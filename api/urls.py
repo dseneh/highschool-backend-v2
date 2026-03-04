@@ -7,7 +7,6 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.views.static import serve
 from django.http import JsonResponse
-from django.db import connection
 import os
 
 
@@ -16,32 +15,13 @@ import os
 # ---------------------------------------------------------------------------
 def health_check(request):
     """
-    Returns 200 if the application is running and the database is reachable.
-    Explicitly uses public schema to avoid tenant routing issues.
+    Lightweight liveness probe endpoint.
+    Must always return quickly with 200 once the app process is running.
     """
-    try:
-        # Force public schema for health check
-        from django_tenants.utils import schema_context, get_public_schema_name
-        
-        with schema_context(get_public_schema_name()):
-            # Simple query to verify database connection
-            from django.contrib.auth import get_user_model
-            User = get_user_model()
-            User.objects.exists()  # This will fail if DB is not accessible
-            db_ok = True
-    except Exception as e:
-        db_ok = False
-        # Log the error in non-production environments
-        if os.getenv('DEBUG', 'False').lower() == 'true':
-            import traceback
-            print(f"Health check failed: {e}")
-            traceback.print_exc()
-
     payload = {
-        "status": "healthy" if db_ok else "degraded",
-        "database": "connected" if db_ok else "unreachable",
+        "status": "ok",
+        "service": "backend",
     }
-    # Keep probe response 200 to avoid platform restart loops on transient DB checks.
     return JsonResponse(payload, status=200)
 
 

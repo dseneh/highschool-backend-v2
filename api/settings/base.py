@@ -32,6 +32,11 @@ for probe_host in ("localhost", "127.0.0.1", "[::1]"):
     if probe_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(probe_host)
 
+# Allow Railway domains used by edge and service health probes
+for railway_host in (".railway.app", ".up.railway.app"):
+    if railway_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(railway_host)
+
 # Application definition
 # NOTE: django_tenants MUST be first in INSTALLED_APPS
 SHARED_APPS = [
