@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # auto-setup-railway.sh - Automatically set up Railway environment only when needed
 
+# CRITICAL: Write to both stdout and stderr to ensure output is visible
+exec 1> >(tee -a /tmp/release.log)
+exec 2>&1
 set -ex  # Added -x for verbose output
 
-echo "🔍 Checking if Railway environment setup is needed..."
-echo "DATABASE_URL is set: $([ -z "$DATABASE_URL" ] && echo 'NO' || echo 'YES')"
-echo "SECRET_KEY is set: $([ -z "$SECRET_KEY" ] && echo 'NO' || echo 'YES')"
+echo "==============================================="
+echo "RELEASE PHASE STARTED"
+echo "==============================================="
+env | grep -E "DATABASE_URL|SECRET_KEY|DJANGO|RAILWAY" || true
 echo ""
 
 # CRITICAL: Run shared schema migrations FIRST (creates public schema and tables)
