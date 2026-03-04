@@ -23,6 +23,10 @@ if not ALLOWED_HOSTS:
     if railway_public_domain:
         ALLOWED_HOSTS = [railway_public_domain]
 
+# Always allow Railway's internal health check domain
+if "healthcheck.railway.app" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("healthcheck.railway.app")
+
 # Application definition
 # NOTE: django_tenants MUST be first in INSTALLED_APPS
 SHARED_APPS = [

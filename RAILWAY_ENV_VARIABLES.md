@@ -318,6 +318,11 @@ Railway will automatically:
 **Cause**: PostgreSQL service not provisioned  
 **Fix**: Add PostgreSQL service to Railway project and wait for it to be ready
 
+### "Invalid HTTP_HOST header: 'healthcheck.railway.app'"
+**Cause**: ALLOWED_HOSTS doesn't include Railway's internal health check domain  
+**Fix**: This is now automatically added to ALLOWED_HOSTS in settings. No action needed.  
+**Note**: Both `api/settings/base.py` and `railway.json` now support Railway's health checks
+
 ### "REDIS_URL not found"
 **Cause**: Redis service not provisioned  
 **Fix**: Add Redis service to Railway project (optional but recommended)
