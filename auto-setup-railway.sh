@@ -8,8 +8,14 @@ echo "DATABASE_URL is set: $([ -z "$DATABASE_URL" ] && echo 'NO' || echo 'YES')"
 echo "SECRET_KEY is set: $([ -z "$SECRET_KEY" ] && echo 'NO' || echo 'YES')"
 echo ""
 
-# Check if superuser exists
-echo "Attempting Django setup to check for existing superuser..."
+# CRITICAL: Run shared schema migrations FIRST (creates public schema and tables)
+echo "📦 Step 1: Running shared schema migrations..."
+python manage.py migrate_schemas --shared --noinput
+echo "✅ Shared schema migrations complete"
+echo ""
+
+# Check if superuser exists (now that migrations are done)
+echo "Checking if superuser and permissions exist..."
 SUPERUSER_EXISTS=$(python -c "
 import django
 import os
@@ -21,7 +27,6 @@ print('true' if User.objects.filter(is_superuser=True).exists() else 'false')
 " 2>&1 || echo "false")
 
 # Check if permissions exist
-echo "Checking if permissions exist..."
 PERMISSIONS_EXIST=$(python -c "
 import django
 import os
@@ -36,11 +41,13 @@ echo "Permissions exist: $PERMISSIONS_EXIST"
 echo ""
 
 if [ "$SUPERUSER_EXISTS" = "true" ] && [ "$PERMISSIONS_EXIST" = "true" ]; then
-    echo "✅ Environment already set up - running migrations only"
-    python manage.py migrate_schemas
+    echo "✅ Superuser and permissions already exist - running tenant migrations only"
+    python manage.py migrate_schemas --noinput
     python manage.py collectstatic --noinput --clear
-    echo "✅ Migrations and static files updated"
+    echo "✅ Migration and static files complete"
 else
     echo "🚀 First-time setup detected - running full environment setup"
     bash -x ./setup-railway-environment.sh
 fi
+
+echo "🎉 Auto-setup complete!"
