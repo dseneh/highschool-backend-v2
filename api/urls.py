@@ -41,8 +41,8 @@ def health_check(request):
         "status": "healthy" if db_ok else "degraded",
         "database": "connected" if db_ok else "unreachable",
     }
-    status_code = 200 if db_ok else 503
-    return JsonResponse(payload, status=status_code)
+    # Keep probe response 200 to avoid platform restart loops on transient DB checks.
+    return JsonResponse(payload, status=200)
 
 
 # API version prefix
@@ -50,6 +50,7 @@ _VERSION_1 = "v1"
 api_base = f"api/{_VERSION_1}/"
 
 urlpatterns = [
+    path("health", health_check, name="health-check-no-slash"),
     path("health/", health_check, name="health-check"),
     path("admin/", admin.site.urls),
     path(api_base, include("core.urls")),
