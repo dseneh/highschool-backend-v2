@@ -2,7 +2,7 @@
 # setup-railway-environment.sh - First-time Railway deployment setup
 # Creates public tenant, superuser, and loads default data
 
-set -euo pipefail
+set -euxo pipefail  # Added -x for verbose, -u for unset variables
 
 echo "🚀 Setting up Railway environment (first-time deployment)"
 echo "========================================================="
