@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Write to both stdout and stderr to ensure visibility
-exec 1> >(tee -a /tmp/web.log)
-exec 2>&1
-
 echo "==============================================="
 echo "WEB PHASE STARTING - $(date)"
 echo "==============================================="
-echo "DATABASE_URL: $([ -z "${DATABASE_URL:-}" ] && echo 'NOT SET' || echo 'SET')"
-echo "SECRET_KEY: $([ -z "${SECRET_KEY:-}" ] && echo 'NOT SET' || echo 'SET')"
+echo "DATABASE_URL set: $([ -n "${DATABASE_URL:-}" ] && echo 'YES' || echo 'NO')"
+echo "SECRET_KEY set: $([ -n "${SECRET_KEY:-}" ] && echo 'YES' || echo 'NO')"
 echo ""
 
 # CRITICAL: Run setup before starting web server
-echo "Running setup/migrations..."
-bash -x ./auto-setup-railway.sh
-echo "Setup complete"
+echo "EXECUTING SETUP SCRIPT..."
+if bash -x ./auto-setup-railway.sh; then
+    echo "✅ Setup script completed successfully"
+else
+    SETUP_EXIT_CODE=$?
+    echo "❌ Setup script failed with exit code: $SETUP_EXIT_CODE"
+    exit $SETUP_EXIT_CODE
+fi
 echo ""
 
 # Quick sanity check that Django can load
@@ -30,5 +31,5 @@ echo ""
 # Ensure staticfiles directory exists (for WhiteNoise)
 mkdir -p staticfiles
 
-echo "Starting Gunicorn on port ${PORT:-8080}..."
+echo "Starting Gunicorn on port ${PORT:-8080} with ${WEB_CONCURRENCY:-3} workers..."
 exec gunicorn api.wsgi:application --bind 0.0.0.0:${PORT:-8080} --workers ${WEB_CONCURRENCY:-3} --timeout 120
