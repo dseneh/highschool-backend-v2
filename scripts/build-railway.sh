@@ -1,94 +1,55 @@
 #!/usr/bin/env bash
-# build-railway.sh - Railway Build Script
+# build-railway.sh - Railway Build Phase Script
+#
+# This script runs during the Railway BUILD phase:
+# - Installs Python dependencies
+# - Verifies critical packages
+# - Collects static files (for serving via WhiteNoise)
+#
+# Database setup, migrations, and superuser creation happen in the RELEASE phase
+# (see ../auto-setup-railway.sh and ../setup-railway-environment.sh)
+#
+# ENVIRONMENT VARIABLES:
+# - This script does NOT require any environment variables
+# - All configuration happens in RELEASE and WEB phases
+# - See RAILWAY_ENV_VARIABLES.md for complete reference
 
 set -o errexit  # exit on error
 
-echo "🚀 Starting Railway build process..."
+echo "🚀 Railway BUILD phase starting..."
+echo ""
 
 # Print Python version for debugging
 echo "🐍 Python version:"
 python --version
+echo ""
 
-# Detect Python version and choose appropriate requirements
-PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-echo "🔍 Detected Python version: $PYTHON_VERSION"
+# Ensure we have the right pip, setuptools, wheel
+echo "📦 Upgrading pip, setuptools, and wheel..."
+pip install --upgrade pip setuptools wheel
+echo ""
 
 # Install Python dependencies
-echo "📦 Installing dependencies..."
-# Upgrade pip and install essential build tools first
-pip install --upgrade pip setuptools wheel
-
-# Choose requirements file based on Python version
-if [[ "$PYTHON_VERSION" == "3.13" ]]; then
-    echo "📦 Using Python 3.13 compatible requirements..."
-    REQUIREMENTS_FILE="requirements-py313.txt"
-else
-    echo "📦 Using standard requirements..."
-    REQUIREMENTS_FILE="requirements.txt"
-fi
-
-# Install requirements with verbose output for debugging
-echo "📦 Installing project requirements from $REQUIREMENTS_FILE..."
-pip install -r $REQUIREMENTS_FILE --verbose || {
-    echo "⚠️  Installation failed with $REQUIREMENTS_FILE, trying fallback..."
-    if [[ "$REQUIREMENTS_FILE" == "requirements.txt" ]]; then
-        echo "📦 Trying Python 3.13 compatible requirements..."
-        pip install -r requirements-py313.txt --verbose
-    else
-        echo "📦 Trying standard requirements..."
-        pip install -r requirements.txt --verbose
-    fi
-}
+echo "📦 Installing project dependencies..."
+pip install -r requirements.txt --verbose
+echo ""
 
 # Verify critical imports work
 echo "🔍 Verifying critical imports..."
-python -c "import django; print(f'Django {django.get_version()} imported successfully')"
+python -c "import django; print(f'✅ Django {django.get_version()} imported successfully')"
+python -c "import rest_framework; print(f'✅ Django REST Framework imported successfully')"
+python -c "import django_tenants; print(f'✅ django-tenants imported successfully')"
+echo ""
 
-# Railway-specific optimizations
-echo "🛤️ Railway-specific setup..."
-
-# Collect static files for Railway
-echo "📂 Collecting static files..."
+# Collect static files for production serving via WhiteNoise
+echo "📂 Collecting static files for WhiteNoise..."
 python manage.py collectstatic --noinput --clear
+echo ""
 
-# Run database migrations
-echo "🗄️ Running database migrations..."
-python manage.py migrate --noinput
-
-# Create superuser if configured
-if [[ "$CREATE_SUPERUSER" == "true" ]]; then
-    echo "👤 Creating superuser..."
-    python manage.py shell -c "
-from django.contrib.auth import get_user_model
-import os
-
-User = get_user_model()
-
-# Get superuser details from environment
-id_number = os.environ.get('DJANGO_SUPERUSER_ID_NUMBER', 'admin001')
-username = os.environ.get('DJANGO_SUPERUSER_USERNAME', 'admin')
-email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
-password = os.environ.get('DJANGO_SUPERUSER_PASSWORD', 'admin')
-
-# Check if superuser already exists
-if not User.objects.filter(username=username).exists():
-    print(f'Creating superuser: {username}')
-    User.objects.create_superuser(
-        id_number=id_number,
-        username=username,
-        email=email,
-        password=password
-    )
-    print('✅ Superuser created successfully')
-else:
-    print('ℹ️ Superuser already exists')
-"
-fi
-
-# Load default data if configured
-if [[ "$LOAD_DEFAULT_DATA" == "true" ]]; then
-    echo "📊 Loading default data..."
-    python defaults/run.py || echo "⚠️ Default data loading failed (this is usually okay)"
-fi
-
-echo "✅ Railway build completed successfully!"
+echo "✅ BUILD phase completed successfully!"
+echo ""
+echo "📋 Next steps (RELEASE phase):"
+echo "   - auto-setup-railway.sh will run migrations"
+echo "   - Public tenant will be created"
+echo "   - Superuser will be created (if CREATE_SUPERUSER=true)"
+echo ""

@@ -28,8 +28,9 @@ print('true' if Permission.objects.exists() else 'false')
 
 if [ "$SUPERUSER_EXISTS" = "true" ] && [ "$PERMISSIONS_EXIST" = "true" ]; then
     echo "✅ Environment already set up - running migrations only"
-    python manage.py migrate --noinput
-    echo "✅ Migrations complete"
+    python manage.py migrate_schemas
+    python manage.py collectstatic --noinput --clear
+    echo "✅ Migrations and static files updated"
 else
     echo "🚀 First-time setup detected - running full environment setup"
     ./setup-railway-environment.sh
