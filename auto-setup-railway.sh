@@ -30,7 +30,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
 django.setup()
 from django.contrib.auth import get_user_model
 User = get_user_model()
-print('true' if User.objects.filter(is_superuser=True).exists() else 'false')
+print('true' if User.objects.filter(role='superadmin').exists() else 'false')
 " 2>&1 || echo "false")
 
 echo "Superuser exists: $SUPERUSER_EXISTS"
