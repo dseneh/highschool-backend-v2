@@ -43,7 +43,20 @@ echo ""
 
 # Collect static files for production serving via WhiteNoise
 echo "📂 Collecting static files for WhiteNoise..."
-python manage.py collectstatic --noinput --clear
+
+# Create staticfiles directory if it doesn't exist
+mkdir -p staticfiles
+
+# Run collectstatic with verbose output
+python manage.py collectstatic --noinput --clear --verbosity=2
+
+# Verify static files were collected
+if [ -d "staticfiles" ] && [ "$(ls -A staticfiles)" ]; then
+    file_count=$(find staticfiles -type f | wc -l)
+    echo "✅ Static files collected: $file_count files in staticfiles/"
+else
+    echo "⚠️  Warning: staticfiles directory is empty or missing"
+fi
 echo ""
 
 echo "✅ BUILD phase completed successfully!"
