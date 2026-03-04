@@ -34,7 +34,7 @@ python-decouple==3.8
 python-dotenv>=1.0.0
 
 # API documentation
-drf-yasg==1.21.7
+drf-yasg==1.21.8
 
 # Data processing
 pandas==2.3.1
@@ -63,7 +63,7 @@ psutil==6.1.0
 gunicorn==23.0.0
 
 # Build tools
-setuptools==80.9.0
+setuptools<81  # Pin to avoid pkg_resources deprecation warnings
 wheel==0.45.1
 
 # django-brotli==0.3.0  # Removed - doesn't support Django 6 (requires django<6)
