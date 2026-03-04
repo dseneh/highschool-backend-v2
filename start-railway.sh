@@ -8,8 +8,14 @@ exec 2>&1
 echo "==============================================="
 echo "WEB PHASE STARTING - $(date)"
 echo "==============================================="
-echo "PORT: ${PORT:-8080}"
-echo "WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}"
+echo "DATABASE_URL: $([ -z "${DATABASE_URL:-}" ] && echo 'NOT SET' || echo 'SET')"
+echo "SECRET_KEY: $([ -z "${SECRET_KEY:-}" ] && echo 'NOT SET' || echo 'SET')"
+echo ""
+
+# CRITICAL: Run setup before starting web server
+echo "Running setup/migrations..."
+bash -x ./auto-setup-railway.sh
+echo "Setup complete"
 echo ""
 
 # Quick sanity check that Django can load
@@ -24,5 +30,5 @@ echo ""
 # Ensure staticfiles directory exists (for WhiteNoise)
 mkdir -p staticfiles
 
-echo "Starting Gunicorn..."
+echo "Starting Gunicorn on port ${PORT:-8080}..."
 exec gunicorn api.wsgi:application --bind 0.0.0.0:${PORT:-8080} --workers ${WEB_CONCURRENCY:-3} --timeout 120
