@@ -27,6 +27,11 @@ if not ALLOWED_HOSTS:
 if "healthcheck.railway.app" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append("healthcheck.railway.app")
 
+# Allow local/internal hosts used by platform health probes and container runtime
+for probe_host in ("localhost", "127.0.0.1", "[::1]"):
+    if probe_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(probe_host)
+
 # Application definition
 # NOTE: django_tenants MUST be first in INSTALLED_APPS
 SHARED_APPS = [
