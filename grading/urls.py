@@ -1,0 +1,173 @@
+from django.urls import path
+
+from grading.views import (
+    GradeListCreateView,
+    GradeDetailView,
+    GradeStatusTransitionView,
+    SectionGradeStatusTransitionView,
+    StudentMarkingPeriodGradeStatusTransitionView,
+    FinalGradeView,
+    StudentFinalGradeView,
+    StudentFinalGradesView,
+    SectionFinalGradesView,
+    StudentReportCardPDFView,
+    AssessmentTypeListCreateView,
+    AssessmentTypeDetailView,
+    GradeBookListCreateView,
+    GradeBookDetailView,
+    AssessmentListCreateView,
+    AssessmentDetailView,
+    GradeLetterListCreateView,
+    GradeLetterDetailView,
+    DefaultAssessmentTemplateListCreateView,
+    DefaultAssessmentTemplateDetailView,
+    GenerateAssessmentsForGradebookView,
+    GenerateAssessmentsForAcademicYearView,
+    PreviewAssessmentsForGradebookView,
+    BulkGradeUploadView,
+    RankingView,
+    GradeHistoryView,
+    GradeCorrectionView,
+    GradeMarkForCorrectionView,
+)
+
+urlpatterns = [
+    path(
+        "rankings/",
+        RankingView.as_view(),
+        name="rankings",
+    ),
+    path(
+        "assessment-types/",
+        AssessmentTypeListCreateView.as_view(),
+        name="assessment-type-create",
+    ),
+    path(
+        "assessment-types/<str:pk>/",
+        AssessmentTypeDetailView.as_view(),
+        name="assessment-type-detail",
+    ),
+    path(
+        "academic-years/<str:academic_year_id>/gradebooks/",
+        GradeBookListCreateView.as_view(),
+        name="grade-book-list-create",
+    ),
+    path(
+        "gradebooks/<str:pk>/", GradeBookDetailView.as_view(), name="grade-book-detail"
+    ),
+    path(
+        "gradebooks/<str:gradebook_id>/assessments/",
+        AssessmentListCreateView.as_view(),
+        name="assessment-list-create",
+    ),
+    path(
+        "assessments/<str:pk>/",
+        AssessmentDetailView.as_view(),
+        name="assessment-detail",
+    ),
+    path(
+        "assessments/<str:assessment_id>/grades/",
+        GradeListCreateView.as_view(),
+        name="grade-list-create",
+    ),
+    path("grades/<str:pk>/", GradeDetailView.as_view(), name="grade-detail"),
+    path(
+        "grades/<str:pk>/status/",
+        GradeStatusTransitionView.as_view(),
+        name="grade-status-transition",
+    ),
+    path(
+        "grades/<str:grade_id>/history/",
+        GradeHistoryView.as_view(),
+        name="grade-history",
+    ),
+    path(
+        "grades/<str:grade_id>/correct/",
+        GradeCorrectionView.as_view(),
+        name="grade-correct",
+    ),
+    path(
+        "grades/<str:grade_id>/mark-for-correction/",
+        GradeMarkForCorrectionView.as_view(),
+        name="grade-mark-for-correction",
+    ),
+    path(
+        "sections/<str:section_id>/grades-status/",
+        SectionGradeStatusTransitionView.as_view(),
+        name="section-grades-status-transition",
+    ),
+    path(
+        "sections/<str:section_id>/grades-upload/",
+        BulkGradeUploadView.as_view(),
+        name="section-grades-bulk-upload",
+    ),
+    path(
+        "students/<str:student_id>/marking_periods/<str:marking_period_id>/grades-status/",
+        StudentMarkingPeriodGradeStatusTransitionView.as_view(),
+        name="student-marking-period-grade-status-transition",
+    ),
+    path("final-grade/", FinalGradeView.as_view(), name="final-grade"),
+    path(
+        "students/<str:student_id>/final-grades/gradebooks/<str:gradebook_id>/",
+        StudentFinalGradeView.as_view(),
+        name="student-final-grade-detail",
+    ),
+    path(
+        "students/<str:student_id>/final-grades/academic-years/<str:academic_year_id>/",
+        StudentFinalGradesView.as_view(),
+        name="student-final-grades",
+    ),
+    # Report card PDF download
+    path(
+        "students/<str:student_id>/final-grades/academic-years/<str:academic_year_id>/report-card/",
+        StudentReportCardPDFView.as_view(),
+        name="student-report-card-pdf",
+    ),
+    # Section-based routes - consolidated endpoint
+    path(
+        "sections/<str:section_id>/final-grades/",
+        SectionFinalGradesView.as_view(),
+        name="section-final-grades",
+    ),
+    # Grade letter management endpoints
+    path(
+        "grade-letters/",
+        GradeLetterListCreateView.as_view(),
+        name="grade-letters-list-create",
+    ),
+    path(
+        "grade-letters/<str:pk>/",
+        GradeLetterDetailView.as_view(),
+        name="grade-letter-detail",
+    ),
+    # ============================================================================
+    # Default Assessment Template Endpoints
+    # ============================================================================
+    # Template CRUD
+    path(
+        "default-templates/",
+        DefaultAssessmentTemplateListCreateView.as_view(),
+        name="default-template-list-create",
+    ),
+    path(
+        "default-templates/<str:pk>/",
+        DefaultAssessmentTemplateDetailView.as_view(),
+        name="default-template-detail",
+    ),
+    # Assessment Generation
+    path(
+        "gradebooks/<str:gradebook_id>/generate-assessments/",
+        GenerateAssessmentsForGradebookView.as_view(),
+        name="generate-assessments-gradebook",
+    ),
+    path(
+        "gradebooks/<str:gradebook_id>/preview-assessments/",
+        PreviewAssessmentsForGradebookView.as_view(),
+        name="preview-assessments-gradebook",
+    ),
+    path(
+        "academic-years/<str:academic_year_id>/generate-assessments/",
+        GenerateAssessmentsForAcademicYearView.as_view(),
+        name="generate-assessments-academic-year",
+    ),
+]

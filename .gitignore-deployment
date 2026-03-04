@@ -1,0 +1,49 @@
+# Add these patterns to your .gitignore if not already there
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+
+# Development
+*.py~
+*.swp
+*.swo
+.DS_Store
+.vscode/
+.idea/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Documentation (local builds)
+docs/_build/
+site/
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+
+# Database
+*.sqlite3
+db.sqlite3
+
+# Logs
+*.log
+
+# Migration backups (keep in migration_backup/ dir)
+# But exclude from deployment
+migration_backup/
+
+# Examples and tests (if not deploying)
+examples/
+tests/test_*.py
+

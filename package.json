@@ -1,0 +1,7 @@
+{
+	"dependencies": {
+		"npm": "^11.10.0",
+		"i": "^0.3.7",
+		"@tanstack/react-query-devtools": "^5.91.3"
+	}
+}

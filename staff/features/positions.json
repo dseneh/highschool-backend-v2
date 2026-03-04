@@ -1,0 +1,227 @@
+[
+    {
+        "title": "Board Member",
+        "category": "Management & Leadership",
+        "description": "Serves on the governing board of the institution.",
+        "department": "Administration",
+        "can_delete": true,
+        "level": 1,
+        "teaching_role": false
+    },
+    {
+        "title": "Director",
+        "category": "Management & Leadership",
+        "description": "Provides overall strategic direction and leadership.",
+        "department": "Administration",
+        "can_delete": true,
+        "level": 1,
+        "teaching_role": false
+    },
+    {
+        "title": "Project Manager",
+        "category": "Management & Leadership",
+        "description": "Coordinates projects and ensures standards.",
+        "department": "Administration",
+        "can_delete": true,
+        "level": 1,
+        "teaching_role": false
+    },    
+    {
+        "title": "Principal",
+        "category": "Faculty",
+        "description": "Head of the school/college responsible for overall administration and academic leadership.",
+        "department": "Administration",
+        "can_delete": false,
+        "level": 2,
+        "teaching_role": false
+    },
+    {
+        "title": "Vice Principal",
+        "category": "Faculty",
+        "description": "Assists the principal in academic and administrative functions.",
+        "department": "Administration",
+        "can_delete": false,
+        "level": 3,
+        "teaching_role": false
+    },
+    {
+        "title": "Dean of Students",
+        "category": "Faculty",
+        "description": "Manages student affairs and provides academic and career guidance to students.",
+        "department": "Guidance & Counseling",
+        "can_delete": false,
+        "level": 3,
+        "teaching_role": false
+    },
+    {
+        "title": "Registrar",
+        "category": "Administrative Staff",
+        "description": "Handles student admissions, records, and course registrations.",
+        "department": "Administration",
+        "can_delete": false,
+        "level": 3,
+        "teaching_role": false
+    },
+    {
+        "title": "HR Manager",
+        "category": "Administrative Staff",
+        "description": "Manages staff recruitment, payroll, and welfare.",
+        "department": "Administration",
+        "can_delete": true,
+        "level": 3,
+        "teaching_role": false
+    },
+    {
+        "title": "Finance Officer",
+        "category": "Administrative Staff",
+        "description": "Oversees accounting, budgeting, and financial reporting.",
+        "department": "Finance",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Administrative Officer",
+        "category": "Administrative Staff",
+        "description": "Manages day-to-day school operations.",
+        "department": "Administration",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Admissions Officer",
+        "category": "Administrative Staff",
+        "description": "Handles student applications and enrollment processes.",
+        "department": "Administration",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "IT Administrator",
+        "category": "Administrative Staff",
+        "description": "Maintains computer systems, networks, and software.",
+        "department": "ICT",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Teacher",
+        "category": "Faculty",
+        "description": "Delivers lessons to students according to curriculum.",
+        "department": "Academics",
+        "can_delete": false,
+        "level": 4,
+        "teaching_role": true
+    },
+    {
+        "title": "Lab Instructor",
+        "category": "Faculty",
+        "description": "Conducts practical sessions and manages laboratory equipment.",
+        "department": "Academics",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": true
+    },
+    {
+        "title": "Teacher Assistant",
+        "category": "Faculty",
+        "description": "Supports the main teacher in classroom instruction.",
+        "department": "Academics",
+        "can_delete": true,
+        "level": 5,
+        "teaching_role": true
+    },
+    {
+        "title": "Librarian",
+        "category": "Faculty",
+        "description": "Manages the library and supports research activities.",
+        "department": "Library & Media",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Student Counselor",
+        "category": "Health & Student Services",
+        "description": "Supports students' mental health and personal development.",
+        "department": "Guidance & Counseling",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "School Nurse",
+        "category": "Health & Student Services",
+        "description": "Provides basic healthcare and first aid services.",
+        "department": "Health",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Welfare Officer",
+        "category": "Health & Student Services",
+        "description": "Handles student welfare and wellbeing programs.",
+        "department": "Guidance & Counseling",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Sports Coach",
+        "category": "Health & Student Services",
+        "description": "Trains and supervises sports and fitness programs.",
+        "department": "Physical Education",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Maintenance Supervisor",
+        "category": "Support & Technical Staff",
+        "description": "Oversees campus maintenance and repairs.",
+        "department": "Maintenance",
+        "can_delete": true,
+        "level": 4,
+        "teaching_role": false
+    },
+    {
+        "title": "Technician",
+        "category": "Support & Technical Staff",
+        "description": "Maintains school equipment and technical systems.",
+        "department": "ICT",
+        "can_delete": true,
+        "level": 5,
+        "teaching_role": false
+    },
+    {
+        "title": "Janitor",
+        "category": "Support & Technical Staff",
+        "description": "Responsible for cleaning and maintaining the school environment.",
+        "department": "Maintenance",
+        "can_delete": true,
+        "level": 5,
+        "teaching_role": false
+    },
+    {
+        "title": "Security Guard",
+        "category": "Support & Technical Staff",
+        "description": "Ensures safety and security of staff, students, and property.",
+        "department": "Security",
+        "can_delete": true,
+        "level": 5,
+        "teaching_role": false
+    },
+    {
+        "title": "Driver",
+        "category": "Support & Technical Staff",
+        "description": "Provides transportation services for students or staff.",
+        "department": "Transportation",
+        "can_delete": true,
+        "level": 5,
+        "teaching_role": false
+    }
+]

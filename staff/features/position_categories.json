@@ -1,0 +1,22 @@
+[
+    {
+        "name": "Faculty",
+        "description": "Teaching staff and academic positions including teachers, department heads, and academic administrators."
+    },
+    {
+        "name": "Administrative Staff",
+        "description": "Administrative personnel responsible for school operations, records, and office management."
+    },
+    {
+        "name": "Support & Technical Staff",
+        "description": "Support staff including maintenance, security, technical, and operational personnel."
+    },
+    {
+        "name": "Management & Leadership",
+        "description": "Senior leadership and management positions including principals, directors, and board members."
+    },
+    {
+        "name": "Health & Student Services",
+        "description": "Positions focused on student health, counseling, welfare, and support services."
+    }
+]

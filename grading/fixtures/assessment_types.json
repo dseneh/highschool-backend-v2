@@ -1,0 +1,51 @@
+[
+  {
+    "name": "Quiz",
+    "description": "Short assessment covering recent topics, typically 10-20 minutes"
+  },
+  {
+    "name": "Test",
+    "description": "Comprehensive assessment covering multiple topics or chapters"
+  },
+  {
+    "name": "Exam",
+    "description": "Major assessment covering extensive curriculum content"
+  },
+  {
+    "name": "Assignment",
+    "description": "Written work or projects assigned to be completed outside of class"
+  },
+  {
+    "name": "Attendance",
+    "description": "Monitoring student presence and participation in class"
+  },
+  {
+    "name": "Project",
+    "description": "Extended assignment requiring research, creativity, or practical application"
+  },
+  {
+    "name": "Presentation",
+    "description": "Oral presentation or demonstration of knowledge or skills"
+  },
+  {
+    "name": "Participation",
+    "description": "Active engagement and contribution during class activities"
+  },
+  {
+    "name": "Homework",
+    "description": "Daily or weekly assignments to reinforce classroom learning"
+  },
+  {
+    "name": "Discussion",
+    "description": "Participation in class discussions, debates, or collaborative activities"
+  },
+  {
+    "name": "Practical",
+    "description": "Hands-on application of skills in laboratory or workshop settings"
+  },
+  {
+    "name": "Final Grade",
+    "description": "Overall grade representing cumulative performance for the course",
+    "is_single_entry": true
+  }
+]

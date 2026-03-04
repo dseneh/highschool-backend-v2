@@ -1,0 +1,62 @@
+[
+  {
+    "name": "Quiz",
+    "assessment_type": "Quiz",
+    "max_score": 30,
+    "weight": 1.0,
+    "is_calculated": true,
+    "order": 1,
+    "target": "marking_period",
+    "description": "Quiz covering marking period topics"
+  },
+  {
+    "name": "Assignment",
+    "assessment_type": "Assignment",
+    "max_score": 20,
+    "weight": 1.0,
+    "is_calculated": true,
+    "order": 2,
+    "target": "marking_period",
+    "description": "Written assignment for the marking period"
+  },
+  {
+    "name": "Participation",
+    "assessment_type": "Participation",
+    "max_score": 5,
+    "weight": 1.0,
+    "is_calculated": true,
+    "order": 3,
+    "target": "marking_period",
+    "description": "Active participation and engagement in class activities"
+  },
+  {
+    "name": "Attendance",
+    "assessment_type": "Attendance",
+    "max_score": 5,
+    "weight": 1.0,
+    "is_calculated": true,
+    "order": 4,
+    "target": "marking_period",
+    "description": "Class attendance throughout the marking period"
+  },
+  {
+    "name": "Test",
+    "assessment_type": "Test",
+    "max_score": 40,
+    "weight": 1.0,
+    "is_calculated": true,
+    "order": 5,
+    "target": "marking_period",
+    "description": "Major test covering marking period material"
+  },
+  {
+    "name": "Semester Exam",
+    "assessment_type": "Exam",
+    "max_score": 100,
+    "weight": 1.0,
+    "is_calculated": true,
+    "order": 6,
+    "target": "exam",
+    "description": "Comprehensive semester examination covering all material"
+  }
+]

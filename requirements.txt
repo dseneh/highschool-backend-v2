@@ -1,0 +1,71 @@
+# Django and core dependencies
+Django>=5.2.0,<6.0.0
+django-tenants>=3.9.0
+django-tenant-users>=2.2.0
+django-filter>=24.3
+
+# REST Framework and authentication
+djangorestframework>=3.15.2
+djangorestframework-simplejwt>=5.3.1
+drf-access-policy>=1.5.0
+drf-nested-routers>=0.93.4
+munch==4.0.0
+
+# Database
+psycopg2-binary>=2.9.10
+# Alternative for newer Python versions: psycopg[binary]==3.2.3
+dj-database-url==2.2.0
+
+# Storage (for multi-tenant file storage)
+django-storages==1.14.4
+boto3==1.35.67
+
+# Image processing
+Pillow==11.2.1
+django-resized==1.0.3
+python-magic==0.4.27
+
+# CORS and middleware
+django-cors-headers==4.5.0
+whitenoise==6.8.2
+
+# Settings and environment
+python-decouple==3.8
+python-dotenv>=1.0.0
+
+# API documentation
+drf-yasg==1.21.7
+
+# Data processing
+pandas==2.3.1
+bottleneck>=1.3.6
+openpyxl==3.1.5
+reportlab==4.0.7
+
+# Utilities
+django-appconf==1.1.0
+requests==2.31.0
+munch==4.0.0
+cryptography==45.0.5
+python-dateutil==2.8.2
+adrf>=0.1.12
+
+# Caching
+redis==5.2.1
+django-redis==5.4.0
+
+# Monitoring and debugging
+sentry-sdk==2.20.0
+django-debug-toolbar==4.4.6
+psutil==6.1.0
+
+# Server
+gunicorn==23.0.0
+
+# Build tools
+setuptools==80.9.0
+wheel==0.45.1
+
+# django-brotli==0.3.0  # Removed - doesn't support Django 6 (requires django<6)
+# The application handles missing django-brotli gracefully via try/except in settings
+# Alternative: Use Django's built-in GZipMiddleware or WhiteNoise compression

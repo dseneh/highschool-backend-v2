@@ -1,0 +1,80 @@
+[
+  {
+    "letter": "A+",
+    "min_percentage": 97.00,
+    "max_percentage": 100.00,
+    "order": 1
+  },
+  {
+    "letter": "A",
+    "min_percentage": 93.00,
+    "max_percentage": 96.99,
+    "order": 2
+  },
+  {
+    "letter": "A-",
+    "min_percentage": 90.00,
+    "max_percentage": 92.99,
+    "order": 3
+  },
+  {
+    "letter": "B+",
+    "min_percentage": 87.00,
+    "max_percentage": 89.99,
+    "order": 4
+  },
+  {
+    "letter": "B",
+    "min_percentage": 83.00,
+    "max_percentage": 86.99,
+    "order": 5
+  },
+  {
+    "letter": "B-",
+    "min_percentage": 80.00,
+    "max_percentage": 82.99,
+    "order": 6
+  },
+  {
+    "letter": "C+",
+    "min_percentage": 77.00,
+    "max_percentage": 79.99,
+    "order": 7
+  },
+  {
+    "letter": "C",
+    "min_percentage": 73.00,
+    "max_percentage": 76.99,
+    "order": 8
+  },
+  {
+    "letter": "C-",
+    "min_percentage": 70.00,
+    "max_percentage": 72.99,
+    "order": 9
+  },
+  {
+    "letter": "D+",
+    "min_percentage": 67.00,
+    "max_percentage": 69.99,
+    "order": 10
+  },
+  {
+    "letter": "D",
+    "min_percentage": 63.00,
+    "max_percentage": 66.99,
+    "order": 11
+  },
+  {
+    "letter": "D-",
+    "min_percentage": 60.00,
+    "max_percentage": 62.99,
+    "order": 12
+  },
+  {
+    "letter": "F",
+    "min_percentage": 0.00,
+    "max_percentage": 59.99,
+    "order": 13
+  }
+]

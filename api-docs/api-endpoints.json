@@ -1,0 +1,1185 @@
+{
+  "api_version": "1.0",
+  "base_url": "https://your-domain.com/api/v1/",
+  "authentication": {
+    "type": "JWT",
+    "header": "Authorization: Bearer <token>"
+  },
+  "multi_tenancy": {
+    "required": true,
+    "header": "x-tenant: <tenant_slug>"
+  },
+  "modules": [
+    {
+      "name": "Authentication",
+      "id": "authentication",
+      "description": "JWT-based authentication endpoints for user login and token management",
+      "endpoints": [
+        {
+          "path": "/api/v1/auth/login/",
+          "methods": ["POST"],
+          "name": "User Login",
+          "description": "Authenticate a user using email, username, or staff ID. Returns access and refresh tokens.",
+          "requires_auth": false,
+          "requires_tenant": false,
+          "request_body": {
+            "username/email/staff_id": "User identifier (required)",
+            "password": "User password (required)"
+          }
+        },
+        {
+          "path": "/api/v1/auth/token/refresh/",
+          "methods": ["POST"],
+          "name": "Refresh Access Token",
+          "description": "Obtain a new access token using a valid refresh token.",
+          "requires_auth": false,
+          "requires_tenant": false,
+          "request_body": {
+            "refresh": "Valid refresh token (required)"
+          }
+        },
+        {
+          "path": "/api/v1/auth/user/current/",
+          "methods": ["GET"],
+          "name": "Get Current User",
+          "description": "Retrieve detailed information about the currently authenticated user.",
+          "requires_auth": true,
+          "requires_tenant": false
+        },
+        {
+          "path": "/api/v1/auth/verify/",
+          "methods": ["POST"],
+          "name": "Verify Token",
+          "description": "Validate a JWT token and check if it's still valid.",
+          "requires_auth": true,
+          "requires_tenant": false
+        },
+        {
+          "path": "/api/v1/auth/",
+          "methods": ["GET"],
+          "name": "List Tenant Users",
+          "description": "Get a list of all users within a specific tenant.",
+          "requires_auth": true,
+          "requires_tenant": true
+        }
+      ]
+    },
+    {
+      "name": "Core / Tenants",
+      "id": "core",
+      "description": "Multi-tenancy management for schools and organizations",
+      "endpoints": [
+        {
+          "path": "/api/v1/tenants/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Tenants",
+          "description": "Retrieve list of tenants or create new tenant",
+          "requires_auth": true,
+          "requires_tenant": false
+        },
+        {
+          "path": "/api/v1/tenants/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Tenant Details",
+          "description": "Get, update, or delete a specific tenant",
+          "requires_auth": true,
+          "requires_tenant": false
+        }
+      ]
+    },
+    {
+      "name": "Academics",
+      "id": "academics",
+      "description": "Academic structure management including years, semesters, subjects, and schedules",
+      "sub_modules": [
+        {
+          "name": "Academic Years",
+          "endpoints": [
+            {
+              "path": "/api/v1/academic-years/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Academic Years",
+              "description": "Get all academic years or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/academic-years/current/",
+              "methods": ["GET"],
+              "name": "Get Current Academic Year",
+              "description": "Retrieve the currently active academic year",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/academic-years/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Academic Year Details",
+              "description": "Get, update, or delete specific academic year",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Semesters",
+          "endpoints": [
+            {
+              "path": "/api/v1/semesters/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Semesters",
+              "description": "Get all semesters or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/semesters/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Semester Details",
+              "description": "Get, update, or delete specific semester",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Marking Periods",
+          "endpoints": [
+            {
+              "path": "/api/v1/marking-periods/",
+              "methods": ["GET"],
+              "name": "List All Marking Periods",
+              "description": "Get all marking periods across all semesters",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/semesters/{semester_id}/marking-periods/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Semester Marking Periods",
+              "description": "Get or create marking periods for specific semester",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/marking-periods/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Marking Period Details",
+              "description": "Get, update, or delete specific marking period",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Grade Levels",
+          "endpoints": [
+            {
+              "path": "/api/v1/grade-levels/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Grade Levels",
+              "description": "Get all grade levels or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grade-levels/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Grade Level Details",
+              "description": "Get, update, or delete specific grade level",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grade-levels/{id}/tuition/",
+              "methods": ["GET"],
+              "name": "Get Grade Level Tuition",
+              "description": "Retrieve tuition fee information for grade level",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Divisions",
+          "endpoints": [
+            {
+              "path": "/api/v1/divisions/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Divisions",
+              "description": "Get all divisions or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/divisions/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Division Details",
+              "description": "Get, update, or delete specific division",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Sections",
+          "endpoints": [
+            {
+              "path": "/api/v1/grade-levels/{grade_level_id}/sections/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Sections",
+              "description": "Get or create sections for grade level",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/sections/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Section Details",
+              "description": "Get, update, or delete specific section",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Subjects",
+          "endpoints": [
+            {
+              "path": "/api/v1/subjects/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Subjects",
+              "description": "Get all subjects or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/subjects/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Subject Details",
+              "description": "Get, update, or delete specific subject",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Section Subjects",
+          "endpoints": [
+            {
+              "path": "/api/v1/sections/{section_id}/section-subjects/",
+              "methods": ["GET", "POST"],
+              "name": "List/Assign Section Subjects",
+              "description": "Get or assign subjects to section",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/section-subjects/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Section Subject Details",
+              "description": "Get, update, or delete section-subject assignment",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Periods & Schedules",
+          "endpoints": [
+            {
+              "path": "/api/v1/periods/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Periods",
+              "description": "Get all periods or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/periods/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Period Details",
+              "description": "Get, update, or delete specific period",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/periods/{period_id}/period-times/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Period Times",
+              "description": "Get or configure time slots for period",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/period-times/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Period Time Details",
+              "description": "Get, update, or delete period time configuration",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/sections/{section_id}/class-schedules/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Section Schedules",
+              "description": "Get or create class schedules for section",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/class-schedules/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Class Schedule Details",
+              "description": "Get, update, or delete specific class schedule",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Students",
+      "id": "students",
+      "description": "Student management, enrollment, attendance, and billing",
+      "sub_modules": [
+        {
+          "name": "Student Management",
+          "endpoints": [
+            {
+              "path": "/api/v1/students/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Students",
+              "description": "Get all students or register new student",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/students/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Student Details",
+              "description": "Get, update, or delete specific student",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grade-levels/{grade_level_id}/student-uploads/",
+              "methods": ["POST"],
+              "name": "Bulk Import Students",
+              "description": "Import multiple students from CSV/Excel",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Enrollment",
+          "endpoints": [
+            {
+              "path": "/api/v1/students/{student_id}/enrollments/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Enrollments",
+              "description": "Get or create student enrollments",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/enrollments/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Enrollment Details",
+              "description": "Get, update, or delete specific enrollment",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Attendance",
+          "endpoints": [
+            {
+              "path": "/api/v1/students/{student_id}/attendance/",
+              "methods": ["GET", "POST"],
+              "name": "List/Record Attendance",
+              "description": "Get or record student attendance",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/attendance/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Attendance Details",
+              "description": "Get, update, or delete attendance record",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Billing",
+          "endpoints": [
+            {
+              "path": "/api/v1/students/{student_id}/bills/",
+              "methods": ["GET"],
+              "name": "List Student Bills",
+              "description": "Get all bills for student",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/students/{student_id}/bills/download-pdf/",
+              "methods": ["GET"],
+              "name": "Download Bill PDF",
+              "description": "Generate and download bill PDF",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/students/bills/recreate/",
+              "methods": ["POST"],
+              "name": "Recreate Bills",
+              "description": "Bulk recreate bills (async operation)",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/students/bills/recreate/preview/",
+              "methods": ["POST"],
+              "name": "Preview Bill Recreation",
+              "description": "Preview changes for bill recreation",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/students/bills/recreate/status/{task_id}/",
+              "methods": ["GET"],
+              "name": "Check Bill Recreation Status",
+              "description": "Check async task status",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Bill Summary",
+          "endpoints": [
+            {
+              "path": "/api/v1/bill-summary/",
+              "methods": ["GET"],
+              "name": "Get Bill Summary",
+              "description": "Get comprehensive billing summary with analytics",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/bill-summary/download/",
+              "methods": ["GET"],
+              "name": "Download Bill Summary",
+              "description": "Export bill summary to Excel/CSV",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/bill-summary/metadata/",
+              "methods": ["GET"],
+              "name": "Get Bill Summary Metadata",
+              "description": "Get metadata including available filters",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/bill-summary/quick-stats/",
+              "methods": ["GET"],
+              "name": "Get Quick Stats",
+              "description": "Get quick billing statistics",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Finance",
+      "id": "finance",
+      "description": "Financial management including fees, transactions, payments, and accounting",
+      "sub_modules": [
+        {
+          "name": "Transactions",
+          "endpoints": [
+            {
+              "path": "/api/v1/transactions/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Transactions",
+              "description": "Get all transactions or record new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/transactions/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Transaction Details",
+              "description": "Get, update, or delete specific transaction",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/transactions/bulk/{transaction_type_id}/",
+              "methods": ["POST"],
+              "name": "Bulk Create Transactions",
+              "description": "Create multiple transactions in single request",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Transaction Types",
+          "endpoints": [
+            {
+              "path": "/api/v1/transaction-types/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Transaction Types",
+              "description": "Get all transaction types or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/transaction-types/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Transaction Type Details",
+              "description": "Get, update, or delete transaction type",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Payment Methods",
+          "endpoints": [
+            {
+              "path": "/api/v1/payment-methods/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Payment Methods",
+              "description": "Get all payment methods or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/payment-methods/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Payment Method Details",
+              "description": "Get, update, or delete payment method",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Bank Accounts",
+          "endpoints": [
+            {
+              "path": "/api/v1/bankaccounts/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Bank Accounts",
+              "description": "Get all bank accounts or add new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/bankaccounts/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Bank Account Details",
+              "description": "Get, update, or delete bank account",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Currency",
+          "endpoints": [
+            {
+              "path": "/api/v1/currencies/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Currencies",
+              "description": "Get all currencies or add new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/currencies/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Currency Details",
+              "description": "Get, update, or delete currency",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Fees",
+          "endpoints": [
+            {
+              "path": "/api/v1/general-fees/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create General Fees",
+              "description": "Get all general fees or create new one",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/general-fees/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "General Fee Details",
+              "description": "Get, update, or delete general fee",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/sections/{section_id}/section-fees/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Section Fees",
+              "description": "Get or create fees for section",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/section-fees/{id}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Section Fee Details",
+              "description": "Get, update, or delete section fee",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Installments",
+          "endpoints": [
+            {
+              "path": "/api/v1/academic-years/{academic_year_id}/installments/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Installments",
+              "description": "Get or create payment installment plans",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/installments/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Installment Details",
+              "description": "Get, update, or delete installment",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Payment Status",
+          "endpoints": [
+            {
+              "path": "/api/v1/students/payment-status/",
+              "methods": ["GET"],
+              "name": "List Student Payment Status",
+              "description": "Get payment status overview for all students",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Staff",
+      "id": "staff",
+      "description": "Staff, teacher, department, and position management",
+      "endpoints": [
+        {
+          "path": "/api/v1/staff/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Staff",
+          "description": "Get all staff members or add new one",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/staff/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Staff Details",
+          "description": "Get, update, or delete staff member",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/staff/teachers/",
+          "methods": ["GET"],
+          "name": "List Teachers",
+          "description": "Get all teaching staff members",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/departments/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Departments",
+          "description": "Get all departments or create new one",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/departments/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Department Details",
+          "description": "Get, update, or delete department",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/positions/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Positions",
+          "description": "Get all positions or create new one",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/positions/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Position Details",
+          "description": "Get, update, or delete position",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/position-categories/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Position Categories",
+          "description": "Get all position categories or create new one",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/position-categories/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Position Category Details",
+          "description": "Get, update, or delete position category",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/teacher-schedules/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Teacher Schedules",
+          "description": "Get or assign teacher schedules",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/teacher-schedules/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Teacher Schedule Details",
+          "description": "Get, update, or delete teacher schedule",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/teacher-sections/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Teacher Sections",
+          "description": "Get or assign teacher to sections",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/teacher-sections/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Teacher Section Details",
+          "description": "Get, update, or delete teacher-section assignment",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/teacher-subjects/",
+          "methods": ["GET", "POST"],
+          "name": "List/Create Teacher Subjects",
+          "description": "Get or assign teacher to subjects",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/teacher-subjects/{id}/",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "name": "Teacher Subject Details",
+          "description": "Get, update, or delete teacher-subject assignment",
+          "requires_auth": true,
+          "requires_tenant": true
+        }
+      ]
+    },
+    {
+      "name": "Grading",
+      "id": "grading",
+      "description": "Grade management, assessments, gradebooks, and report cards",
+      "sub_modules": [
+        {
+          "name": "Gradebooks",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/academic-years/{academic_year_id}/gradebooks/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Gradebooks",
+              "description": "Get or create gradebooks for academic year",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/gradebooks/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Gradebook Details",
+              "description": "Get, update, or delete gradebook",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Assessments",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/assessment-types/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Assessment Types",
+              "description": "Get or create assessment types",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/assessment-types/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Assessment Type Details",
+              "description": "Get, update, or delete assessment type",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/gradebooks/{gradebook_id}/assessments/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Assessments",
+              "description": "Get or create assessments for gradebook",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/assessments/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Assessment Details",
+              "description": "Get, update, or delete assessment",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Grades",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/assessments/{assessment_id}/grades/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Grades",
+              "description": "Get or enter grades for assessment",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/grades/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Grade Details",
+              "description": "Get, update, or delete grade",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/sections/{section_id}/grades-upload/",
+              "methods": ["POST"],
+              "name": "Bulk Upload Grades",
+              "description": "Upload multiple grades via CSV/Excel",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/grades/{pk}/status/",
+              "methods": ["PATCH"],
+              "name": "Update Grade Status",
+              "description": "Change grade status (draft/submitted/published)",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/sections/{section_id}/grades-status/",
+              "methods": ["PATCH"],
+              "name": "Update Section Grades Status",
+              "description": "Batch update status for section grades",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Final Grades",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/final-grade/",
+              "methods": ["GET"],
+              "name": "Calculate Final Grades",
+              "description": "Calculate and retrieve final grades",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/students/{student_id}/final-grades/gradebooks/{gradebook_id}/",
+              "methods": ["GET"],
+              "name": "Get Student Final Grade",
+              "description": "Get final grade for student in gradebook",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/students/{student_id}/final-grades/academic-years/{academic_year_id}/",
+              "methods": ["GET"],
+              "name": "Get Student Academic Year Grades",
+              "description": "Get all final grades for student for academic year",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/sections/{section_id}/final-grades/",
+              "methods": ["GET"],
+              "name": "Get Section Final Grades",
+              "description": "Get final grades for all students in section",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Report Cards",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/students/{student_id}/final-grades/academic-years/{academic_year_id}/report-card/",
+              "methods": ["GET"],
+              "name": "Download Report Card PDF",
+              "description": "Generate and download student report card PDF",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Grade Letters",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/grade-letters/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Grade Letters",
+              "description": "Get or configure grade letter scale",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/grade-letters/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Grade Letter Details",
+              "description": "Get, update, or delete grade letter configuration",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Templates",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/default-templates/",
+              "methods": ["GET", "POST"],
+              "name": "List/Create Assessment Templates",
+              "description": "Get or create assessment templates",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/default-templates/{pk}/",
+              "methods": ["GET", "PUT", "PATCH", "DELETE"],
+              "name": "Template Details",
+              "description": "Get, update, or delete assessment template",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/gradebooks/{gradebook_id}/generate-assessments/",
+              "methods": ["POST"],
+              "name": "Generate Assessments for Gradebook",
+              "description": "Auto-generate assessments for gradebook from templates",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/gradebooks/{gradebook_id}/preview-assessments/",
+              "methods": ["GET"],
+              "name": "Preview Generated Assessments",
+              "description": "Preview assessments before generation",
+              "requires_auth": true,
+              "requires_tenant": true
+            },
+            {
+              "path": "/api/v1/grading/academic-years/{academic_year_id}/generate-assessments/",
+              "methods": ["POST"],
+              "name": "Generate Assessments for Academic Year",
+              "description": "Bulk generate assessments for academic year",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        },
+        {
+          "name": "Rankings",
+          "endpoints": [
+            {
+              "path": "/api/v1/grading/rankings/",
+              "methods": ["GET"],
+              "name": "Get Student Rankings",
+              "description": "Get student rankings based on grades",
+              "requires_auth": true,
+              "requires_tenant": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Settings",
+      "id": "settings",
+      "description": "School configuration and grading system settings",
+      "endpoints": [
+        {
+          "path": "/api/v1/settings/grading/",
+          "methods": ["GET", "PUT", "PATCH"],
+          "name": "Grading Settings",
+          "description": "Get or update grading system settings",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/settings/grading-style/",
+          "methods": ["GET", "PUT", "PATCH"],
+          "name": "Grading Style Settings",
+          "description": "Configure grading style",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/settings/grading/init/",
+          "methods": ["POST"],
+          "name": "Initialize Grading Fixtures",
+          "description": "Initialize default grading configuration",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/settings/grading/regenerate/",
+          "methods": ["POST"],
+          "name": "Regenerate Gradebooks",
+          "description": "Regenerate all gradebooks (async operation)",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/settings/grading/tasks/{task_id}/",
+          "methods": ["GET"],
+          "name": "Check Grading Task Status",
+          "description": "Check status of async grading operations",
+          "requires_auth": true,
+          "requires_tenant": true
+        }
+      ]
+    },
+    {
+      "name": "Reports",
+      "id": "reports",
+      "description": "Generate and export various school reports",
+      "endpoints": [
+        {
+          "path": "/api/v1/reports/transactions/",
+          "methods": ["GET"],
+          "name": "Transaction Reports",
+          "description": "Generate financial transaction reports",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/reports/students/",
+          "methods": ["GET"],
+          "name": "Student Reports",
+          "description": "Generate student-related reports",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/reports/finance/",
+          "methods": ["GET"],
+          "name": "Finance Reports",
+          "description": "Generate financial reports",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/reports/export-status/{task_id}/",
+          "methods": ["GET"],
+          "name": "Check Export Status",
+          "description": "Check status of async report export",
+          "requires_auth": true,
+          "requires_tenant": true
+        },
+        {
+          "path": "/api/v1/reports/download/{task_id}/",
+          "methods": ["GET"],
+          "name": "Download Report",
+          "description": "Download completed report file",
+          "requires_auth": true,
+          "requires_tenant": true
+        }
+      ]
+    }
+  ],
+  "response_format": {
+    "success_response": {
+      "success": true,
+      "data": {},
+      "message": "Operation successful"
+    },
+    "error_response": {
+      "success": false,
+      "error": {
+        "detail": "Error message",
+        "code": "ERROR_CODE"
+      }
+    }
+  },
+  "pagination": {
+    "query_params": {
+      "page": "Page number",
+      "page_size": "Number of items per page"
+    },
+    "response_structure": {
+      "count": "Total number of items",
+      "next": "URL to next page",
+      "previous": "URL to previous page",
+      "results": []
+    }
+  },
+  "common_query_params": {
+    "search": "Search term",
+    "ordering": "Sort field(s), prefix with - for descending",
+    "limit": "Maximum results to return"
+  }
+}

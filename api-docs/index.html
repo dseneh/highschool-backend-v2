@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>High School Management System - API Documentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #fff;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            color: #1a1a1a;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #2563eb;
+            color: #1a1a1a;
+        }
+
+        .header-info {
+            color: #666;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #ddd;
+            font-size: 0.95rem;
+        }
+
+        .header-info code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .endpoint {
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+        }
+
+        .endpoint-header {
+            margin-bottom: 0.75rem;
+        }
+
+        .method {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 3px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            margin-right: 0.5rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .method-get { background: #d4edda; color: #155724; }
+        .method-post { background: #d1ecf1; color: #0c5460; }
+        .method-put { background: #fff3cd; color: #856404; }
+        .method-patch { background: #f8d7da; color: #721c24; }
+        .method-delete { background: #f5c6cb; color: #721c24; }
+
+        .path {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            background: #f5f5f5;
+            padding: 0.25rem 0.5rem;
+            border-radius: 3px;
+            display: inline-block;
+            margin-top: 0.25rem;
+        }
+
+        .endpoint-name {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .description {
+            color: #555;
+            font-size: 0.95rem;
+        }
+
+        @media print {
+            body {
+                max-width: 100%;
+                padding: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>High School Management System - API Documentation</h1>
+    <div class="header-info">
+        <p><strong>Base URL:</strong> <code>https://your-domain.com/api/v1/</code></p>
+        <p><strong>Authentication:</strong> JWT Bearer Token (<code>Authorization: Bearer &lt;token&gt;</code>)</p>
+        <p><strong>Multi-Tenancy:</strong> Required header: <code>x-tenant: &lt;tenant-slug&gt;</code></p>
+    </div>
+
+    <h2>Authentication</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/auth/login/</span>
+        </div>
+        <div class="endpoint-name">User Login</div>
+        <div class="description">
+            Authenticate a user using email, username, or staff ID. Returns access and refresh tokens.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/auth/token/refresh/</span>
+        </div>
+        <div class="endpoint-name">Refresh Access Token</div>
+        <div class="description">
+            Obtain a new access token using a valid refresh token.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/auth/user/current/</span>
+        </div>
+        <div class="endpoint-name">Get Current User</div>
+        <div class="description">
+            Retrieve detailed information about the currently authenticated user.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/auth/verify/</span>
+        </div>
+        <div class="endpoint-name">Verify Token</div>
+        <div class="description">
+            Validate a JWT token and check if it's still valid.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/auth/</span>
+        </div>
+        <div class="endpoint-name">List Tenant Users</div>
+        <div class="description">
+            Get a list of all users within a specific tenant.
+        </div>
+    </div>
+
+    <h2>Core / Tenant Management</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/tenants/</span>
+        </div>
+        <div class="endpoint-name">List Tenants</div>
+        <div class="description">
+            Retrieve a list of all tenants/schools.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/tenants/</span>
+        </div>
+        <div class="endpoint-name">Create Tenant</div>
+        <div class="description">
+            Create a new tenant/school with all necessary configuration.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/tenants/{id}/</span>
+        </div>
+        <div class="endpoint-name">Tenant Details</div>
+        <div class="description">
+            Get, update, partially update, or delete a specific tenant.
+        </div>
+    </div>
+
+    <h2>Academics</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/academics/subjects/</span>
+        </div>
+        <div class="endpoint-name">List/Create Subjects</div>
+        <div class="description">
+            Get all subjects or create a new subject.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/academics/subjects/{id}/</span>
+        </div>
+        <div class="endpoint-name">Subject Details</div>
+        <div class="description">
+            Get, update, or delete a specific subject.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/academics/classes/</span>
+        </div>
+        <div class="endpoint-name">List/Create Classes</div>
+        <div class="description">
+            Get all classes or create a new class.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/academics/classes/{id}/</span>
+        </div>
+        <div class="endpoint-name">Class Details</div>
+        <div class="description">
+            Get, update, or delete a specific class.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/academics/grades/</span>
+        </div>
+        <div class="endpoint-name">List/Create Grades</div>
+        <div class="description">
+            Get all grade levels or create a new grade level.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/academics/grades/{id}/</span>
+        </div>
+        <div class="endpoint-name">Grade Details</div>
+        <div class="description">
+            Get, update, or delete a specific grade level.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/academics/terms/</span>
+        </div>
+        <div class="endpoint-name">List/Create Terms</div>
+        <div class="description">
+            Get all academic terms or create a new term.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/academics/terms/{id}/</span>
+        </div>
+        <div class="endpoint-name">Term Details</div>
+        <div class="description">
+            Get, update, or delete a specific academic term.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/academics/academic-years/</span>
+        </div>
+        <div class="endpoint-name">List/Create Academic Years</div>
+        <div class="description">
+            Get all academic years or create a new academic year.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/academics/academic-years/{id}/</span>
+        </div>
+        <div class="endpoint-name">Academic Year Details</div>
+        <div class="description">
+            Get, update, or delete a specific academic year.
+        </div>
+    </div>
+
+    <h2>Students</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/students/</span>
+        </div>
+        <div class="endpoint-name">List/Create Students</div>
+        <div class="description">
+            Get all students or create a new student record.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/students/{id}/</span>
+        </div>
+        <div class="endpoint-name">Student Details</div>
+        <div class="description">
+            Get, update, or delete a specific student.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/students/search/</span>
+        </div>
+        <div class="endpoint-name">Search Students</div>
+        <div class="description">
+            Search students by name, admission number, or other criteria.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/students/enrollments/</span>
+        </div>
+        <div class="endpoint-name">Student Enrollments</div>
+        <div class="description">
+            List student enrollments or enroll a student in a class.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/students/enrollments/{id}/</span>
+        </div>
+        <div class="endpoint-name">Enrollment Details</div>
+        <div class="description">
+            Get, update, or delete a specific enrollment.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/students/attendance/</span>
+        </div>
+        <div class="endpoint-name">Student Attendance</div>
+        <div class="description">
+            List attendance records or mark student attendance.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/students/attendance/{id}/</span>
+        </div>
+        <div class="endpoint-name">Attendance Details</div>
+        <div class="description">
+            Get, update, or delete a specific attendance record.
+        </div>
+    </div>
+
+    <h2>Finance</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/finance/fee-structures/</span>
+        </div>
+        <div class="endpoint-name">List/Create Fee Structures</div>
+        <div class="description">
+            Get all fee structures or create a new fee structure.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/finance/fee-structures/{id}/</span>
+        </div>
+        <div class="endpoint-name">Fee Structure Details</div>
+        <div class="description">
+            Get, update, or delete a specific fee structure.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/finance/fee-items/</span>
+        </div>
+        <div class="endpoint-name">List/Create Fee Items</div>
+        <div class="description">
+            Get all fee items or create a new fee item.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/finance/fee-items/{id}/</span>
+        </div>
+        <div class="endpoint-name">Fee Item Details</div>
+        <div class="description">
+            Get, update, or delete a specific fee item.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/finance/invoices/</span>
+        </div>
+        <div class="endpoint-name">List/Create Invoices</div>
+        <div class="description">
+            Get all invoices or create a new invoice for a student.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/finance/invoices/{id}/</span>
+        </div>
+        <div class="endpoint-name">Invoice Details</div>
+        <div class="description">
+            Get, update, or delete a specific invoice.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/finance/payments/</span>
+        </div>
+        <div class="endpoint-name">List/Create Payments</div>
+        <div class="description">
+            Get all payments or record a new payment.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/finance/payments/{id}/</span>
+        </div>
+        <div class="endpoint-name">Payment Details</div>
+        <div class="description">
+            Get, update, or delete a specific payment.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/finance/student-balances/</span>
+        </div>
+        <div class="endpoint-name">Student Balances</div>
+        <div class="description">
+            Get financial balances for all students or a specific student.
+        </div>
+    </div>
+
+    <h2>Staff</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/staff/</span>
+        </div>
+        <div class="endpoint-name">List/Create Staff</div>
+        <div class="description">
+            Get all staff members or create a new staff member.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/staff/{id}/</span>
+        </div>
+        <div class="endpoint-name">Staff Details</div>
+        <div class="description">
+            Get, update, or delete a specific staff member.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/staff/departments/</span>
+        </div>
+        <div class="endpoint-name">List/Create Departments</div>
+        <div class="description">
+            Get all departments or create a new department.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/staff/departments/{id}/</span>
+        </div>
+        <div class="endpoint-name">Department Details</div>
+        <div class="description">
+            Get, update, or delete a specific department.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/staff/attendance/</span>
+        </div>
+        <div class="endpoint-name">Staff Attendance</div>
+        <div class="description">
+            List staff attendance records or mark staff attendance.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/staff/attendance/{id}/</span>
+        </div>
+        <div class="endpoint-name">Staff Attendance Details</div>
+        <div class="description">
+            Get, update, or delete a specific staff attendance record.
+        </div>
+    </div>
+
+    <h2>Grading</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/grading/scales/</span>
+        </div>
+        <div class="endpoint-name">List/Create Grading Scales</div>
+        <div class="description">
+            Get all grading scales or create a new grading scale.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/grading/scales/{id}/</span>
+        </div>
+        <div class="endpoint-name">Grading Scale Details</div>
+        <div class="description">
+            Get, update, or delete a specific grading scale.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/grading/assessments/</span>
+        </div>
+        <div class="endpoint-name">List/Create Assessments</div>
+        <div class="description">
+            Get all assessments or create a new assessment.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/grading/assessments/{id}/</span>
+        </div>
+        <div class="endpoint-name">Assessment Details</div>
+        <div class="description">
+            Get, update, or delete a specific assessment.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/grading/grades/</span>
+        </div>
+        <div class="endpoint-name">List/Create Grades</div>
+        <div class="description">
+            Get all student grades or enter a new grade.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/grading/grades/{id}/</span>
+        </div>
+        <div class="endpoint-name">Grade Details</div>
+        <div class="description">
+            Get, update, or delete a specific grade.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/grading/report-cards/{student_id}/</span>
+        </div>
+        <div class="endpoint-name">Student Report Card</div>
+        <div class="description">
+            Generate and retrieve a report card for a specific student.
+        </div>
+    </div>
+
+    <h2>Settings</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="path">/api/v1/settings/school/</span>
+        </div>
+        <div class="endpoint-name">School Settings</div>
+        <div class="description">
+            Get or update school-wide settings and configuration.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/settings/roles/</span>
+        </div>
+        <div class="endpoint-name">List/Create Roles</div>
+        <div class="description">
+            Get all user roles or create a new role.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/settings/roles/{id}/</span>
+        </div>
+        <div class="endpoint-name">Role Details</div>
+        <div class="description">
+            Get, update, or delete a specific role.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-post">POST</span>
+            <span class="path">/api/v1/settings/permissions/</span>
+        </div>
+        <div class="endpoint-name">List/Create Permissions</div>
+        <div class="description">
+            Get all permissions or create a new permission.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="method method-put">PUT</span>
+            <span class="method method-patch">PATCH</span>
+            <span class="method method-delete">DELETE</span>
+            <span class="path">/api/v1/settings/permissions/{id}/</span>
+        </div>
+        <div class="endpoint-name">Permission Details</div>
+        <div class="description">
+            Get, update, or delete a specific permission.
+        </div>
+    </div>
+
+    <h2>Reports</h2>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/reports/student-summary/</span>
+        </div>
+        <div class="endpoint-name">Student Summary Report</div>
+        <div class="description">
+            Generate a comprehensive summary report for students.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/reports/attendance/</span>
+        </div>
+        <div class="endpoint-name">Attendance Report</div>
+        <div class="description">
+            Generate attendance reports by class, grade, or date range.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/reports/financial/</span>
+        </div>
+        <div class="endpoint-name">Financial Report</div>
+        <div class="description">
+            Generate financial reports including collections, balances, and payments.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/reports/academic-performance/</span>
+        </div>
+        <div class="endpoint-name">Academic Performance Report</div>
+        <div class="description">
+            Generate academic performance reports by student, class, or subject.
+        </div>
+    </div>
+
+    <div class="endpoint">
+        <div class="endpoint-header">
+            <span class="method method-get">GET</span>
+            <span class="path">/api/v1/reports/staff-summary/</span>
+        </div>
+        <div class="endpoint-name">Staff Summary Report</div>
+        <div class="description">
+            Generate summary reports for staff members and their activities.
+        </div>
+    </div>
+
+</body>
+</html>

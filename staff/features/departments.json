@@ -1,0 +1,87 @@
+[
+    {
+        "name": "Academics",
+        "code": "ACAD",
+        "description": "Oversees the study and teaching of all subjects."
+    },
+    {
+        "name": "Science",
+        "code": "SCI",
+        "description": "Oversees the study and teaching of natural and physical sciences such as biology, chemistry, and physics."
+    },
+    {
+        "name": "Mathematics",
+        "code": "MATH",
+        "description": "Responsible for mathematics education, curriculum design, and support for analytical learning."
+    },
+    {
+        "name": "English",
+        "code": "ENG",
+        "description": "Handles courses related to English language, literature, and effective communication skills."
+    },
+    {
+        "name": "Social Studies",
+        "code": "SOC",
+        "description": "Focuses on history, geography, civics, and social sciences to promote civic understanding."
+    },
+    {
+        "name": "ICT",
+        "code": "ICT",
+        "description": "Manages information technology instruction, infrastructure, and digital literacy programs."
+    },
+    {
+        "name": "Business",
+        "code": "BUS",
+        "description": "Covers accounting, management, economics, and entrepreneurship-related courses."
+    },
+    {
+        "name": "Arts",
+        "code": "ART",
+        "description": "Encourages creativity through visual arts, music, drama, and cultural education."
+    },
+    {
+        "name": "Physical Education",
+        "code": "PE",
+        "description": "Promotes fitness, sportsmanship, and physical wellness among students."
+    },
+    {
+        "name": "Guidance & Counseling",
+        "code": "GUID",
+        "description": "Provides emotional, academic, and career counseling to support student development."
+    },
+    {
+        "name": "Health",
+        "code": "HLT",
+        "description": "Coordinates school health programs, first aid, and overall student wellbeing."
+    },
+    {
+        "name": "Administration",
+        "code": "ADMIN",
+        "description": "Manages school operations, human resources, and general administrative support."
+    },
+    {
+        "name": "Finance",
+        "code": "FIN",
+        "description": "Oversees accounting, budgeting, and financial reporting for the school."
+    },
+    {
+        "name": "Maintenance",
+        "code": "MAIN",
+        "description": "Responsible for campus maintenance, repairs, and facility management."
+    },
+    {
+        "name": "Security",
+        "code": "SEC",
+        "description": "Ensures the safety and protection of students, staff, and school property."
+    },
+    {
+        "name": "Library & Media",
+        "code": "LIB",
+        "description": "Manages library operations and promotes academic research and resource access."
+    },
+    {
+        "name": "Transportation",
+        "code": "TRAN",
+        "description": "Manages transportation services for students and staff."
+    }
+]

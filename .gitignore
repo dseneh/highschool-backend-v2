@@ -1,0 +1,77 @@
+# OS files
+.DS_Store
+
+# Environment files
+.env
+.env.local
+.env.production
+.venv
+venv/
+env/
+.cursor/
+
+# Security files
+wire_guard
+wireguard.conf
+*.key
+*.pem
+*.p12
+*.crt
+
+# Python cache
+*.pyc
+*/__pycache__/*
+__pycache__
+
+# Database
+db.sqlite3
+*.sqlite3
+
+# Migration credentials
+migrate_data_direct.py
+
+# Student data files
+students.xlsx
+*.xlsx
+student_data.*
+backup_students.*
+enrollment_data.*
+data/neon_backup.json
+data/neon_fresh_export.sql
+
+# Media files (user uploads)
+media/school
+media/users
+
+# Migrations (exclude auto-generated migrations but keep essential ones)
+# **/migrations/0*
+# !**/migrations/__init__.py
+# Note: For production deployment, we include all migrations in git
+# If you want to exclude migrations, uncomment the lines above
+
+# Previously excluded SQLite-specific migrations, but now needed for CI compatibility
+# users/migrations/0002_fix_missing_role_level.py
+# users/migrations/0003_comprehensive_role_fix.py
+# users/migrations/0004_cleanup_corrupt_roles.py
+# users/migrations/0005_aggressive_role_cleanup.py
+# users/migrations/0006_final_cleanup.py
+# users/migrations/0007_add_missing_user_columns.py
+# users/migrations/0008_nuclear_cleanup.py
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+staticfiles/
+.coverage
+htmlcov/
+
+# Test artifacts
+.pytest_cache/
