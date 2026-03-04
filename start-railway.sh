@@ -28,6 +28,14 @@ python manage.py check --deploy 2>&1 || {
 echo "✅ Django configuration OK"
 echo ""
 
+# Test database connection
+echo "Testing database connection..."
+python -c "from django.db import connection; connection.ensure_connection(); print('✅ Database connection OK')" || {
+    echo "❌ Database connection failed!"
+    exit 1
+}
+echo ""
+
 # Ensure staticfiles directory exists (for WhiteNoise)
 mkdir -p staticfiles
 

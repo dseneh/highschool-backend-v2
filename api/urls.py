@@ -17,12 +17,25 @@ import os
 def health_check(request):
     """
     Returns 200 if the application is running and the database is reachable.
+    Explicitly uses public schema to avoid tenant routing issues.
     """
     try:
-        connection.ensure_connection()
-        db_ok = True
-    except Exception:
+        # Force public schema for health check
+        from django_tenants.utils import schema_context, get_public_schema_name
+        
+        with schema_context(get_public_schema_name()):
+            # Simple query to verify database connection
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            User.objects.exists()  # This will fail if DB is not accessible
+            db_ok = True
+    except Exception as e:
         db_ok = False
+        # Log the error in non-production environments
+        if os.getenv('DEBUG', 'False').lower() == 'true':
+            import traceback
+            print(f"Health check failed: {e}")
+            traceback.print_exc()
 
     payload = {
         "status": "healthy" if db_ok else "degraded",
