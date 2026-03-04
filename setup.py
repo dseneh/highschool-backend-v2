@@ -55,7 +55,7 @@ def find_all_apps():
     for app in settings.INSTALLED_APPS:
         # Skip third-party apps
         if app.startswith('django.') or app.startswith('rest_framework') or \
-           app.startswith('corsheaders') or app.startswith('drf_yasg') or \
+           app.startswith('corsheaders') or \
            app.startswith('storages') or app.startswith('django_tenants') or \
            app.startswith('tenant_users'):
             continue

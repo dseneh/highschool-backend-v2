@@ -120,16 +120,4 @@ else:
         cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
     )
 
-# Swagger/OpenAPI Settings
-SWAGGER_SETTINGS = {
-    "SECURITY_DEFINITIONS": {
-        "Bearer": {
-            "type": "apiKey",
-            "name": "Authorization",
-            "in": "header",
-        }
-    },
-    "USE_SESSION_AUTH": False,
-}
-
 SECRET_AES_KEY = config("SECRET_AES_KEY", default="your-aes-secret-key-change-in-production")

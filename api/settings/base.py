@@ -46,7 +46,6 @@ SHARED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
-    "drf_yasg",
     "storages",
     # Local shared apps (data in public schema OR abstract models/utilities)
     "common",  # Abstract base models (BaseModel, BasePersonModel) - no DB tables
