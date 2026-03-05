@@ -24,60 +24,37 @@ def fix_or_create_superuser():
         user = User.objects.get(email=email)
         print(f"Found existing user: {email}")
         
-        # Update fields if missing
-        updated = False
-        if not user.username:
-            user.username = "admin"
-            updated = True
-            print("  ✓ Set username to 'admin'")
-        
-        if user.role != Roles.SUPERADMIN:
-            user.role = Roles.SUPERADMIN
-            updated = True
-            print("  ✓ Set role to 'superadmin'")
-        
-        if user.account_type != UserAccountType.GLOBAL:
-            user.account_type = UserAccountType.GLOBAL
-            updated = True
-            print("  ✓ Set account_type to 'GLOBAL'")
-        
-        if not user.first_name:
-            user.first_name = "System"
-            user.last_name = "Administrator"
-            updated = True
-            print("  ✓ Set name to 'System Administrator'")
-        
-        if not user.id_number:
-            user.id_number = "admin001"
-            updated = True
-            print("  ✓ Set id_number to 'admin001'")
-        
-        # Reset password
+        # Update fields
+        user.username = "admin"
+        user.role = Roles.SUPERADMIN
+        user.account_type = UserAccountType.GLOBAL
+        user.first_name = "System"
+        user.last_name = "Administrator"
+        user.id_number = "admin001"
+        user.is_active = True
         user.set_password(password)
-        updated = True
-        print("  ✓ Reset password")
-        
-        if updated:
-            user.save()
-            print(f"\n✅ Successfully updated user: {email}")
-        else:
-            print(f"\n✅ User already has all required fields")
+        user.save()
+        print("  ✓ Updated all fields")
             
     except User.DoesNotExist:
         # Create new user
         print(f"User {email} does not exist. Creating new superuser...")
         user = User.objects.create_superuser(
             email=email,
-            username="admin",
             password=password,
-            first_name="System",
-            last_name="Administrator",
-            id_number="admin001",
-            role=Roles.SUPERADMIN,
-            account_type=UserAccountType.GLOBAL,
-            is_active=True,
         )
-        print(f"✅ Successfully created superuser: {email}")
+        # Update all fields after creation
+        user.username = "admin"
+        user.role = Roles.SUPERADMIN
+        user.account_type = UserAccountType.GLOBAL
+        user.first_name = "System"
+        user.last_name = "Administrator"
+        user.id_number = "admin001"
+        user.is_active = True
+        user.save()
+        print("  ✓ Created and configured superuser")
+    
+    print(f"\n✅ Superuser is ready!")
     
     print("\n" + "="*60)
     print("Superuser Credentials:")

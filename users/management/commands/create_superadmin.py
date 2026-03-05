@@ -104,21 +104,25 @@ class Command(BaseCommand):
             # Generate username from email (e.g., admin@example.com -> admin)
             username = email.split('@')[0] if email else 'admin'
             
-            # Create superuser using UserProfile's create_superuser method
-            # UserProfile.create_superuser expects: password, email, **extra_fields
+            # Import Roles and UserAccountType
             from common.status import Roles, UserAccountType
             
+            # Create superuser with minimal fields first
+            # UserProfile.create_superuser handles email and password
             user = User.objects.create_superuser(
                 password=password,
                 email=email,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-                id_number=id_number,
-                role=Roles.SUPERADMIN,
-                account_type=UserAccountType.GLOBAL,
-                is_active=True,
             )
+            
+            # Then update all the required fields explicitly
+            user.username = username
+            user.first_name = first_name
+            user.last_name = last_name
+            user.id_number = id_number
+            user.role = Roles.SUPERADMIN
+            user.account_type = UserAccountType.GLOBAL
+            user.is_active = True
+            user.save()
 
             # Note: is_superuser and is_staff are properties in django-tenant-users
             # that check UserTenantPermissions, not direct fields
