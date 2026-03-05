@@ -25,6 +25,7 @@ from core.serializers import (
     TenantInfoSearchResultSerializer
 )
 from common.utils import update_model_fields
+from common.permissions import IsSuperAdmin
 from students.models import Student
 from staff.models import Staff
 
@@ -107,11 +108,13 @@ class TenantViewSet(ModelViewSet):
     def get_permissions(self):
         """
         Allow public access (no authentication) for list and retrieve actions.
-        Require authentication and admin permissions for create, update, delete.
+        Require authentication and superadmin permissions for create, update, delete.
+        
+        Superadmin users can perform any operation in the system.
         """
         if self.action in ['list', 'retrieve']:
             return [AllowAny()]
-        return [IsAuthenticated(), IsAdminUser()]
+        return [IsAuthenticated(), IsSuperAdmin()]
     
     def get_serializer_class(self):
         """
