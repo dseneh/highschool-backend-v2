@@ -10,7 +10,7 @@ echo ""
 
 # CRITICAL: Run setup before starting web server
 echo "EXECUTING SETUP SCRIPT..."
-if bash -x ./auto-setup-railway.sh; then
+if bash ./auto-setup-railway.sh; then
     echo "✅ Setup script completed successfully"
 else
     SETUP_EXIT_CODE=$?

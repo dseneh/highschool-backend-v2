@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # auto-setup-railway.sh - Automatically set up Railway environment only when needed
 
-set -ex  # Exit on error, show commands
+set -e  # Exit on error
 
 echo ""
 echo "###############################################"
