@@ -20,19 +20,7 @@ PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-public.${RAILWAY_PUBLIC_DOMAIN:-ezyschool.net}}"
 OWNER_EMAIL="${DJANGO_SUPERUSER_EMAIL:-admin@ezyschool.app}"
 
 # Check if public tenant already exists
-PUBLIC_EXISTS=$(python -c "
-import django
-import os
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
-django.setup()
-from core.models import Tenant
-from django_tenants.utils import get_public_schema_name
-try:
-    Tenant.objects.get(schema_name=get_public_schema_name())
-    print('true')
-except Tenant.DoesNotExist:
-    print('false')
-" 2>/dev/null || echo "false")
+PUBLIC_EXISTS=$(python check_setup.py public_tenant 2>/dev/null || echo "false")
 
 if [ "$PUBLIC_EXISTS" = "true" ]; then
     echo "✅ Public tenant already exists"
@@ -51,16 +39,7 @@ if [ "$CREATE_SUPERUSER" = "true" ]; then
     echo "👤 Step 3: Creating superuser..."
     
     # Check if superuser with this email exists
-    SUPERUSER_EXISTS=$(python -c "
-import django
-import os
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
-django.setup()
-from django.contrib.auth import get_user_model
-User = get_user_model()
-email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@ezyschool.app')
-print('true' if User.objects.filter(email=email, role='superadmin').exists() else 'false')
-" 2>/dev/null || echo "false")
+    SUPERUSER_EXISTS=$(python check_setup.py superuser 2>/dev/null || echo "false")
     
     if [ "$SUPERUSER_EXISTS" = "true" ]; then
         echo "✅ Superuser already exists"
@@ -80,14 +59,7 @@ fi
 # Step 4: Load permissions (required for access control)
 echo ""
 echo "🔐 Step 4: Loading permissions..."
-PERMISSIONS_EXIST=$(python -c "
-import django
-import os
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
-django.setup()
-from users.models import Permission
-print('true' if Permission.objects.exists() else 'false')
-" 2>/dev/null || echo "false")
+PERMISSIONS_EXIST=$(python check_setup.py permissions 2>/dev/null || echo "false")
 
 if [ "$PERMISSIONS_EXIST" = "true" ]; then
     echo "✅ Permissions already loaded"

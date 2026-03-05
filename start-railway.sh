@@ -30,18 +30,12 @@ echo ""
 
 # Test database connection
 echo "Testing database connection..."
-python -c "
-import django
-import os
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
-django.setup()
-from django.db import connection
-connection.ensure_connection()
-print('✅ Database connection OK')
-" || {
+if python check_setup.py superuser >/dev/null 2>&1; then
+    echo "✅ Database connection OK"
+else
     echo "❌ Database connection failed!"
     exit 1
-}
+fi
 echo ""
 
 # Ensure staticfiles directory exists (for WhiteNoise)

@@ -23,15 +23,7 @@ echo ""
 
 # Step 3: Check if superuser exists
 echo "Step 3: Checking if already initialized..."
-SUPERUSER_EXISTS=$(python -c "
-import django
-import os
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
-django.setup()
-from django.contrib.auth import get_user_model
-User = get_user_model()
-print('true' if User.objects.filter(role='superadmin').exists() else 'false')
-" 2>&1 || echo "false")
+SUPERUSER_EXISTS=$(python check_setup.py superuser 2>&1 || echo "false")
 
 echo "Superuser exists: $SUPERUSER_EXISTS"
 echo ""
@@ -44,7 +36,7 @@ if [ "$SUPERUSER_EXISTS" = "true" ]; then
     echo "✅ Step 4 complete"
 else
     echo "Step 4: First-time setup - running full setup..."
-    bash -x ./setup-railway-environment.sh
+    bash ./setup-railway-environment.sh
     echo "✅ Step 4 complete"
 fi
 
