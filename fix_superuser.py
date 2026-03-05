@@ -18,14 +18,15 @@ User = get_user_model()
 def fix_or_create_superuser():
     email = "admin@ezyschool.app"
     password = "Ezyschool.net"
+    username = "admin"
     
     try:
         # Try to get existing user
         user = User.objects.get(email=email)
         print(f"Found existing user: {email}")
         
-        # Update fields
-        user.username = "admin"
+        # Force-update all fields
+        user.username = username
         user.role = Roles.SUPERADMIN
         user.account_type = UserAccountType.GLOBAL
         user.first_name = "System"
@@ -34,25 +35,22 @@ def fix_or_create_superuser():
         user.is_active = True
         user.set_password(password)
         user.save()
-        print("  ✓ Updated all fields")
+        print("  ✓ Updated all fields (forced)")
             
     except User.DoesNotExist:
-        # Create new user
+        # Create new user using the same approach as setup.py
         print(f"User {email} does not exist. Creating new superuser...")
         user = User.objects.create_superuser(
             email=email,
+            username=username,
             password=password,
+            first_name="System",
+            last_name="Administrator",
+            id_number="admin001",
+            account_type=UserAccountType.GLOBAL,
+            role=Roles.SUPERADMIN,
         )
-        # Update all fields after creation
-        user.username = "admin"
-        user.role = Roles.SUPERADMIN
-        user.account_type = UserAccountType.GLOBAL
-        user.first_name = "System"
-        user.last_name = "Administrator"
-        user.id_number = "admin001"
-        user.is_active = True
-        user.save()
-        print("  ✓ Created and configured superuser")
+        print("  ✓ Created superuser with all fields")
     
     print(f"\n✅ Superuser is ready!")
     
