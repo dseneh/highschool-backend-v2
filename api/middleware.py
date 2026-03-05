@@ -33,8 +33,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if request.method == 'OPTIONS':
             return None
         
-        # Skip tenant resolution for the health check endpoint
-        if request.path.startswith('/health'):
+        # Skip tenant resolution for liveness endpoints
+        if request.path == '/' or request.path.startswith('/health'):
             return None
         
         # Skip tenant resolution for media files in DEBUG mode

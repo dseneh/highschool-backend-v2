@@ -30,6 +30,7 @@ _VERSION_1 = "v1"
 api_base = f"api/{_VERSION_1}/"
 
 urlpatterns = [
+    path("", health_check, name="root-health-check"),
     path("health", health_check, name="health-check-no-slash"),
     path("health/", health_check, name="health-check"),
     path("admin/", admin.site.urls),
