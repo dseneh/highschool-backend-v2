@@ -32,8 +32,8 @@ else
     echo "✅ Public tenant created"
 fi
 
-# Step 3: Create superuser (if CREATE_SUPERUSER=true)
-CREATE_SUPERUSER="${CREATE_SUPERUSER:-false}"
+# Step 3: Create superuser (defaults to true for first-time setup)
+CREATE_SUPERUSER="${CREATE_SUPERUSER:-true}"
 if [ "$CREATE_SUPERUSER" = "true" ]; then
     echo ""
     echo "👤 Step 3: Creating superuser..."

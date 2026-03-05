@@ -96,13 +96,27 @@ class Command(BaseCommand):
             return
 
         try:
+            # Split name into first_name and last_name
+            name_parts = name.split(' ', 1) if name else ['Admin', '']
+            first_name = name_parts[0]
+            last_name = name_parts[1] if len(name_parts) > 1 else ''
+            
+            # Generate username from email (e.g., admin@example.com -> admin)
+            username = email.split('@')[0] if email else 'admin'
+            
             # Create superuser using UserProfile's create_superuser method
             # UserProfile.create_superuser expects: password, email, **extra_fields
+            from common.status import Roles, UserAccountType
+            
             user = User.objects.create_superuser(
                 password=password,
                 email=email,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
                 id_number=id_number,
-                name=name,
+                role=Roles.SUPERADMIN,
+                account_type=UserAccountType.GLOBAL,
                 is_active=True,
             )
 
@@ -112,8 +126,10 @@ class Command(BaseCommand):
                 self.style.SUCCESS(
                     f"✓ Successfully created global superadmin:\n"
                     f"  Email: {user.email}\n"
+                    f"  Username: {user.username}\n"
                     f"  ID Number: {user.id_number}\n"
-                    f"  Name: {getattr(user, 'name', 'N/A')}\n"
+                    f"  Name: {user.first_name} {user.last_name}\n"
+                    f"  Role: {user.role}\n"
                     f"  User created with superuser privileges in public tenant"
                 )
             )
