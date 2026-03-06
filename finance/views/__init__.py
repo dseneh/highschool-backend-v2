@@ -1,4 +1,5 @@
 from .bank_account import *
+from .billing_summary import *
 from .currency import *
 from .general_fee import *
 from .payment_installment import *

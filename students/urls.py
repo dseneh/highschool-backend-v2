@@ -1,6 +1,14 @@
 from django.urls import path
 
 from students.views.student import StudentImportView, StudentWithdrawView, StudentReinstateView
+from students.views.distributions import (
+    get_grade_level_distribution,
+    get_payment_status_distribution,
+    get_attendance_distribution,
+    get_section_distribution,
+    get_payment_summary,
+    get_top_students_by_grade,
+)
 
 from .views import AttendanceDetailView  # StudentEnrollmentBillDetailView,
 from .views import (
@@ -28,6 +36,7 @@ from .views import (
     StudentEnrollmentBillListView,
     StudentGuardianListView,
     StudentGuardianDetailView,
+    StudentSummaryView,
     # StudentGradesView,  # Removed - use grading app
     StudentListView,
 )
@@ -37,6 +46,11 @@ urlpatterns = [
         "students/",
         StudentListView.as_view(),
         name="student_list",
+    ),
+    path(
+        "students/summary/",
+        StudentSummaryView.as_view(),
+        name="student_summary",
     ),
     path("students/<str:id>/", StudentDetailView.as_view(), name="student_detail"),
     path(
@@ -207,4 +221,36 @@ urlpatterns = [
     #     StudentGradeTableView.as_view(),
     #     name="student_grade_table",
     # ),
+    
+    # Dashboard distribution endpoints
+    path(
+        "students/distributions/grade-level/",
+        get_grade_level_distribution,
+        name="grade_level_distribution",
+    ),
+    path(
+        "students/distributions/payment-status/",
+        get_payment_status_distribution,
+        name="payment_status_distribution",
+    ),
+    path(
+        "students/distributions/attendance/",
+        get_attendance_distribution,
+        name="attendance_distribution",
+    ),
+    path(
+        "students/distributions/sections/",
+        get_section_distribution,
+        name="section_distribution",
+    ),
+    path(
+        "students/distributions/payment-summary/",
+        get_payment_summary,
+        name="payment_summary",
+    ),
+    path(
+        "students/distributions/top-students/",
+        get_top_students_by_grade,
+        name="top_students_by_grade",
+    ),
 ]

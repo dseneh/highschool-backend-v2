@@ -1,6 +1,6 @@
 
 from django.db import transaction, router
-from django.db.models import Q
+from django.db.models import Q, Sum, Avg, Count
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
 from rest_framework import parsers, permissions, status
@@ -22,7 +22,7 @@ from common.utils import (
     get_object_by_uuid_or_fields,
 )
 from academics.models import AcademicYear, GradeLevel
-from students.models import Student
+from students.models import Student, Enrollment, StudentEnrollmentBill, Attendance
 from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.utils import create_enrollment_for_student
 
@@ -237,6 +237,118 @@ class StudentListView(APIView):
             return Response(
                 {"detail": f"An error occurred: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class StudentSummaryView(APIView):
+    """
+    Dashboard summary statistics for students.
+    GET /students/summary/
+    
+    Returns:
+    {
+        "total_students": int,
+        "total_staff": int,
+        "academic_year": str,
+        "total_enrolled": int,
+        "pending_bills": float,
+        "total_courses": int,
+        "active_sections": int,
+        "avg_attendance": float
+    }
+    """
+    permission_classes = [StudentAccessPolicy]
+
+    def get(self, request):
+        from academics.models import Section
+
+        try:
+            # Get current academic year
+            current_academic_year = AcademicYear.objects.filter(current=True).first()
+            academic_year_name = current_academic_year.name if current_academic_year else "N/A"
+
+            # Count total students
+            total_students = Student.objects.all().count()
+
+            # Count total staff (from users app if applicable)
+            try:
+                from users.models import User
+                total_staff = User.objects.filter(
+                    Q(role__name__in=['admin', 'staff', 'teacher', 'registrar']) | 
+                    Q(account_type__in=['STAFF', 'ADMIN'])
+                ).exclude(role__name='student').distinct().count()
+            except:
+                total_staff = 0
+
+            # Count total enrolled students in current academic year
+            if current_academic_year:
+                total_enrolled = Enrollment.objects.filter(
+                    academic_year=current_academic_year
+                ).values('student').distinct().count()
+            else:
+                total_enrolled = 0
+
+            # Calculate pending bills (active bills from StudentEnrollmentBill)
+            # Note: StudentEnrollmentBill doesn't have a 'status' field, only 'active'
+            pending_bills = StudentEnrollmentBill.objects.filter(
+                active=True
+            ).aggregate(total=Sum('amount'))['total'] or 0
+
+            # Count active courses/sections
+            # Note: Sections don't have academic_year field directly,
+            # they're linked to academic years through enrollments
+            if current_academic_year:
+                # Get sections that have enrollments in the current academic year
+                active_sections = Section.objects.filter(
+                    enrollments__academic_year=current_academic_year,
+                    active=True
+                ).distinct().count()
+                
+                # Count unique subjects across those sections
+                from academics.models import SectionSubject
+                total_courses = SectionSubject.objects.filter(
+                    section__enrollments__academic_year=current_academic_year,
+                    section__active=True,
+                    active=True
+                ).values('subject').distinct().count()
+            else:
+                total_courses = 0
+                active_sections = 0
+
+            if current_academic_year:
+                attendance_totals = Attendance.objects.filter(
+                    enrollment__academic_year=current_academic_year
+                ).aggregate(
+                    total_records=Count("id"),
+                    present_records=Count(
+                        "id",
+                        filter=Q(status__in=["present", "late", "excused"]),
+                    ),
+                )
+
+                total_records = attendance_totals.get("total_records") or 0
+                present_records = attendance_totals.get("present_records") or 0
+                avg_attendance = (
+                    (present_records / total_records) * 100 if total_records > 0 else 0
+                )
+            else:
+                avg_attendance = 0
+
+            return Response({
+                "total_students": total_students,
+                "total_staff": total_staff,
+                "academic_year": academic_year_name,
+                "total_enrolled": total_enrolled,
+                "pending_bills": float(pending_bills),
+                "total_courses": total_courses,
+                "active_sections": active_sections,
+                "avg_attendance": round(float(avg_attendance), 2) if avg_attendance else 0,
+            })
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Error retrieving student summary: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 

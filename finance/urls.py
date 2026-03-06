@@ -18,6 +18,7 @@ from finance.views import (
     TransactionTypeDetailView,
     TransactionTypeListView,
     TransactionViewSet,
+    get_billing_summary,
 )
 
 router = DefaultRouter()
@@ -106,5 +107,11 @@ urlpatterns = [
         "students/payment-status/",
         StudentPaymentStatusListView.as_view(),
         name="student-payment-status-list",
+    ),
+    # Billing Summary endpoint for dashboard
+    path(
+        "billing/summary/",
+        get_billing_summary,
+        name="billing-summary",
     ),
 ]

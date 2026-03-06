@@ -5,7 +5,7 @@ from django.db import connection
 from django.core.cache import cache
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.viewsets import ModelViewSet
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, NotFound
 from rest_framework.decorators import api_view, permission_classes, authentication_classes, action
 from rest_framework.response import Response
 from rest_framework import status
@@ -155,6 +155,34 @@ class TenantViewSet(ModelViewSet):
             queryset = queryset.filter(active=True)
         
         return queryset
+
+    def get_object(self):
+        """
+        Resolve "admin" workspace alias to the public tenant on retrieve.
+
+        This allows public lookup endpoints like:
+        GET /api/v1/tenants/admin/
+        to return the public schema tenant metadata.
+        """
+        from django_tenants.utils import get_public_schema_name
+
+        lookup_kwarg = self.lookup_url_kwarg or self.lookup_field
+        lookup_value = self.kwargs.get(lookup_kwarg)
+
+        if (
+            self.action == 'retrieve'
+            and isinstance(lookup_value, str)
+            and lookup_value.lower() == 'admin'
+        ):
+            try:
+                obj = Tenant.objects.get(schema_name=get_public_schema_name())
+            except Tenant.DoesNotExist:
+                raise NotFound("Public tenant not found")
+
+            self.check_object_permissions(self.request, obj)
+            return obj
+
+        return super().get_object()
     
     def perform_create(self, serializer):
         """
@@ -456,11 +484,40 @@ def search_tenant_info(request):
                         }
                     })
     
-    # Serialize the results
-    serializer = TenantInfoSearchResultSerializer(results, many=True)
+    # Deduplicate results by id_number
+    # Priority: student > staff > user (prefer actual records over user accounts)
+    # This ensures parents using shared emails see unique workspace entries
+    unique_results = {}
+    priority_order = {"student": 3, "staff": 2, "user": 1}
+    
+    for result in results:
+        result_id_number = result["data"].get("id_number")
+        result_user_type = result["user_type"]
+        
+        # Skip if no id_number (shouldn't happen, but be safe)
+        if not result_id_number:
+            continue
+        
+        # If this id_number hasn't been seen, add it
+        if result_id_number not in unique_results:
+            unique_results[result_id_number] = result
+        else:
+            # If already seen, keep the one with higher priority
+            existing_priority = priority_order.get(unique_results[result_id_number]["user_type"], 0)
+            current_priority = priority_order.get(result_user_type, 0)
+            
+            if current_priority > existing_priority:
+                unique_results[result_id_number] = result
+    
+    # Convert unique results back to list
+    deduplicated_results = list(unique_results.values())
+    
+    # Serialize the deduplicated results
+    serializer = TenantInfoSearchResultSerializer(deduplicated_results, many=True)
     
     return Response({
-        "count": len(results),
+        "count": len(deduplicated_results),
+        "total_matches": len(results),  # Original count before deduplication
         "search_params": {
             "email": email,
             "phone": phone,
