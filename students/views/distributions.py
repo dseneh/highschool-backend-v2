@@ -411,10 +411,10 @@ def get_top_students_by_grade(request):
                 )
                 
                 final_average = overall_avg_data.get('final_average')
-                if final_average is not None:
+                if final_average is not None and final_average > 0:
                     student_averages.append({
                         'id': str(student.id),
-                        'full_name': student.full_name,
+                        'full_name': student.get_full_name(),
                         'id_number': student.id_number,
                         'grade_level': enrollment.grade_level.name,
                         'final_average': float(final_average),

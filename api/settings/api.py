@@ -57,22 +57,8 @@ SIMPLE_JWT = {
 _DEBUG = config("DEBUG", default=True, cast=bool)
 
 if _DEBUG:
-    # In development: allow all localhost subdomains via regex
-    CORS_ALLOWED_ORIGINS = config(
-        "CORS_ALLOWED_ORIGINS",
-        default="http://localhost:3000,http://127.0.0.1:3000",
-        cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
-    )
-    # Regex patterns for subdomain-based origins (e.g., dujar.localhost:3000)
-    # Using more permissive pattern for development
-    CORS_ALLOWED_ORIGIN_REGEXES = [
-        r"^https?://.*\.localhost:3000$",  # Matches any subdomain.localhost:3000 (more permissive)
-        r"^https?://.*\.127\.0\.0\.1:3000$",  # Also match subdomain.127.0.0.1:3000
-        r"^https?://localhost:3000$",  # Exact match for localhost
-        r"^https?://127\.0\.0\.1:3000$",  # Exact match for 127.0.0.1
-    ]
-    # Uncomment for testing - allows all origins in development (NOT for production!)
-    # CORS_ALLOW_ALL_ORIGINS = True
+    # For development - allow all origins (simplest approach)
+    CORS_ALLOW_ALL_ORIGINS = True
 else:
     # Production: explicit origins only
     CORS_ALLOWED_ORIGINS = config(
@@ -87,6 +73,10 @@ else:
     )
 
 CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = [
+    "content-type",
+    "x-tenant",
+]
 CORS_ALLOW_HEADERS = [
     "accept",
     "accept-encoding",
@@ -100,6 +90,15 @@ CORS_ALLOW_HEADERS = [
     "x-tenant",  # Custom header for tenant identification
     "x-workspace",  # Alternative header for tenant identification
 ]
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+CORS_PREFLIGHT_MAX_AGE = 86400  # 24 hours
 
 # Prod example
 # CORS_ALLOWED_ORIGIN_REGEXES += [

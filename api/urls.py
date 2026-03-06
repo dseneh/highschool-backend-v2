@@ -13,16 +13,29 @@ import os
 # ---------------------------------------------------------------------------
 # Health check  – lightweight, no auth, no tenant header required
 # ---------------------------------------------------------------------------
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+
+@csrf_exempt
 def health_check(request):
     """
     Lightweight liveness probe endpoint.
     Must always return quickly with 200 once the app process is running.
+    Handles CORS for all methods including OPTIONS preflight.
     """
-    payload = {
-        "status": "ok",
-        "service": "backend",
-    }
-    return JsonResponse(payload, status=200)
+    # Get the origin from the request
+    origin = request.META.get('HTTP_ORIGIN', '')
+    
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = JsonResponse({}, status=200)
+    else:
+        response = JsonResponse({
+            "status": "ok",
+            "service": "backend",
+        }, status=200)
+    
+    return response
 
 
 # API version prefix

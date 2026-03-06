@@ -249,6 +249,7 @@ class StudentSummaryView(APIView):
     {
         "total_students": int,
         "total_staff": int,
+        "total_teachers": int,
         "academic_year": str,
         "total_enrolled": int,
         "pending_bills": float,
@@ -270,15 +271,18 @@ class StudentSummaryView(APIView):
             # Count total students
             total_students = Student.objects.all().count()
 
-            # Count total staff (from users app if applicable)
+            # Count total staff and teachers
             try:
-                from users.models import User
-                total_staff = User.objects.filter(
-                    Q(role__name__in=['admin', 'staff', 'teacher', 'registrar']) | 
-                    Q(account_type__in=['STAFF', 'ADMIN'])
-                ).exclude(role__name='student').distinct().count()
+                from staff.models import Staff
+
+                staff_qs = Staff.objects.all()
+                total_staff = staff_qs.count()
+                total_teachers = staff_qs.filter(
+                    Q(is_teacher=True) | Q(position__teaching_role=True)
+                ).distinct().count()
             except:
                 total_staff = 0
+                total_teachers = 0
 
             # Count total enrolled students in current academic year
             if current_academic_year:
@@ -337,6 +341,7 @@ class StudentSummaryView(APIView):
             return Response({
                 "total_students": total_students,
                 "total_staff": total_staff,
+                "total_teachers": total_teachers,
                 "academic_year": academic_year_name,
                 "total_enrolled": total_enrolled,
                 "pending_bills": float(pending_bills),
