@@ -158,10 +158,11 @@ class TenantViewSet(ModelViewSet):
 
     def get_object(self):
         """
-        Resolve "admin" workspace alias to the public tenant on retrieve.
+        Resolve "admin" or "public" workspace alias to the public tenant on retrieve.
 
         This allows public lookup endpoints like:
         GET /api/v1/tenants/admin/
+        GET /api/v1/tenants/public/
         to return the public schema tenant metadata.
         """
         from django_tenants.utils import get_public_schema_name
@@ -172,7 +173,7 @@ class TenantViewSet(ModelViewSet):
         if (
             self.action == 'retrieve'
             and isinstance(lookup_value, str)
-            and lookup_value.lower() == 'admin'
+            and lookup_value.lower() in ['admin', 'public']
         ):
             try:
                 obj = Tenant.objects.get(schema_name=get_public_schema_name())
