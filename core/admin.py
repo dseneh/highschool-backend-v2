@@ -7,6 +7,7 @@ from django_tenants.admin import TenantAdminMixin
 from .models import Tenant, Domain
 
 
+
 @admin.register(Tenant)
 class TenantAdmin(TenantAdminMixin, admin.ModelAdmin):
     list_display = ("name", "short_name", "schema_name", "active", "created_at")
