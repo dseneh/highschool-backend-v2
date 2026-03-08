@@ -1,8 +1,11 @@
 
-from django.db import transaction, router
+import logging
+
+from django.db import transaction, router, connection
 from django.db.models import Q, Sum, Avg, Count
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
+from django.db.utils import OperationalError, ProgrammingError
 from rest_framework import parsers, permissions, status
 from rest_framework.exceptions import NotFound
 from rest_framework.pagination import PageNumberPagination
@@ -36,6 +39,15 @@ from business.students.adapters import (
     student_has_enrollments,
     student_has_bills,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _table_exists(table_name: str) -> bool:
+    try:
+        return table_name in connection.introspection.table_names()
+    except Exception:
+        return False
 
 
 class StudentPageNumberPagination(PageNumberPagination):
@@ -263,6 +275,24 @@ class StudentSummaryView(APIView):
     def get(self, request):
         from academics.models import Section
 
+        default_summary = {
+            "total_students": 0,
+            "total_staff": 0,
+            "total_teachers": 0,
+            "academic_year": "N/A",
+            "total_enrolled": 0,
+            "pending_bills": 0.0,
+            "total_courses": 0,
+            "active_sections": 0,
+            "avg_attendance": 0,
+        }
+
+        # Tenants can exist before student-related tables are provisioned.
+        # Return an empty summary instead of throwing SQL errors.
+        if not _table_exists("student"):
+            logger.warning("Student table missing for tenant; returning empty student summary")
+            return Response(default_summary, status=status.HTTP_200_OK)
+
         try:
             # Get current academic year
             current_academic_year = AcademicYear.objects.filter(current=True).first()
@@ -350,6 +380,9 @@ class StudentSummaryView(APIView):
                 "avg_attendance": round(float(avg_attendance), 2) if avg_attendance else 0,
             })
 
+        except (ProgrammingError, OperationalError) as e:
+            logger.warning(f"Student summary unavailable due to missing tables: {e}")
+            return Response(default_summary, status=status.HTTP_200_OK)
         except Exception as e:
             return Response(
                 {"detail": f"Error retrieving student summary: {str(e)}"},

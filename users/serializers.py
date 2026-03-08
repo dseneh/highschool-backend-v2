@@ -72,6 +72,45 @@ class UserSerializer(serializers.ModelSerializer):
             
             result = []
             
+            # Check if user should have access to public/admin schema
+            # Include for superusers or users with explicit public schema permissions
+            try:
+                include_admin_schema = False
+                
+                # Check if user is superuser
+                if obj.is_superuser:
+                    include_admin_schema = True
+                else:
+                    # Check if user has explicit permissions in public schema
+                    with schema_context(public_schema):
+                        include_admin_schema = UserTenantPermissions.objects.filter(
+                            profile_id=obj.id
+                        ).exists()
+                
+                # Add admin/public schema to the beginning of results if eligible
+                if include_admin_schema:
+                    try:
+                        public_tenant = Tenant.objects.get(schema_name=public_schema)
+                        result.append({
+                            'id': str(public_tenant.id),
+                            'schema_name': 'admin',  # Display as "admin" instead of "public"
+                            'workspace': 'admin',
+                            'name': public_tenant.name or 'Admin',
+                            'logo': public_tenant.logo.url if public_tenant.logo else None,
+                        })
+                    except Tenant.DoesNotExist:
+                        # If public tenant doesn't exist, create a placeholder entry
+                        result.append({
+                            'id': 'admin',
+                            'schema_name': 'admin',
+                            'workspace': 'admin',
+                            'name': 'Admin',
+                            'logo': None,
+                        })
+            except Exception as admin_check_error:
+                # If there's an error checking admin access, skip it
+                pass
+            
             # Check each tenant to see if user has access
             for tenant in all_tenants:
                 try:
