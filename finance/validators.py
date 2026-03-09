@@ -2,17 +2,62 @@
 Reusable validation functions for transaction fields
 """
 from datetime import date, datetime
+from decimal import Decimal
 
-from django.db.models import Q
+from django.db.models import Q, Sum
 from rest_framework import status
 from rest_framework.response import Response
 
+from academics.models import AcademicYear
 from common.utils import get_object_by_uuid_or_fields
 from finance.models import BankAccount, Currency, PaymentMethod, TransactionType
 from students.models.student import Student
 
 
-def validate_amount(amount, student=None, transaction_type=None):
+def get_student_net_remaining_balance(student, academic_year):
+    """
+    Remaining balance for validation:
+    net bill - approved income transactions
+    """
+    if not student or not academic_year:
+        return Decimal("0")
+
+    enrollment = student.enrollments.filter(academic_year=academic_year).first()
+    if not enrollment:
+        return Decimal("0")
+
+    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+    total_concession = Decimal("0")
+    try:
+        from students.models.billing import calculate_concessions_for_enrollment
+
+        concession_data = calculate_concessions_for_enrollment(enrollment)
+        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
+    except Exception:
+        total_concession = Decimal("0")
+
+    net_total_bills = gross_total_bills - total_concession
+    if net_total_bills < 0:
+        net_total_bills = Decimal("0")
+
+    approved_income_paid = (
+        student.transactions.filter(
+            academic_year=academic_year,
+            status="approved",
+            type__type="income",
+        ).aggregate(total=Sum("amount"))["total"]
+        or Decimal("0")
+    )
+
+    remaining_balance = net_total_bills - approved_income_paid
+    if remaining_balance < 0:
+        remaining_balance = Decimal("0")
+
+    return Decimal(str(remaining_balance))
+
+
+def validate_amount(amount, student=None, transaction_type=None, academic_year=None):
     """
     Validate transaction amount
     """
@@ -24,16 +69,18 @@ def validate_amount(amount, student=None, transaction_type=None):
 
     # Additional validation for student balance if it's an income transaction
     if student and transaction_type and transaction_type.type == "income":
-        if student.get_approved_balance() == 0:
+        remaining_balance = get_student_net_remaining_balance(student, academic_year)
+
+        if remaining_balance <= 0:
             return Response(
                 {"detail": "Student has no balance due. Cannot create transaction."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if amount > student.get_approved_balance():
+        if Decimal(str(amount)) > remaining_balance:
             return Response(
                 {
-                    "detail": f"Transaction amount exceeds student balance due of {student.get_approved_balance():,.2f}."
+                    "detail": f"Transaction amount exceeds student balance due of {remaining_balance:,.2f}."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -237,6 +284,16 @@ def validate_transaction_data(
             return None, date_error
         validated_data["date"] = transaction_date
 
+    # Resolve academic year from date (or fallback to current)
+    resolved_date = validated_data.get("date") or date.today()
+    if isinstance(resolved_date, str):
+        resolved_date = datetime.strptime(resolved_date, "%Y-%m-%d").date()
+
+    academic_year = AcademicYear.objects.filter(
+        (Q(start_date__lte=resolved_date) & Q(end_date__gte=resolved_date)) | Q(current=True)
+    ).first()
+    validated_data["academic_year"] = academic_year
+
     # Validate amount (if provided)
     amount = req_data.get("amount")
     if amount is not None:
@@ -297,7 +354,7 @@ def validate_transaction_data(
     # Additional validations if we have all required data
     if student and transaction_type and amount:
         # Validate amount against student balance
-        amount_error = validate_amount(amount, student, transaction_type)
+        amount_error = validate_amount(amount, student, transaction_type, academic_year)
         if amount_error:
             return None, amount_error
 
@@ -307,14 +364,6 @@ def validate_transaction_data(
         )
         if pending_error:
             return None, pending_error
-
-        if amount > student.balance_due:
-            return None, Response(
-                {
-                    "detail": f"Transaction amount exceeds student projected balance of {student.get_projected_balance():,.2f}."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
     # Validate account balance for income
     if account and transaction_type and amount:

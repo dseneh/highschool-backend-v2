@@ -15,7 +15,7 @@ from common.utils import create_model_data, get_object_by_uuid_or_fields, update
 from finance.access_policies import TransactionAccessPolicy
 from finance.models import BankAccount, PaymentMethod, Transaction, TransactionType
 from finance.serializers import TransactionDetailSerializer, TransactionSerializer
-from finance.validators import validate_transaction_data
+from finance.validators import validate_transaction_data, get_student_net_remaining_balance
 from students.models import Student
 
 
@@ -199,7 +199,10 @@ class TransactionViewSet(viewsets.ModelViewSet):
             )
 
         if transaction_obj.student and new_status == "approved":
-            student_balance = transaction_obj.student.balance_due
+            student_balance = get_student_net_remaining_balance(
+                transaction_obj.student,
+                transaction_obj.academic_year,
+            )
             if transaction_obj.amount > student_balance:
                 return Response(
                     {
