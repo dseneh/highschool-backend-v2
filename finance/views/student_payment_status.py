@@ -13,6 +13,7 @@ from finance.models import (
 from students.models import (
     Enrollment,
     Student,
+    StudentConcession,
     StudentEnrollmentBill,
     StudentPaymentSummary,
 )
@@ -120,7 +121,7 @@ class StudentPaymentStatusListView(APIView):
         transactions_prefetch = Prefetch(
             "transactions",
             queryset=Transaction.objects.filter(
-                academic_year=academic_year, status="approved"
+                academic_year=academic_year, status="approved", type__type="income"
             ),
         )
 
@@ -188,6 +189,25 @@ class StudentPaymentStatusListView(APIView):
                 for item in bills_totals
             }
 
+        # Bulk aggregate concessions per student for this academic year.
+        # Concessions are applied at student + academic_year level.
+        concession_map = {}
+        student_ids = [student.id for student in students_list]
+        if student_ids:
+            concessions_totals = (
+                StudentConcession.objects.filter(
+                    student_id__in=student_ids,
+                    academic_year=academic_year,
+                    active=True,
+                )
+                .values("student_id")
+                .annotate(total=Sum("amount"))
+            )
+            concession_map = {
+                item["student_id"]: Decimal(str(item["total"] or 0))
+                for item in concessions_totals
+            }
+
         # Filter by payment status and prepare data
         filtered_students_data = []
         import logging
@@ -240,49 +260,33 @@ class StudentPaymentStatusListView(APIView):
                 except (AttributeError, StudentPaymentSummary.DoesNotExist):
                     payment_summary = None
 
-            # Use payment status from summary table if available, otherwise calculate
-            if payment_summary and payment_summary.payment_status:
-                # Use pre-calculated payment status from summary table
-                payment_status = payment_summary.payment_status.copy()
+            # Always compute payment status with live net-bill logic.
+            payment_status = get_student_payment_status(enrollment, academic_year)
 
-                # Get total_bills from bulk-calculated map (no query)
-                total_bills = bills_map.get(enrollment.id, Decimal("0"))
-                payment_status["total_bills"] = float(total_bills)
+            # Override with bulk-computed net total to keep this endpoint consistent
+            # and avoid extra aggregation queries.
+            gross_total_bills = bills_map.get(enrollment.id, Decimal("0"))
+            total_concession = concession_map.get(student.id, Decimal("0"))
+            total_bills = gross_total_bills - total_concession
+            if total_bills < 0:
+                total_bills = Decimal("0")
+            payment_status["total_bills"] = float(total_bills)
 
-                # Use total_paid from summary table
-                total_paid = float(payment_summary.total_paid or 0)
-                payment_status["total_paid"] = total_paid
+            total_paid = float(payment_status.get("total_paid", 0) or 0)
+            payment_status["overall_balance"] = float(
+                total_bills - Decimal(str(total_paid))
+            )
 
-                # Calculate balance
-                payment_status["overall_balance"] = float(
-                    total_bills - Decimal(str(total_paid))
+            # Save refreshed summary snapshot for future reads.
+            try:
+                from finance.utils import calculate_student_payment_summary
+
+                calculate_student_payment_summary(enrollment, academic_year)
+            except Exception as e:
+                # Don't fail the request if summary save fails
+                logger.warning(
+                    f"Failed to save payment summary for enrollment {enrollment.id}: {e}"
                 )
-
-                # Recalculate next_due_date dynamically (not persisted)
-                from finance.models import _calculate_next_due_date_dynamic
-
-                payment_status["next_due_date"] = _calculate_next_due_date_dynamic(
-                    enrollment, academic_year
-                )
-            else:
-                # Fallback: calculate payment status (should be rare after initial population)
-                # Calculate and save to summary table for next time
-                payment_status = get_student_payment_status(enrollment, academic_year)
-
-                # Get total_bills from bulk-calculated map
-                total_bills = bills_map.get(enrollment.id, Decimal("0"))
-                payment_status["total_bills"] = float(total_bills)
-
-                # Save to summary table so it's available next time (lazy population)
-                try:
-                    from finance.utils import calculate_student_payment_summary
-
-                    calculate_student_payment_summary(enrollment, academic_year)
-                except Exception as e:
-                    # Don't fail the request if summary save fails
-                    logger.warning(
-                        f"Failed to save payment summary for enrollment {enrollment.id}: {e}"
-                    )
 
             # Determine overall payment status for filtering
             is_delinquent = payment_status["overdue_count"] > 0 or (

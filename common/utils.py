@@ -63,19 +63,44 @@ def get_object_by_uuid_or_fields(model_class, lookup_value, fields=None):
     """
     if fields is None:
         fields = ['id_number']
-    
-    # Build query for the provided fields
-    query = Q()
-    for field in fields:
-        if hasattr(model_class, field):
-            query |= Q(**{field: lookup_value})
-    
-    # Try to add UUID lookup
+
+    lookup_str = str(lookup_value)
+
+    # Parse UUID once. We only query UUID-backed fields when parsing succeeds.
+    parsed_uuid = None
     try:
-        uuid_obj = uuid.UUID(str(lookup_value))
-        query |= Q(id=uuid_obj)
-    except (ValueError, TypeError):
-        pass
+        parsed_uuid = uuid.UUID(lookup_str)
+    except (ValueError, TypeError, AttributeError):
+        parsed_uuid = None
+
+    query = Q()
+    has_conditions = False
+
+    # Build query for provided fields safely (skip UUID fields for non-UUID input)
+    for field in fields:
+        try:
+            model_field = model_class._meta.get_field(field)
+        except Exception:
+            continue
+
+        is_uuid_field = getattr(model_field, "get_internal_type", lambda: "")() == "UUIDField"
+        if is_uuid_field:
+            if parsed_uuid is None:
+                continue
+            query |= Q(**{field: parsed_uuid})
+        else:
+            query |= Q(**{field: lookup_value})
+        has_conditions = True
+
+    # Add direct ID lookup only when lookup_value is a valid UUID
+    if parsed_uuid is not None:
+        query |= Q(id=parsed_uuid)
+        has_conditions = True
+
+    if not has_conditions:
+        raise model_class.DoesNotExist(
+            f"{model_class.__name__} does not exist with lookup value '{lookup_value}'"
+        )
     
     try:
         return model_class.objects.get(query)
@@ -578,106 +603,37 @@ def get_enrollment_bill_summary(
     except (ImportError, AttributeError):
         # Fallback if Transaction model doesn't exist or different structure
         transactional_paid = Decimal("0")
-    # Get payment plan and payment status if available
-    # Try to use prefetched payment_summary first
+    # Get payment plan and payment status.
+    # IMPORTANT: Always calculate these with live helpers so installment
+    # schedules are based on net bill (gross - concessions), not stale snapshots.
     payment_plan = []
     payment_status = {}
-    total_paid_from_summary = None
-
     try:
-        from students.models import StudentPaymentSummary
+        from finance.models import (
+            get_student_payment_plan,
+            get_student_payment_status,
+        )
 
         academic_year = enrollment.academic_year
+        if include_payment_plan:
+            payment_plan = get_student_payment_plan(enrollment, academic_year) or []
 
-        # Try prefetched payment_summary first
-        payment_summary = None
-        if (
-            hasattr(enrollment, "_prefetched_objects_cache")
-            and "payment_summary" in enrollment._prefetched_objects_cache
-        ):
-            prefetched_summaries = enrollment._prefetched_objects_cache[
-                "payment_summary"
-            ]
-            if prefetched_summaries:
-                payment_summary = prefetched_summaries[0]
-        else:
-            # Fallback: try related manager (might use prefetch cache)
-            try:
-                payment_summary = enrollment.payment_summary.first()
-            except (AttributeError, StudentPaymentSummary.DoesNotExist):
-                pass
-
-        # If still not found, try direct query (last resort)
-        if not payment_summary:
-            try:
-                payment_summary = StudentPaymentSummary.objects.get(
-                    enrollment=enrollment, academic_year=academic_year
-                )
-            except StudentPaymentSummary.DoesNotExist:
-                pass
-
-        if payment_summary:
-            if include_payment_plan and payment_summary.payment_plan:
-                payment_plan = payment_summary.payment_plan
-            if include_payment_status and payment_summary.payment_status:
-                payment_status = payment_summary.payment_status.copy()
-                # Remove duplicate fields that are already in billing_summary
-                payment_status.pop("total_bills", None)
-                payment_status.pop("total_paid", None)
-                payment_status.pop("overall_balance", None)
-                # Recalculate next_due_date dynamically (not persisted)
-                try:
-                    from finance.models import _calculate_next_due_date_dynamic
-
-                    payment_status["next_due_date"] = _calculate_next_due_date_dynamic(
-                        enrollment, academic_year
-                    )
-                except Exception:
-                    # If calculation fails, set to None
-                    payment_status["next_due_date"] = None
-            total_paid_from_summary = (
-                float(payment_summary.total_paid)
-                if payment_summary.total_paid
-                else None
-            )
+        if include_payment_status:
+            payment_status = get_student_payment_status(enrollment, academic_year) or {}
+            # Remove duplicate fields that are already in billing_summary
+            payment_status.pop("total_bills", None)
+            payment_status.pop("total_paid", None)
+            payment_status.pop("overall_balance", None)
     except Exception:
-        # If summary lookup fails, fall back to calculation
+        # If payment plan/status cannot be generated, return defaults
         pass
 
-    # If summary didn't have the data, calculate it
-    if (include_payment_plan and not payment_plan) or (
-        include_payment_status and not payment_status
-    ):
-        try:
-            from finance.models import (
-                get_student_payment_plan,
-                get_student_payment_status,
-            )
+    # Payments should always reflect transactional payments only.
+    # Concessions reduce the bill (net total) and are not counted as paid cash.
+    amount_paid = transactional_paid
 
-            if include_payment_plan and not payment_plan:
-                payment_plan = get_student_payment_plan(enrollment)
-            if include_payment_status and not payment_status:
-                payment_status = get_student_payment_status(enrollment)
-                # Remove duplicate fields that are already in billing_summary
-                payment_status.pop("total_bills", None)
-                payment_status.pop("total_paid", None)
-                payment_status.pop("overall_balance", None)
-        except Exception:
-            # If payment plan/status cannot be generated, return defaults
-            pass
-
-    # Effective paid includes transactional paid + concession
-    effective_paid = transactional_paid + total_concession
-
-    # Use total_paid from summary if available (more accurate), otherwise use effective_paid
-    if total_paid_from_summary is not None:
-        amount_paid = Decimal(str(total_paid_from_summary))
-    else:
-        amount_paid = effective_paid
-
-    # Keep total_bill as gross/original and compute balance from effective paid
-    # balance = total_bill - paid, where paid already includes concessions
-    balance = gross_total_bill - amount_paid
+    # Balance is always computed from net bill.
+    balance = net_total_bill - amount_paid
     if balance < 0:
         balance = Decimal("0")
 
@@ -688,7 +644,7 @@ def get_enrollment_bill_summary(
         "net_total_bill": float(net_total_bill),
         "total_concession": float(total_concession),
         "concessions": concession_items,
-        "total_bill": float(gross_total_bill),
+        "total_bill": float(net_total_bill),
         "paid": float(amount_paid),
         "balance": float(balance),
         "payment_plan": payment_plan,

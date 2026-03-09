@@ -34,8 +34,10 @@ def _calculate_payment_plan_direct(enrollment, academic_year):
     except Exception:
         total_concession = Decimal("0")
     
-    # Payment plan percentages should be based on original total bill
-    total_bills = gross_total_bills
+    # Payment plan percentages and balances should be based on net total bill.
+    total_bills = gross_total_bills - total_concession
+    if total_bills < 0:
+        total_bills = Decimal("0")
 
     # Get approved payments for this academic year
     # Only count income transactions (payments received), not expenses
@@ -45,8 +47,8 @@ def _calculate_payment_plan_direct(enrollment, academic_year):
         type__type="income",  # Only income transactions (payments received)
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
-    # Effective paid includes approved transactions + concessions
-    effective_paid = approved_payments + total_concession
+    # Paid amount should only be real transactions.
+    effective_paid = approved_payments
 
     # Calculate remaining balance (total bill - effective paid)
     remaining_balance = total_bills - effective_paid
@@ -155,8 +157,10 @@ def _calculate_payment_status_direct(enrollment, academic_year):
     except Exception:
         total_concession = Decimal("0")
     
-    # Payment status percentages should be based on original total bill
-    total_bills = gross_total_bills
+    # Payment status percentages and balances should be based on net total bill.
+    total_bills = gross_total_bills - total_concession
+    if total_bills < 0:
+        total_bills = Decimal("0")
 
     # Get approved payments for this academic year
     # Only count income transactions (payments received), not expenses
@@ -166,8 +170,8 @@ def _calculate_payment_status_direct(enrollment, academic_year):
         type__type="income",  # Only income transactions (payments received)
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
-    # Effective paid includes approved transactions + concessions
-    effective_paid = approved_payments + total_concession
+    # Paid amount should only be real transactions.
+    effective_paid = approved_payments
 
     # Calculate overall balance and payment status
     total_bills_float = float(total_bills)
@@ -300,18 +304,8 @@ def calculate_student_payment_summary(enrollment, academic_year=None):
         type__type="income",  # Only income transactions (payments received)
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
-    # Calculate concessions to include in paid-equivalent value
-    total_concession = Decimal("0")
-    try:
-        from students.models.billing import calculate_concessions_for_enrollment
-
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
-    except Exception:
-        total_concession = Decimal("0")
-
-    # Store effective paid = transaction paid + concession
-    total_paid = transactional_paid + total_concession
+    # Store transactional paid only.
+    total_paid = transactional_paid
 
     # Create or update summary record
     summary, created = StudentPaymentSummary.objects.update_or_create(

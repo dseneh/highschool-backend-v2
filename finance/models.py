@@ -580,24 +580,9 @@ def get_student_payment_plan(enrollment, academic_year=None):
     if not academic_year:
         academic_year = enrollment.academic_year
 
-    # First check StudentPaymentSummary table (persistent cache)
-    try:
-        summary = StudentPaymentSummary.objects.get(
-            enrollment=enrollment, academic_year=academic_year
-        )
-        if summary.payment_plan is not None:
-            # Also cache in Redis for faster subsequent access
-            cache_key = f"payment_plan:{enrollment.id}:{academic_year.id}"
-            cache.set(cache_key, summary.payment_plan, 3600)
-            return summary.payment_plan
-    except StudentPaymentSummary.DoesNotExist:
-        pass
-
-    # Fallback: Check Redis cache
+    # NOTE: Recalculate with live net-bill logic to avoid stale cached plans
+    # generated with old gross-based concession behavior.
     cache_key = f"payment_plan:{enrollment.id}:{academic_year.id}"
-    cached_plan = cache.get(cache_key)
-    if cached_plan is not None:
-        return cached_plan
 
     # Get total bills for this enrollment
     from django.db.models import Sum
@@ -621,8 +606,10 @@ def get_student_payment_plan(enrollment, academic_year=None):
     except Exception:
         total_concession = Decimal("0")
 
-    # Payment plan percentages should be based on original total bill
-    total_bills = gross_total_bills
+    # Payment plan percentages should be based on net total bill.
+    total_bills = gross_total_bills - total_concession
+    if total_bills < 0:
+        total_bills = Decimal("0")
 
     # Get approved payments for this academic year (single query for optimization)
     # Only count income transactions (payments received), not expenses
@@ -632,8 +619,8 @@ def get_student_payment_plan(enrollment, academic_year=None):
         type__type="income",  # Only income transactions (payments received)
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
-    # Effective paid includes approved transactions + concessions
-    effective_paid = approved_payments + total_concession
+    # Paid amount should only be real transactions.
+    effective_paid = approved_payments
 
     # Calculate remaining balance (total bill - effective paid)
     remaining_balance = total_bills - effective_paid
@@ -748,8 +735,10 @@ def _calculate_next_due_date_dynamic(enrollment, academic_year=None):
     except Exception:
         total_concession = Decimal("0")
 
-    # Payment schedule is based on original total bill
-    total_bills = gross_total_bills
+    # Payment schedule is based on net total bill.
+    total_bills = gross_total_bills - total_concession
+    if total_bills < 0:
+        total_bills = Decimal("0")
 
     # Get approved payments for this academic year
     # Only count income transactions (payments received), not expenses
@@ -759,8 +748,8 @@ def _calculate_next_due_date_dynamic(enrollment, academic_year=None):
         type__type="income",  # Only income transactions (payments received)
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
-    # Effective paid includes approved transactions + concessions
-    effective_paid = approved_payments + total_concession
+    # Paid amount should only be real transactions.
+    effective_paid = approved_payments
 
     # Calculate remaining balance
     remaining_balance = total_bills - effective_paid
@@ -844,36 +833,9 @@ def get_student_payment_status(enrollment, academic_year=None):
     if not academic_year:
         academic_year = enrollment.academic_year
 
-    # First check StudentPaymentSummary table (persistent cache)
-    # Note: next_due_date is always recalculated dynamically, not from cache
-    try:
-        summary = StudentPaymentSummary.objects.get(
-            enrollment=enrollment, academic_year=academic_year
-        )
-        if summary.payment_status is not None:
-            # Also cache in Redis for faster subsequent access
-            cache_key = f"payment_status:{enrollment.id}:{academic_year.id}"
-            cache.set(cache_key, summary.payment_status, 3600)
-            # Recalculate next_due_date dynamically (not from cache)
-            payment_status = summary.payment_status.copy()
-            payment_status["next_due_date"] = _calculate_next_due_date_dynamic(
-                enrollment, academic_year
-            )
-            return payment_status
-    except StudentPaymentSummary.DoesNotExist:
-        pass
-
-    # Fallback: Check Redis cache
-    # Note: next_due_date is always recalculated dynamically, not from cache
+    # NOTE: Recalculate with live net-bill logic to avoid stale cached status
+    # generated with old gross-based concession behavior.
     cache_key = f"payment_status:{enrollment.id}:{academic_year.id}"
-    cached_status = cache.get(cache_key)
-    if cached_status is not None:
-        # Recalculate next_due_date dynamically (not from cache)
-        cached_status = cached_status.copy()
-        cached_status["next_due_date"] = _calculate_next_due_date_dynamic(
-            enrollment, academic_year
-        )
-        return cached_status
 
     today = timezone.now().date()
 
@@ -891,8 +853,10 @@ def get_student_payment_status(enrollment, academic_year=None):
     except Exception:
         total_concession = Decimal("0")
 
-    # Payment status percentages should be based on original total bill
-    total_bills = gross_total_bills
+    # Payment status percentages should be based on net total bill.
+    total_bills = gross_total_bills - total_concession
+    if total_bills < 0:
+        total_bills = Decimal("0")
 
     # Get approved payments for this academic year
     # Only count income transactions (payments received), not expenses
@@ -902,8 +866,8 @@ def get_student_payment_status(enrollment, academic_year=None):
         type__type="income",  # Only income transactions (payments received)
     ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
-    # Effective paid includes approved transactions + concessions
-    effective_paid = approved_payments + total_concession
+    # Paid amount should only be real transactions.
+    effective_paid = approved_payments
 
     # Calculate overall balance and payment status
     total_bills_float = float(total_bills)

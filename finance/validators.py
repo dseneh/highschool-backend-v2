@@ -52,7 +52,11 @@ def validate_student(student_id, required=False):
             )
         return None, None
 
-    student = get_object_by_uuid_or_fields(Student, student_id, ["id", "id_number", "prev_id_number"])
+    student = get_object_by_uuid_or_fields(
+        Student,
+        student_id,
+        ["id_number", "prev_id_number"],
+    )
 
     if not student:
         return None, Response(
