@@ -42,6 +42,17 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         response["full_name"] = instance.get_full_name()
         context = self.context
         request = context.get("request")
+
+        # Return grade_level as a nested object in API responses
+        # while keeping write payloads backward compatible (UUID accepted).
+        if instance.grade_level:
+            response["grade_level"] = {
+                "id": instance.grade_level.id,
+                "name": instance.grade_level.name,
+                "level": instance.grade_level.level,
+            }
+        else:
+            response["grade_level"] = None
         
         # Photo URL is automatically handled by PhotoURLMixin
         
