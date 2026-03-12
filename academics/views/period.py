@@ -20,13 +20,13 @@ class PeriodListView(APIView):
 
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    def post(self, request, school_id):
+    def post(self, request):
         req_data: dict = request.data
 
         name = req_data.get("name")
 
         # Validate period creation
-        is_valid, error = validate_period_creation(name, school_id)
+        is_valid, error = validate_period_creation(name)
         if not is_valid:
             return Response({"detail": error}, status=400)
 
@@ -39,6 +39,7 @@ class PeriodListView(APIView):
         data = {
             "name": name,
             "description": req_data.get("description"),
+            "period_type": req_data.get("period_type") or "class",
         }
 
         try:

@@ -15,6 +15,7 @@ from grading.views import (
     AssessmentTypeDetailView,
     GradeBookListCreateView,
     GradeBookDetailView,
+    TeacherGradebookListView,
     AssessmentListCreateView,
     AssessmentDetailView,
     GradeLetterListCreateView,
@@ -46,6 +47,11 @@ urlpatterns = [
         "assessment-types/<str:pk>/",
         AssessmentTypeDetailView.as_view(),
         name="assessment-type-detail",
+    ),
+    path(
+        "my-gradebooks/",
+        TeacherGradebookListView.as_view(),
+        name="teacher-gradebook-list",
     ),
     path(
         "academic-years/<str:academic_year_id>/gradebooks/",

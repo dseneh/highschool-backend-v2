@@ -58,6 +58,17 @@ class StudentPageNumberPagination(PageNumberPagination):
 class StudentListView(APIView):
     permission_classes = [StudentAccessPolicy]
     def get(self, request):
+        include_billing = request.query_params.get("include_billing", "true").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        include_grades = request.query_params.get("include_grades", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
         students = Student.objects.select_related(
             "grade_level"
         ).prefetch_related("enrollments__academic_year")
@@ -70,6 +81,7 @@ class StudentListView(APIView):
             "gender",
             # "status",
             "grade_level",
+            "section",
         ]
 
         # filter_kwargs = {}
@@ -140,7 +152,15 @@ class StudentListView(APIView):
         paginator = StudentPageNumberPagination()
         paginated_qs = paginator.paginate_queryset(students, request)
         serializer = StudentSerializer(
-            paginated_qs, many=True, context={"request": request}
+            paginated_qs,
+            many=True,
+            context={
+                "request": request,
+                "include_billing": include_billing,
+                "include_payment_plan": include_billing,
+                "include_grades": include_grades,
+                "include_payment_status": include_billing,
+            },
         )
         return paginator.get_paginated_response(serializer.data)
 

@@ -100,6 +100,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         ]
         if current_enrollment:
 
+            include_billing = context.get("include_billing", True)
             include_payment_plan = context.get("include_payment_plan", True)
             include_payment_status = context.get("include_payment_status", True)
 
@@ -109,6 +110,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
                 current_enrollment,
                 context={
                     "request": request if request else None,
+                    "include_billing": include_billing,
                     "include_payment_plan": include_payment_plan,
                     "include_payment_status": include_payment_status,
                 },
@@ -127,6 +129,22 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         # response["enrollment_bill_summary"] = instance.get_balance_summary()
         response["number_of_enrollments"] = enrollment_count
         response["can_delete"] = enrollment_count == 0
+
+        # Optionally include grade average if requested
+        include_grades = context.get("include_grades", False)
+        if include_grades and current_enrollment:
+            from grading.utils import calculate_student_overall_average
+            try:
+                average_data = calculate_student_overall_average(
+                    student=instance,
+                    academic_year=current_enrollment.academic_year,
+                    status="approved",
+                )
+                response["grade_average"] = average_data["final_average"]
+            except Exception:
+                # If grade calculation fails, set to None
+                response["grade_average"] = None
+
         return response
 
 
@@ -192,6 +210,7 @@ class StudentPaymentStatusSerializer(serializers.ModelSerializer):
                 response["section"] = None
 
             # Include current_enrollment object with payment plan/status
+            include_billing = context.get("include_billing", True)
             include_payment_plan = context.get("include_payment_plan", True)
             include_payment_status = context.get("include_payment_status", True)
 
@@ -199,6 +218,7 @@ class StudentPaymentStatusSerializer(serializers.ModelSerializer):
                 current_enrollment,
                 context={
                     "request": request if request else None,
+                    "include_billing": include_billing,
                     "include_payment_plan": include_payment_plan,
                     "include_payment_status": include_payment_status,
                 },

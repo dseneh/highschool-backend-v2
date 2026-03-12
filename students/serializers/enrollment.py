@@ -47,14 +47,16 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
         # Get include_payment_plan and include_payment_status from context
         # Can be passed directly in context for reusability, or via request query params for backward compatibility
         context = self.context
+        include_billing = context.get("include_billing", True)
         include_payment_plan = context.get("include_payment_plan", True)
         include_payment_status = context.get("include_payment_status", True)
 
-        response["billing_summary"] = get_enrollment_bill_summary(
-            instance,
-            include_payment_plan=include_payment_plan,
-            include_payment_status=include_payment_status,
-        )
+        if include_billing:
+            response["billing_summary"] = get_enrollment_bill_summary(
+                instance,
+                include_payment_plan=include_payment_plan,
+                include_payment_status=include_payment_status,
+            )
         return response
 
 

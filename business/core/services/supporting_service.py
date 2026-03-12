@@ -105,22 +105,36 @@ def validate_period_name_uniqueness(name: str, existing_names: List[str]) -> Tup
 # PERIOD TIME VALIDATION
 # =============================================================================
 
-def validate_period_time_creation(name: str, period_id: str) -> Tuple[bool, Optional[str]]:
+def validate_period_time_creation(start_time: Optional[str], end_time: Optional[str],
+                                  day_of_week: Optional[int], period_id: str) -> Tuple[bool, Optional[str]]:
     """
     Validate period time creation data
     
     Args:
-        name: Period time name
+        start_time: Period time start (HH:MM[:SS])
+        end_time: Period time end (HH:MM[:SS])
+        day_of_week: Day of week (1-7)
         period_id: Parent period identifier
         
     Returns:
         Tuple of (is_valid, error_message)
     """
-    if not name:
-        return False, "Name is required"
-    
-    if not name.strip():
-        return False, "Name cannot be empty or whitespace"
+    if not start_time:
+        return False, "start_time is required"
+
+    if not end_time:
+        return False, "end_time is required"
+
+    if day_of_week is None:
+        return False, "day_of_week is required"
+
+    try:
+        day = int(day_of_week)
+    except (TypeError, ValueError):
+        return False, "day_of_week must be an integer between 1 and 7"
+
+    if day < 1 or day > 7:
+        return False, "day_of_week must be between 1 and 7"
     
     if not period_id:
         return False, "Period ID is required"

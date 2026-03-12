@@ -78,8 +78,13 @@ class TeacherSectionAdmin(admin.ModelAdmin):
 
 @admin.register(TeacherSubject)
 class TeacherSubjectAdmin(admin.ModelAdmin):
-    list_display = ["teacher", "subject"]
-    search_fields = ["teacher__first_name", "teacher__last_name", "subject__name"]
+    list_display = ["teacher", "section_subject", "subject"]
+    search_fields = [
+        "teacher__first_name",
+        "teacher__last_name",
+        "subject__name",
+        "section_subject__section__name",
+    ]
     readonly_fields = ["created_at", "updated_at"]
 
 

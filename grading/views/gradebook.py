@@ -11,6 +11,7 @@ from grading.utils import paginate_qs, generate_assessments_for_gradebook_with_s
 
 from grading.models import GradeBook
 from grading.serializers import GradeBookOut
+from grading.services.authorization import get_teacher_gradebook_scope
 
 from academics.models import AcademicYear, SectionSubject
 
@@ -40,6 +41,8 @@ class GradeBookListCreateView(APIView):
         qs = academic_year.gradebooks.select_related(
             "section_subject",
             "section_subject__section", "section_subject__subject"
+        ).prefetch_related(
+            "section_subject__staff_teachers__teacher"
         ).only(
             "id", "active", "name", "calculation_method",
             "section_subject", "academic_year", "created_at", "updated_at",
@@ -123,6 +126,8 @@ class GradeBookDetailView(APIView):
             return GradeBook.objects.select_related(
                 "section_subject", "academic_year",
                 "section_subject__section", "section_subject__subject"
+            ).prefetch_related(
+                "section_subject__staff_teachers__teacher"
             ).get(f)
         except GradeBook.DoesNotExist:
             raise NotFound("This grade book does not exist.")
@@ -155,3 +160,68 @@ class GradeBookDetailView(APIView):
         #     return Response({"detail": "Cannot delete grade book with associated grade items."}, status=409)
         gb.delete()
         return Response(status=204)
+
+
+class TeacherGradebookListView(APIView):
+    """
+    GET /my-gradebooks/?academic_year=<id>&include_stats=true
+    
+    Returns gradebooks filtered by teacher's assigned subjects and sections.
+    Teachers only see gradebooks they are explicitly assigned to teach.
+    
+    Query Parameters:
+    - academic_year: Filter by academic year ID (optional, defaults to current year if not specified)
+    - teacher_id_number: Filter by a specific teacher's assignments (admin/registrar use)
+    - include_stats: Include statistics (true/false) - adds grade item counts and overall average
+    """
+    permission_classes = [GradebookAccessPolicy]
+    
+    def get(self, request):
+        # Get teacher assignment scope (defaults to current teacher user)
+        teacher_id_number = request.query_params.get("teacher_id_number")
+        teacher_scope = get_teacher_gradebook_scope(request.user, teacher_id_number=teacher_id_number)
+        
+        # Build base queryset
+        qs = GradeBook.objects.select_related(
+            "section_subject",
+            "section_subject__section", 
+            "section_subject__subject",
+            "academic_year"
+        ).prefetch_related(
+            "section_subject__staff_teachers__teacher"
+        ).only(
+            "id", "active", "name", "calculation_method",
+            "section_subject", "academic_year", "created_at", "updated_at",
+            "section_subject__section__name", "section_subject__subject__name",
+            "academic_year__name",
+        )
+        
+        # Filter by academic year if specified
+        if academic_year_id := request.query_params.get("academic_year"):
+            qs = qs.filter(academic_year_id=academic_year_id)
+        
+        # Apply teacher filtering if user is a teacher
+        if teacher_scope is not None:
+            explicit_section_subject_ids = teacher_scope["explicit_section_subject_ids"]
+            general_subject_ids = teacher_scope["general_subject_ids"]
+            section_ids = teacher_scope["section_ids"]
+
+            # 1) Explicit section-subject assignments are always allowed.
+            explicit_q = Q(section_subject_id__in=explicit_section_subject_ids)
+
+            # 2) General subject assignments require teacher to also be assigned to the section.
+            general_q = Q(
+                section_subject__subject_id__in=general_subject_ids,
+                section_subject__section_id__in=section_ids,
+            )
+
+            qs = qs.filter(explicit_q | general_q).distinct()
+        
+        # Check if stats should be included
+        include_stats = request.query_params.get("include_stats", "").lower() in ("true", "1", "yes")
+        
+        page, meta = paginate_qs(qs, request)
+        return Response({
+            "meta": meta,
+            "results": GradeBookOut(page, many=True, include_stats=include_stats).data
+        })

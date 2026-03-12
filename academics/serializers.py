@@ -23,6 +23,7 @@ from academics.models import (
     Semester,
     Subject,
 )
+from staff.models import TeacherSubject
 
 
 class SchoolSerializer(serializers.ModelSerializer):
@@ -618,6 +619,7 @@ class PeriodSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
+            "period_type",
         ]
 
     def to_representation(self, instance):
@@ -638,6 +640,12 @@ class PeriodTimeSerializer(serializers.ModelSerializer):
 
 
 class SectionScheduleSerializer(serializers.ModelSerializer):
+    subject = serializers.PrimaryKeyRelatedField(
+        queryset=SectionSubject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model = SectionSchedule
         fields = [
@@ -648,19 +656,117 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
             "subject",
         ]
 
+    def validate(self, attrs):
+        instance = self.instance
+
+        section = attrs.get("section") or (instance.section if instance else None)
+        period = attrs.get("period") or (instance.period if instance else None)
+        period_time = attrs.get("period_time") or (instance.period_time if instance else None)
+        subject = attrs.get("subject") if "subject" in attrs else (instance.subject if instance else None)
+
+        if not section or not period or not period_time:
+            return attrs
+
+        if period_time.period_id != period.id:
+            raise serializers.ValidationError(
+                {"period_time": "The selected PeriodTime does not belong to the selected Period."}
+            )
+
+        is_recess = period.period_type == Period.PeriodType.RECESS
+
+        if is_recess:
+            if subject is not None:
+                raise serializers.ValidationError(
+                    {"subject": "Recess periods cannot have a subject assignment."}
+                )
+            return attrs
+
+        if subject is None:
+            raise serializers.ValidationError(
+                {"subject": "A subject assignment is required for class periods."}
+            )
+
+        if subject.section_id != section.id:
+            raise serializers.ValidationError(
+                {"subject": "Selected section subject does not belong to the selected section."}
+            )
+
+        teacher_assignments = TeacherSubject.objects.filter(
+            section_subject=subject,
+            active=True,
+        ).select_related("teacher")
+
+        if not teacher_assignments.exists():
+            raise serializers.ValidationError(
+                {"subject": "Assign a teacher to this section subject before scheduling it."}
+            )
+
+        section_slot_conflict = (
+            SectionSchedule.objects.filter(
+                section=section,
+                period_time=period_time,
+                active=True,
+            )
+            .exclude(id=instance.id if instance else None)
+            .exists()
+        )
+        if section_slot_conflict:
+            raise serializers.ValidationError(
+                {"period_time": "This section already has a schedule entry for this period time."}
+            )
+
+        for assignment in teacher_assignments:
+            conflict = (
+                SectionSchedule.objects.filter(
+                    period_time=period_time,
+                    subject__staff_teachers__teacher=assignment.teacher,
+                    active=True,
+                )
+                .exclude(id=instance.id if instance else None)
+                .select_related("section")
+                .first()
+            )
+            if conflict:
+                raise serializers.ValidationError(
+                    {
+                        "period_time": (
+                            f"Teacher {assignment.teacher.get_full_name()} is already scheduled "
+                            f"for {conflict.section.name} at this period time."
+                        )
+                    }
+                )
+
+        return attrs
+
     def to_representation(self, instance):
         response = super().to_representation(instance)
         response["section"] = {
             "id": instance.section.id,
             "name": instance.section.name,
         }
-        response["subject"] = {
-            "id": instance.subject.id,
-            "name": instance.subject.subject.name,
-        }
+        response["subject"] = (
+            {
+                "id": instance.subject.id,
+                "name": instance.subject.subject.name,
+            }
+            if instance.subject
+            else None
+        )
+        response["teacher"] = None
+        if instance.subject:
+            teacher_assignment = (
+                instance.subject.staff_teachers.select_related("teacher").filter(active=True).first()
+            )
+            if teacher_assignment:
+                response["teacher"] = {
+                    "id": teacher_assignment.teacher.id,
+                    "id_number": teacher_assignment.teacher.id_number,
+                    "full_name": teacher_assignment.teacher.get_full_name(),
+                }
         response["period"] = {
             "id": instance.period.id,
             "name": instance.period.name,
+            "period_type": instance.period.period_type,
         }
         response["period_time"] = {
             "id": instance.period_time.id,
@@ -668,4 +774,5 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
             "end_time": instance.period_time.end_time,
             "day_of_week": instance.period_time.day_of_week,
         }
+        response["is_recess"] = instance.period.period_type == Period.PeriodType.RECESS
         return response

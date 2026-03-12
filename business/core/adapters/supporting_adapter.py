@@ -151,15 +151,16 @@ def get_period_time_by_id(period_time_id: str) -> Optional[PeriodTime]:
 
 def get_period_times_for_period(period: Period) -> List[PeriodTime]:
     """Get all period times for a period"""
-    return list(period.period_times.all())
+    return list(period.period_times.all().order_by("day_of_week", "start_time"))
 
 
 @transaction.atomic
 def create_period_time_in_db(period: Period, data: Dict[str, Any], user=None) -> PeriodTime:
     """Create period time in database"""
     return period.period_times.create(
-        name=data['name'],
-        description=data.get('description'),
+        start_time=data['start_time'],
+        end_time=data['end_time'],
+        day_of_week=data['day_of_week'],
         created_by=user,
         updated_by=user,
     )

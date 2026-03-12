@@ -235,8 +235,17 @@ class Period(BaseModel):
     Example: 1st period, 2nd period, etc.
     """
 
+    class PeriodType(models.TextChoices):
+        CLASS = "class", "Class"
+        RECESS = "recess", "Recess"
+
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True, default=None)
+    period_type = models.CharField(
+        max_length=20,
+        choices=PeriodType.choices,
+        default=PeriodType.CLASS,
+    )
 
     def __str__(self):
         return self.name
@@ -287,7 +296,11 @@ class SectionSchedule(BaseModel):
         Section, on_delete=models.CASCADE, related_name="class_schedules"
     )
     subject = models.ForeignKey(
-        SectionSubject, on_delete=models.CASCADE, related_name="class_schedules"
+        SectionSubject,
+        on_delete=models.CASCADE,
+        related_name="class_schedules",
+        null=True,
+        blank=True,
     )
     period_time = models.ForeignKey(
         PeriodTime, on_delete=models.CASCADE, related_name="class_schedules"
@@ -303,8 +316,68 @@ class SectionSchedule(BaseModel):
                 "The selected PeriodTime does not belong to the selected Period."
             )
 
+        # Recess should not carry a subject assignment.
+        if self.period.period_type == Period.PeriodType.RECESS and self.subject is not None:
+            raise ValidationError("Recess periods cannot have a subject assignment.")
+
+        # Class periods must carry a subject assignment from the same section.
+        if self.period.period_type == Period.PeriodType.CLASS:
+            if self.subject is None:
+                raise ValidationError("A subject assignment is required for class periods.")
+            if self.subject.section_id != self.section_id:
+                raise ValidationError("Selected section subject does not belong to this section.")
+
+            # Ensure teacher assignment exists for this section subject.
+            from staff.models import TeacherSubject
+
+            teacher_assignments = TeacherSubject.objects.filter(
+                section_subject=self.subject,
+                active=True,
+            ).select_related("teacher")
+
+            if not teacher_assignments.exists():
+                raise ValidationError(
+                    "Assign a teacher to this section subject before scheduling it."
+                )
+
+            # Prevent same teacher being scheduled across multiple sections at same period time.
+            for assignment in teacher_assignments:
+                conflict = (
+                    SectionSchedule.objects.filter(
+                        period_time=self.period_time,
+                        subject__staff_teachers__teacher=assignment.teacher,
+                        active=True,
+                    )
+                    .exclude(id=self.id)
+                    .select_related("section", "period_time")
+                    .first()
+                )
+
+                if conflict:
+                    raise ValidationError(
+                        f"Teacher {assignment.teacher.get_full_name()} is already scheduled "
+                        f"for {conflict.section.name} at this period time."
+                    )
+
+        # One schedule row per section + period time.
+        section_slot_conflict = (
+            SectionSchedule.objects.filter(
+                section=self.section,
+                period_time=self.period_time,
+                active=True,
+            )
+            .exclude(id=self.id)
+            .exists()
+        )
+        if section_slot_conflict:
+            raise ValidationError(
+                "This section already has a schedule entry for the selected period time."
+            )
+
     def __str__(self):
-        return f"{self.section.name} - {self.subject.name} ({self.period.name})"
+        if self.subject:
+            return f"{self.section.name} - {self.subject.name} ({self.period.name})"
+        return f"{self.section.name} - Recess ({self.period.name})"
 
     class Meta:
         db_table = 'section_schedule'

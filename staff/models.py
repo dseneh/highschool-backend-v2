@@ -362,6 +362,13 @@ class TeacherSubject(BaseModel):
     subject = models.ForeignKey(
         "academics.Subject", on_delete=models.CASCADE, related_name="staff_teachers"
     )
+    section_subject = models.ForeignKey(
+        "academics.SectionSubject",
+        on_delete=models.CASCADE,
+        related_name="staff_teachers",
+        null=True,
+        blank=True,
+    )
     created_by = models.ForeignKey(
         "users.User",
         on_delete=models.SET_NULL,

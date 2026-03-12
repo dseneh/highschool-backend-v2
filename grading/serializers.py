@@ -86,6 +86,24 @@ class GradeBookOut(serializers.ModelSerializer):
             "name": instance.academic_year.name,
         }
 
+        # Resolve teacher assignment for this section-subject.
+        # If multiple assignments exist, return the most recently updated one.
+        teacher_assignment = (
+            instance.section_subject.staff_teachers.select_related("teacher")
+            .order_by("-updated_at", "-created_at")
+            .first()
+        )
+        teacher = teacher_assignment.teacher if teacher_assignment else None
+        response["teacher"] = (
+            {
+                "id": str(teacher.id),
+                "full_name": teacher.get_full_name() if hasattr(teacher, "get_full_name") else "",
+                "id_number": teacher.id_number,
+            }
+            if teacher
+            else None
+        )
+
         # Include statistics if requested
         if self.include_stats:
             stats = instance.get_gradebook_statistics()
@@ -96,6 +114,10 @@ class GradeBookOut(serializers.ModelSerializer):
                 "students_with_grades": stats["students_with_grades"],
                 "total_enrolled_students": stats["total_enrolled_students"],
             }
+            
+            # Include workflow status summary
+            workflow_status = instance.get_workflow_status_summary()
+            response["workflow_status"] = workflow_status
 
         return response
 

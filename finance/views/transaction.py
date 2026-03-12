@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
+from django_tenants.utils import get_public_schema_name
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
@@ -43,6 +44,17 @@ class TransactionViewSet(viewsets.ModelViewSet):
     pagination_class = TransactionPageNumberPagination
     serializer_class = TransactionDetailSerializer
 
+    def _ensure_tenant_context(self):
+        """Reject tenant-specific finance operations in public schema."""
+        if connection.schema_name == get_public_schema_name():
+            return Response(
+                {
+                    "detail": "This endpoint must be accessed from a tenant context (with x-tenant header)."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
     def get_queryset(self):
         qs = Transaction.objects.select_related(
             "student",
@@ -75,6 +87,10 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """Create a new transaction"""
+        tenant_error = self._ensure_tenant_context()
+        if tenant_error:
+            return tenant_error
+
         validated_data, error = validate_transaction_data(
             request.data, is_update=False
         )
@@ -179,6 +195,10 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     def _set_status_action(self, request, transaction_obj, new_status):
         """Shared status update logic used by dedicated actions."""
+        tenant_error = self._ensure_tenant_context()
+        if tenant_error:
+            return tenant_error
+
         notes = request.data.get("notes")
 
         valid_statuses = ["pending", "approved", "rejected", "canceled"]

@@ -20,11 +20,16 @@ from grading.utils import (
 
 from grading.models import GradeBook, Assessment, Grade
 from grading.serializers import GradeOut
+from grading.services.authorization import (
+    enforce_teacher_grade_access,
+    get_teacher_allowed_section_ids_for_subject,
+)
 
 from students.models import Student
 
 
 class GradeListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET  /grades/?assessment=&student=&academic_year=&section=&subject=
     POST /grades/  (manual upsert by (assessment, enrollment))
@@ -59,6 +64,14 @@ class GradeListCreateView(APIView):
     def get(self, request, assessment_id):
         assessment = self.get_object(assessment_id)
         print("DEBUG: assessment", assessment.id)
+
+        # Enforce teacher scope for grade listing by assessment.
+        enforce_teacher_grade_access(
+            request.user,
+            assessment.gradebook.section_id,
+            assessment.gradebook.subject_id,
+        )
+
         qs = assessment.grades.select_related(
             "assessment", "student", "section", "subject"
         ).only(
@@ -190,11 +203,16 @@ class GradeDetailView(APIView):
 
     def get(self, request, pk):
         grade = get_object(pk)
+        enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
         return Response(GradeOut(grade).data)
 
     @transaction.atomic
     def put(self, request, pk):
         grade = get_object(pk)
+
+        # Teachers can only edit grades for their assigned section/subject.
+        enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
+
         score = request.data.get("score")
 
         if not can_edit_grade_status(grade.status):
@@ -255,6 +273,7 @@ def run_validation_checks(request, grade=None):
 
 
 class GradeStatusTransitionView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     PUT /grades/<id>/status/  { "status": "pending|reviewed|approved|draft", "targeted_status": "draft" (optional) }
     """
@@ -283,6 +302,9 @@ class GradeStatusTransitionView(APIView):
 
         grade = get_object(pk)
 
+        # Teachers can only transition grades for assigned section/subject.
+        enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
+
         # Check if targeted_status filter applies
         if targeted_status is not None and grade.status != targeted_status:
             return Response(
@@ -304,6 +326,7 @@ class GradeStatusTransitionView(APIView):
 
 
 class SectionGradeStatusTransitionView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     PUT /sections/<section_id>/grades/status/
     { "status": "pending|reviewed|approved|draft", "targeted_status": "draft" (optional) }
@@ -332,6 +355,9 @@ class SectionGradeStatusTransitionView(APIView):
                 {"detail": "subject must be added to the request query params."},
                 status=400,
             )
+
+        # Teachers can only submit status updates for assigned section/subject.
+        enforce_teacher_grade_access(request.user, section_id, subject_id)
 
         run_validation_checks(request)
 
@@ -435,6 +461,7 @@ class SectionGradeStatusTransitionView(APIView):
 
 
 class StudentMarkingPeriodGradeStatusTransitionView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     PUT /students/<student_id>/marking-periods/<marking_period_id>/grades/status/
     { "status": "pending|reviewed|approved|draft", "targeted_status": "draft" (optional) }
@@ -466,7 +493,6 @@ class StudentMarkingPeriodGradeStatusTransitionView(APIView):
         require_approval = workflow_settings["require_grade_approval"]
 
         # Verify student exists
-        f = Q(id=student_id) | Q(id_number=student_id)
         student = get_object_by_uuid_or_fields(Student, student_id, ["id_number", "prev_id_number"])
 
         # Verify marking period exists
@@ -480,6 +506,14 @@ class StudentMarkingPeriodGradeStatusTransitionView(APIView):
             subject_id=subject_id,
             assessment__marking_period_id=marking_period_id,
         )
+
+        # Teachers can only transition grades in their assigned sections for this subject.
+        allowed_section_ids = get_teacher_allowed_section_ids_for_subject(
+            request.user,
+            subject_id,
+        )
+        if allowed_section_ids is not None:
+            grades = grades.filter(section_id__in=allowed_section_ids)
 
         # Apply targeted_status filter if provided
         if targeted_status is not None:

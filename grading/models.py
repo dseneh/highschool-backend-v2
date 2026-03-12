@@ -506,6 +506,64 @@ class GradeBook(BaseModel):
         
         return stats
 
+    def get_workflow_status_summary(self) -> dict:
+        """
+        Get workflow status summary for all grades in this gradebook.
+        Returns counts of grades in each status and the predominant status.
+        
+        Returns:
+            dict containing:
+            - draft_count: Number of grades in draft status
+            - pending_count: Number of grades in pending status
+            - reviewed_count: Number of grades in reviewed status
+            - submitted_count: Number of grades in submitted status
+            - approved_count: Number of grades in approved status
+            - rejected_count: Number of grades in rejected status
+            - total_grades: Total number of grades
+            - predominant_status: The most common status (or "draft" if no grades)
+        """
+        from django.db.models import Count, Q
+        
+        # Get status counts for all grades in this gradebook
+        status_counts = Grade.objects.filter(
+            assessment__gradebook=self
+        ).values('status').annotate(count=Count('id'))
+        
+        # Initialize counts
+        counts = {
+            'draft': 0,
+            'pending': 0,
+            'reviewed': 0,
+            'submitted': 0,
+            'approved': 0,
+            'rejected': 0,
+        }
+        
+        total = 0
+        for item in status_counts:
+            status = item['status'] or 'draft'
+            count = item['count']
+            if status in counts:
+                counts[status] = count
+                total += count
+        
+        # Determine predominant status
+        if total == 0:
+            predominant_status = 'draft'
+        else:
+            predominant_status = max(counts.items(), key=lambda x: x[1])[0]
+        
+        return {
+            'draft_count': counts['draft'],
+            'pending_count': counts['pending'],
+            'reviewed_count': counts['reviewed'],
+            'submitted_count': counts['submitted'],
+            'approved_count': counts['approved'],
+            'rejected_count': counts['rejected'],
+            'total_grades': total,
+            'predominant_status': predominant_status,
+        }
+
 
 class Assessment(BaseModel):
     """

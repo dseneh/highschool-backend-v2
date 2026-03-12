@@ -21,7 +21,7 @@ def get_student_queryparams(query_params, other_parms: None):
             elif k == "end_date_enrolled":
                 f.add(Q(**{f"end_date__lte": v}), Q.AND)
             elif k == "section":
-                f.add(Q(**{f"enrollments__section__name": v}), Q.AND)
+                f.add(Q(**{f"enrollments__section__id": v}), Q.AND)
             elif k == "academic_year":
                 f.add(Q(**{f"enrollments__academic_year__name": v}), Q.AND)
             elif k in ["year", "month", "day"]:

@@ -36,16 +36,19 @@ class PeriodTimeListView(APIView):
         period = self.get_period_object(period_id)
         req_data: dict = request.data
 
-        name = req_data.get("name")
+        start_time = req_data.get("start_time")
+        end_time = req_data.get("end_time")
+        day_of_week = req_data.get("day_of_week")
 
         # Validate period time creation
-        is_valid, error = validate_period_time_creation(name, period_id)
+        is_valid, error = validate_period_time_creation(start_time, end_time, day_of_week, period_id)
         if not is_valid:
             return Response({"detail": error}, status=400)
 
         data = {
-            "name": name,
-            "description": req_data.get("description"),
+            "start_time": start_time,
+            "end_time": end_time,
+            "day_of_week": day_of_week,
         }
 
         try:
@@ -75,8 +78,9 @@ class PeriodTimeDetailView(APIView):
         period_time = self.get_object(id)
 
         allowed_fields = [
-            "name",
-            "description",
+            "start_time",
+            "end_time",
+            "day_of_week",
             "active",
         ]
 

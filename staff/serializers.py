@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from users.models import User
+from academics.models import SectionSubject, Subject, SectionSchedule
 
 from common.serializers import PhotoURLMixin
 from .models import (
@@ -258,41 +259,107 @@ class StaffDetailSerializer(StaffSerializer):
             for ts in sections
         ]
 
-        # Add subjects assigned to this teacher
-        subjects = instance.subjects.select_related("subject").all()
+        # Add subjects assigned to this teacher (section-scoped)
+        subjects = instance.subjects.select_related(
+            "subject",
+            "section_subject",
+            "section_subject__section",
+            "section_subject__section__grade_level",
+            "section_subject__subject",
+        ).all()
         response["subjects"] = [
             {
-                "id": ts.subject.id,
-                "name": ts.subject.name,
-                "code": ts.subject.code,
+                "id": ts.id,
+                "section_subject": (
+                    {
+                        "id": ts.section_subject.id,
+                        "section": {
+                            "id": ts.section_subject.section.id,
+                            "name": ts.section_subject.section.name,
+                            "grade_level": (
+                                {
+                                    "id": ts.section_subject.section.grade_level.id,
+                                    "name": ts.section_subject.section.grade_level.name,
+                                }
+                                if ts.section_subject.section.grade_level
+                                else None
+                            ),
+                        },
+                        "subject": {
+                            "id": ts.section_subject.subject.id,
+                            "name": ts.section_subject.subject.name,
+                        },
+                    }
+                    if ts.section_subject
+                    else None
+                ),
+                "subject": {
+                    "id": ts.subject.id,
+                    "name": ts.subject.name,
+                }
+                if ts.subject
+                else None,
             }
             for ts in subjects
         ]
 
-        # Add schedules for this teacher
-        schedules = instance.schedules.select_related(
-            "class_schedule", "class_schedule__section", "class_schedule__period"
-        ).all()
+        # Build schedules from assigned section-subject mappings so schedule rows
+        # are automatically tied to teacher subject assignments.
+        section_subject_ids = list(
+            instance.subjects.filter(section_subject__isnull=False, active=True)
+            .values_list("section_subject_id", flat=True)
+        )
+        schedules = SectionSchedule.objects.select_related(
+            "section",
+            "section__grade_level",
+            "period",
+            "period_time",
+            "subject",
+            "subject__subject",
+        ).filter(subject_id__in=section_subject_ids, active=True)
+
         response["schedules"] = [
             {
                 "id": sched.id,
-                "class_schedule": (
-                    {
-                        "id": sched.class_schedule.id,
-                        "section": (
-                            sched.class_schedule.section.name
-                            if sched.class_schedule.section
-                            else None
-                        ),
-                        "period": (
-                            sched.class_schedule.period.name
-                            if sched.class_schedule.period
-                            else None
-                        ),
-                    }
-                    if sched.class_schedule
-                    else None
-                ),
+                "class_schedule": {
+                    "id": sched.id,
+                    "section": (
+                        {
+                            "id": sched.section.id,
+                            "name": sched.section.name,
+                        }
+                        if sched.section
+                        else None
+                    ),
+                    "subject": (
+                        {
+                            "id": sched.subject.id,
+                            "name": sched.subject.subject.name,
+                        }
+                        if sched.subject
+                        else None
+                    ),
+                    "period": (
+                        {
+                            "id": sched.period.id,
+                            "name": sched.period.name,
+                            "period_type": sched.period.period_type,
+                        }
+                        if sched.period
+                        else None
+                    ),
+                    "period_time": (
+                        {
+                            "id": sched.period_time.id,
+                            "start_time": sched.period_time.start_time,
+                            "end_time": sched.period_time.end_time,
+                            "day_of_week": sched.period_time.day_of_week,
+                        }
+                        if sched.period_time
+                        else None
+                    ),
+                    "is_recess": sched.period.period_type == "recess" if sched.period else False,
+                },
             }
             for sched in schedules
         ]
@@ -334,14 +401,40 @@ class TeacherSectionSerializer(serializers.ModelSerializer):
 
 
 class TeacherSubjectSerializer(serializers.ModelSerializer):
+    subject = serializers.PrimaryKeyRelatedField(
+        queryset=Subject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    section_subject = serializers.PrimaryKeyRelatedField(
+        queryset=SectionSubject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model = TeacherSubject
         fields = [
             "id",
             "teacher",
             "subject",
+            "section_subject",
         ]
         read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        section_subject = attrs.get("section_subject")
+        subject = attrs.get("subject")
+
+        if not section_subject and not subject:
+            raise serializers.ValidationError(
+                {"section_subject": "This field is required."}
+            )
+
+        if section_subject:
+            attrs["subject"] = section_subject.subject
+
+        return attrs
 
     def to_representation(self, instance):
         response = super().to_representation(instance)
@@ -350,11 +443,30 @@ class TeacherSubjectSerializer(serializers.ModelSerializer):
             "id_number": instance.teacher.id_number,
             "full_name": instance.teacher.get_full_name(),
         }
+        if instance.section_subject:
+            response["section_subject"] = {
+                "id": instance.section_subject.id,
+                "section": {
+                    "id": instance.section_subject.section.id,
+                    "name": instance.section_subject.section.name,
+                    "grade_level": (
+                        {
+                            "id": instance.section_subject.section.grade_level.id,
+                            "name": instance.section_subject.section.grade_level.name,
+                        }
+                        if instance.section_subject.section.grade_level
+                        else None
+                    ),
+                },
+                "subject": {
+                    "id": instance.section_subject.subject.id,
+                    "name": instance.section_subject.subject.name,
+                },
+            }
         if instance.subject:
             response["subject"] = {
                 "id": instance.subject.id,
                 "name": instance.subject.name,
-                "code": instance.subject.code,
             }
         return response
 

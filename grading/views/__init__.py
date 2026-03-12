@@ -17,7 +17,7 @@ from .final_grades import (
     SectionFinalGradesView,
     StudentReportCardPDFView,
 )
-from .gradebook import GradeBookListCreateView, GradeBookDetailView
+from .gradebook import GradeBookListCreateView, GradeBookDetailView, TeacherGradebookListView
 from .grade_letter import GradeLetterListCreateView, GradeLetterDetailView
 from .default_assessment_template import (
     DefaultAssessmentTemplateListCreateView,
@@ -49,6 +49,7 @@ __all__ = [
     "StudentReportCardPDFView",
     "GradeBookListCreateView",
     "GradeBookDetailView",
+    "TeacherGradebookListView",
     "GradeLetterListCreateView",
     "GradeLetterDetailView",
     "DefaultAssessmentTemplateListCreateView",
