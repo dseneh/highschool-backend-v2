@@ -56,6 +56,32 @@ class UserViewSet(viewsets.ModelViewSet):
     pagination_class = UserPagination
     lookup_field = 'id_number'
     lookup_value_regex = '[^/]+'  # Allow any characters in id_number
+
+    @staticmethod
+    def _get_linked_user_id_numbers():
+        linked_id_numbers = set()
+
+        from staff.models import Staff
+        from students.models.guardian import StudentGuardian
+        from students.models.student import Student
+
+        linked_id_numbers.update(
+            Staff.objects.exclude(user_account_id_number__isnull=True)
+            .exclude(user_account_id_number='')
+            .values_list('user_account_id_number', flat=True)
+        )
+        linked_id_numbers.update(
+            Student.objects.exclude(user_account_id_number__isnull=True)
+            .exclude(user_account_id_number='')
+            .values_list('user_account_id_number', flat=True)
+        )
+        linked_id_numbers.update(
+            StudentGuardian.objects.exclude(user_account_id_number__isnull=True)
+            .exclude(user_account_id_number='')
+            .values_list('user_account_id_number', flat=True)
+        )
+
+        return linked_id_numbers
     
     def get_queryset(self):
         """Get users based on context (tenant or global)."""
@@ -67,10 +93,16 @@ class UserViewSet(viewsets.ModelViewSet):
         if connection.schema_name != 'public':
             try:
                 from tenant_users.permissions.models import UserTenantPermissions
-                user_ids = UserTenantPermissions.objects.values_list('profile_id', flat=True).distinct()
+                permission_user_ids = set(
+                    UserTenantPermissions.objects.values_list('profile_id', flat=True).distinct()
+                )
+                linked_user_id_numbers = self._get_linked_user_id_numbers()
                 
                 with schema_context('public'):
-                    queryset = User.objects.filter(id__in=list(user_ids))
+                    queryset = User.objects.filter(
+                        Q(id__in=list(permission_user_ids)) |
+                        Q(id_number__in=list(linked_user_id_numbers))
+                    ).distinct()
                     
                     # Apply filters from query params
                     search = self.request.query_params.get('search')

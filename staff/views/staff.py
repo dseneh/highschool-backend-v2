@@ -1,4 +1,6 @@
+from django.db import connection
 from django.db.models import Q
+from django_tenants.utils import get_tenant_model
 from rest_framework import viewsets, status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -273,6 +275,17 @@ class StaffViewSet(viewsets.ModelViewSet):
         # Set default password to id_number
         user_account.set_password(staff.id_number)
         user_account.save()
+
+        tenant_schema_name = connection.schema_name
+        if tenant_schema_name != "public":
+            tenant_model = get_tenant_model()
+            tenant = tenant_model.objects.filter(schema_name=tenant_schema_name).first()
+            if tenant is not None:
+                try:
+                    tenant.add_user(user_account, is_staff=True, is_superuser=False)
+                except Exception as exc:
+                    if "already" not in str(exc).lower() and "exists" not in str(exc).lower():
+                        raise
         
         # Link user account to staff (loose coupling via id_number)
         staff.user_account_id_number = user_account.id_number
