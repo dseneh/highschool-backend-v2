@@ -162,10 +162,14 @@ AUTH_PASSWORD_VALIDATORS = [
 # In production, either:
 #   Option A (recommended): set RESEND_API_KEY to use Resend's REST API.
 #   Option B: set EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD for SMTP.
-EMAIL_BACKEND = config(
-    "EMAIL_BACKEND",
-    default="django.core.mail.backends.console.EmailBackend",
+email_backend_default = (
+    "django.core.mail.backends.console.EmailBackend"
+    if DEBUG
+    else "django.core.mail.backends.smtp.EmailBackend"
 )
+EMAIL_BACKEND = config("EMAIL_BACKEND", default=email_backend_default)
+if not DEBUG and EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = config("EMAIL_HOST", default="smtp.resend.com")
 EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
