@@ -9,6 +9,7 @@ from users.views import (
     VerifyTokenView,
     GlobalUserCreateView,
     PasswordResetConfirmView,
+    PasswordResetRequestView,
 )
 from users.viewsets import UserViewSet
 
@@ -27,7 +28,8 @@ urlpatterns = [
     # Global user creation (kept as APIView for now)
     path("users/global/", GlobalUserCreateView.as_view(), name="global_user_create"),
     
-    # Password reset confirm (public endpoint)
+    # Password reset endpoints (public – no auth required)
+    path("password/forgot/", PasswordResetRequestView.as_view(), name="password_reset_request"),
     path("password/reset/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     
     # ViewSet routes (includes all user CRUD + custom actions)

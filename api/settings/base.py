@@ -155,6 +155,42 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Static files
+
+# Email configuration
+# -------------------
+# In development, set EMAIL_BACKEND to console to see emails in terminal.
+# In production, either:
+#   Option A (recommended): set RESEND_API_KEY to use Resend's REST API.
+#   Option B: set EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD for SMTP.
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = config("EMAIL_HOST", default="smtp.resend.com")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@ezyschool.net")
+EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool")
+
+# Resend API key (takes priority over SMTP when set)
+# Get yours at https://resend.com/
+RESEND_API_KEY = config("RESEND_API_KEY", default="")
+
+# Frontend integration
+FRONTEND_DOMAIN = config("FRONTEND_DOMAIN", default="http://localhost:3000")
+FRONTEND_USE_SUBDOMAIN = config("FRONTEND_USE_SUBDOMAIN", default=True, cast=bool)
+FRONTEND_DEV_MODE = config("FRONTEND_DEV_MODE", default=True, cast=bool)
+FRONTEND_PASSWORD_RESET_PATH = config("FRONTEND_PASSWORD_RESET_PATH", default="/reset-password")
+
+# Branding for transactional emails
+EMAIL_LOGO_URL = config("EMAIL_LOGO_URL", default="")
+
+# How long (in seconds) a password-reset token stays valid (default: 1 hour)
+PASSWORD_RESET_TIMEOUT = config("PASSWORD_RESET_TIMEOUT", default=3600, cast=int)
+
+# Static files
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"

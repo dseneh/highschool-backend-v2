@@ -25,6 +25,7 @@ from users.serializers import (
 )
 from users.access_policies import UserAccessPolicy
 from common.status import UserAccountType, Roles
+from django.conf import settings
 
 
 class UserPagination(PageNumberPagination):
@@ -402,18 +403,62 @@ class UserViewSet(viewsets.ModelViewSet):
     def password_reset_request(self, request):
         """
         Request password reset (public endpoint).
-        
+
         POST /users/password/forgot/
         {
             "user_identifier": "username_or_email_or_id_number"
         }
+
+        Always returns 200 to avoid leaking whether an account exists.
         """
+        import logging
+        from django.contrib.auth.tokens import PasswordResetTokenGenerator
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+
+        from common.email_service import send_password_reset_email
+        from users.utils import build_password_reset_url
+
+        logger = logging.getLogger(__name__)
+
         serializer = PasswordForgotSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        # TODO: Implement actual email/SMS sending with reset token
-        return Response(
-            {"detail": "Password reset instructions sent to your email/phone"},
-            status=status.HTTP_200_OK
+
+        user_identifier = serializer.validated_data['user_identifier']
+
+        safe_response = Response(
+            {"detail": "If a user with that identifier exists, a password reset link has been sent to their email."},
+            status=status.HTTP_200_OK,
         )
+
+        with schema_context('public'):
+            user = User.objects.filter(
+                Q(username=user_identifier) |
+                Q(email=user_identifier) |
+                Q(id_number=user_identifier)
+            ).first()
+
+            if not user or not user.is_active or not user.email:
+                return safe_response
+
+            token_generator = PasswordResetTokenGenerator()
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = token_generator.make_token(user)
+
+            school_workspace = getattr(request, 'tenant', None)
+            if school_workspace and hasattr(school_workspace, 'schema_name'):
+                school_workspace = school_workspace.schema_name
+            else:
+                school_workspace = None
+
+            reset_url = build_password_reset_url(school_workspace, uid, token)
+
+            if settings.DEBUG:
+                logger.debug("Password reset URL for %s: %s", user.username, reset_url)
+
+            sent = send_password_reset_email(user, reset_url)
+            if not sent:
+                logger.error("Failed to send password reset email to user %s", user.username)
+
+            return safe_response

@@ -11,6 +11,7 @@ from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q
 from django.db import connection
 from django_tenants.utils import schema_context
+from django.conf import settings
 
 from users.serializers import (
     MultiFieldTokenObtainPairSerializer, 
@@ -656,159 +657,184 @@ class PasswordChangeView(APIView):
 class PasswordResetRequestView(APIView):
     """
     Request a password reset (forgot password).
-    
+
     POST /api/v1/auth/password/forgot/
     {
         "user_identifier": "username_or_email_or_id_number"
     }
-    
-    Response:
-    {
-        "detail": "Password reset instructions sent to your email/phone"
-    }
-    
-    TODO: Implement actual email/SMS sending with reset token
+
+    Always returns 200 to avoid leaking whether an account exists.
+    When a matching user with a valid email is found, a reset link is sent.
     """
     permission_classes = []  # Public endpoint
-    
+    authentication_classes = []
+
     def post(self, request):
         """Request password reset."""
+        import logging
+        from django.contrib.auth.tokens import PasswordResetTokenGenerator
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+
+        from common.email_service import send_password_reset_email
+        from users.utils import build_password_reset_url
+
+        logger = logging.getLogger(__name__)
+
+        # Generic response – never reveal whether the account exists
+        _safe_response = Response(
+            {"detail": "If a user with that identifier exists, a password reset link has been sent to their email."},
+            status=status.HTTP_200_OK,
+        )
+
         serializer = PasswordForgotSerializer(data=request.data)
-        if serializer.is_valid():
-            user_identifier = serializer.validated_data['user_identifier']
-            
-            with schema_context('public'):
-                try:
-                    # Find user by username, email, or id_number
-                    user = User.objects.filter(
-                        Q(username=user_identifier) |
-                        Q(email=user_identifier) |
-                        Q(id_number=user_identifier)
-                    ).first()
-                    
-                    if user:
-                        # TODO: Generate reset token and send email/SMS
-                        # For now, just return success
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.info(f"Password reset requested for user: {user.username}")
-                        
-                        # In production, you'd:
-                        # 1. Generate a secure token (use Django's PasswordResetTokenGenerator)
-                        # 2. Store token with expiry
-                        # 3. Send email/SMS with reset link
-                        # from django.contrib.auth.tokens import PasswordResetTokenGenerator
-                        # token_generator = PasswordResetTokenGenerator()
-                        # token = token_generator.make_token(user)
-                        
-                        return Response(
-                            {"detail": "If a user with that identifier exists, password reset instructions have been sent"},
-                            status=status.HTTP_200_OK
-                        )
-                    else:
-                        # Don't reveal if user exists or not (security best practice)
-                        return Response(
-                            {"detail": "If a user with that identifier exists, password reset instructions have been sent"},
-                            status=status.HTTP_200_OK
-                        )
-                        
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.error(f"Error processing password reset: {e}")
-                    return Response(
-                        {"detail": "Error processing password reset request"},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user_identifier = serializer.validated_data['user_identifier']
+
+        with schema_context('public'):
+            try:
+                user = User.objects.filter(
+                    Q(username=user_identifier) |
+                    Q(email=user_identifier) |
+                    Q(id_number=user_identifier)
+                ).first()
+
+                if not user:
+                    return _safe_response
+
+                if not user.email:
+                    logger.warning(
+                        "Password reset requested for user %s but no email address is set",
+                        user.username,
                     )
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    return _safe_response
+
+                if not user.is_active:
+                    return _safe_response
+
+                # Generate a secure, single-use token
+                token_generator = PasswordResetTokenGenerator()
+                uid = urlsafe_base64_encode(force_bytes(user.pk))
+                token = token_generator.make_token(user)
+
+                # Use tenant workspace if available (for subdomain URL building)
+                school_workspace = getattr(request, 'tenant', None)
+                if school_workspace and hasattr(school_workspace, 'schema_name'):
+                    school_workspace = school_workspace.schema_name
+                else:
+                    school_workspace = None
+
+                reset_url = build_password_reset_url(school_workspace, uid, token)
+
+                if settings.DEBUG:
+                    logger.debug("Password reset URL for %s: %s", user.username, reset_url)
+
+                sent = send_password_reset_email(user, reset_url)
+                if not sent:
+                    logger.error("Failed to send password reset email to user %s", user.username)
+
+                return _safe_response
+
+            except Exception as exc:
+                logger.error("Error processing password reset request: %s", exc)
+                return Response(
+                    {"detail": "An error occurred while processing your request."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
 
 class PasswordResetConfirmView(APIView):
     """
     Confirm password reset with token.
-    
+
     POST /api/v1/auth/password/reset/
     {
-        "token": "reset_token_here",
-        "user_identifier": "username_or_id_number",
-        "new_password": "new_password",
-        "confirm_password": "new_password"
+        "uid":          "base64-encoded user PK",   ← preferred
+        "token":        "reset-token",
+        "new_password": "NewSecurePass1"
     }
-    
-    Response:
-    {
-        "detail": "Password reset successful"
-    }
-    
-    TODO: Implement token validation
+
+    The uid/token pair comes from the reset URL sent by PasswordResetRequestView.
     """
     permission_classes = []  # Public endpoint
-    
+    authentication_classes = []
+
     def post(self, request):
         """Confirm password reset."""
+        import re
+        import logging
+        from django.contrib.auth.tokens import PasswordResetTokenGenerator
+        from django.utils import timezone
+        from django.utils.encoding import force_str
+        from django.utils.http import urlsafe_base64_decode
+
+        logger = logging.getLogger(__name__)
+
+        uid_b64 = request.data.get('uid') or request.data.get('uidb64')
         token = request.data.get('token')
-        user_identifier = request.data.get('user_identifier')
-        new_password = request.data.get('new_password')
-        confirm_password = request.data.get('confirm_password')
-        
-        if not all([token, user_identifier, new_password, confirm_password]):
+        new_password = request.data.get('new_password') or request.data.get('password')
+
+        if not uid_b64 or not token or not new_password:
             return Response(
-                {"detail": "Missing required fields: token, user_identifier, new_password, confirm_password"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"detail": "uid, token, and new_password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        if new_password != confirm_password:
+
+        # Decode uid
+        try:
+            user_pk = force_str(urlsafe_base64_decode(uid_b64))
+        except (TypeError, ValueError, OverflowError):
             return Response(
-                {"detail": "Passwords do not match"},
-                status=status.HTTP_400_BAD_REQUEST
+                {"detail": "Invalid reset link."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         with schema_context('public'):
             try:
-                # Find user
-                user = User.objects.filter(
-                    Q(username=user_identifier) |
-                    Q(id_number=user_identifier)
-                ).first()
-                
-                if not user:
-                    return Response(
-                        {"detail": "Invalid reset token or user identifier"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # TODO: Validate token
-                # from django.contrib.auth.tokens import PasswordResetTokenGenerator
-                # token_generator = PasswordResetTokenGenerator()
-                # if not token_generator.check_token(user, token):
-                #     return Response({"detail": "Invalid or expired reset token"}, status=400)
-                
-                # For now, accept any token (IN PRODUCTION, VALIDATE THE TOKEN!)
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Password reset confirmed without token validation for user: {user.username}")
-                
-                # Set new password
-                user.set_password(new_password)
-                user.is_default_password = False
-                from django.utils import timezone
-                user.last_password_updated = timezone.now()
-                user.save()
-                
+                user = User.objects.get(pk=user_pk)
+            except User.DoesNotExist:
                 return Response(
-                    {"detail": "Password reset successful"},
-                    status=status.HTTP_200_OK
+                    {"detail": "Invalid reset link."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-                
-            except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Error confirming password reset: {e}")
+
+            # Validate token
+            token_generator = PasswordResetTokenGenerator()
+            if not token_generator.check_token(user, token):
                 return Response(
-                    {"detail": "Error processing password reset"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    {"detail": "This reset link is invalid or has already been used."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            # Enforce basic password strength
+            if len(new_password) < 8:
+                return Response(
+                    {"detail": "Password must be at least 8 characters long."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not re.search(r'[a-zA-Z]', new_password):
+                return Response(
+                    {"detail": "Password must contain at least one letter."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not re.search(r'[0-9]', new_password):
+                return Response(
+                    {"detail": "Password must contain at least one number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user.set_password(new_password)
+            user.is_default_password = False
+            user.last_password_updated = timezone.now()
+            user.save(update_fields=["password", "is_default_password", "last_password_updated"])
+
+            logger.info("Password reset confirmed for user %s", user.username)
+            return Response(
+                {"detail": "Your password has been reset successfully. You can now log in."},
+                status=status.HTTP_200_OK,
+            )
 
 
 class UserRecreateView(APIView):
