@@ -86,7 +86,7 @@ class SchoolCalendarSettings(BaseModel):
         return "School Calendar Settings"
 
     class Meta:
-        db_table = "school_calendar_settings"
+        db_table = "calendar_settings"
         verbose_name = "School Calendar Settings"
         verbose_name_plural = "School Calendar Settings"
 
@@ -120,7 +120,12 @@ class SchoolCalendarEvent(BaseModel):
     end_date = models.DateField()
     all_day = models.BooleanField(default=True)
     applies_to_all_sections = models.BooleanField(default=True)
-    sections = models.ManyToManyField("Section", blank=True, related_name="calendar_events")
+    sections = models.ManyToManyField(
+        "Section",
+        blank=True,
+        related_name="calendar_events",
+        db_table="calendar_event_sections",
+    )
 
     OCCURRENCE_YEAR_PAST = 1
     OCCURRENCE_YEAR_FUTURE = 5
@@ -195,7 +200,7 @@ class SchoolCalendarEvent(BaseModel):
         return self.name
 
     class Meta:
-        db_table = "school_calendar_event"
+        db_table = "calendar_event"
         ordering = ["start_date", "name"]
         indexes = [
             models.Index(fields=["event_type", "start_date", "end_date"]),
@@ -245,7 +250,7 @@ class SchoolCalendarEventOccurrence(BaseModel):
         return f"{self.event.name} @ {self.occurrence_date}"
 
     class Meta:
-        db_table = "school_calendar_event_occurrence"
+        db_table = "calendar_event_occurrence"
         ordering = ["occurrence_date", "event__name"]
         constraints = [
             models.UniqueConstraint(
