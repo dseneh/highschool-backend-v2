@@ -8,9 +8,6 @@ class Attendance(BaseModel):
     enrollment = models.ForeignKey(
         "students.Enrollment", on_delete=models.CASCADE, related_name="attendance"
     )
-    marking_period = models.ForeignKey(
-        "academics.markingperiod", on_delete=models.CASCADE, related_name="attendance"
-    )
     date = models.DateField()
     status = models.CharField(
         max_length=20,
@@ -26,7 +23,6 @@ class Attendance(BaseModel):
         unique_together = ["enrollment", "date"]
         indexes = [
             models.Index(fields=["enrollment", "date"]),
-            models.Index(fields=["marking_period", "date"]),
             models.Index(fields=["status"]),
         ]
 

@@ -634,6 +634,8 @@ class PeriodSerializer(serializers.ModelSerializer):
 
 class SchoolCalendarSettingsSerializer(serializers.ModelSerializer):
     operating_day_labels = serializers.SerializerMethodField()
+    school_year_start_date = serializers.SerializerMethodField()
+    school_year_end_date = serializers.SerializerMethodField()
 
     class Meta:
         model = SchoolCalendarSettings
@@ -642,12 +644,22 @@ class SchoolCalendarSettingsSerializer(serializers.ModelSerializer):
             "operating_days",
             "operating_day_labels",
             "timezone",
+            "school_year_start_date",
+            "school_year_end_date",
             "active",
         ]
 
     def get_operating_day_labels(self, obj):
         labels = dict(SchoolCalendarSettings.DAY_OF_WEEK_CHOICES)
         return [labels[day] for day in obj.operating_days]
+
+    def get_school_year_start_date(self, _obj):
+        current_year = AcademicYear.get_current_academic_year()
+        return current_year.start_date if current_year else None
+
+    def get_school_year_end_date(self, _obj):
+        current_year = AcademicYear.get_current_academic_year()
+        return current_year.end_date if current_year else None
 
 
 class SchoolCalendarEventSerializer(serializers.ModelSerializer):
@@ -686,6 +698,22 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"sections": "Choose at least one section or mark event as applying to all sections."}
             )
+
+        start_date = attrs.get("start_date") or (self.instance.start_date if self.instance else None)
+        end_date = attrs.get("end_date") or (self.instance.end_date if self.instance else None)
+
+        current_year = AcademicYear.get_current_academic_year()
+        if current_year and start_date and end_date:
+            if start_date < current_year.start_date:
+                raise serializers.ValidationError(
+                    {"start_date": "Start date cannot be before the current school year start date."}
+                )
+
+            if end_date > current_year.end_date:
+                raise serializers.ValidationError(
+                    {"end_date": "End date cannot be after the current school year end date."}
+                )
+
         return attrs
 
     def get_section_details(self, obj):

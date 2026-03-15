@@ -13,6 +13,7 @@ from students.views.distributions import (
 from .views import AttendanceDetailView  # StudentEnrollmentBillDetailView,
 from .views import (
     AttendanceListView,
+    AttendanceSectionRosterView,
     BillRecreationPreviewView,
     BillRecreationView,
     BillRecreationStatusView,
@@ -82,6 +83,11 @@ urlpatterns = [
         "attendance/<str:id>/",
         AttendanceDetailView.as_view(),
         name="student_attendance_detail",
+    ),
+    path(
+        "sections/<str:section_id>/attendance/",
+        AttendanceSectionRosterView.as_view(),
+        name="section_attendance_roster",
     ),
     # OLD GRADEBOOK ENDPOINT - Migrated to grading app
     # path(

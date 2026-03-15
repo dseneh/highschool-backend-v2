@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..access_policies import AcademicsAccessPolicy
-from ..models import SchoolCalendarEvent, SchoolCalendarEventOccurrence, SchoolCalendarSettings
+from ..models import AcademicYear, SchoolCalendarEvent, SchoolCalendarEventOccurrence, SchoolCalendarSettings
 from ..serializers import SchoolCalendarEventSerializer, SchoolCalendarSettingsSerializer, SectionScheduleSerializer
 from business.core.adapters import get_section_by_id, get_section_schedules
 
@@ -44,10 +44,30 @@ class SchoolCalendarEventListView(APIView):
         except ValueError as exc:
             raise ValidationError({"detail": "Invalid date format. Use YYYY-MM-DD."}) from exc
 
+    def _validate_school_year_bounds(self, start_date: date | None, end_date: date | None):
+        if not start_date or not end_date:
+            return
+
+        current_year = AcademicYear.get_current_academic_year()
+        if not current_year:
+            return
+
+        if start_date < current_year.start_date or end_date > current_year.end_date:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "Date range must be within the current school year "
+                        f"({current_year.start_date.isoformat()} to {current_year.end_date.isoformat()})."
+                    )
+                }
+            )
+
     def _get_queryset(self, request):
         queryset = SchoolCalendarEvent.objects.filter(active=True).prefetch_related("sections")
         start_date = self._parse_date(request.query_params.get("start"))
         end_date = self._parse_date(request.query_params.get("end"))
+
+        self._validate_school_year_bounds(start_date, end_date)
 
         if not start_date or not end_date:
             return queryset.order_by("start_date", "name")
@@ -124,6 +144,21 @@ class SectionCalendarProjectionView(APIView):
         except ValueError as exc:
             raise ValidationError({"detail": "Invalid date format. Use YYYY-MM-DD."}) from exc
 
+    def _validate_school_year_bounds(self, start_date: date, end_date: date):
+        current_year = AcademicYear.get_current_academic_year()
+        if not current_year:
+            return
+
+        if start_date < current_year.start_date or end_date > current_year.end_date:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "Date range must be within the current school year "
+                        f"({current_year.start_date.isoformat()} to {current_year.end_date.isoformat()})."
+                    )
+                }
+            )
+
     def _iter_dates(self, start_date: date, end_date: date):
         current = start_date
         while current <= end_date:
@@ -143,6 +178,8 @@ class SectionCalendarProjectionView(APIView):
 
         if start_date > end_date:
             raise ValidationError({"detail": "start date must be on or before end date."})
+
+        self._validate_school_year_bounds(start_date, end_date)
 
         settings = SchoolCalendarSettings.get_solo()
         operating_days = settings.operating_days or [1, 2, 3, 4, 5]

@@ -249,6 +249,8 @@ class AttendanceStatus(str, Enum):
     ABSENT = "absent"
     LATE = "late"
     EXCUSED = "excused"
+    SICK = "sick"
+    ON_LEAVE = "on_leave"
     HOLIDAY = "holiday"
 
     @classmethod
@@ -281,6 +283,8 @@ class AttendanceStatus(str, Enum):
     ABSENT = "absent"
     LATE = "late"
     EXCUSED = "excused"
+    SICK = "sick"
+    ON_LEAVE = "on_leave"
     HOLIDAY = "holiday"
 
     @classmethod
