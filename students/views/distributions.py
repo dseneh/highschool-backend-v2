@@ -12,7 +12,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import Count, Q, F, Case, When, Value as V, CharField
+from django.db.models import Count, Q, F, Case, When, Value as V, CharField, Avg, FloatField, ExpressionWrapper
 from django.db.models.functions import Coalesce
 from academics.models import AcademicYear, GradeLevel
 from students.models import Student, Enrollment, Attendance
@@ -385,50 +385,52 @@ def get_top_students_by_grade(request):
     ]
     """
     try:
-        from grading.models import GradeBook, Grade
-        from grading.utils import calculate_student_overall_average
-        from decimal import Decimal
+        from grading.models import Grade
         
         current_academic_year = AcademicYear.objects.filter(current=True).first()
         if not current_academic_year:
             return Response([], status=status.HTTP_200_OK)
         
-        # Get all enrollments for current academic year
-        enrollments = Enrollment.objects.filter(
-            academic_year=current_academic_year
-        ).select_related('student', 'grade_level')
-        
-        # Calculate overall average for each student
-        student_averages = []
-        for enrollment in enrollments:
-            student = enrollment.student
-            try:
-                # Get overall average for the student
-                overall_avg_data = calculate_student_overall_average(
-                    student, 
-                    current_academic_year, 
-                    status='approved'
-                )
-                
-                final_average = overall_avg_data.get('final_average')
-                if final_average is not None and final_average > 0:
-                    student_averages.append({
-                        'id': str(student.id),
-                        'full_name': student.get_full_name(),
-                        'id_number': student.id_number,
-                        'grade_level': enrollment.grade_level.name,
-                        'final_average': float(final_average),
-                    })
-            except Exception as e:
-                logger.warning(f"Error calculating average for student {student.id}: {str(e)}")
-                continue
-        
-        # Sort by final_average descending and take top 5
-        top_students = sorted(
-            student_averages, 
-            key=lambda x: x['final_average'], 
-            reverse=True
-        )[:5]
+        # One-query aggregate avoids the expensive per-student/per-gradebook loops.
+        percentage_expr = ExpressionWrapper(
+            (F('score') * 100.0) / F('assessment__max_score'),
+            output_field=FloatField(),
+        )
+
+        top_students_qs = (
+            Grade.objects.filter(
+                academic_year=current_academic_year,
+                status='approved',
+                assessment__is_calculated=True,
+                score__isnull=False,
+                assessment__max_score__gt=0,
+            )
+            .values(
+                'student_id',
+                'student__first_name',
+                'student__middle_name',
+                'student__last_name',
+                'student__id_number',
+                'enrollment__grade_level__name',
+            )
+            .annotate(final_average=Avg(percentage_expr))
+            .order_by('-final_average')[:5]
+        )
+
+        top_students = []
+        for row in top_students_qs:
+            full_name = " ".join(
+                part for part in [row.get('student__first_name'), row.get('student__middle_name'), row.get('student__last_name')] if part
+            )
+            top_students.append(
+                {
+                    'id': str(row['student_id']),
+                    'full_name': full_name,
+                    'id_number': row.get('student__id_number'),
+                    'grade_level': row.get('enrollment__grade_level__name') or '-',
+                    'final_average': round(float(row['final_average'] or 0), 1),
+                }
+            )
         
         return Response(top_students, status=status.HTTP_200_OK)
     
