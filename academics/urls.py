@@ -26,6 +26,21 @@ urlpatterns = [
         name="current-academic-year",
     ),
     path(
+        "school-calendar/settings/",
+        SchoolCalendarSettingsView.as_view(),
+        name="school-calendar-settings",
+    ),
+    path(
+        "school-calendar/events/",
+        SchoolCalendarEventListView.as_view(),
+        name="school-calendar-event-list",
+    ),
+    path(
+        "school-calendar/events/<str:id>/",
+        SchoolCalendarEventDetailView.as_view(),
+        name="school-calendar-event-detail",
+    ),
+    path(
         "academic-years/<str:id>/",
         AcademicYearDetailView.as_view(),
         name="academic-year-detail",
@@ -44,9 +59,49 @@ urlpatterns = [
         name="class-schedule-list",
     ),
     path(
+        "sections/<str:section_id>/calendar/",
+        SectionCalendarProjectionView.as_view(),
+        name="section-calendar-projection",
+    ),
+    path(
+        "sections/<str:section_id>/time-slots/",
+        SectionTimeSlotListView.as_view(),
+        name="section-time-slot-list",
+    ),
+    path(
+        "sections/<str:section_id>/time-slots/copy/",
+        SectionTimeSlotCopyView.as_view(),
+        name="section-time-slot-copy",
+    ),
+    path(
+        "sections/<str:section_id>/time-slots/generate/",
+        SectionTimeSlotGenerateView.as_view(),
+        name="section-time-slot-generate",
+    ),
+    path(
+        "section-time-slots/<str:id>/",
+        SectionTimeSlotDetailView.as_view(),
+        name="section-time-slot-detail",
+    ),
+    path(
         "class-schedules/<str:id>/",
         SectionScheduleDetailView.as_view(),
         name="class-schedule-detail",
+    ),
+    path(
+        "schedule-projections/teachers/<str:teacher_id>/",
+        TeacherScheduleProjectionListView.as_view(),
+        name="teacher-schedule-projection-list",
+    ),
+    path(
+        "schedule-projections/gradebooks/<str:gradebook_id>/",
+        GradeBookScheduleProjectionListView.as_view(),
+        name="gradebook-schedule-projection-list",
+    ),
+    path(
+        "schedule-projections/students/<str:student_id>/",
+        StudentScheduleProjectionListView.as_view(),
+        name="student-schedule-projection-list",
     ),
     # Section
     path(

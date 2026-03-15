@@ -112,6 +112,7 @@ def create_period_in_db(data: Dict[str, Any], user=None) -> Period:
     return Period.objects.create(
         name=data['name'],
         description=data.get('description'),
+        period_type=data.get('period_type') or Period.PeriodType.CLASS,
         created_by=user,
         updated_by=user,
     )

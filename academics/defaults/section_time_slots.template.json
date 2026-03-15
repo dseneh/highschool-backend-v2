@@ -1,0 +1,62 @@
+{
+  "name": "default-general-timetable",
+  "description": "Fallback section timetable used when no source section is available.",
+  "slots": [
+    {
+      "period": "Period 1",
+      "period_type": "class",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "08:00",
+      "end_time": "09:00",
+      "sort_order": 1
+    },
+    {
+      "period": "Period 2",
+      "period_type": "class",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "09:00",
+      "end_time": "10:00",
+      "sort_order": 2
+    },
+    {
+      "period": "Period 3",
+      "period_type": "class",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "10:00",
+      "end_time": "11:00",
+      "sort_order": 3
+    },
+    {
+      "period": "Recess",
+      "period_type": "recess",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "11:00",
+      "end_time": "12:00",
+      "sort_order": 4
+    },
+    {
+      "period": "Period 4",
+      "period_type": "class",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "12:00",
+      "end_time": "13:00",
+      "sort_order": 5
+    },
+    {
+      "period": "Period 5",
+      "period_type": "class",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "13:00",
+      "end_time": "14:00",
+      "sort_order": 6
+    },
+    {
+      "period": "Period 6",
+      "period_type": "class",
+      "days": [1, 2, 3, 4, 5],
+      "start_time": "14:00",
+      "end_time": "15:00",
+      "sort_order": 7
+    }
+  ]
+}

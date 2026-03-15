@@ -12,18 +12,23 @@ from students.models.enrollment import Enrollment
 from academics.models import (
     AcademicYear,
     Division,
+    GradeBookScheduleProjection,
     GradeLevel,
     GradeLevelTuitionFee,
     MarkingPeriod,
     Period,
     PeriodTime,
     Section,
+    SchoolCalendarEvent,
+    SchoolCalendarSettings,
     SectionSchedule,
+    StudentScheduleProjection,
+    SectionTimeSlot,
     SectionSubject,
     Semester,
     Subject,
 )
-from staff.models import TeacherSubject
+from staff.models import TeacherSchedule, TeacherSubject
 
 
 class SchoolSerializer(serializers.ModelSerializer):
@@ -627,6 +632,84 @@ class PeriodSerializer(serializers.ModelSerializer):
         return response
 
 
+class SchoolCalendarSettingsSerializer(serializers.ModelSerializer):
+    operating_day_labels = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SchoolCalendarSettings
+        fields = [
+            "id",
+            "operating_days",
+            "operating_day_labels",
+            "timezone",
+            "active",
+        ]
+
+    def get_operating_day_labels(self, obj):
+        labels = dict(SchoolCalendarSettings.DAY_OF_WEEK_CHOICES)
+        return [labels[day] for day in obj.operating_days]
+
+
+class SchoolCalendarEventSerializer(serializers.ModelSerializer):
+    sections = serializers.PrimaryKeyRelatedField(
+        queryset=Section.objects.all(),
+        many=True,
+        required=False,
+    )
+    section_details = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SchoolCalendarEvent
+        fields = [
+            "id",
+            "name",
+            "description",
+            "event_type",
+            "recurrence_type",
+            "start_date",
+            "end_date",
+            "all_day",
+            "applies_to_all_sections",
+            "sections",
+            "section_details",
+            "active",
+        ]
+
+    def validate(self, attrs):
+        applies_to_all_sections = attrs.get(
+            "applies_to_all_sections",
+            self.instance.applies_to_all_sections if self.instance else True,
+        )
+        sections = attrs.get("sections")
+
+        if not applies_to_all_sections and sections is not None and len(sections) == 0:
+            raise serializers.ValidationError(
+                {"sections": "Choose at least one section or mark event as applying to all sections."}
+            )
+        return attrs
+
+    def get_section_details(self, obj):
+        return [{"id": section.id, "name": section.name} for section in obj.sections.all()]
+
+    def create(self, validated_data):
+        sections = validated_data.pop("sections", [])
+        event = super().create(validated_data)
+        if not event.applies_to_all_sections:
+            event.sections.set(sections)
+        event.rebuild_occurrences()
+        return event
+
+    def update(self, instance, validated_data):
+        sections = validated_data.pop("sections", None)
+        event = super().update(instance, validated_data)
+        if event.applies_to_all_sections:
+            event.sections.clear()
+        elif sections is not None:
+            event.sections.set(sections)
+        event.rebuild_occurrences()
+        return event
+
+
 class PeriodTimeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PeriodTime
@@ -637,6 +720,83 @@ class PeriodTimeSerializer(serializers.ModelSerializer):
             "day_of_week",
             "period",
         ]
+
+
+class SectionTimeSlotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SectionTimeSlot
+        fields = [
+            "id",
+            "section",
+            "period",
+            "day_of_week",
+            "start_time",
+            "end_time",
+            "sort_order",
+            "active",
+        ]
+
+    def validate(self, attrs):
+        instance = self.instance
+
+        section = attrs.get("section") or (instance.section if instance else None)
+        start_time = attrs.get("start_time") or (instance.start_time if instance else None)
+        end_time = attrs.get("end_time") or (instance.end_time if instance else None)
+        day_of_week = attrs.get("day_of_week") or (instance.day_of_week if instance else None)
+
+        if not section or not start_time or not end_time or not day_of_week:
+            return attrs
+
+        settings = SchoolCalendarSettings.get_solo()
+        if settings.operating_days and day_of_week not in settings.operating_days:
+            raise serializers.ValidationError(
+                {
+                    "day_of_week": (
+                        "Selected day is not configured as an operating school day."
+                    )
+                }
+            )
+
+        if start_time >= end_time:
+            raise serializers.ValidationError(
+                {"start_time": "Start time must be earlier than end time."}
+            )
+
+        overlap_exists = (
+            SectionTimeSlot.objects.filter(
+                section=section,
+                day_of_week=day_of_week,
+                active=True,
+                start_time__lt=end_time,
+                end_time__gt=start_time,
+            )
+            .exclude(id=instance.id if instance else None)
+            .exists()
+        )
+        if overlap_exists:
+            raise serializers.ValidationError(
+                {
+                    "start_time": (
+                        "This section already has an overlapping time slot for the selected day."
+                    )
+                }
+            )
+
+        return attrs
+
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+        response["period"] = {
+            "id": instance.period.id,
+            "name": instance.period.name,
+            "period_type": instance.period.period_type,
+        }
+        response["section"] = {
+            "id": instance.section.id,
+            "name": instance.section.name,
+        }
+        response["is_recess"] = instance.period.period_type == Period.PeriodType.RECESS
+        return response
 
 
 class SectionScheduleSerializer(serializers.ModelSerializer):
@@ -651,23 +811,65 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "section",
+            "section_time_slot",
             "period_time",
             "period",
             "subject",
         ]
+
+    @staticmethod
+    def _extract_time_window(section_time_slot, period_time):
+        if section_time_slot is not None:
+            return (
+                section_time_slot.day_of_week,
+                section_time_slot.start_time,
+                section_time_slot.end_time,
+            )
+        if period_time is not None:
+            return (
+                period_time.day_of_week,
+                period_time.start_time,
+                period_time.end_time,
+            )
+        return (None, None, None)
 
     def validate(self, attrs):
         instance = self.instance
 
         section = attrs.get("section") or (instance.section if instance else None)
         period = attrs.get("period") or (instance.period if instance else None)
+        section_time_slot = attrs.get("section_time_slot") or (
+            instance.section_time_slot if instance else None
+        )
         period_time = attrs.get("period_time") or (instance.period_time if instance else None)
         subject = attrs.get("subject") if "subject" in attrs else (instance.subject if instance else None)
 
-        if not section or not period or not period_time:
+        if not section or not period:
             return attrs
 
-        if period_time.period_id != period.id:
+        if section_time_slot is None and period_time is None:
+            raise serializers.ValidationError(
+                {"section_time_slot": "A section time slot is required."}
+            )
+
+        if section_time_slot is not None:
+            if section_time_slot.section_id != section.id:
+                raise serializers.ValidationError(
+                    {
+                        "section_time_slot": (
+                            "Selected section time slot does not belong to the selected section."
+                        )
+                    }
+                )
+            if section_time_slot.period_id != period.id:
+                raise serializers.ValidationError(
+                    {
+                        "section_time_slot": (
+                            "Selected section time slot does not belong to the selected period."
+                        )
+                    }
+                )
+        elif period_time is not None and period_time.period_id != period.id:
             raise serializers.ValidationError(
                 {"period_time": "The selected PeriodTime does not belong to the selected Period."}
             )
@@ -696,42 +898,65 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
             active=True,
         ).select_related("teacher")
 
-        if not teacher_assignments.exists():
-            raise serializers.ValidationError(
-                {"subject": "Assign a teacher to this section subject before scheduling it."}
+        if section_time_slot is not None:
+            section_slot_conflict = (
+                SectionSchedule.objects.filter(
+                    section=section,
+                    section_time_slot=section_time_slot,
+                    active=True,
+                )
+                .exclude(id=instance.id if instance else None)
+                .exists()
             )
-
-        section_slot_conflict = (
-            SectionSchedule.objects.filter(
-                section=section,
-                period_time=period_time,
-                active=True,
+        else:
+            section_slot_conflict = (
+                SectionSchedule.objects.filter(
+                    section=section,
+                    period_time=period_time,
+                    active=True,
+                )
+                .exclude(id=instance.id if instance else None)
+                .exists()
             )
-            .exclude(id=instance.id if instance else None)
-            .exists()
-        )
         if section_slot_conflict:
             raise serializers.ValidationError(
-                {"period_time": "This section already has a schedule entry for this period time."}
+                {
+                    "section_time_slot": (
+                        "This section already has a schedule entry for this section time slot."
+                    )
+                }
             )
 
+        target_day, target_start, target_end = self._extract_time_window(
+            section_time_slot,
+            period_time,
+        )
+
         for assignment in teacher_assignments:
-            conflict = (
+            conflicts = (
                 SectionSchedule.objects.filter(
-                    period_time=period_time,
                     subject__staff_teachers__teacher=assignment.teacher,
                     active=True,
                 )
                 .exclude(id=instance.id if instance else None)
-                .select_related("section")
-                .first()
+                .select_related("section", "section_time_slot", "period_time")
             )
-            if conflict:
+
+            for conflict in conflicts:
+                conflict_day, conflict_start, conflict_end = self._extract_time_window(
+                    conflict.section_time_slot,
+                    conflict.period_time,
+                )
+                if conflict_day != target_day:
+                    continue
+                if not (target_start < conflict_end and target_end > conflict_start):
+                    continue
+
                 raise serializers.ValidationError(
                     {
-                        "period_time": (
+                        "section_time_slot": (
                             f"Teacher {assignment.teacher.get_full_name()} is already scheduled "
-                            f"for {conflict.section.name} at this period time."
+                            f"for {conflict.section.name} during overlapping time."
                         )
                     }
                 )
@@ -768,11 +993,187 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
             "name": instance.period.name,
             "period_type": instance.period.period_type,
         }
+        resolved_day = None
+        resolved_start = None
+        resolved_end = None
+
+        if instance.section_time_slot:
+            resolved_day = instance.section_time_slot.day_of_week
+            resolved_start = instance.section_time_slot.start_time
+            resolved_end = instance.section_time_slot.end_time
+        elif instance.period_time:
+            resolved_day = instance.period_time.day_of_week
+            resolved_start = instance.period_time.start_time
+            resolved_end = instance.period_time.end_time
+
+        response["section_time_slot"] = (
+            {
+                "id": instance.section_time_slot.id,
+                "day_of_week": instance.section_time_slot.day_of_week,
+                "start_time": instance.section_time_slot.start_time,
+                "end_time": instance.section_time_slot.end_time,
+                "sort_order": instance.section_time_slot.sort_order,
+            }
+            if instance.section_time_slot
+            else None
+        )
         response["period_time"] = {
-            "id": instance.period_time.id,
-            "start_time": instance.period_time.start_time,
-            "end_time": instance.period_time.end_time,
-            "day_of_week": instance.period_time.day_of_week,
+            "id": instance.period_time.id if instance.period_time else None,
+            "start_time": resolved_start,
+            "end_time": resolved_end,
+            "day_of_week": resolved_day,
         }
         response["is_recess"] = instance.period.period_type == Period.PeriodType.RECESS
+        return response
+
+
+class TeacherScheduleProjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TeacherSchedule
+        fields = [
+            "id",
+            "teacher",
+            "class_schedule",
+        ]
+
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+
+        section_time_slot = instance.class_schedule.section_time_slot
+        period_time = instance.class_schedule.period_time
+        day_of_week = section_time_slot.day_of_week if section_time_slot else (period_time.day_of_week if period_time else None)
+        start_time = section_time_slot.start_time if section_time_slot else (period_time.start_time if period_time else None)
+        end_time = section_time_slot.end_time if section_time_slot else (period_time.end_time if period_time else None)
+
+        response["teacher"] = {
+            "id": instance.teacher.id,
+            "id_number": instance.teacher.id_number,
+            "full_name": instance.teacher.get_full_name(),
+        }
+        response["section"] = {
+            "id": instance.class_schedule.section.id,
+            "name": instance.class_schedule.section.name,
+        }
+        response["subject"] = (
+            {
+                "id": instance.class_schedule.subject.id,
+                "name": instance.class_schedule.subject.subject.name,
+            }
+            if instance.class_schedule.subject
+            else None
+        )
+        response["period"] = {
+            "id": instance.class_schedule.period.id,
+            "name": instance.class_schedule.period.name,
+            "period_type": instance.class_schedule.period.period_type,
+        }
+        response["time_window"] = {
+            "day_of_week": day_of_week,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+        return response
+
+
+class GradeBookScheduleProjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GradeBookScheduleProjection
+        fields = [
+            "id",
+            "class_schedule",
+            "gradebook",
+            "section",
+            "section_subject",
+            "subject",
+            "period",
+            "day_of_week",
+            "start_time",
+            "end_time",
+        ]
+
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+        response["gradebook"] = {
+            "id": instance.gradebook.id,
+            "name": instance.gradebook.name,
+            "academic_year": {
+                "id": instance.gradebook.academic_year.id,
+                "name": instance.gradebook.academic_year.name,
+            },
+        }
+        response["section"] = {
+            "id": instance.section.id,
+            "name": instance.section.name,
+        }
+        response["subject"] = {
+            "id": instance.subject.id,
+            "name": instance.subject.name,
+        }
+        response["period"] = {
+            "id": instance.period.id,
+            "name": instance.period.name,
+            "period_type": instance.period.period_type,
+        }
+        response["section_subject"] = {
+            "id": instance.section_subject.id,
+            "subject": {
+                "id": instance.section_subject.subject.id,
+                "name": instance.section_subject.subject.name,
+            },
+        }
+        return response
+
+
+class StudentScheduleProjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentScheduleProjection
+        fields = [
+            "id",
+            "class_schedule",
+            "enrollment",
+            "student",
+            "section",
+            "section_subject",
+            "subject",
+            "period",
+            "day_of_week",
+            "start_time",
+            "end_time",
+        ]
+
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+        response["student"] = {
+            "id": instance.student.id,
+            "id_number": instance.student.id_number,
+            "full_name": instance.student.get_full_name(),
+        }
+        response["enrollment"] = {
+            "id": instance.enrollment.id,
+            "status": instance.enrollment.status,
+            "academic_year": {
+                "id": instance.enrollment.academic_year.id,
+                "name": instance.enrollment.academic_year.name,
+            },
+        }
+        response["section"] = {
+            "id": instance.section.id,
+            "name": instance.section.name,
+        }
+        response["subject"] = {
+            "id": instance.subject.id,
+            "name": instance.subject.name,
+        }
+        response["period"] = {
+            "id": instance.period.id,
+            "name": instance.period.name,
+            "period_type": instance.period.period_type,
+        }
+        response["section_subject"] = {
+            "id": instance.section_subject.id,
+            "subject": {
+                "id": instance.section_subject.subject.id,
+                "name": instance.section_subject.subject.name,
+            },
+        }
         return response

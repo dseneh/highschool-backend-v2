@@ -71,6 +71,7 @@ class PeriodDetailView(APIView):
         allowed_fields = [
             "name",
             "description",
+            "period_type",
             "active",
         ]
 

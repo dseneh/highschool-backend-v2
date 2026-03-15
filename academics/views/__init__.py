@@ -5,7 +5,10 @@ from .marking_period import *
 from .period import *
 from .period_time import *
 from .section import *
+from .schedule_projection import *
+from .school_calendar import *
 from .section_schedule import *
+from .section_time_slot import *
 from .section_subject import *
 from .semester import *
 from .subject import *

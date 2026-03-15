@@ -1,9 +1,13 @@
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 import logging
 
 from common.images import delete_old_file, set_default_image
 from core.models import Tenant
+from academics.services import (
+    purge_schedule_projections_for_class_schedule,
+    sync_schedule_projections_for_class_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,3 +135,41 @@ def setup_tenant_defaults(sender, instance, created, **kwargs):
 # def auto_create_gradebook_for_section_subject(sender, instance, created, **kwargs):
 #     """[DISABLED] Gradebook creation moved to view for atomic transaction handling"""
 #     pass
+
+
+@receiver(post_save, sender="academics.SectionSchedule")
+def sync_schedule_projections_on_schedule_save(sender, instance, **kwargs):
+    sync_schedule_projections_for_class_schedule(instance)
+
+
+@receiver(post_delete, sender="academics.SectionSchedule")
+def purge_schedule_projections_on_schedule_delete(sender, instance, **kwargs):
+    purge_schedule_projections_for_class_schedule(str(instance.id))
+
+
+@receiver(post_save, sender="staff.TeacherSubject")
+@receiver(post_delete, sender="staff.TeacherSubject")
+def sync_schedule_projections_on_teacher_assignment_change(sender, instance, **kwargs):
+    section_subject_id = getattr(instance, "section_subject_id", None)
+    if not section_subject_id:
+        return
+
+    from academics.models import SectionSchedule
+
+    schedules = SectionSchedule.objects.filter(subject_id=section_subject_id, active=True)
+    for schedule in schedules:
+        sync_schedule_projections_for_class_schedule(schedule)
+
+
+@receiver(post_save, sender="students.Enrollment")
+@receiver(post_delete, sender="students.Enrollment")
+def sync_schedule_projections_on_enrollment_change(sender, instance, **kwargs):
+    section_id = getattr(instance, "section_id", None)
+    if not section_id:
+        return
+
+    from academics.models import SectionSchedule
+
+    schedules = SectionSchedule.objects.filter(section_id=section_id, active=True)
+    for schedule in schedules:
+        sync_schedule_projections_for_class_schedule(schedule)

@@ -72,6 +72,7 @@ class SectionListView(APIView):
             section = section_adapter.create_section_in_db(
                 data=data,
                 grade_level_id=str(grade_level.id),
+                source_section_id=req_data.get("source_section_id"),
                 user=request.user
             )
             # Invalidate sections cache after creation
