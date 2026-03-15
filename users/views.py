@@ -769,6 +769,8 @@ class PasswordResetConfirmView(APIView):
         from django.utils import timezone
         from django.utils.encoding import force_str
         from django.utils.http import urlsafe_base64_decode
+        from common.email_service import send_password_reset_success_email
+        from users.utils import build_frontend_url
 
         logger = logging.getLogger(__name__)
 
@@ -829,6 +831,18 @@ class PasswordResetConfirmView(APIView):
             user.is_default_password = False
             user.last_password_updated = timezone.now()
             user.save(update_fields=["password", "is_default_password", "last_password_updated"])
+
+            school = getattr(request, 'tenant', None)
+            school_workspace = getattr(school, 'schema_name', None) if school else None
+            login_url = build_frontend_url(school_workspace, "/login")
+
+            success_email_sent = send_password_reset_success_email(
+                user,
+                login_url=login_url,
+                school=school,
+            )
+            if not success_email_sent:
+                logger.warning("Password reset success email could not be sent to user %s", user.username)
 
             logger.info("Password reset confirmed for user %s", user.username)
             return Response(

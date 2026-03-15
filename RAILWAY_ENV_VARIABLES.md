@@ -145,6 +145,25 @@ AUTH_DEBUG_LOGGING=False  # Set to False in production
 # SENTRY_DSN=<your-sentry-dsn>
 ```
 
+### Email Delivery
+
+```bash
+# Recommended: Resend REST API
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
+DEFAULT_FROM_EMAIL=noreply@dewx.tech
+EMAIL_FROM_NAME=EzySchool
+
+# Optional SMTP fallback only if you are not using RESEND_API_KEY
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.resend.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=<your-smtp-username>
+EMAIL_HOST_PASSWORD=<your-smtp-password>
+```
+
+Important: if RESEND_API_KEY is not set in Railway, the backend falls back to Django's configured email backend. If that backend is SMTP, you must also provide EMAIL_HOST_USER and EMAIL_HOST_PASSWORD or password-reset emails will fail with SMTP authentication errors.
+
 ### Gunicorn (Web Server)
 
 ```bash

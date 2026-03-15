@@ -81,7 +81,7 @@ def build_password_reset_url(school_workspace: str | None, uid: str, token: str)
     base_url = build_frontend_url(school_workspace, reset_path)
 
     query_params = f"?uid={uid}&token={token}"
-    if school_workspace:
-        query_params += f"&workspace={school_workspace}"
+    # if school_workspace:
+    #     query_params += f"&workspace={school_workspace}"
 
     return base_url + query_params
