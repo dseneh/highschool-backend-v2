@@ -30,6 +30,7 @@ from students.models import Student, Enrollment, StudentEnrollmentBill, Attendan
 from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.utils import create_enrollment_for_student
 from finance.models import Transaction
+from grading.services.ranking import RankingService
 
 # Import business logic (framework-agnostic)
 from business.students.services import student_service
@@ -60,16 +61,26 @@ class StudentPageNumberPagination(PageNumberPagination):
 class StudentListView(APIView):
     permission_classes = [StudentAccessPolicy]
     def get(self, request):
-        include_billing = request.query_params.get("include_billing", "true").lower() in (
-            "true",
-            "1",
-            "yes",
+        def _to_bool(value, default=False):
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+        include_billing_raw = request.query_params.get(
+            "include_billing",
+            request.query_params.get("show_billing_summary"),
         )
+        include_billing = _to_bool(include_billing_raw, default=False)
         include_grades = request.query_params.get("include_grades", "false").lower() in (
             "true",
             "1",
             "yes",
         )
+        show_rank = _to_bool(request.query_params.get("show_rank"), default=False)
+        show_grade_average = _to_bool(request.query_params.get("show_grade_average"), default=False)
+        show_balance = _to_bool(request.query_params.get("show_balance"), default=False)
 
         students = Student.objects.select_related(
             "grade_level"
@@ -210,6 +221,45 @@ class StudentListView(APIView):
         # Pagination
         paginator = StudentPageNumberPagination()
         paginated_qs = paginator.paginate_queryset(students, request)
+
+        ranking_lookup = {}
+        if (show_rank or show_grade_average) and paginated_qs:
+            current_academic_year = AcademicYear.objects.filter(current=True).only("id").first()
+            if current_academic_year:
+                section_param = (request.query_params.get("section") or "").strip()
+                grade_param = (request.query_params.get("grade_level") or "").strip()
+
+                section_values = [v.strip() for v in section_param.split(",") if v.strip()]
+                grade_values = [v.strip() for v in grade_param.split(",") if v.strip()]
+
+                scope_type = None
+                scope_id = None
+
+                if len(section_values) == 1:
+                    scope_type = "section"
+                    scope_id = section_values[0]
+                elif len(grade_values) == 1:
+                    scope_type = "grade_level"
+                    scope_id = grade_values[0]
+
+                if scope_type and scope_id:
+                    try:
+                        ranking_rows = RankingService.get_overall_rankings(
+                            academic_year_id=str(current_academic_year.id),
+                            scope_type=scope_type,
+                            scope_id=scope_id,
+                        )
+                        ranking_lookup = {
+                            str(row["student"].id): {
+                                "score": row.get("score"),
+                                "rank": row.get("rank"),
+                            }
+                            for row in ranking_rows
+                            if row.get("student") is not None
+                        }
+                    except Exception:
+                        ranking_lookup = {}
+
         serializer = StudentSerializer(
             paginated_qs,
             many=True,
@@ -219,6 +269,10 @@ class StudentListView(APIView):
                 "include_payment_plan": include_billing,
                 "include_grades": include_grades,
                 "include_payment_status": include_billing,
+                "show_rank": show_rank,
+                "show_grade_average": show_grade_average,
+                "show_balance": show_balance,
+                "ranking_lookup": ranking_lookup,
             },
         )
         return paginator.get_paginated_response(serializer.data)

@@ -42,6 +42,10 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         response["full_name"] = instance.get_full_name()
         context = self.context
         request = context.get("request")
+        show_rank = context.get("show_rank", False)
+        show_grade_average = context.get("show_grade_average", False)
+        show_balance = context.get("show_balance", False)
+        ranking_lookup = context.get("ranking_lookup", {}) or {}
 
         # Return grade_level as a nested object in API responses
         # while keeping write payloads backward compatible (UUID accepted).
@@ -130,9 +134,9 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         response["number_of_enrollments"] = enrollment_count
         response["can_delete"] = enrollment_count == 0
 
-        # Optionally include grade average if requested
+        # Optionally include grade average if requested (legacy heavy mode)
         include_grades = context.get("include_grades", False)
-        if include_grades and current_enrollment:
+        if include_grades and not show_grade_average and current_enrollment:
             from grading.utils import calculate_student_overall_average
             try:
                 average_data = calculate_student_overall_average(
@@ -144,6 +148,21 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             except Exception:
                 # If grade calculation fails, set to None
                 response["grade_average"] = None
+
+        # Lightweight ranking/average response controlled by query params.
+        if show_rank or show_grade_average:
+            metric = ranking_lookup.get(str(instance.id))
+            if show_grade_average:
+                response["grade_average"] = metric.get("score") if metric else None
+            if show_rank:
+                response["rank"] = metric.get("rank") if metric else None
+
+        if show_balance:
+            balance_value = getattr(instance, "balance_total", None)
+            try:
+                response["balance"] = float(balance_value) if balance_value is not None else None
+            except (TypeError, ValueError):
+                response["balance"] = None
 
         return response
 
