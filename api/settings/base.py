@@ -194,6 +194,13 @@ EMAIL_LOGO_URL = config("EMAIL_LOGO_URL", default="")
 # How long (in seconds) a password-reset token stays valid (default: 1 hour)
 PASSWORD_RESET_TIMEOUT = config("PASSWORD_RESET_TIMEOUT", default=3600, cast=int)
 
+# Minimum seconds between password-reset email sends per user
+PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS = config(
+    "PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS",
+    default=60,
+    cast=int,
+)
+
 # Static files
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

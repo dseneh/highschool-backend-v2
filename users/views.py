@@ -673,6 +673,7 @@ class PasswordResetRequestView(APIView):
         """Request password reset."""
         import logging
         from django.contrib.auth.tokens import PasswordResetTokenGenerator
+        from django.core.cache import cache
         from django.utils.encoding import force_bytes
         from django.utils.http import urlsafe_base64_encode
 
@@ -712,6 +713,22 @@ class PasswordResetRequestView(APIView):
                     return _safe_response
 
                 if not user.is_active:
+                    return _safe_response
+
+                cooldown_seconds = max(
+                    1,
+                    int(getattr(settings, "PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS", 60)),
+                )
+                tenant_schema = getattr(getattr(request, "tenant", None), "schema_name", "public")
+                rate_limit_key = f"pwd-reset-cooldown:{tenant_schema}:{user.id}"
+
+                # cache.add is atomic: it returns False when key already exists.
+                if not cache.add(rate_limit_key, "1", timeout=cooldown_seconds):
+                    logger.info(
+                        "Password reset request throttled for user %s (%ss cooldown)",
+                        user.username,
+                        cooldown_seconds,
+                    )
                     return _safe_response
 
                 # Generate a secure, single-use token
