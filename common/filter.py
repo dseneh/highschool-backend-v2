@@ -16,12 +16,25 @@ def get_student_queryparams(query_params, other_parms: None):
                 values = v.split(",")
                 v = [value.strip() for value in values if value.strip()]
                 f.add(Q(**{f"enrollments__status__in": v}), Q.AND)
+            elif k == "gender":
+                values = v.split(",")
+                genders = [value.strip().lower() for value in values if value.strip()]
+                if genders:
+                    f.add(Q(**{f"gender__in": genders}), Q.AND)
             if k == "start_date_enrolled":
                 f.add(Q(**{f"start_date__gte": v}), Q.AND)
             elif k == "end_date_enrolled":
                 f.add(Q(**{f"end_date__lte": v}), Q.AND)
             elif k == "section":
-                f.add(Q(**{f"enrollments__section__id": v}), Q.AND)
+                values = v.split(",")
+                section_ids = [value.strip() for value in values if value.strip()]
+                if section_ids:
+                    f.add(Q(**{f"enrollments__section__id__in": section_ids}), Q.AND)
+            elif k == "grade_level":
+                values = v.split(",")
+                grade_ids = [value.strip() for value in values if value.strip()]
+                if grade_ids:
+                    f.add(Q(**{f"grade_level__id__in": grade_ids}), Q.AND)
             elif k == "academic_year":
                 f.add(Q(**{f"enrollments__academic_year__name": v}), Q.AND)
             elif k in ["year", "month", "day"]:

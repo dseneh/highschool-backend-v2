@@ -2,7 +2,8 @@
 import logging
 
 from django.db import transaction, router, connection
-from django.db.models import Q, Sum, Avg, Count
+from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery
+from django.db.models.functions import Coalesce
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
 from django.db.utils import OperationalError, ProgrammingError
@@ -28,6 +29,7 @@ from academics.models import AcademicYear, GradeLevel
 from students.models import Student, Enrollment, StudentEnrollmentBill, Attendance
 from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.utils import create_enrollment_for_student
+from finance.models import Transaction
 
 # Import business logic (framework-agnostic)
 from business.students.services import student_service
@@ -96,37 +98,94 @@ class StudentListView(APIView):
 
         query_params = request.query_params.copy()
 
-        # Parse enrollment status using business logic
+        # Parse enrollment status using business logic.
+        # Keep status out of generic query parser and handle it with OR semantics below.
         enrollment_statuses, other_statuses = student_service.parse_enrollment_status_filter(status)
-        
-        # Update query_params with cleaned status
-        if other_statuses:
-            query_params["status"] = ",".join(other_statuses)
-        else:
-            query_params.pop("status", None)
+        query_params.pop("status", None)
 
         query = get_student_queryparams(query_params, filter_fields)
         if query:
             students = students.filter(query)
+
+        # Apply balance filters against current academic year using bill and payment aggregates.
+        billed_subquery = (
+            StudentEnrollmentBill.objects.filter(
+                enrollment__student=OuterRef("pk"),
+                enrollment__academic_year__current=True,
+            )
+            .values("enrollment__student")
+            .annotate(total=Sum("amount"))
+            .values("total")[:1]
+        )
+
+        paid_subquery = (
+            Transaction.objects.filter(
+                student=OuterRef("pk"),
+                academic_year__current=True,
+                status="approved",
+            )
+            .values("student")
+            .annotate(total=Sum("amount"))
+            .values("total")[:1]
+        )
+
+        students = students.annotate(
+            billed_total=Coalesce(Subquery(billed_subquery), Value(0), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            paid_total=Coalesce(Subquery(paid_subquery), Value(0), output_field=DecimalField(max_digits=12, decimal_places=2)),
+        ).annotate(balance_total=F("billed_total") - F("paid_total"))
+
+        balance_owed = str(query_params.get("balance_owed", "")).strip().lower()
+        balance_min = query_params.get("balance_min")
+        balance_max = query_params.get("balance_max")
+
+        if balance_owed == "owed":
+            students = students.filter(balance_total__gt=0)
+        elif balance_owed == "clear":
+            students = students.filter(balance_total__lte=0)
+
+        if balance_min not in [None, ""]:
+            try:
+                students = students.filter(balance_total__gte=float(balance_min))
+            except (TypeError, ValueError):
+                pass
+
+        if balance_max not in [None, ""]:
+            try:
+                students = students.filter(balance_total__lte=float(balance_max))
+            except (TypeError, ValueError):
+                pass
             
-        # Apply enrollment filtering
-        if enrollment_statuses:
-            students1 = students2 = None
-            if "enrolled" in enrollment_statuses:
-                students1 = students.filter(
-                    enrollments__academic_year__current=True
-                ).distinct()
-            if "not_enrolled" in enrollment_statuses:
-                students2 = students.exclude(
-                    enrollments__academic_year__current=True
-                ).distinct()
-            
-            if students1 is not None and students2 is not None:
-                students = students1 | students2
-            elif students1 is not None:
-                students = students1
-            elif students2 is not None:
-                students = students2
+        # Apply status filtering with OR semantics between student-status and enrollment-status buckets.
+        if enrollment_statuses or other_statuses:
+            status_qs = None
+
+            if other_statuses:
+                status_qs = students.filter(status__in=other_statuses).distinct()
+
+            enrollment_qs = None
+            if enrollment_statuses:
+                enrolled_qs = None
+                not_enrolled_qs = None
+
+                if "enrolled" in enrollment_statuses:
+                    enrolled_qs = students.filter(enrollments__academic_year__current=True).distinct()
+
+                if "not_enrolled" in enrollment_statuses:
+                    not_enrolled_qs = students.exclude(enrollments__academic_year__current=True).distinct()
+
+                if enrolled_qs is not None and not_enrolled_qs is not None:
+                    enrollment_qs = (enrolled_qs | not_enrolled_qs).distinct()
+                elif enrolled_qs is not None:
+                    enrollment_qs = enrolled_qs
+                elif not_enrolled_qs is not None:
+                    enrollment_qs = not_enrolled_qs
+
+            if status_qs is not None and enrollment_qs is not None:
+                students = (status_qs | enrollment_qs).distinct()
+            elif status_qs is not None:
+                students = status_qs
+            elif enrollment_qs is not None:
+                students = enrollment_qs
 
         registered_grade_level = query_params.get("registered_grade_level")
 

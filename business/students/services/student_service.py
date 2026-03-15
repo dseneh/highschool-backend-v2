@@ -316,12 +316,14 @@ def parse_enrollment_status_filter(status_param: str) -> tuple[list[str], list[s
     if not status_param:
         return [], []
     
-    status_values = [s.strip().lower() for s in status_param.split(",")]
+    status_values = [s.strip().lower() for s in status_param.split(",") if s.strip()]
     
     enrollment_statuses = []
     other_statuses = []
     
     for s in status_values:
+        if s == "all":
+            continue
         if s in ["enrolled", "not enrolled", "not_enrolled"]:
             enrollment_statuses.append(s.replace(" ", "_"))
         else:
