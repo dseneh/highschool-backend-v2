@@ -1079,10 +1079,10 @@ def calculate_student_overall_average(
                 section=enrollment.section, academic_year=academic_year
             ).select_related("subject", "section", "section_subject")
         except Enrollment.DoesNotExist:
-            return {"semester_averages": [], "final_average": 0, "total_gradebooks": 0}
+            return {"semester_averages": [], "final_average": None, "total_gradebooks": 0}
 
     if not gradebooks:
-        return {"semester_averages": [], "final_average": 0, "total_gradebooks": 0}
+        return {"semester_averages": [], "final_average": None, "total_gradebooks": 0}
 
     # Get all marking periods for this academic year
     all_marking_periods = list(
@@ -1131,7 +1131,7 @@ def calculate_student_overall_average(
                 total_sum += avg
                 total_count += 1
 
-    final_average = round(total_sum / total_count, 1) if total_count > 0 else 0
+    final_average = round(total_sum / total_count, 1) if total_count > 0 else None
 
     return {
         "semester_averages": semester_averages,

@@ -259,6 +259,38 @@ class StudentListView(APIView):
                         }
                     except Exception:
                         ranking_lookup = {}
+                else:
+                    # No explicit single-scope filter was provided.
+                    # Fall back to each student's current section scope so rank and
+                    # average can still be returned in list payloads.
+                    try:
+                        for student in paginated_qs:
+                            current_enrollment = next(
+                                (
+                                    enrollment
+                                    for enrollment in student.enrollments.all()
+                                    if enrollment.academic_year_id == current_academic_year.id
+                                ),
+                                None,
+                            )
+
+                            if not current_enrollment or not current_enrollment.section_id:
+                                continue
+
+                            rank_data = RankingService.get_student_overall_rank(
+                                student_id=str(student.id),
+                                academic_year_id=str(current_academic_year.id),
+                                scope_type="section",
+                                scope_id=str(current_enrollment.section_id),
+                            )
+
+                            if rank_data:
+                                ranking_lookup[str(student.id)] = {
+                                    "score": rank_data.get("score"),
+                                    "rank": rank_data.get("rank"),
+                                }
+                    except Exception:
+                        ranking_lookup = {}
 
         serializer = StudentSerializer(
             paginated_qs,

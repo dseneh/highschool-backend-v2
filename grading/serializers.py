@@ -1740,9 +1740,8 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 .order_by("semester__start_date", "start_date")
             )
 
-            # NOTE: do NOT filter all_marking_periods here — we always need the full
-            # list to compute year-to-date averages correctly. The display filter is
-            # applied below when building marking_periods_list.
+            # The selected marking period controls the visible score payload,
+            # while gradebook averages remain cumulative across the academic year.
 
             # Pre-fetch all grades for this student and gradebook
             grades = Grade.objects.filter(
@@ -1833,7 +1832,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                     "final_percentage": (
                         format_numeric_value(final_percentage)
                         if final_percentage is not None
-                        else 0
+                        else None
                     ),
                     "letter_grade": letter_grade,
                     "status": status,
@@ -1894,14 +1893,9 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
 
                     mp_data["assessments"] = formatted_assessments
 
-                # Only include this period in the response list when no filter is set,
-                # or when this period matches the requested filter.
                 if not filter_marking_period or mp.id == filter_marking_period.id:
                     marking_periods_list.append(mp_data)
 
-                # Always accumulate semester totals across ALL periods so that
-                # final_average is a true year-to-date average, not just the
-                # currently selected marking period's score.
                 if final_percentage is not None:
                     semester_totals[mp.semester.id]["sum"] += float(final_percentage)
                     semester_totals[mp.semester.id]["count"] += 1
@@ -1944,7 +1938,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 final_average = (
                     format_numeric_value(total_sum / total_count)
                     if total_count > 0
-                    else 0
+                    else None
                 )
 
                 gradebook_result["averages"] = {
@@ -1982,41 +1976,6 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
 
         if not gradebooks_data or not student or not academic_year:
             return {"semester_averages": [], "final_average": None}
-
-        # If filtering by specific marking period, calculate average across all subjects for that marking period
-        if filter_marking_period:
-            from grading.utils import calculate_marking_period_percentage
-
-            valid_percentages = []
-            for gb_data in gradebooks_data:
-                gradebook = gb_data.get("gradebook")
-                if gradebook:
-                    percentage = calculate_marking_period_percentage(
-                        gradebook,
-                        student,
-                        filter_marking_period,
-                        status=self.context.get("status", "any"),
-                    )
-                    if percentage is not None:
-                        valid_percentages.append(float(percentage))
-
-            # Calculate average of this marking period across all subjects
-            # Return None if no valid percentages to avoid confusion with actual zero average
-            if not valid_percentages:
-                return {"semester_averages": [], "final_average": None}
-
-            final_average = sum(valid_percentages) / len(valid_percentages)
-
-            return {
-                "semester_averages": [
-                    {
-                        "id": str(filter_marking_period.semester.id),
-                        "name": filter_marking_period.semester.name,
-                        "average": round(final_average, 1),
-                    }
-                ],
-                "final_average": round(final_average, 1),
-            }
 
         # Extract gradebooks from gradebooks_data
         gradebooks = [
