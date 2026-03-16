@@ -1740,13 +1740,9 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 .order_by("semester__start_date", "start_date")
             )
 
-            # Filter by specific marking period if provided
-            if filter_marking_period:
-                all_marking_periods = [
-                    mp
-                    for mp in all_marking_periods
-                    if mp.id == filter_marking_period.id
-                ]
+            # NOTE: do NOT filter all_marking_periods here — we always need the full
+            # list to compute year-to-date averages correctly. The display filter is
+            # applied below when building marking_periods_list.
 
             # Pre-fetch all grades for this student and gradebook
             grades = Grade.objects.filter(
@@ -1898,9 +1894,14 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
 
                     mp_data["assessments"] = formatted_assessments
 
-                marking_periods_list.append(mp_data)
+                # Only include this period in the response list when no filter is set,
+                # or when this period matches the requested filter.
+                if not filter_marking_period or mp.id == filter_marking_period.id:
+                    marking_periods_list.append(mp_data)
 
-                # Track for semester averages (convert Decimal to float for calculations)
+                # Always accumulate semester totals across ALL periods so that
+                # final_average is a true year-to-date average, not just the
+                # currently selected marking period's score.
                 if final_percentage is not None:
                     semester_totals[mp.semester.id]["sum"] += float(final_percentage)
                     semester_totals[mp.semester.id]["count"] += 1
