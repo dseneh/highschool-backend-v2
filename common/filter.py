@@ -78,9 +78,16 @@ def get_transaction_queryparams(query_params, other_params=None):
                 if s:
                     f.add(Q(**{f"status__in": s}), Q.AND)
             elif k == "transaction_type":
-                f.add(Q(**{f"type__id": v}), Q.AND)
+                values = v.split(",")
+                type_ids = [value.strip() for value in values if value.strip() and value.strip().lower() != "all"]
+                if type_ids:
+                    f.add(Q(**{f"type__id__in": type_ids}), Q.AND)
             if k == "account":
-                f.add(Q(**{f"account__number": v}), Q.AND)
+                values = v.split(",")
+                account_values = [value.strip() for value in values if value.strip() and value.strip().lower() != "all"]
+                if account_values:
+                    account_query = Q(account__id__in=account_values) | Q(account__number__in=account_values)
+                    f.add(account_query, Q.AND)
             elif k == "student_id":
                 f.add(Q(**{f"student__id_number": v}), Q.AND)
             elif k == "payment_method":
@@ -122,16 +129,33 @@ def get_transaction_queryparams(query_params, other_params=None):
                 f.add(Q(**{f"student__enrollments__enrolled_as__in": s}), Q.AND)
 
             # General search across multiple fields
-            elif k == "query":
+            elif k in ("search", "query"):
                 search_query = (
                     Q(description__icontains=v)
                     | Q(transaction_id__icontains=v)
                     | Q(reference__icontains=v)
                     | Q(notes__icontains=v)
+                    # Student fields
                     | Q(student__first_name__icontains=v)
                     | Q(student__last_name__icontains=v)
                     | Q(student__id_number__icontains=v)
+                    # Bank account fields
+                    | Q(account__name__icontains=v)
+                    | Q(account__number__icontains=v)
+                    # Payment method
+                    | Q(payment_method__name__icontains=v)
+                    # Academic year
+                    | Q(academic_year__name__icontains=v)
+                    # Transaction type name
+                    | Q(type__name__icontains=v)
                 )
+                # Also match date strings (e.g. "2025-01") and amount (e.g. "500")
+                if v.replace("-", "").replace("/", "").replace(".", "").isdigit():
+                    search_query = search_query | Q(date__icontains=v)
+                    try:
+                        search_query = search_query | Q(amount__icontains=v)
+                    except Exception:
+                        pass
                 f.add(search_query, Q.AND)
 
             else:

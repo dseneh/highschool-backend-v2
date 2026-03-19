@@ -177,6 +177,48 @@ class MockTaskProcessor:
         thread.daemon = True
         thread.start()
 
+    @staticmethod
+    def process_student_report(task_id: str):
+        """
+        Mock background processing of student reports.
+        In production this should be replaced by a Celery worker task.
+        """
+        import threading
+        import time
+
+        def background_work():
+            try:
+                task_data = TaskManager.get_task(task_id)
+                if not task_data:
+                    return
+
+                TaskManager.update_task(task_id, status="processing", progress=10)
+                time.sleep(1)
+
+                TaskManager.update_task(task_id, status="processing", progress=45)
+                time.sleep(1)
+
+                TaskManager.update_task(task_id, status="processing", progress=80)
+                time.sleep(1)
+
+                TaskManager.update_task(
+                    task_id,
+                    status="completed",
+                    progress=100,
+                    result_url=f"/api/v1/reports/download/{task_id}/",
+                )
+
+            except Exception as e:
+                TaskManager.update_task(
+                    task_id,
+                    status="failed",
+                    error=str(e),
+                )
+
+        thread = threading.Thread(target=background_work)
+        thread.daemon = True
+        thread.start()
+
 
 # Future Celery task implementation
 """

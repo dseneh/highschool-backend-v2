@@ -14,6 +14,7 @@ from rest_framework import status as http_status
 from decimal import Decimal, InvalidOperation
 
 from academics.models import Section, AcademicYear, MarkingPeriod
+from common.utils import get_object_by_uuid_or_fields
 from students.models import Student
 from grading.models import Assessment, Grade
 
@@ -55,11 +56,22 @@ class BulkGradeUploadView(APIView):
     """
     
     parser_classes = (MultiPartParser, FormParser)
+
+    @staticmethod
+    def _parse_bool(value, default=False):
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
     
     @transaction.atomic
     def post(self, request, section_id):
-        # Get query parameters
-        override_grades = request.query_params.get('override_grades', 'false').lower() == 'true'
+        # Read override flag from query params first, then form body for robustness.
+        override_raw = request.query_params.get('override_grades')
+        if override_raw is None:
+            override_raw = request.data.get('override_grades')
+        override_grades = self._parse_bool(override_raw, default=False)
         
         # Verify section exists
         section = get_object_or_404(Section, pk=section_id)
@@ -104,8 +116,35 @@ class BulkGradeUploadView(APIView):
     def _process_excel_file(self, file, section, override_grades, user):
         """Process the uploaded Excel file and create/update grades"""
         import pandas as pd
-        from django.db.models import Q
         from academics.models import Subject, GradeLevel
+
+        def _normalize_excel_text(value):
+            """
+            Normalize Excel cell values to trimmed strings without introducing
+            numeric coercion artifacts (e.g. 20025.0).
+            """
+            if value is None:
+                return ''
+
+            if isinstance(value, str):
+                return value.strip()
+
+            try:
+                if pd.isna(value):
+                    return ''
+            except Exception:
+                pass
+
+            if isinstance(value, float):
+                # Excel often loads numeric IDs as float; strip only trailing .0.
+                if value.is_integer():
+                    return str(int(value))
+                return format(value, 'f').rstrip('0').rstrip('.')
+
+            if isinstance(value, int):
+                return str(value)
+
+            return str(value).strip()
         
         # ========================================================================
         # STEP 1: Read Excel file and extract metadata from first rows
@@ -178,12 +217,6 @@ class BulkGradeUploadView(APIView):
         if section.name != metadata['section']:
             raise ValueError(f"Section mismatch. Expected '{section.name}' but file has '{metadata['section']}'")
         
-        # Validate Subject
-        try:
-            subject = Subject.objects.get(name=metadata['subject'])
-        except Subject.DoesNotExist:
-            raise ValueError(f"Subject '{metadata['subject']}' not found in the system")
-        
         # Validate Academic Year
         try:
             academic_year = AcademicYear.objects.get(name=metadata['academic_year'])
@@ -205,7 +238,7 @@ class BulkGradeUploadView(APIView):
         try:
             # Use the header_row we calculated earlier
             header_row_index = metadata.get('header_row', 8)
-            df = pd.read_excel(file, header=header_row_index, dtype={'id_number': str, 'student_id': str})
+            df = pd.read_excel(file, header=header_row_index, dtype=object)
             
             # Rename columns to standardize (handle possible column name variations)
             column_mapping = {}
@@ -217,6 +250,13 @@ class BulkGradeUploadView(APIView):
                     column_mapping[col] = 'student_name'
             
             df.rename(columns=column_mapping, inplace=True)
+
+            # Treat IDs and names strictly as text to preserve leading zeros and
+            # avoid float artifacts from Excel numeric cells.
+            if 'student_id' in df.columns:
+                df['student_id'] = df['student_id'].apply(_normalize_excel_text)
+            if 'student_name' in df.columns:
+                df['student_name'] = df['student_name'].apply(_normalize_excel_text)
             
         except Exception as e:
             raise ValueError(f"Failed to read student data from Excel file (header at row {header_row_index + 1}): {str(e)}")
@@ -237,6 +277,28 @@ class BulkGradeUploadView(APIView):
         
         if not assessment_columns:
             raise ValueError("No assessment columns found. Please add at least one assessment column after 'Student Name'.")
+
+        # Validate Subject using the current upload context instead of a global name lookup.
+        subject_candidates = Subject.objects.filter(
+            name=metadata['subject'],
+            gradebooks__section=section,
+            gradebooks__academic_year=academic_year,
+            gradebooks__assessments__marking_period=marking_period,
+            gradebooks__assessments__name__in=assessment_columns,
+            gradebooks__assessments__active=True,
+        ).distinct()
+
+        subject_count = subject_candidates.count()
+        if subject_count == 0:
+            raise ValueError(
+                f"Subject '{metadata['subject']}' was not found for section '{section.name}' in academic year '{academic_year.name}'."
+            )
+        if subject_count > 1:
+            raise ValueError(
+                f"Subject '{metadata['subject']}' is ambiguous for this upload context. Please ensure the section, marking period, and assessment columns match a single gradebook."
+            )
+
+        subject = subject_candidates.first()
         
         # Statistics
         stats = {
@@ -258,13 +320,26 @@ class BulkGradeUploadView(APIView):
         # Extract unique student IDs
         student_ids = df['student_id'].dropna().astype(str).str.strip().unique()
         
-        # Pre-fetch students
+        # Pre-fetch students with the shared UUID-or-field resolver so id_number values
+        # do not get sent through UUID filters and trigger validation errors.
         students_map = {}
-        for student in Student.objects.filter(
-            Q(id_number__in=student_ids) | Q(id__in=student_ids),
-        ).select_related('grade_level'):
+        for student_lookup in student_ids:
+            try:
+                student = get_object_by_uuid_or_fields(
+                    Student,
+                    student_lookup,
+                    fields=['id_number', 'prev_id_number'],
+                )
+            except Student.DoesNotExist:
+                continue
+
+            students_map[str(student_lookup)] = student
             students_map[str(student.id_number)] = student
             students_map[str(student.id)] = student
+
+            prev_id_number = getattr(student, 'prev_id_number', None)
+            if prev_id_number:
+                students_map[str(prev_id_number)] = student
         
         # Pre-fetch assessments for this section, academic year, subject, and marking period
         assessments_cache = {}

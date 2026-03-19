@@ -65,7 +65,19 @@ class StaffViewSet(viewsets.ModelViewSet):
 
         status_filter = self.request.query_params.get("status")
         if status_filter:
-            queryset = queryset.by_status(status_filter)
+            statuses = [status.strip() for status in status_filter.split(",") if status.strip()]
+            if len(statuses) == 1:
+                queryset = queryset.by_status(statuses[0])
+            elif len(statuses) > 1:
+                queryset = queryset.filter(status__in=statuses)
+
+        department = self.request.query_params.get("department")
+        if department:
+            department_ids = [value.strip() for value in department.split(",") if value.strip()]
+            if len(department_ids) == 1:
+                queryset = queryset.filter(primary_department_id=department_ids[0])
+            elif len(department_ids) > 1:
+                queryset = queryset.filter(primary_department_id__in=department_ids)
         
         is_teacher = self.request.query_params.get("is_teacher")
         if is_teacher is not None:
@@ -75,6 +87,14 @@ class StaffViewSet(viewsets.ModelViewSet):
             elif is_teacher.lower() in ['false', '0']:
                 f = Q(is_teacher=False) & (Q(position__teaching_role=False) | Q(position__isnull=True))
                 queryset = queryset.filter(f)
+
+        gender = self.request.query_params.get("gender")
+        if gender:
+            genders = [value.strip().lower() for value in gender.split(",") if value.strip()]
+            if len(genders) == 1:
+                queryset = queryset.filter(gender__iexact=genders[0])
+            elif len(genders) > 1:
+                queryset = queryset.filter(gender__in=genders)
 
         # Apply ordering
         ordering = self.request.query_params.get("ordering", "-created_at")

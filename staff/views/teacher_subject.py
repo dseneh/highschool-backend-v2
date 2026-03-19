@@ -78,26 +78,34 @@ class TeacherSubjectViewSet(viewsets.ModelViewSet):
 
         if not section_subject:
             raise serializers.ValidationError(
-                {"section_subject": "section_subject is required for teacher subject assignment."}
+                {"detail": "section_subject is required for teacher subject assignment."}
             )
 
-        teacher_has_section = TeacherSection.objects.filter(
-            teacher=teacher,
-            section=section_subject.section,
-        ).exists()
-        if not teacher_has_section:
-            raise serializers.ValidationError(
-                "Teacher must be assigned to the section before assigning its subjects"
-            )
-
-        # Check if assignment already exists
-        if TeacherSubject.objects.filter(
+        # teacher_has_section = TeacherSection.objects.filter(
+        #     teacher=teacher,
+        #     section=section_subject.section,
+        # ).exists()
+        # if not teacher_has_section:
+        #     raise serializers.ValidationError(
+        #         {"detail": "Teacher must be assigned to the section before assigning its subjects"}
+        #     )
+        created, _ = TeacherSubject.objects.get_or_create(
             teacher=teacher,
             section_subject=section_subject,
-        ).exists():
-            raise serializers.ValidationError(
-                "Teacher is already assigned to this section subject"
-            )
+            defaults={
+                "subject": subject or section_subject.subject,
+                "created_by": self.request.user,
+                "updated_by": self.request.user,
+            })
+
+        # Check if assignment already exists
+        # if TeacherSubject.objects.filter(
+        #     teacher=teacher,
+        #     section_subject=section_subject,
+        # ).exists():
+        #     raise serializers.ValidationError(
+        #         {"detail": "Teacher is already assigned to this section subject"}
+        #     )
 
         serializer.save(
             subject=subject or section_subject.subject,

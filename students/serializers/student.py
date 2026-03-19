@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from academics.models import AcademicYear
 
 from common.utils import get_enrollment_bill_summary
 from common.serializers import PhotoURLMixin
@@ -45,6 +46,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         show_rank = context.get("show_rank", False)
         show_grade_average = context.get("show_grade_average", False)
         show_balance = context.get("show_balance", False)
+        show_paid = context.get("show_paid", False)
         ranking_lookup = context.get("ranking_lookup", {}) or {}
 
         # Return grade_level as a nested object in API responses
@@ -60,10 +62,23 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         
         # Photo URL is automatically handled by PhotoURLMixin
         
-        # Get current enrollment
-        current_enrollment = instance.enrollments.filter(
-            academic_year__current=True
-        ).first()
+        selected_academic_year = context.get("academic_year")
+        if selected_academic_year is None:
+            selected_academic_year_id = context.get("academic_year_id")
+            if selected_academic_year_id:
+                selected_academic_year = AcademicYear.objects.filter(
+                    id=selected_academic_year_id
+                ).first()
+
+        # Resolve the enrollment for the selected academic year when provided.
+        if selected_academic_year:
+            current_enrollment = instance.enrollments.filter(
+                academic_year=selected_academic_year
+            ).first()
+        else:
+            current_enrollment = instance.enrollments.filter(
+                academic_year__current=True
+            ).first()
 
         # Determine current grade level based on priority
         current_grade_level = None
@@ -163,6 +178,13 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
                 response["balance"] = float(balance_value) if balance_value is not None else None
             except (TypeError, ValueError):
                 response["balance"] = None
+
+        if show_paid:
+            paid_value = getattr(instance, "paid_total", None)
+            try:
+                response["paid"] = float(paid_value) if paid_value is not None else None
+            except (TypeError, ValueError):
+                response["paid"] = None
 
         return response
 

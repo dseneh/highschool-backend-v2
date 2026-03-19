@@ -2,7 +2,7 @@
 import logging
 
 from django.db import transaction, router, connection
-from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery
+from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When
 from django.db.models.functions import Coalesce
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
@@ -81,6 +81,7 @@ class StudentListView(APIView):
         show_rank = _to_bool(request.query_params.get("show_rank"), default=False)
         show_grade_average = _to_bool(request.query_params.get("show_grade_average"), default=False)
         show_balance = _to_bool(request.query_params.get("show_balance"), default=False)
+        show_paid = _to_bool(request.query_params.get("show_paid"), default=False)
 
         students = Student.objects.select_related(
             "grade_level"
@@ -146,25 +147,95 @@ class StudentListView(APIView):
         ).annotate(balance_total=F("billed_total") - F("paid_total"))
 
         balance_owed = str(query_params.get("balance_owed", "")).strip().lower()
+        balance_condition = str(query_params.get("balance_condition", "")).strip().lower()
         balance_min = query_params.get("balance_min")
         balance_max = query_params.get("balance_max")
+        paid_condition = str(query_params.get("paid_condition", "")).strip().lower()
+        paid_min = query_params.get("paid_min")
+        paid_max = query_params.get("paid_max")
 
         if balance_owed == "owed":
             students = students.filter(balance_total__gt=0)
         elif balance_owed == "clear":
             students = students.filter(balance_total__lte=0)
 
-        if balance_min not in [None, ""]:
-            try:
-                students = students.filter(balance_total__gte=float(balance_min))
-            except (TypeError, ValueError):
-                pass
+        is_pct = balance_condition.startswith("pct-")
+        actual_condition = balance_condition[4:] if is_pct else balance_condition
 
-        if balance_max not in [None, ""]:
-            try:
-                students = students.filter(balance_total__lte=float(balance_max))
-            except (TypeError, ValueError):
-                pass
+        if is_pct:
+            students = students.annotate(
+                balance_pct=Case(
+                    When(billed_total=0, then=Value(0.0)),
+                    default=ExpressionWrapper(
+                        F("balance_total") * Value(100.0) / F("billed_total"),
+                        output_field=FloatField(),
+                    ),
+                    output_field=FloatField(),
+                )
+            )
+
+        filter_field = "balance_pct" if is_pct else "balance_total"
+
+        try:
+            min_value = None if balance_min in [None, ""] else float(balance_min)
+        except (TypeError, ValueError):
+            min_value = None
+
+        try:
+            max_value = None if balance_max in [None, ""] else float(balance_max)
+        except (TypeError, ValueError):
+            max_value = None
+
+        if actual_condition == "is-equal-to" and min_value is not None:
+            students = students.filter(**{filter_field: min_value})
+        elif actual_condition == "is-greater-than" and min_value is not None:
+            students = students.filter(**{f"{filter_field}__gt": min_value})
+        elif actual_condition == "is-less-than" and min_value is not None:
+            students = students.filter(**{f"{filter_field}__lt": min_value})
+        else:
+            if min_value is not None:
+                students = students.filter(**{f"{filter_field}__gte": min_value})
+            if max_value is not None:
+                students = students.filter(**{f"{filter_field}__lte": max_value})
+
+        is_paid_pct = paid_condition.startswith("pct-")
+        paid_actual_condition = paid_condition[4:] if is_paid_pct else paid_condition
+
+        if is_paid_pct:
+            students = students.annotate(
+                paid_pct=Case(
+                    When(billed_total=0, then=Value(0.0)),
+                    default=ExpressionWrapper(
+                        F("paid_total") * Value(100.0) / F("billed_total"),
+                        output_field=FloatField(),
+                    ),
+                    output_field=FloatField(),
+                )
+            )
+
+        paid_filter_field = "paid_pct" if is_paid_pct else "paid_total"
+
+        try:
+            paid_min_value = None if paid_min in [None, ""] else float(paid_min)
+        except (TypeError, ValueError):
+            paid_min_value = None
+
+        try:
+            paid_max_value = None if paid_max in [None, ""] else float(paid_max)
+        except (TypeError, ValueError):
+            paid_max_value = None
+
+        if paid_actual_condition == "is-equal-to" and paid_min_value is not None:
+            students = students.filter(**{paid_filter_field: paid_min_value})
+        elif paid_actual_condition == "is-greater-than" and paid_min_value is not None:
+            students = students.filter(**{f"{paid_filter_field}__gt": paid_min_value})
+        elif paid_actual_condition == "is-less-than" and paid_min_value is not None:
+            students = students.filter(**{f"{paid_filter_field}__lt": paid_min_value})
+        else:
+            if paid_min_value is not None:
+                students = students.filter(**{f"{paid_filter_field}__gte": paid_min_value})
+            if paid_max_value is not None:
+                students = students.filter(**{f"{paid_filter_field}__lte": paid_max_value})
             
         # Apply status filtering with OR semantics between student-status and enrollment-status buckets.
         if enrollment_statuses or other_statuses:
@@ -304,6 +375,7 @@ class StudentListView(APIView):
                 "show_rank": show_rank,
                 "show_grade_average": show_grade_average,
                 "show_balance": show_balance,
+                "show_paid": show_paid,
                 "ranking_lookup": ranking_lookup,
             },
         )
@@ -959,6 +1031,36 @@ class StudentImportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Use background processing for large imports to avoid request timeouts
+        from students.tasks import StudentImportTaskManager, MockStudentImportProcessor
+
+        if StudentImportTaskManager.should_use_background(len(df)):
+            task_id = StudentImportTaskManager.create_import_task(
+                grade_level_id=str(grade_level.id),
+                row_count=len(df),
+                user_id=request.user.id,
+                file_name=file_obj.name,
+            )
+
+            MockStudentImportProcessor.process_student_import(
+                task_id,
+                df=df,
+                grade_level_id=str(grade_level.id),
+                user_id=request.user.id,
+            )
+
+            return Response(
+                {
+                    "task_id": task_id,
+                    "status": "pending",
+                    "processing_mode": "background",
+                    "row_count": len(df),
+                    "message": f"Student import started in background for {len(df)} rows",
+                    "check_status_url": f"/api/v1/students/uploads/status/{task_id}/",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
         # Process in chunks with individual transactions per chunk
         total_created = 0
         all_errors = []
@@ -1037,4 +1139,69 @@ class StudentImportView(APIView):
                 if total_created > 0
                 else status.HTTP_400_BAD_REQUEST
             ),
+        )
+
+
+class StudentImportStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, task_id):
+        from students.tasks import StudentImportTaskManager
+
+        task_data = StudentImportTaskManager.get_task(task_id)
+        if not task_data:
+            return Response(
+                {"detail": "Task not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        response_data = {
+            "task_id": task_id,
+            "status": task_data.get("status"),
+            "progress": task_data.get("progress", 0),
+            "created_at": task_data.get("created_at"),
+            "updated_at": task_data.get("updated_at"),
+            "grade_level_id": task_data.get("grade_level_id"),
+            "file_name": task_data.get("file_name"),
+            "estimated_count": task_data.get("estimated_count", 0),
+            "total_processed": task_data.get("total_processed", 0),
+            "created": task_data.get("created", 0),
+            "total_errors": task_data.get("total_errors", 0),
+            "errors": task_data.get("errors", []),
+        }
+
+        if task_data.get("status") == "completed" and task_data.get("result"):
+            response_data["result"] = task_data.get("result")
+
+        if task_data.get("status") == "failed" and task_data.get("error"):
+            response_data["error"] = task_data.get("error")
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
+    def delete(self, request, task_id):
+        from students.tasks import StudentImportTaskManager
+
+        task_data = StudentImportTaskManager.get_task(task_id)
+        if not task_data:
+            return Response(
+                {"detail": "Task not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        current_status = task_data.get("status")
+
+        if current_status == "completed":
+            return Response(
+                {"detail": "Cannot cancel completed task"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if current_status == "failed":
+            return Response(
+                {"detail": "Task already failed"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        StudentImportTaskManager.update_task(task_id, status="cancelled")
+
+        return Response(
+            {"detail": "Task cancelled successfully", "task_id": task_id},
+            status=status.HTTP_200_OK,
         )

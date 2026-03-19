@@ -5,7 +5,9 @@ Reusable PDF components for consistent document generation across the applicatio
 from io import BytesIO
 from typing import Optional, List
 import logging
+import os
 
+from django.conf import settings
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.lib.styles import ParagraphStyle
@@ -34,8 +36,42 @@ def get_school_logo(school, width: float = 1.0, height: float = 1.0) -> Optional
     Returns:
         RLImage instance or None if logo cannot be loaded
     """
-    if not school.logo:
+    if not school or not getattr(school, "logo", None):
         return None
+
+    def iter_logo_paths() -> List[str]:
+        candidates: List[str] = []
+
+        try:
+            direct_path = getattr(school.logo, "path", None)
+            if direct_path:
+                candidates.append(direct_path)
+        except Exception:
+            pass
+
+        logo_name = getattr(school.logo, "name", "")
+        if logo_name:
+            media_root = str(settings.MEDIA_ROOT)
+            candidates.extend(
+                [
+                    os.path.join(media_root, logo_name),
+                    os.path.join(media_root, "public", logo_name),
+                ]
+            )
+
+            schema_name = getattr(school, "schema_name", None)
+            if schema_name:
+                relative_path = logo_name
+                tenant_prefix = f"tenants/{schema_name}/"
+                if relative_path.startswith(tenant_prefix):
+                    relative_path = relative_path[len(tenant_prefix):]
+                candidates.append(os.path.join(media_root, schema_name, relative_path))
+
+        deduped_candidates: List[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in deduped_candidates:
+                deduped_candidates.append(candidate)
+        return deduped_candidates
 
     try:
         logo_data = None
@@ -57,6 +93,17 @@ def get_school_logo(school, width: float = 1.0, height: float = 1.0) -> Optional
                     logo_data = response.content
             except Exception:
                 pass
+
+        # Strategy 3: Try direct filesystem path for local media storage.
+        if not logo_data:
+            for logo_path in iter_logo_paths():
+                try:
+                    if os.path.exists(logo_path):
+                        with open(logo_path, "rb") as f:
+                            logo_data = f.read()
+                        break
+                except Exception:
+                    continue
 
         if logo_data:
             image_buffer = BytesIO(logo_data)
@@ -83,6 +130,7 @@ def build_pdf_header(
     title_style: ParagraphStyle,
     show_statement_date: bool = False,
     statement_date_text: str = "",
+    bottom_spacer_inches: float = 0.08,
 ) -> None:
     """
     Build a standardized PDF header with school logo, information, and title.
@@ -97,8 +145,14 @@ def build_pdf_header(
         show_statement_date: Whether to show a statement date below title
         statement_date_text: Statement date text to display
     """
-    # Get school logo
-    logo = get_school_logo(school)
+    # Size logo by configured tenant shape and keep the full header within page width.
+    logo_width = 0.82
+    logo_height = 0.82
+    if getattr(school, "logo_shape", None) == "landscape":
+        logo_width = 1.1
+        logo_height = 0.62
+
+    logo = get_school_logo(school, width=logo_width, height=logo_height)
 
     # School name (large, bold, blue)
     school_name = Paragraph(school.name, school_name_style)
@@ -159,18 +213,20 @@ def build_pdf_header(
 
     # Create header table with same dimensions as report card
     header_table = Table(
-        header_data, colWidths=[1.1 * inch, 6.9 * inch], hAlign="LEFT"
+        header_data,
+        colWidths=[1.0 * inch, 6.2 * inch],
+        hAlign="LEFT",
     )
     header_table.setStyle(
         TableStyle(
             [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (0, 0), 0),  # Logo column
                 ("RIGHTPADDING", (0, 0), (0, 0), 0),
-                ("LEFTPADDING", (1, 0), (1, 0), 4),  # School info column
+                ("LEFTPADDING", (1, 0), (1, 0), 6),  # School info column
                 ("RIGHTPADDING", (1, 0), (1, 0), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ]
         )
     )
@@ -190,7 +246,7 @@ def build_pdf_header(
     story.append(blue_line)
 
     # Title (centered, bold)
-    story.append(Spacer(1, 0.1 * inch))
+    story.append(Spacer(1, 0.05 * inch))
     title = Paragraph(title_text, title_style)
     story.append(title)
 
@@ -205,4 +261,4 @@ def build_pdf_header(
         date_para = Paragraph(statement_date_text, date_style)
         story.append(date_para)
 
-    story.append(Spacer(1, 0.15 * inch))
+    story.append(Spacer(1, max(0.0, bottom_spacer_inches) * inch))

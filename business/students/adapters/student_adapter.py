@@ -5,6 +5,7 @@ This module handles all Django-specific database operations for students.
 Business logic should NOT be in this file - only database interactions.
 """
 
+from datetime import datetime, date
 from typing import Optional
 from django.db.models import Q
 
@@ -95,16 +96,65 @@ def get_next_student_sequence() -> int:
 
 def check_student_exists(first_name: str, last_name: str, date_of_birth, 
                          prev_id_number: Optional[str] = None) -> bool:
-    """Check if student already exists"""
-    query = (
-        Q(first_name=first_name) & 
-        Q(last_name=last_name) & 
-        Q(date_of_birth=date_of_birth)
-    )
-    
-    if prev_id_number:
-        query &= Q(prev_id_number=prev_id_number)
-    
+    """Check if a student already exists using the same semantics across endpoints.
+
+    A match is considered true when either condition matches:
+    1) first_name + last_name + date_of_birth
+    2) prev_id_number (when provided)
+    """
+
+    def _clean(value) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _parse_dob(value) -> Optional[date]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        # Keep supported formats in sync with bulk import parsing behavior.
+        formats = [
+            "%Y-%m-%d",
+            "%m/%d/%Y",
+            "%m/%d/%y",
+            "%d/%m/%Y",
+            "%d-%m-%Y",
+            "%Y/%m/%d",
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    first = _clean(first_name)
+    last = _clean(last_name)
+    prev_id = _clean(prev_id_number)
+    dob = _parse_dob(date_of_birth)
+
+    query = Q()
+
+    # Condition 1: same person by name + DOB.
+    if first and last and dob:
+        query |= Q(first_name__iexact=first, last_name__iexact=last, date_of_birth=dob)
+
+    # Condition 2: same person by previous id.
+    if prev_id:
+        query |= Q(prev_id_number__iexact=prev_id)
+
+    if not query.children:
+        return False
+
     return Student.objects.filter(query).exists()
 
 

@@ -15,7 +15,7 @@ from .views.transactions import (
     TransactionExportStatusView,
     TransactionReportDownloadView
 )
-from .views.students import StudentReportView
+from .views.students import StudentReportView, StudentIndividualReportView
 from .views.finance import FinanceReportView
 
 app_name = 'reports'
@@ -26,6 +26,7 @@ urlpatterns = [
     
     # Student Reports
     path('students/', StudentReportView.as_view(), name='student-reports'),
+    path('students/<str:student_id>/', StudentIndividualReportView.as_view(), name='student-individual-reports'),
     
     # Finance Reports
     path('finance/', FinanceReportView.as_view(), name='finance-reports'),

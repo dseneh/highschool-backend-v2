@@ -769,11 +769,72 @@ class StudentImportValidator:
         if empty_rows > 0:
             errors.append(f"Found {empty_rows} completely empty rows")
 
-        # # Check for duplicate email addresses
-        # if 'email' in df.columns:
-        #     email_duplicates = df[df.duplicated(['email'], keep=False)]['email'].unique()
-        #     if len(email_duplicates) > 0:
-        #         errors.append(f"Duplicate email addresses found: {', '.join(email_duplicates[:5])}")
+        # Reuse the same duplicate logic as student POST (check_student_exists)
+        # so single-create and bulk-import enforce the same behavior.
+        if all(col in df.columns for col in ['first_name', 'last_name', 'date_of_birth']):
+            from business.students.adapters import check_student_exists
+
+            # Track duplicates within file using the same matching semantics:
+            # - first_name + last_name + date_of_birth
+            # - and prev_id_number only when provided
+            seen_keys = {}
+            in_file_duplicate_info = []
+            existing_duplicate_info = []
+
+            for idx, row in df.iterrows():
+                first_name = clean_csv_value(row.get('first_name'))
+                last_name = clean_csv_value(row.get('last_name'))
+                date_of_birth = clean_csv_value(row.get('date_of_birth'))
+                prev_id_number = clean_csv_value(row.get('prev_id_number'))
+
+                if not first_name or not last_name or not date_of_birth:
+                    continue
+
+                normalized_prev = prev_id_number.lower() if prev_id_number else ""
+                key = (
+                    first_name.strip().lower(),
+                    last_name.strip().lower(),
+                    date_of_birth.strip(),
+                    normalized_prev,
+                )
+
+                if key in seen_keys:
+                    first_seen_row = seen_keys[key]
+                    in_file_duplicate_info.append(
+                        f"{first_name.title()} {last_name.title()} (DOB: {date_of_birth}) duplicated in rows {first_seen_row} and {idx + 2}"
+                    )
+                else:
+                    seen_keys[key] = idx + 2
+
+                # Check existing DB records with the exact same logic used by POST endpoint
+                if check_student_exists(
+                    first_name,
+                    last_name,
+                    date_of_birth,
+                    prev_id_number or None,
+                ):
+                    existing_duplicate_info.append(
+                        f"{first_name.title()} {last_name.title()} (DOB: {date_of_birth}) already exists"
+                    )
+
+            if in_file_duplicate_info:
+                error_msg = (
+                    f"Found {len(in_file_duplicate_info)} duplicate student(s) in the file: "
+                    f"{', '.join(in_file_duplicate_info[:3])}"
+                )
+                if len(in_file_duplicate_info) > 3:
+                    error_msg += f" and {len(in_file_duplicate_info) - 3} more..."
+                errors.append(error_msg)
+
+            if existing_duplicate_info:
+                unique_existing = list(dict.fromkeys(existing_duplicate_info))
+                error_msg = (
+                    f"Found {len(unique_existing)} student(s) that already exist: "
+                    f"{', '.join(unique_existing[:3])}"
+                )
+                if len(unique_existing) > 3:
+                    error_msg += f" and {len(unique_existing) - 3} more..."
+                errors.append(error_msg)
 
         return errors
 
@@ -925,6 +986,21 @@ class StudentBulkProcessor:
     """Handles bulk processing of student data"""
 
     @staticmethod
+    def _resolve_school_code() -> int:
+        """Resolve school_code from the active tenant schema."""
+        try:
+            from django.db import connection
+            from core.models import Tenant
+
+            tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+            if tenant and tenant.id_number:
+                return int(str(tenant.id_number)[-2:])
+        except Exception:
+            pass
+
+        return 1
+
+    @staticmethod
     def generate_unique_id(school=None):
         """
         Generate a unique student ID - simplified version for sequential numbering
@@ -960,6 +1036,7 @@ class StudentBulkProcessor:
         students_to_create = []
         users_to_create = []
         chunk_errors = []
+        school_code = StudentBulkProcessor._resolve_school_code()
 
         for index, row in chunk.iterrows():
             try:
@@ -970,9 +1047,8 @@ class StudentBulkProcessor:
 
                 # Allocate sequential student ID with robust conflict resolution
                 student_seq = StudentBulkProcessor._get_next_available_sequence(
-                    grade_level.school, student_name
+                    school_code, student_name
                 )
-                school_code = int(grade_level.school.id_number[-2:])
 
                 # Handle entry_date with null checking
                 entry_date = row.get("entry_date")
@@ -1015,7 +1091,6 @@ class StudentBulkProcessor:
                     "place_of_birth": clean_csv_value(row.get("place_of_birth")),
                     "entry_date": entry_date,
                     "grade_level": grade_level,
-                    "school": grade_level.school,
                     "created_by": request_user,
                     "updated_by": request_user,
                     "status": "active",
@@ -1036,7 +1111,7 @@ class StudentBulkProcessor:
         return students_to_create, users_to_create, chunk_errors
 
     @staticmethod
-    def _get_next_available_sequence(school, student_name):
+    def _get_next_available_sequence(school_code, student_name):
         """
         Get the next available sequence number that won't cause ID conflicts.
 
@@ -1046,7 +1121,6 @@ class StudentBulkProcessor:
         from students.models import Student, StudentSequence
         from django.db import transaction
 
-        school_code = int(school.id_number[-2:]) if school.id_number else 0
         max_attempts = 100  # Reasonable upper limit
 
         with transaction.atomic():

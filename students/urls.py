@@ -1,6 +1,11 @@
 from django.urls import path
 
-from students.views.student import StudentImportView, StudentWithdrawView, StudentReinstateView
+from students.views.student import (
+    StudentImportView,
+    StudentImportStatusView,
+    StudentWithdrawView,
+    StudentReinstateView,
+)
 from students.views.distributions import (
     get_grade_level_distribution,
     get_payment_status_distribution,
@@ -189,6 +194,11 @@ urlpatterns = [
         "grade-levels/<str:grade_level_id>/student-uploads/",
         StudentImportView.as_view(),
         name="student_import",
+    ),
+    path(
+        "students/uploads/status/<str:task_id>/",
+        StudentImportStatusView.as_view(),
+        name="student_import_status",
     ),
     # Student contacts
     path(

@@ -1,12 +1,15 @@
 from django.db.models import Q
+from django.db import connection
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django_tenants.utils import get_public_schema_name, schema_context
 from ..access_policies import StudentAccessPolicy
 
 from common.utils import get_enrollment_bill_summary, get_object_by_uuid_or_fields
+from core.models import Tenant
 from finance.services.billing_pdf import generate_student_billing_pdf
 from finance.models import Transaction
 
@@ -171,17 +174,21 @@ class StudentBillingPDFView(APIView):
 
     def get(self, request, student_id):
         try:
+            tenant_schema_name = connection.schema_name
+            with schema_context(get_public_schema_name()):
+                school = Tenant.objects.filter(schema_name=tenant_schema_name).first()
+
             # Get student - try UUID first, fallback to id_number
             try:
                 import uuid
                 uuid_obj = uuid.UUID(str(student_id))
                 student = get_object_or_404(
-                    Student.objects.select_related('school'), 
+                    Student.objects.all(), 
                     id=uuid_obj
                 )
             except (ValueError, AttributeError):
                 student = get_object_or_404(
-                    Student.objects.select_related('school'), 
+                    Student.objects.all(), 
                     id_number=student_id
                 )
 
@@ -234,6 +241,7 @@ class StudentBillingPDFView(APIView):
             # Generate PDF
             response = generate_student_billing_pdf(
                 student=student,
+                school=school,
                 enrollment=enrollment,
                 billing_summary=billing_summary,
                 bill_items=bill_items,
