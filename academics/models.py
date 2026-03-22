@@ -385,6 +385,10 @@ class Section(BaseModel):
 
     def __str__(self):
         return self.name
+    
+    @property
+    def section_class(self):
+        return f"{self.grade_level.name} {self.name}"
 
     class Meta:
         db_table = 'section'

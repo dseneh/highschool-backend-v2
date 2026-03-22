@@ -297,3 +297,10 @@ class Student(BasePersonModel):
             "approved_balance": float(approved_balance),
             "projected_balance": float(projected_balance),
         }
+    
+    @property
+    def student_class(self):
+        current_enrollment = self.enrollments.filter(academic_year__current=True).first()
+        if current_enrollment and current_enrollment.grade_level:
+            return f"{current_enrollment.grade_level.name} {current_enrollment.section.name if current_enrollment.section else ''}".strip()
+        return self.grade_level.name if self.grade_level else "N/A"

@@ -185,6 +185,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
                 response["paid"] = float(paid_value) if paid_value is not None else None
             except (TypeError, ValueError):
                 response["paid"] = None
+        response["student_class"] = instance.student_class
 
         return response
 

@@ -250,6 +250,7 @@ class SectionCalendarProjectionView(APIView):
                 "section": {
                     "id": str(section.id),
                     "name": section.name,
+                    'section_class': section.section_class,
                 },
                 "range": {
                     "start": start_date.isoformat(),

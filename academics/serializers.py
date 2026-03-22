@@ -419,6 +419,7 @@ class GradeLevelSerializer(serializers.ModelSerializer):
                 "id": section["id"],
                 "name": section["name"],
                 "students": section["students"],
+                "section_class": section.get("section_class")
             }
             for section in serializers.data
         ]
@@ -517,6 +518,7 @@ class SectionSerializer(serializers.ModelSerializer):
             "level": instance.grade_level.level,
             "active": instance.grade_level.active,
         }
+        response["section_class"] = instance.section_class
 
         subjects = instance.section_subjects.select_related("subject").all()
         response["subjects"] = [
