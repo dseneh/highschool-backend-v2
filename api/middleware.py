@@ -99,6 +99,15 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         request = getattr(self, 'request', None)
         
         if request:
+            def _is_public_path(path: str) -> bool:
+                return (
+                    path.startswith('/admin/')
+                    or path.startswith('/api/v1/auth')
+                    or path.startswith('/api/v1/tenants')
+                    or path.startswith('/api/v1/search')
+                    or path in ('/', '/health', '/health/')
+                )
+
             # Tenant management endpoints (retrieving tenant info) should ignore x-tenant header
             # and always work in public schema
             path = request.path
@@ -150,15 +159,10 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                             code="tenant_not_found"
                         )
             
-            # If no header provided, check if this is an auth or tenant management endpoint
-            # Auth endpoints and tenant management endpoints should work in public schema
-            # Search endpoint is also public and should work without tenant header
+            # If no tenant header provided, only allow known public endpoints on public schema.
+            # Tenant-scoped API requests should not silently fall back to public schema.
             path = request.path
-            if ('auth' in path or 
-                path.startswith('/admin/') or 
-                path.startswith('/api/v1/tenants') or 
-                path.startswith('/api/v1/search')):
-                # Return public tenant for authentication, tenant management, and search endpoints
+            if _is_public_path(path):
                 try:
                     public_schema = get_public_schema_name()
                     return Tenant.objects.get(schema_name=public_schema)
@@ -171,7 +175,15 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         try:
             return super().get_tenant(domain_model, hostname)
         except Http404:
-            # If subdomain lookup fails and no header, try public schema as last resort
+            # For tenant-scoped API endpoints, fail fast instead of using public fallback.
+            if request and request.path.startswith('/api/'):
+                from rest_framework.exceptions import NotFound
+                raise NotFound(
+                    detail="Missing or invalid tenant context. Provide a valid X-Tenant header.",
+                    code="tenant_header_required"
+                )
+
+            # Non-API requests can still use public fallback as a safe default.
             try:
                 public_schema = get_public_schema_name()
                 return Tenant.objects.get(schema_name=public_schema)
