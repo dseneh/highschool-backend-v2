@@ -67,6 +67,14 @@ class Command(BaseCommand):
         except Exception as exc:
             raise CommandError(f"Migration failed: {exc}") from exc
 
+        if summary.get("skipped_missing_legacy_table"):
+            self.stdout.write(
+                self.style.WARNING(
+                    "Legacy billing table 'enrollment_bill' does not exist in this tenant schema. Nothing to migrate."
+                )
+            )
+            return
+
         mode = "DRY RUN" if dry_run else "COMPLETED"
         self.stdout.write(self.style.SUCCESS(f"Legacy student bill migration {mode}."))
         self.stdout.write(f"Legacy rows processed: {summary['legacy_rows']}")

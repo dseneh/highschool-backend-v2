@@ -6,7 +6,7 @@ from decimal import Decimal
 import re
 from typing import Iterable
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -278,6 +278,22 @@ def migrate_legacy_student_bills(
     enrollment_ids: Iterable[str] | None = None,
     dry_run: bool = False,
 ) -> dict[str, int]:
+    legacy_table_name = StudentEnrollmentBill._meta.db_table
+    existing_tables = set(connection.introspection.table_names())
+
+    counters = {
+        "legacy_rows": 0,
+        "enrollments": 0,
+        "created_bills": 0,
+        "updated_bills": 0,
+        "created_lines": 0,
+        "skipped_missing_legacy_table": 0,
+    }
+
+    if legacy_table_name not in existing_tables:
+        counters["skipped_missing_legacy_table"] = 1
+        return counters
+
     queryset = StudentEnrollmentBill.objects.select_related(
         "enrollment",
         "enrollment__student",
@@ -292,13 +308,10 @@ def migrate_legacy_student_bills(
     grouped = _group_legacy_rows(rows)
     currency = _resolve_base_currency()
 
-    counters = {
+    counters.update({
         "legacy_rows": len(rows),
         "enrollments": len(grouped),
-        "created_bills": 0,
-        "updated_bills": 0,
-        "created_lines": 0,
-    }
+    })
 
     for grouped_rows in grouped.values():
         enrollment = grouped_rows[0].enrollment
