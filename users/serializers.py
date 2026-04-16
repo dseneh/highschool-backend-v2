@@ -97,6 +97,8 @@ class UserSerializer(serializers.ModelSerializer):
                             'workspace': 'admin',
                             'name': public_tenant.name or 'Admin',
                             'logo': public_tenant.logo.url if public_tenant.logo else None,
+                            'status': getattr(public_tenant, 'status', None),
+                            'active': getattr(public_tenant, 'active', None),
                         })
                     except Tenant.DoesNotExist:
                         # If public tenant doesn't exist, create a placeholder entry
@@ -106,6 +108,8 @@ class UserSerializer(serializers.ModelSerializer):
                             'workspace': 'admin',
                             'name': 'Admin',
                             'logo': None,
+                            'status': 'active',
+                            'active': True,
                         })
             except Exception as admin_check_error:
                 # If there's an error checking admin access, skip it
@@ -128,6 +132,8 @@ class UserSerializer(serializers.ModelSerializer):
                                 'workspace': tenant.schema_name,
                                 'name': tenant.name,
                                 'logo': tenant.logo.url if tenant.logo else None,
+                                'status': getattr(tenant, 'status', None),
+                                'active': getattr(tenant, 'active', None),
                             })
                 except Exception as tenant_error:
                     # Skip this tenant if there's an error

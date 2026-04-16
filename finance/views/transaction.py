@@ -11,6 +11,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from academics.models import AcademicYear
+from accounting.models import AccountingCashTransaction
 from common.filter import get_transaction_queryparams
 from common.utils import create_model_data, get_object_by_uuid_or_fields, update_model_fields
 from finance.access_policies import TransactionAccessPolicy
@@ -276,30 +277,104 @@ class TransactionViewSet(viewsets.ModelViewSet):
     def student_transactions(self, request, student_id=None, *args, **kwargs):
         academic_year_id = request.query_params.get("academic_year")
 
-        year_filter = Q(academic_year__id=academic_year_id) | Q(
-            academic_year__name_iexact=academic_year_id
-        )
-        if not academic_year_id:
-            year_filter = Q(academic_year__current=True)
-
         student = get_object_by_uuid_or_fields(
                     Student, 
                     student_id,
                     fields=['id_number', 'prev_id_number']
                 )
 
-        transactions = student.transactions.filter(year_filter).order_by("-updated_at")
+        academic_year = None
+        if academic_year_id:
+            academic_year = AcademicYear.objects.filter(
+                Q(id=academic_year_id) | Q(name__iexact=academic_year_id)
+            ).first()
+        else:
+            academic_year = AcademicYear.objects.filter(current=True).first()
+
+        transactions = AccountingCashTransaction.objects.select_related(
+            "transaction_type",
+            "payment_method",
+            "bank_account",
+            "currency",
+        ).filter(
+            Q(source_reference=str(student.id))
+            | Q(source_reference=student.id_number)
+            | Q(source_reference=student.prev_id_number)
+            | Q(bill_allocations__student_bill__student=student)
+        )
+
+        if academic_year:
+            transactions = transactions.filter(
+                transaction_date__gte=academic_year.start_date,
+                transaction_date__lte=academic_year.end_date,
+            )
+
+        transactions = transactions.distinct().order_by("-transaction_date", "-updated_at")
 
         status_filter = request.query_params.get("status")
         if status_filter:
+            if status_filter == "canceled":
+                status_filter = "rejected"
             transactions = transactions.filter(status=status_filter)
 
         transaction_type_filter = request.query_params.get("transaction_type")
         if transaction_type_filter:
-            transactions = transactions.filter(type__name=transaction_type_filter)
+            transactions = transactions.filter(transaction_type__name=transaction_type_filter)
 
-        serializer = TransactionSerializer(transactions, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        currency_data = None
+        serialized = []
+        for tx in transactions:
+            if currency_data is None:
+                currency_data = {
+                    "id": str(tx.currency.id),
+                    "name": tx.currency.name,
+                    "symbol": tx.currency.symbol,
+                    "code": tx.currency.code,
+                } if tx.currency_id else None
+
+            serialized.append(
+                {
+                    "id": str(tx.id),
+                    "transaction_id": tx.reference_number,
+                    "reference": tx.reference_number,
+                    "amount": float(f"{tx.amount:.2f}"),
+                    "date": tx.transaction_date.isoformat(),
+                    "description": tx.description,
+                    "status": tx.status,
+                    "student": {
+                        "id": str(student.id),
+                        "id_number": student.id_number,
+                        "full_name": student.get_full_name(),
+                    },
+                    "transaction_type": {
+                        "id": str(tx.transaction_type.id),
+                        "name": tx.transaction_type.name,
+                        "type_code": tx.transaction_type.code,
+                        "type": tx.transaction_type.transaction_category,
+                    } if tx.transaction_type_id else None,
+                    "payment_method": {
+                        "id": str(tx.payment_method.id),
+                        "name": tx.payment_method.name,
+                    } if tx.payment_method_id else None,
+                    "account": {
+                        "id": str(tx.bank_account.id),
+                        "number": tx.bank_account.account_number,
+                        "name": tx.bank_account.account_name,
+                    } if tx.bank_account_id else None,
+                    "academic_year": {
+                        "id": str(academic_year.id),
+                        "name": academic_year.name,
+                    } if academic_year else None,
+                    "currency": {
+                        "id": str(tx.currency.id),
+                        "name": tx.currency.name,
+                        "symbol": tx.currency.symbol,
+                        "code": tx.currency.code,
+                    } if tx.currency_id else currency_data,
+                }
+            )
+
+        return Response(serialized, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="account-transfer")
     def account_transfer(self, request, *args, **kwargs):

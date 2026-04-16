@@ -11,9 +11,10 @@ from ..access_policies import StudentAccessPolicy
 
 from common.file_generators import FileGenerator, FileGeneratorConfig
 from academics.models import AcademicYear, GradeLevel, Section
-from finance.models import Currency, Transaction
+from accounting.models import AccountingStudentBill
+from finance.models import Currency
 
-from ..models import Enrollment, Student, StudentConcession, StudentEnrollmentBill
+from ..models import Enrollment, Student
 from ..serializers.bill_summary import (
     BillSummaryGradeLevelSerializer,
     BillSummarySectionSerializer,
@@ -155,52 +156,36 @@ class StudentBillSummaryView(APIView):
                 Q(section__grade_level__short_name__icontains=search)
             )
 
-        # Group by grade level and enrolled_as, then annotate with billing summary
-        # Note: We need to be careful about joins between bills and transactions to avoid cartesian products
+        # Group by grade level and enrolled_as, then aggregate from accounting bills.
         grade_level_summaries = enrollments_query.values(
             'section__grade_level__id',
             'section__grade_level__name', 
             'section__grade_level__level',
             'enrolled_as'
         ).annotate(
-            student_count=Count('student', distinct=True),
-            total_bills=Sum(
-                'student_bills__amount',
-                output_field=DecimalField(max_digits=15, decimal_places=2)
-            )
+            student_count=Count('student', distinct=True)
         ).order_by('section__grade_level__level', 'enrolled_as')
 
-        # Calculate total_paid separately to avoid cartesian product with student_bills
         for summary in grade_level_summaries:
-            raw_total_bills = summary.get('total_bills') or 0
-            # Get students for this specific grade level and enrolled_as combination
-            students_in_group = enrollments_query.filter(
+            enrollment_ids = list(
+                enrollments_query.filter(
                 section__grade_level__id=summary['section__grade_level__id'],
                 enrolled_as=summary['enrolled_as']
-            ).values_list('student__id', flat=True).distinct()
-            
-            # Calculate total paid for these specific students
-            total_paid = Transaction.objects.filter(
-                student__id__in=students_in_group,
-                academic_year=academic_year,
-                status='approved',
-                type__type='income'
-            ).aggregate(
-                total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-            )['total'] or 0
-            
-            summary['total_paid'] = total_paid
+                ).values_list('id', flat=True)
+            )
 
-            total_concessions = StudentConcession.objects.filter(
-                student__id__in=students_in_group,
+            accounting_totals = AccountingStudentBill.objects.filter(
+                enrollment_id__in=enrollment_ids,
                 academic_year=academic_year,
-                active=True,
             ).aggregate(
-                total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-            )['total'] or 0
+                total_bills=Sum('net_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+                total_paid=Sum('paid_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+                total_concessions=Sum('concession_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            )
 
-            summary['total_concessions'] = total_concessions
-            summary['total_bills'] = max((raw_total_bills or 0) - total_concessions, 0)
+            summary['total_bills'] = accounting_totals.get('total_bills') or 0
+            summary['total_paid'] = accounting_totals.get('total_paid') or 0
+            summary['total_concessions'] = accounting_totals.get('total_concessions') or 0
             
             # Calculate correct average bill per student
             if summary['student_count'] > 0 and summary['total_bills']:
@@ -270,51 +255,35 @@ class StudentBillSummaryView(APIView):
         if search:
             enrollments_query = enrollments_query.filter(section__name__icontains=search)
 
-        # Group by section and enrolled_as, then annotate with billing summary
-        # Note: We need to be careful about joins between bills and transactions to avoid cartesian products
+        # Group by section and enrolled_as, then aggregate from accounting bills.
         section_summaries = enrollments_query.values(
             'section__id',
             'section__name',
             'enrolled_as'
         ).annotate(
-            student_count=Count('student', distinct=True),
-            total_bills=Sum(
-                'student_bills__amount',
-                output_field=DecimalField(max_digits=15, decimal_places=2)
-            )
+            student_count=Count('student', distinct=True)
         ).order_by('section__name', 'enrolled_as')
 
-        # Calculate total_paid separately to avoid cartesian product with student_bills
         for summary in section_summaries:
-            raw_total_bills = summary.get('total_bills') or 0
-            # Get students for this specific section and enrolled_as combination
-            students_in_group = enrollments_query.filter(
+            enrollment_ids = list(
+                enrollments_query.filter(
                 section__id=summary['section__id'],
                 enrolled_as=summary['enrolled_as']
-            ).values_list('student__id', flat=True).distinct()
-            
-            # Calculate total paid for these specific students
-            total_paid = Transaction.objects.filter(
-                student__id__in=students_in_group,
-                academic_year=academic_year,
-                status='approved',
-                type__type='income'
-            ).aggregate(
-                total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-            )['total'] or 0
-            
-            summary['total_paid'] = total_paid
+                ).values_list('id', flat=True)
+            )
 
-            total_concessions = StudentConcession.objects.filter(
-                student__id__in=students_in_group,
+            accounting_totals = AccountingStudentBill.objects.filter(
+                enrollment_id__in=enrollment_ids,
                 academic_year=academic_year,
-                active=True,
             ).aggregate(
-                total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-            )['total'] or 0
+                total_bills=Sum('net_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+                total_paid=Sum('paid_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+                total_concessions=Sum('concession_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            )
 
-            summary['total_concessions'] = total_concessions
-            summary['total_bills'] = max((raw_total_bills or 0) - total_concessions, 0)
+            summary['total_bills'] = accounting_totals.get('total_bills') or 0
+            summary['total_paid'] = accounting_totals.get('total_paid') or 0
+            summary['total_concessions'] = accounting_totals.get('total_concessions') or 0
             
             # Calculate correct average bill per student
             if summary['student_count'] > 0 and summary['total_bills']:
@@ -398,14 +367,8 @@ class StudentBillSummaryView(APIView):
                 Q(id_number__icontains=search)
             )
 
-        # Annotate with billing summary using separate queries to avoid cartesian products
+        # Annotate enrollment presence only; billing figures are pulled from accounting tables.
         students = students_query.annotate(
-            total_bills=Sum(
-                'enrollments__student_bills__amount',
-                filter=Q(enrollments__academic_year=academic_year),
-                output_field=DecimalField(max_digits=15, decimal_places=2)
-            ),
-            # Get enrollment status and enrolled_as for reference
             enrollment_status=Count(
                 'enrollments',
                 filter=Q(
@@ -415,32 +378,20 @@ class StudentBillSummaryView(APIView):
             )
         ).order_by('last_name', 'first_name')
 
-        # Calculate total_paid separately for each student to avoid cartesian product
         for student in students:
-            raw_total_bills = student.total_bills or 0
-            total_paid = Transaction.objects.filter(
+            accounting_totals = AccountingStudentBill.objects.filter(
                 student=student,
                 academic_year=academic_year,
-                status='approved',
-                type__type='income'
             ).aggregate(
-                total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-            )['total'] or 0
-            
-            # Add total_paid as an attribute
-            student.total_paid = total_paid
+                total_bills=Sum('net_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+                total_paid=Sum('paid_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+                total_concessions=Sum('concession_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            )
 
-            concession_total = StudentConcession.objects.filter(
-                student=student,
-                academic_year=academic_year,
-                active=True,
-            ).aggregate(
-                total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-            )['total'] or 0
-
-            student.total_concessions = concession_total
-            student.gross_total_bills = raw_total_bills
-            student.total_bills = max((raw_total_bills or 0) - concession_total, 0)
+            student.total_bills = accounting_totals.get('total_bills') or 0
+            student.total_paid = accounting_totals.get('total_paid') or 0
+            student.total_concessions = accounting_totals.get('total_concessions') or 0
+            student.gross_total_bills = (student.total_bills or 0) + (student.total_concessions or 0)
 
         # Paginate results
         paginator = self.pagination_class()
@@ -508,113 +459,52 @@ class StudentBillSummaryView(APIView):
 
     def _calculate_school_totals(self, academic_year):
         """Calculate total bill summary using optimized queries (tenant-filtered)"""
-        # Calculate bills total
-        bill_summary = StudentEnrollmentBill.objects.filter(
-            enrollment__academic_year=academic_year
+        bill_summary = AccountingStudentBill.objects.filter(
+            academic_year=academic_year
         ).aggregate(
-            total_students=Count('enrollment__student', distinct=True),
-            total_bills=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
+            total_students=Count('student', distinct=True),
+            total_bills=Sum('net_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            total_paid=Sum('paid_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            total_concessions=Sum('concession_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
         )
-        
-        # Calculate payments total separately to avoid cartesian product
-        total_paid = Transaction.objects.filter(
-            academic_year=academic_year,
-            status='approved',
-            type__type='income'
-        ).aggregate(
-            total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-        )['total'] or 0
 
-        total_concessions = StudentConcession.objects.filter(
-            academic_year=academic_year,
-            active=True,
-        ).aggregate(
-            total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-        )['total'] or 0
-        
-        bill_summary['total_paid'] = total_paid
-        bill_summary['total_concessions'] = total_concessions
-        bill_summary['total_bills'] = max((bill_summary.get('total_bills') or 0) - total_concessions, 0)
+        bill_summary['total_bills'] = bill_summary.get('total_bills') or 0
+        bill_summary['total_paid'] = bill_summary.get('total_paid') or 0
+        bill_summary['total_concessions'] = bill_summary.get('total_concessions') or 0
         return bill_summary
 
     def _calculate_grade_level_totals(self, grade_level, academic_year):
         """Calculate total bill summary for a grade level using optimized queries"""
-        # Calculate bills total
-        bill_summary = StudentEnrollmentBill.objects.filter(
-            enrollment__academic_year=academic_year,
-            enrollment__section__grade_level=grade_level
+        bill_summary = AccountingStudentBill.objects.filter(
+            academic_year=academic_year,
+            enrollment__section__grade_level=grade_level,
         ).aggregate(
-            total_students=Count('enrollment__student', distinct=True),
-            total_bills=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
+            total_students=Count('student', distinct=True),
+            total_bills=Sum('net_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            total_paid=Sum('paid_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            total_concessions=Sum('concession_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
         )
-        
-        # Get students in this grade level
-        students_in_grade = Enrollment.objects.filter(
-            academic_year=academic_year,
-            section__grade_level=grade_level
-        ).values_list('student__id', flat=True).distinct()
-        
-        # Calculate payments total separately to avoid cartesian product
-        total_paid = Transaction.objects.filter(
-            student__id__in=students_in_grade,
-            academic_year=academic_year,
-            status='approved',
-            type__type='income'
-        ).aggregate(
-            total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-        )['total'] or 0
 
-        total_concessions = StudentConcession.objects.filter(
-            student__id__in=students_in_grade,
-            academic_year=academic_year,
-            active=True,
-        ).aggregate(
-            total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-        )['total'] or 0
-        
-        bill_summary['total_paid'] = total_paid
-        bill_summary['total_concessions'] = total_concessions
-        bill_summary['total_bills'] = max((bill_summary.get('total_bills') or 0) - total_concessions, 0)
+        bill_summary['total_bills'] = bill_summary.get('total_bills') or 0
+        bill_summary['total_paid'] = bill_summary.get('total_paid') or 0
+        bill_summary['total_concessions'] = bill_summary.get('total_concessions') or 0
         return bill_summary
 
     def _calculate_section_totals(self, section, academic_year):
         """Calculate total bill summary for a section using optimized queries"""
-        # Calculate bills total
-        bill_summary = StudentEnrollmentBill.objects.filter(
-            enrollment__academic_year=academic_year,
-            enrollment__section=section
+        bill_summary = AccountingStudentBill.objects.filter(
+            academic_year=academic_year,
+            enrollment__section=section,
         ).aggregate(
-            total_students=Count('enrollment__student', distinct=True),
-            total_bills=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
+            total_students=Count('student', distinct=True),
+            total_bills=Sum('net_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            total_paid=Sum('paid_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
+            total_concessions=Sum('concession_amount', output_field=DecimalField(max_digits=15, decimal_places=2)),
         )
-        
-        # Get students in this section
-        students_in_section = Enrollment.objects.filter(
-            academic_year=academic_year,
-            section=section
-        ).values_list('student__id', flat=True).distinct()
-        
-        # Calculate payments total separately to avoid cartesian product
-        total_paid = Transaction.objects.filter(
-            student__id__in=students_in_section,
-            academic_year=academic_year,
-            status='approved',
-            type__type='income'
-        ).aggregate(
-            total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-        )['total'] or 0
 
-        total_concessions = StudentConcession.objects.filter(
-            student__id__in=students_in_section,
-            academic_year=academic_year,
-            active=True,
-        ).aggregate(
-            total=Sum('amount', output_field=DecimalField(max_digits=15, decimal_places=2))
-        )['total'] or 0
-        
-        bill_summary['total_paid'] = total_paid
-        bill_summary['total_concessions'] = total_concessions
-        bill_summary['total_bills'] = max((bill_summary.get('total_bills') or 0) - total_concessions, 0)
+        bill_summary['total_bills'] = bill_summary.get('total_bills') or 0
+        bill_summary['total_paid'] = bill_summary.get('total_paid') or 0
+        bill_summary['total_concessions'] = bill_summary.get('total_concessions') or 0
         return bill_summary
 
 class StudentBillSummaryDownloadView(APIView):
@@ -710,35 +600,19 @@ class StudentBillSummaryDownloadView(APIView):
                     'section__grade_level'
                 ).prefetch_related(
                     Prefetch(
-                        'student_bills',
-                        queryset=StudentEnrollmentBill.objects.all()
+                        'accounting_bills',
+                        queryset=AccountingStudentBill.objects.filter(
+                            academic_year=academic_year
+                        ).prefetch_related(
+                            'lines__fee_item'
+                        )
                     )
-                )
-            )
-            
-            # OPTIMIZATION: Prefetch transactions to avoid N+1 queries
-            transactions_prefetch = Prefetch(
-                'transactions',
-                queryset=Transaction.objects.filter(
-                    academic_year=academic_year,
-                    status='approved',
-                    type__type='income'
-                ).select_related('type')
-            )
-
-            concessions_prefetch = Prefetch(
-                'concessions',
-                queryset=StudentConcession.objects.filter(
-                    academic_year=academic_year,
-                    active=True,
                 )
             )
             
             # Apply prefetch and get students
             students = students_query.prefetch_related(
                 enrollments_prefetch,
-                transactions_prefetch,
-                concessions_prefetch,
             ).order_by('last_name', 'first_name')
             
             # Get currency
@@ -784,32 +658,27 @@ class StudentBillSummaryDownloadView(APIView):
             if not enrollment:
                 continue
             
-            # OPTIMIZATION: Calculate bills from prefetched student_bills (no additional query)
+            # OPTIMIZATION: Calculate bills from prefetched accounting bills (no additional query)
             tuition = 0
             other_fees = 0
-            total_bills = 0
-            
-            for bill in enrollment.student_bills.all():
-                amount = float(bill.amount or 0)
-                total_bills += amount
-                
-                # Case-insensitive comparison for bill type
-                if bill.type and bill.type.lower() == 'tuition':
-                    tuition += amount
-                else:
-                    other_fees += amount
-
+            gross_total_bills = 0
             total_concessions = 0
-            for concession in student.concessions.all():
-                total_concessions += float(concession.amount or 0)
-
-            net_total_bills = max(total_bills - total_concessions, 0)
-            
-            # OPTIMIZATION: Calculate total_paid from prefetched transactions (no additional query)
+            net_total_bills = 0
             total_paid = 0
-            for transaction in student.transactions.all():
-                if transaction.academic_year_id == academic_year.id:
-                    total_paid += float(transaction.amount or 0)
+
+            for bill in enrollment.accounting_bills.all():
+                gross_total_bills += float(bill.gross_amount or 0)
+                total_concessions += float(bill.concession_amount or 0)
+                net_total_bills += float(bill.net_amount or 0)
+                total_paid += float(bill.paid_amount or 0)
+
+                for line in bill.lines.all():
+                    line_amount = float(line.line_amount or 0)
+                    category = getattr(getattr(line, 'fee_item', None), 'category', '')
+                    if category == 'tuition':
+                        tuition += line_amount
+                    else:
+                        other_fees += line_amount
             
             # Calculate balance and percent paid
             balance = net_total_bills - total_paid
@@ -825,7 +694,7 @@ class StudentBillSummaryDownloadView(APIView):
                 'en_as': enrollment.get_enrolled_as_display() if enrollment else '',
                 'tuition': tuition,
                 'others': other_fees,
-                'gross_total_bills': total_bills,
+                'gross_total_bills': gross_total_bills,
                 'total_concessions': total_concessions,
                 'total_bills': net_total_bills,
                 'total_paid': total_paid,

@@ -3,10 +3,12 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
 from finance.models import PaymentInstallment, Transaction
+from finance.utils import is_payment_summary_refresh_disabled
 from finance.views.payment_installment import (
     clear_installment_cache,
     clear_student_payment_cache,
 )
+from accounting.services import sync_finance_transaction_to_accounting
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,12 @@ def invalidate_payment_cache_on_transaction_save(sender, instance, created, **kw
     This ensures payment data stays in sync when payments are posted.
     """
     try:
+        # Sync to accounting system (dual-write during transition period)
+        try:
+            sync_finance_transaction_to_accounting(instance, created=created)
+        except Exception as e:
+            logger.warning(f"Failed to sync transaction {instance.id} to accounting: {e}")
+
         # Only invalidate if transaction affects student payments
         if not instance.student or not instance.academic_year:
             return
@@ -248,6 +256,94 @@ def invalidate_payment_cache_on_transaction_delete(sender, instance, **kwargs):
     except Exception as e:
         logger.error(f"Error invalidating payment cache on transaction delete: {e}")
         # Don't fail the delete operation if cache clearing fails
+
+
+def _invalidate_enrollment_payment_cache(enrollment, academic_year):
+    """Invalidate cache and refresh summary for a single enrollment."""
+    if not enrollment or not academic_year:
+        return
+
+    clear_student_payment_cache(
+        enrollment_id=enrollment.id,
+        academic_year_id=academic_year.id,
+    )
+
+    try:
+        from finance.utils import calculate_student_payment_summary
+
+        calculate_student_payment_summary(enrollment, academic_year)
+    except Exception as exc:
+        logger.warning(
+            "Failed to update payment summary for enrollment %s: %s",
+            enrollment.id,
+            exc,
+        )
+
+
+def _invalidate_for_accounting_cash_transaction(instance):
+    """Refresh payment cache for enrollments impacted by an accounting cash transaction."""
+    try:
+        from academics.models import AcademicYear
+        from students.models import Student
+
+        impacted = {}
+
+        for allocation in instance.bill_allocations.select_related(
+            "student_bill__enrollment",
+            "student_bill__academic_year",
+        ):
+            enrollment = allocation.student_bill.enrollment
+            academic_year = allocation.student_bill.academic_year
+            if enrollment and academic_year:
+                impacted[(str(enrollment.id), str(academic_year.id))] = (
+                    enrollment,
+                    academic_year,
+                )
+
+        source_reference = (instance.source_reference or "").strip()
+        if source_reference:
+            student = Student.objects.filter(
+                id=source_reference
+            ).first() or Student.objects.filter(
+                id_number=source_reference
+            ).first() or Student.objects.filter(
+                prev_id_number=source_reference
+            ).first()
+
+            if student:
+                tx_year = AcademicYear.objects.filter(
+                    start_date__lte=instance.transaction_date,
+                    end_date__gte=instance.transaction_date,
+                ).first()
+                if tx_year:
+                    enrollments = student.enrollments.filter(
+                        academic_year=tx_year,
+                        status="active",
+                    )
+                    for enrollment in enrollments:
+                        impacted[(str(enrollment.id), str(tx_year.id))] = (
+                            enrollment,
+                            tx_year,
+                        )
+
+        for enrollment, academic_year in impacted.values():
+            _invalidate_enrollment_payment_cache(enrollment, academic_year)
+    except Exception as exc:
+        logger.warning(
+            "Failed to invalidate payment cache for accounting cash transaction %s: %s",
+            getattr(instance, "id", None),
+            exc,
+        )
+
+
+@receiver(post_save, sender="accounting.AccountingCashTransaction")
+def invalidate_payment_cache_on_accounting_cash_save(sender, instance, created, **kwargs):
+    _invalidate_for_accounting_cash_transaction(instance)
+
+
+@receiver(post_delete, sender="accounting.AccountingCashTransaction")
+def invalidate_payment_cache_on_accounting_cash_delete(sender, instance, **kwargs):
+    _invalidate_for_accounting_cash_transaction(instance)
 
 
 # ========================================
@@ -431,3 +527,162 @@ def invalidate_payment_cache_on_concession_delete(sender, instance, **kwargs):
     except Exception as e:
         logger.error(f"Error invalidating payment cache on concession delete: {e}")
         # Don't fail the delete operation if cache clearing fails
+
+
+# ========================================
+# ACCOUNTING FLOW CACHE INVALIDATION SIGNALS
+# ========================================
+
+
+def _refresh_payment_summary_for_enrollment(enrollment, academic_year):
+    """Clear caches and refresh payment summary for one enrollment."""
+    if is_payment_summary_refresh_disabled():
+        logger.debug(
+            "Payment summary refresh disabled; skipping enrollment %s",
+            getattr(enrollment, "pk", None),
+        )
+        return
+
+    if not enrollment or not academic_year or not getattr(enrollment, "pk", None):
+        return
+
+    enrollment_manager = getattr(enrollment.__class__, "_default_manager", None)
+    if enrollment_manager and not enrollment_manager.filter(pk=enrollment.pk).exists():
+        logger.debug(
+            "Skipping payment summary refresh for deleted enrollment %s",
+            enrollment.pk,
+        )
+        return
+
+    clear_student_payment_cache(
+        enrollment_id=enrollment.id,
+        academic_year_id=academic_year.id,
+    )
+
+    try:
+        from finance.utils import calculate_student_payment_summary
+
+        calculate_student_payment_summary(enrollment, academic_year)
+    except Exception as e:
+        logger.warning(
+            f"Failed to update payment summary for enrollment {enrollment.id}: {e}"
+        )
+
+
+@receiver(post_save, sender="accounting.AccountingStudentBill")
+def invalidate_payment_cache_on_accounting_bill_save(sender, instance, created, **kwargs):
+    try:
+        _refresh_payment_summary_for_enrollment(instance.enrollment, instance.academic_year)
+        logger.info(
+            f"Invalidated payment cache for {'created' if created else 'updated'} "
+            f"accounting bill {instance.id} (enrollment: {instance.enrollment_id})"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating cache on accounting bill save: {e}")
+
+
+@receiver(post_delete, sender="accounting.AccountingStudentBill")
+def invalidate_payment_cache_on_accounting_bill_delete(sender, instance, **kwargs):
+    try:
+        _refresh_payment_summary_for_enrollment(instance.enrollment, instance.academic_year)
+        logger.info(
+            f"Invalidated payment cache for deleted accounting bill {instance.id} "
+            f"(enrollment: {instance.enrollment_id})"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating cache on accounting bill delete: {e}")
+
+
+@receiver(post_save, sender="accounting.AccountingStudentPaymentAllocation")
+def invalidate_payment_cache_on_accounting_allocation_save(sender, instance, created, **kwargs):
+    try:
+        bill = instance.student_bill
+        _refresh_payment_summary_for_enrollment(bill.enrollment, bill.academic_year)
+        logger.info(
+            f"Invalidated payment cache for {'created' if created else 'updated'} "
+            f"accounting allocation {instance.id} (bill: {bill.id})"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating cache on accounting allocation save: {e}")
+
+
+@receiver(post_delete, sender="accounting.AccountingStudentPaymentAllocation")
+def invalidate_payment_cache_on_accounting_allocation_delete(sender, instance, **kwargs):
+    try:
+        bill = instance.student_bill
+        _refresh_payment_summary_for_enrollment(bill.enrollment, bill.academic_year)
+        logger.info(
+            f"Invalidated payment cache for deleted accounting allocation {instance.id} "
+            f"(bill: {bill.id})"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating cache on accounting allocation delete: {e}")
+
+
+@receiver(post_save, sender="accounting.AccountingConcession")
+def invalidate_payment_cache_on_accounting_concession_save(sender, instance, created, **kwargs):
+    try:
+        enrollment = instance.student.enrollments.filter(
+            academic_year=instance.academic_year,
+        ).first()
+        if not enrollment:
+            return
+
+        _refresh_payment_summary_for_enrollment(enrollment, instance.academic_year)
+        logger.info(
+            f"Invalidated payment cache for {'created' if created else 'updated'} "
+            f"accounting concession {instance.id} (enrollment: {enrollment.id})"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating cache on accounting concession save: {e}")
+
+
+@receiver(post_delete, sender="accounting.AccountingConcession")
+def invalidate_payment_cache_on_accounting_concession_delete(sender, instance, **kwargs):
+    try:
+        enrollment = instance.student.enrollments.filter(
+            academic_year=instance.academic_year,
+        ).first()
+        if not enrollment:
+            return
+
+        _refresh_payment_summary_for_enrollment(enrollment, instance.academic_year)
+        logger.info(
+            f"Invalidated payment cache for deleted accounting concession {instance.id} "
+            f"(enrollment: {enrollment.id})"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating cache on accounting concession delete: {e}")
+
+
+@receiver(post_save, sender="accounting.AccountingInstallmentLine")
+def invalidate_installment_cache_on_accounting_installment_save(sender, instance, created, **kwargs):
+    try:
+        academic_year = instance.installment_plan.academic_year
+        clear_installment_cache(
+            academic_year_id=academic_year.id,
+            installment_ids=[instance.id],
+        )
+
+        logger.info(
+            f"Invalidated installment cache for {'created' if created else 'updated'} "
+            f"accounting installment line {instance.id}"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating installment cache on accounting installment save: {e}")
+
+
+@receiver(post_delete, sender="accounting.AccountingInstallmentLine")
+def invalidate_installment_cache_on_accounting_installment_delete(sender, instance, **kwargs):
+    try:
+        academic_year = instance.installment_plan.academic_year
+        clear_installment_cache(
+            academic_year_id=academic_year.id,
+            installment_ids=[instance.id],
+        )
+
+        logger.info(
+            f"Invalidated installment cache for deleted accounting installment line {instance.id}"
+        )
+    except Exception as e:
+        logger.error(f"Error invalidating installment cache on accounting installment delete: {e}")

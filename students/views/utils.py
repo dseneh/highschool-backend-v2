@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 
 from academics.models import Section, Semester
+from accounting.services import create_or_update_accounting_bill_for_enrollment
+from finance.utils import disable_payment_summary_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,14 @@ def create_enrollment_for_student(
                         "Cannot re-enroll student when grades have already been produced for this academic year"
                     )
             # delete the existing enrollment
-            current_enrollment.delete()
+            current_enrollment_ids = list(current_enrollment.values_list("id", flat=True))
+            with disable_payment_summary_refresh():
+                from students.models import StudentPaymentSummary
+
+                StudentPaymentSummary.objects.filter(
+                    enrollment_id__in=current_enrollment_ids
+                ).delete()
+                current_enrollment.delete()
             # Create a new enrollment
             enrollment = create_enrollment_for_student(
                 student,
@@ -100,7 +109,10 @@ def create_enrollment_for_student(
     }
 
     enrollment = student.enrollments.create(**data)
-    create_student_bill(enrollment, request)  # Create student bill
+    create_or_update_accounting_bill_for_enrollment(
+        enrollment=enrollment,
+        created_by=request.user,
+    )
 
     # Create grade books
     subjects = section.section_subjects.filter(

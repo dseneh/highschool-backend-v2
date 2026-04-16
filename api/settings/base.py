@@ -79,6 +79,8 @@ TENANT_APPS = [
     "staff",  # Staff models (Department, Position, Staff, Teacher assignments, etc.)
     "grading",  # Grading models (GradeLetter, AssessmentType, GradeBook, Assessment, Grade, etc.)
     "finance",  # Finance models (BankAccount, Transaction, PaymentMethod, PaymentInstallment, etc.)
+    "accounting",  # Accounting models (Ledger, Journal, Cash, AR, Tax, Posting Bridge - Phase 2-5)
+    "hr",  # HR models (Payroll, Contracts, Workforce - Phase 6-7)
     "settings",  # Tenant-specific settings (grading settings)
     "reports",  # Reports (transaction reporting, exports, placeholders)
     "defaults",  # Default data creation for new tenants

@@ -16,45 +16,17 @@ from students.models.student import Student
 
 def get_student_net_remaining_balance(student, academic_year):
     """
-    Remaining balance for validation:
-    net bill - approved income transactions
+    Remaining balance for validation.
+    Prefer the accounting-backed student balance path.
     """
     if not student or not academic_year:
         return Decimal("0")
 
-    enrollment = student.enrollments.filter(academic_year=academic_year).first()
-    if not enrollment:
-        return Decimal("0")
-
-    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
-    total_concession = Decimal("0")
     try:
-        from students.models.billing import calculate_concessions_for_enrollment
-
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
+        balance = student.get_approved_balance(getattr(academic_year, "id", academic_year))
+        return max(Decimal("0"), Decimal(str(balance or 0)))
     except Exception:
-        total_concession = Decimal("0")
-
-    net_total_bills = gross_total_bills - total_concession
-    if net_total_bills < 0:
-        net_total_bills = Decimal("0")
-
-    approved_income_paid = (
-        student.transactions.filter(
-            academic_year=academic_year,
-            status="approved",
-            type__type="income",
-        ).aggregate(total=Sum("amount"))["total"]
-        or Decimal("0")
-    )
-
-    remaining_balance = net_total_bills - approved_income_paid
-    if remaining_balance < 0:
-        remaining_balance = Decimal("0")
-
-    return Decimal(str(remaining_balance))
+        return Decimal("0")
 
 
 def validate_amount(amount, student=None, transaction_type=None, academic_year=None):

@@ -539,6 +539,120 @@ class PaymentInstallment(BaseModel):
         return f"{self.name} - {self.academic_year}"
 
 
+def _get_net_total_bills_for_enrollment(enrollment):
+    """Return net bill total from accounting tables only."""
+    from decimal import Decimal
+    from django.db.models import Sum
+
+    try:
+        from accounting.models import AccountingStudentBill
+
+        accounting_qs = AccountingStudentBill.objects.filter(
+            enrollment=enrollment,
+            academic_year=enrollment.academic_year,
+        )
+        accounting_total = accounting_qs.aggregate(total=Sum("net_amount"))["total"]
+        if accounting_total is not None or accounting_qs.exists():
+            return Decimal(str(accounting_total or 0))
+    except Exception:
+        return Decimal("0")
+
+    return Decimal("0")
+
+
+def _get_effective_paid_for_enrollment(enrollment, academic_year):
+    """Return paid amount from accounting bills/allocations only."""
+    from decimal import Decimal
+    from django.db.models import Sum
+
+    try:
+        from accounting.models import (
+            AccountingCashTransaction,
+            AccountingStudentBill,
+            AccountingStudentPaymentAllocation,
+        )
+
+        bills_qs = AccountingStudentBill.objects.filter(
+            enrollment=enrollment,
+            academic_year=academic_year,
+        )
+        if bills_qs.exists():
+            paid_total = bills_qs.aggregate(total=Sum("paid_amount"))["total"]
+            if paid_total is not None and Decimal(str(paid_total or 0)) > 0:
+                return Decimal(str(paid_total or 0))
+
+            allocated_total = AccountingStudentPaymentAllocation.objects.filter(
+                student_bill__in=bills_qs,
+                cash_transaction__status="approved",
+            ).aggregate(total=Sum("allocated_amount"))["total"]
+            if allocated_total is not None:
+                allocated_total = Decimal(str(allocated_total or 0))
+                if allocated_total > 0:
+                    return allocated_total
+
+        # Fallback for direct cash transactions that are not allocated yet.
+        student_refs = [str(enrollment.student.id)]
+        if enrollment.student.id_number:
+            student_refs.append(enrollment.student.id_number)
+        if getattr(enrollment.student, "prev_id_number", None):
+            student_refs.append(enrollment.student.prev_id_number)
+
+        direct_cash_total = AccountingCashTransaction.objects.filter(
+            status="approved",
+            source_reference__in=student_refs,
+            transaction_date__gte=academic_year.start_date,
+            transaction_date__lte=academic_year.end_date,
+        ).aggregate(total=Sum("amount"))["total"]
+        if direct_cash_total is not None:
+            direct_cash_total = Decimal(str(direct_cash_total or 0))
+            if direct_cash_total > 0:
+                return direct_cash_total
+    except Exception:
+        return Decimal("0")
+
+    return Decimal("0")
+
+
+def _get_installments_for_academic_year(academic_year):
+    """Return normalized installments with id, due_date and percentage."""
+    installments = []
+
+    try:
+        from accounting.models import AccountingInstallmentLine
+
+        accounting_installments = AccountingInstallmentLine.objects.filter(
+            installment_plan__academic_year=academic_year,
+            installment_plan__is_active=True,
+        ).order_by("sequence")
+
+        if accounting_installments.exists():
+            for row in accounting_installments:
+                installments.append(
+                    {
+                        "id": str(row.id),
+                        "due_date": row.due_date,
+                        "percentage": row.percentage,
+                    }
+                )
+            return installments
+    except Exception:
+        pass
+
+    for row in PaymentInstallment.objects.filter(
+        academic_year=academic_year,
+        active=True,
+    ).order_by("sequence"):
+        installments.append(
+            {
+                "id": str(row.id),
+                "due_date": row.due_date,
+                "percentage": row.value,
+            }
+        )
+
+    return installments
+
+
 def get_student_payment_plan(enrollment, academic_year=None):
     """
     Generate a payment plan for a student enrollment based on active installments.
@@ -575,7 +689,6 @@ def get_student_payment_plan(enrollment, academic_year=None):
     """
     from decimal import Decimal
     from django.core.cache import cache
-    from students.models import StudentPaymentSummary
 
     if not academic_year:
         academic_year = enrollment.academic_year
@@ -584,43 +697,14 @@ def get_student_payment_plan(enrollment, academic_year=None):
     # generated with old gross-based concession behavior.
     cache_key = f"payment_plan:{enrollment.id}:{academic_year.id}"
 
-    # Get total bills for this enrollment
-    from django.db.models import Sum
-
-    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))[
-        "total"
-    ] or Decimal("0")
-
-    if gross_total_bills <= 0:
+    total_bills = _get_net_total_bills_for_enrollment(enrollment)
+    if total_bills <= 0:
         # Cache empty result too
         empty_plan = []
         cache.set(cache_key, empty_plan, 3600)  # 1 hour
         return empty_plan
 
-    # Calculate concessions
-    total_concession = Decimal("0")
-    try:
-        from students.models.billing import calculate_concessions_for_enrollment
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
-    except Exception:
-        total_concession = Decimal("0")
-
-    # Payment plan percentages should be based on net total bill.
-    total_bills = gross_total_bills - total_concession
-    if total_bills < 0:
-        total_bills = Decimal("0")
-
-    # Get approved payments for this academic year (single query for optimization)
-    # Only count income transactions (payments received), not expenses
-    approved_payments = enrollment.student.transactions.filter(
-        academic_year=academic_year,
-        status="approved",
-        type__type="income",  # Only income transactions (payments received)
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
-    # Paid amount should only be real transactions.
-    effective_paid = approved_payments
+    effective_paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
     # Calculate remaining balance (total bill - effective paid)
     remaining_balance = total_bills - effective_paid
@@ -630,13 +714,8 @@ def get_student_payment_plan(enrollment, academic_year=None):
         cache.set(cache_key, empty_plan, 3600)  # 1 hour
         return empty_plan
 
-    # Get active installments for this academic year, ordered by sequence
-    installments = PaymentInstallment.objects.filter(
-        academic_year=academic_year,
-        active=True,
-    ).order_by("sequence")
-
-    if not installments.exists():
+    installments = _get_installments_for_academic_year(academic_year)
+    if not installments:
         return []
 
     payment_plan = []
@@ -645,11 +724,10 @@ def get_student_payment_plan(enrollment, academic_year=None):
     cumulative_paid = Decimal("0")
 
     for installment in installments:
-        # Get due date from installment
-        due_date = installment.due_date
+        due_date = installment["due_date"]
 
         # Value is individual percentage (e.g., 50%, 25%, 25%)
-        individual_percentage = installment.value
+        individual_percentage = installment["percentage"]
         # Calculate installment amount based on TOTAL BILL percentages
         individual_amount = (total_bills * individual_percentage) / Decimal("100")
 
@@ -682,7 +760,7 @@ def get_student_payment_plan(enrollment, academic_year=None):
 
         payment_plan.append(
             {
-                "id": str(installment.id),
+                "id": installment["id"],
                 "percentage": float(individual_percentage),
                 "cumulative_percentage": float(cumulative_percentage),
                 "amount": float(individual_amount),
@@ -711,45 +789,17 @@ def _calculate_next_due_date_dynamic(enrollment, academic_year=None):
     """
     from decimal import Decimal
     from django.utils import timezone
-    from django.db.models import Sum
 
     if not academic_year:
         academic_year = enrollment.academic_year
 
     today = timezone.now().date()
 
-    # Get total bills for this enrollment
-    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))[
-        "total"
-    ] or Decimal("0")
-
-    if gross_total_bills <= 0:
+    total_bills = _get_net_total_bills_for_enrollment(enrollment)
+    if total_bills <= 0:
         return None
 
-    # Calculate concessions
-    total_concession = Decimal("0")
-    try:
-        from students.models.billing import calculate_concessions_for_enrollment
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
-    except Exception:
-        total_concession = Decimal("0")
-
-    # Payment schedule is based on net total bill.
-    total_bills = gross_total_bills - total_concession
-    if total_bills < 0:
-        total_bills = Decimal("0")
-
-    # Get approved payments for this academic year
-    # Only count income transactions (payments received), not expenses
-    approved_payments = enrollment.student.transactions.filter(
-        academic_year=academic_year,
-        status="approved",
-        type__type="income",  # Only income transactions (payments received)
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
-    # Paid amount should only be real transactions.
-    effective_paid = approved_payments
+    effective_paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
     # Calculate remaining balance
     remaining_balance = total_bills - effective_paid
@@ -757,23 +807,18 @@ def _calculate_next_due_date_dynamic(enrollment, academic_year=None):
         # Already paid in full - no next due date
         return None
 
-    installments = PaymentInstallment.objects.filter(
-        academic_year=academic_year,
-        active=True,
-    ).order_by("sequence")
-
-    # If no installments exist, return None
-    if not installments.exists():
+    installments = _get_installments_for_academic_year(academic_year)
+    if not installments:
         return None
 
     next_due_date = None
     cumulative_amount_due = Decimal("0")
 
     for installment in installments:
-        due_date = installment.due_date
+        due_date = installment["due_date"]
 
         # Calculate individual and cumulative amounts based on total bill percentages
-        individual_percentage = installment.value
+        individual_percentage = installment["percentage"]
         individual_amount = (total_bills * individual_percentage) / Decimal("100")
         cumulative_amount_due += individual_amount
 
@@ -826,9 +871,7 @@ def get_student_payment_status(enrollment, academic_year=None):
     """
     from decimal import Decimal
     from django.utils import timezone
-    from django.db.models import Sum
     from django.core.cache import cache
-    from students.models import StudentPaymentSummary
 
     if not academic_year:
         academic_year = enrollment.academic_year
@@ -839,35 +882,8 @@ def get_student_payment_status(enrollment, academic_year=None):
 
     today = timezone.now().date()
 
-    # Get total bills for this enrollment
-    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))[
-        "total"
-    ] or Decimal("0")
-
-    # Calculate concessions
-    total_concession = Decimal("0")
-    try:
-        from students.models.billing import calculate_concessions_for_enrollment
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
-    except Exception:
-        total_concession = Decimal("0")
-
-    # Payment status percentages should be based on net total bill.
-    total_bills = gross_total_bills - total_concession
-    if total_bills < 0:
-        total_bills = Decimal("0")
-
-    # Get approved payments for this academic year
-    # Only count income transactions (payments received), not expenses
-    approved_payments = enrollment.student.transactions.filter(
-        academic_year=academic_year,
-        status="approved",
-        type__type="income",  # Only income transactions (payments received)
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
-    # Paid amount should only be real transactions.
-    effective_paid = approved_payments
+    total_bills = _get_net_total_bills_for_enrollment(enrollment)
+    effective_paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
     # Calculate overall balance and payment status
     total_bills_float = float(total_bills)
@@ -900,11 +916,7 @@ def get_student_payment_status(enrollment, academic_year=None):
         cache.set(cache_key, early_status, 3600)  # 1 hour
         return early_status
 
-    # Get active installments for this academic year, ordered by sequence
-    installments = PaymentInstallment.objects.filter(
-        academic_year=academic_year,
-        active=True,
-    ).order_by("sequence")
+    installments = _get_installments_for_academic_year(academic_year)
 
     overdue_count = 0
     overdue_amount = Decimal("0")
@@ -915,10 +927,10 @@ def get_student_payment_status(enrollment, academic_year=None):
     )  # Cumulative percentage of installments past due date
 
     for installment in installments:
-        due_date = installment.due_date
+        due_date = installment["due_date"]
 
         # Calculate individual and cumulative amounts based on total bill percentages
-        individual_percentage = installment.value
+        individual_percentage = installment["percentage"]
         individual_amount = (total_bills * individual_percentage) / Decimal("100")
         cumulative_amount_due += individual_amount
 

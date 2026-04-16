@@ -1,4 +1,4 @@
-from django.db.models import Prefetch, Q, Sum
+from django.db.models import Prefetch, Q
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,8 +13,6 @@ from finance.models import (
 from students.models import (
     Enrollment,
     Student,
-    StudentConcession,
-    StudentEnrollmentBill,
     StudentPaymentSummary,
 )
 from students.serializers.student import (
@@ -107,7 +105,6 @@ class StudentPaymentStatusListView(APIView):
             )
             .select_related("academic_year", "section", "grade_level")
             .prefetch_related(
-                Prefetch("student_bills", queryset=StudentEnrollmentBill.objects.all()),
                 Prefetch(
                     "payment_summary",
                     queryset=StudentPaymentSummary.objects.filter(
@@ -149,64 +146,6 @@ class StudentPaymentStatusListView(APIView):
         # Convert students queryset to list to evaluate queries once
         # This ensures prefetches are loaded before we iterate
         students_list = list(students)
-
-        # Bulk calculate total_bills for all enrollments to avoid N+1 queries
-        from decimal import Decimal
-        from django.db.models import Sum
-
-        # Collect enrollment IDs from prefetched data (no queries)
-        enrollment_ids = []
-        for student in students_list:
-            if (
-                hasattr(student, "_prefetched_objects_cache")
-                and "enrollments" in student._prefetched_objects_cache
-            ):
-                prefetched_enrollments = student._prefetched_objects_cache[
-                    "enrollments"
-                ]
-                enrollment_ids.extend([e.id for e in prefetched_enrollments])
-            else:
-                # Fallback: query if not prefetched (shouldn't happen)
-                enrollment_ids.extend(
-                    [
-                        e.id
-                        for e in student.enrollments.filter(
-                            academic_year=academic_year, status="active"
-                        )
-                    ]
-                )
-
-        # Bulk aggregate total_bills per enrollment (single query for all enrollments)
-        bills_map = {}
-        if enrollment_ids:
-            bills_totals = (
-                StudentEnrollmentBill.objects.filter(enrollment_id__in=enrollment_ids)
-                .values("enrollment_id")
-                .annotate(total=Sum("amount"))
-            )
-            bills_map = {
-                item["enrollment_id"]: Decimal(str(item["total"] or 0))
-                for item in bills_totals
-            }
-
-        # Bulk aggregate concessions per student for this academic year.
-        # Concessions are applied at student + academic_year level.
-        concession_map = {}
-        student_ids = [student.id for student in students_list]
-        if student_ids:
-            concessions_totals = (
-                StudentConcession.objects.filter(
-                    student_id__in=student_ids,
-                    academic_year=academic_year,
-                    active=True,
-                )
-                .values("student_id")
-                .annotate(total=Sum("amount"))
-            )
-            concession_map = {
-                item["student_id"]: Decimal(str(item["total"] or 0))
-                for item in concessions_totals
-            }
 
         # Filter by payment status and prepare data
         filtered_students_data = []
@@ -260,22 +199,8 @@ class StudentPaymentStatusListView(APIView):
                 except (AttributeError, StudentPaymentSummary.DoesNotExist):
                     payment_summary = None
 
-            # Always compute payment status with live net-bill logic.
+            # Always compute payment status with the live accounting-backed bill logic.
             payment_status = get_student_payment_status(enrollment, academic_year)
-
-            # Override with bulk-computed net total to keep this endpoint consistent
-            # and avoid extra aggregation queries.
-            gross_total_bills = bills_map.get(enrollment.id, Decimal("0"))
-            total_concession = concession_map.get(student.id, Decimal("0"))
-            total_bills = gross_total_bills - total_concession
-            if total_bills < 0:
-                total_bills = Decimal("0")
-            payment_status["total_bills"] = float(total_bills)
-
-            total_paid = float(payment_status.get("total_paid", 0) or 0)
-            payment_status["overall_balance"] = float(
-                total_bills - Decimal(str(total_paid))
-            )
 
             # Save refreshed summary snapshot for future reads.
             try:

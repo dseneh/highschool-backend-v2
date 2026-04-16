@@ -1,6 +1,8 @@
 """
 Student model with balance calculation methods
 """
+from decimal import Decimal
+
 from django.core.validators import RegexValidator
 from django.db import models, transaction
 
@@ -161,73 +163,125 @@ class Student(BasePersonModel):
         """
         return self.get_approved_balance(academic_year_id)
 
+    def _get_accounting_bill_totals(self, academic_year):
+        from accounting.models import AccountingStudentBill
+
+        bill_totals = AccountingStudentBill.objects.filter(
+            student=self,
+            academic_year=academic_year,
+        ).aggregate(
+            gross_total=Sum("gross_amount"),
+            concession_total=Sum("concession_amount"),
+            net_total=Sum("net_amount"),
+            paid_total=Sum("paid_amount"),
+            outstanding_total=Sum("outstanding_amount"),
+        )
+
+        keys = (
+            "gross_total",
+            "concession_total",
+            "net_total",
+            "paid_total",
+            "outstanding_total",
+        )
+        if all(bill_totals.get(key) is None for key in keys):
+            return None
+
+        return {
+            key: Decimal(str(bill_totals.get(key) or 0))
+            for key in keys
+        }
+
     def get_approved_balance(self, academic_year_id=None):
         """
         Current balance after approved payments only.
-        Balance = Total Bills - approved Payments
+        Prefer the accounting student bill table as the source of truth.
         """
         academic_year = get_current_academic_year(academic_year_id)
 
         if not academic_year:
-            return 0
+            return Decimal("0")
+
+        accounting_totals = self._get_accounting_bill_totals(academic_year)
+        if accounting_totals is not None:
+            return max(Decimal("0"), accounting_totals["outstanding_total"])
 
         enrollment = self.enrollments.filter(academic_year=academic_year).first()
         if not enrollment:
-            return 0
+            return Decimal("0")
 
-        # Get total bills
-        total_bills = (
-            enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0
+        total_bills = Decimal(
+            str(enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0)
+        )
+        approved_payments = Decimal(
+            str(
+                self.transactions.filter(
+                    academic_year=academic_year,
+                    status="approved",
+                    type__type="income",
+                ).aggregate(total=Sum("amount"))["total"]
+                or 0
+            )
         )
 
-        # Get approved payments (only income transactions that are approved)
-        approved_payments = (
-            self.transactions.filter(
-                academic_year=academic_year,
-                status="approved",
-                # type__type='income'  # Only count income as payments towards balance
-            ).aggregate(total=Sum("amount"))["total"]
-            or 0
-        )
-
-        return total_bills - approved_payments
+        return max(Decimal("0"), total_bills - approved_payments)
 
     def get_projected_balance(self, academic_year_id=None):
         """
         Projected balance if all pending payments are approved.
-        Balance = Total Bills - (approved Payments + Pending Payments)
+        Prefer the accounting student bill table as the source of truth.
         """
         academic_year = get_current_academic_year(academic_year_id)
         if not academic_year:
-            return 0
+            return Decimal("0")
+
+        pending_payments = Decimal(
+            str(
+                self.transactions.filter(
+                    academic_year=academic_year,
+                    status="pending",
+                    type__type="income",
+                ).aggregate(total=Sum("amount"))["total"]
+                or 0
+            )
+        )
+
+        accounting_totals = self._get_accounting_bill_totals(academic_year)
+        if accounting_totals is not None:
+            return max(
+                Decimal("0"),
+                accounting_totals["outstanding_total"] - pending_payments,
+            )
 
         enrollment = self.enrollments.filter(academic_year=academic_year).first()
         if not enrollment:
-            return 0
+            return Decimal("0")
 
-        # Get total bills
-        total_bills = (
-            enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0
+        total_bills = Decimal(
+            str(enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0)
         )
-
-        # Get all payments (approved + pending, excluding canceled)
-        all_payments = (
-            self.transactions.filter(
-                academic_year=academic_year,
-                status__in=["approved", "pending"],
-                # type__type='income'  # Only count income as payments
-            ).aggregate(total=Sum("amount"))["total"]
-            or 0
+        approved_payments = Decimal(
+            str(
+                self.transactions.filter(
+                    academic_year=academic_year,
+                    status="approved",
+                    type__type="income",
+                ).aggregate(total=Sum("amount"))["total"]
+                or 0
+            )
         )
-        return total_bills - all_payments
+        return max(Decimal("0"), total_bills - approved_payments - pending_payments)
 
     def get_balance_summary(self, academic_year_id=None):
         """
         Simple balance summary with key financial information.
+        Prefer the accounting student bill table as the source of truth.
         """
         academic_year = get_current_academic_year(academic_year_id)
         if not academic_year:
             return {
+                "gross_bills": 0,
+                "total_concession": 0,
                 "total_bills": 0,
                 "approved_payments": 0,
                 "pending_payments": 0,
@@ -237,26 +291,9 @@ class Student(BasePersonModel):
                 "amount_pending": 0,
             }
 
-        enrollment = self.enrollments.filter(academic_year=academic_year).first()
-        if not enrollment:
-            return {
-                "total_bills": 0,
-                "approved_payments": 0,
-                "pending_payments": 0,
-                "canceled_payments": 0,
-                "approved_balance": 0,
-                "projected_balance": 0,
-                "amount_pending": 0,
-            }
-
-        # Get total bills
-        total_bills = (
-            enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0
-        )
-
-        # Get payment totals by status (only income transactions)
         payment_summary = self.transactions.filter(
-            academic_year=academic_year, type__type="income"
+            academic_year=academic_year,
+            type__type="income",
         ).aggregate(
             approved=Sum(
                 Case(
@@ -281,21 +318,58 @@ class Student(BasePersonModel):
             ),
         )
 
-        approved_payments = payment_summary["approved"] or 0
-        pending_payments = payment_summary["pending"] or 0
-        canceled_payments = payment_summary["canceled"] or 0
+        pending_payments = Decimal(str(payment_summary["pending"] or 0))
+        canceled_payments = Decimal(str(payment_summary["canceled"] or 0))
 
-        # Calculate balances
-        approved_balance = total_bills - approved_payments
-        projected_balance = total_bills - (approved_payments + pending_payments)
+        accounting_totals = self._get_accounting_bill_totals(academic_year)
+        if accounting_totals is not None:
+            approved_payments = accounting_totals["paid_total"]
+            approved_balance = max(Decimal("0"), accounting_totals["outstanding_total"])
+            projected_balance = max(Decimal("0"), approved_balance - pending_payments)
+
+            return {
+                "gross_bills": float(accounting_totals["gross_total"]),
+                "total_concession": float(accounting_totals["concession_total"]),
+                "total_bills": float(accounting_totals["net_total"]),
+                "approved_payments": float(approved_payments),
+                "pending_payments": float(pending_payments),
+                "canceled_payments": float(canceled_payments),
+                "approved_balance": float(approved_balance),
+                "projected_balance": float(projected_balance),
+                "amount_pending": float(pending_payments),
+            }
+
+        enrollment = self.enrollments.filter(academic_year=academic_year).first()
+        if not enrollment:
+            return {
+                "gross_bills": 0,
+                "total_concession": 0,
+                "total_bills": 0,
+                "approved_payments": 0,
+                "pending_payments": 0,
+                "canceled_payments": 0,
+                "approved_balance": 0,
+                "projected_balance": 0,
+                "amount_pending": 0,
+            }
+
+        total_bills = Decimal(
+            str(enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0)
+        )
+        approved_payments = Decimal(str(payment_summary["approved"] or 0))
+        approved_balance = max(Decimal("0"), total_bills - approved_payments)
+        projected_balance = max(Decimal("0"), approved_balance - pending_payments)
 
         return {
+            "gross_bills": float(total_bills),
+            "total_concession": 0.0,
             "total_bills": float(total_bills),
             "approved_payments": float(approved_payments),
             "pending_payments": float(pending_payments),
             "canceled_payments": float(canceled_payments),
             "approved_balance": float(approved_balance),
             "projected_balance": float(projected_balance),
+            "amount_pending": float(pending_payments),
         }
     
     @property

@@ -9,11 +9,11 @@ from django_tenants.utils import get_public_schema_name, schema_context
 from ..access_policies import StudentAccessPolicy
 
 from common.utils import get_enrollment_bill_summary, get_object_by_uuid_or_fields
+from accounting.models import AccountingCashTransaction, AccountingStudentBill, AccountingStudentBillLine
 from core.models import Tenant
 from finance.services.billing_pdf import generate_student_billing_pdf
-from finance.models import Transaction
 
-from ..models import Enrollment, Student, StudentEnrollmentBill
+from ..models import Enrollment, Student
 from ..serializers.student_bill import (
     StudentBillDetailSerializer,
     StudentBillSerializer,
@@ -52,23 +52,21 @@ class StudentEnrollmentBillListView(APIView):
                 {"detail": "Student not found"}, status=status.HTTP_404_NOT_FOUND
             )
 
-        year_filter = Q(enrollment__academic_year_id=year_id) if year_id else Q()
+        bill_filter = Q(student_bill__student=student)
         if not year_id or year_id == "current":
-            year_filter = Q(enrollment__academic_year__current=True)
+            bill_filter &= Q(student_bill__academic_year__current=True)
+        else:
+            bill_filter &= Q(student_bill__academic_year_id=year_id)
 
-        # Build base queryset
-        queryset = StudentEnrollmentBill.objects.select_related(
-            "enrollment",
-            "enrollment__student",
-            "enrollment__academic_year",
-            "enrollment__grade_level",
-            "enrollment__section",
-        ).order_by("-created_at")
-
-        # Filter by student if student_id is provided
-
-        f = Q(enrollment__student=student) & year_filter
-        queryset = queryset.filter(f)
+        queryset = AccountingStudentBillLine.objects.select_related(
+            "student_bill",
+            "student_bill__enrollment",
+            "student_bill__enrollment__student",
+            "student_bill__enrollment__academic_year",
+            "student_bill__enrollment__grade_level",
+            "student_bill__enrollment__section",
+            "fee_item",
+        ).filter(bill_filter).order_by("student_bill__bill_date", "line_sequence", "created_at")
         # Filter by enrollment if enrollment_id is provided
         # if enrollment_id:
         #     enrollment = get_object_or_404(Enrollment, id=enrollment_id)
@@ -95,14 +93,14 @@ class StudentEnrollmentBillListView(APIView):
         min_amount = request.GET.get("min_amount")
         if min_amount:
             try:
-                queryset = queryset.filter(amount__gte=float(min_amount))
+                queryset = queryset.filter(line_amount__gte=float(min_amount))
             except ValueError:
                 pass
 
         max_amount = request.GET.get("max_amount")
         if max_amount:
             try:
-                queryset = queryset.filter(amount__lte=float(max_amount))
+                queryset = queryset.filter(line_amount__lte=float(max_amount))
             except ValueError:
                 pass
 
@@ -116,7 +114,21 @@ class StudentEnrollmentBillListView(APIView):
 
         # If no pagination
         serializer = StudentBillSerializer(queryset, many=True)
-        enrollment = queryset.first().enrollment if queryset else None
+        first_line = queryset.first()
+        enrollment = first_line.student_bill.enrollment if first_line else None
+
+        if enrollment is None:
+            fallback_bill_filter = Q(student=student)
+            if not year_id or year_id == "current":
+                fallback_bill_filter &= Q(academic_year__current=True)
+            else:
+                fallback_bill_filter &= Q(academic_year_id=year_id)
+
+            accounting_bill = AccountingStudentBill.objects.select_related("enrollment").filter(
+                fallback_bill_filter
+            ).first()
+            enrollment = accounting_bill.enrollment if accounting_bill else None
+
         data = {}
         if enrollment:
             data = {
@@ -142,12 +154,14 @@ class StudentEnrollmentBillDetailView(APIView):
     def get(self, request, pk, *args, **kwargs):
         try:
             bill = get_object_or_404(
-                StudentEnrollmentBill.objects.select_related(
-                    "enrollment",
-                    "enrollment__student",
-                    "enrollment__academic_year",
-                    "enrollment__grade_level",
-                    "enrollment__section",
+                AccountingStudentBillLine.objects.select_related(
+                    "student_bill",
+                    "student_bill__enrollment",
+                    "student_bill__enrollment__student",
+                    "student_bill__enrollment__academic_year",
+                    "student_bill__enrollment__grade_level",
+                    "student_bill__enrollment__section",
+                    "fee_item",
                 ),
                 id=pk,
             )
@@ -155,7 +169,7 @@ class StudentEnrollmentBillDetailView(APIView):
             serializer = StudentBillDetailSerializer(bill)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
-        except StudentEnrollmentBill.DoesNotExist:
+        except AccountingStudentBillLine.DoesNotExist:
             return Response(
                 {"detail": "Bill not found"}, status=status.HTTP_404_NOT_FOUND
             )
@@ -212,26 +226,34 @@ class StudentBillingPDFView(APIView):
             billing_summary = get_enrollment_bill_summary(enrollment, include_payment_plan=True)
             
             # Get bill items
-            bills = StudentEnrollmentBill.objects.filter(
-                enrollment=enrollment
-            ).values('name', 'amount')
-            bill_items = [{"name": bill['name'], "amount": bill['amount']} for bill in bills]
+            bill_lines = AccountingStudentBillLine.objects.select_related("fee_item").filter(
+                student_bill__enrollment=enrollment,
+                student_bill__academic_year=enrollment.academic_year,
+            ).order_by("line_sequence", "created_at")
+            bill_items = [
+                {"name": line.fee_item.name, "amount": line.line_amount}
+                for line in bill_lines
+            ]
 
             # Get payment plan from billing summary
             payment_plan_data = billing_summary.get('payment_plan', []) if billing_summary else []
             
-            # Get transactions
-            transactions = Transaction.objects.filter(
-                student=student,
-                academic_year=enrollment.academic_year,
-                status='approved'
-            ).select_related('type', 'payment_method').order_by('-date')
+            # Get approved student payments from accounting cash transactions
+            transactions = AccountingCashTransaction.objects.filter(
+                Q(status="approved"),
+                Q(transaction_date__gte=enrollment.academic_year.start_date),
+                Q(transaction_date__lte=enrollment.academic_year.end_date),
+                Q(source_reference=str(student.id))
+                | Q(source_reference=student.id_number)
+                | Q(source_reference=student.prev_id_number)
+                | Q(bill_allocations__student_bill__student=student),
+            ).select_related("transaction_type", "payment_method").distinct().order_by("-transaction_date", "-updated_at")
 
             transactions_list = [
                 {
-                    'date': str(transaction.date),
-                    'reference': transaction.reference or '',
-                    'type': {'name': transaction.type.name if transaction.type else 'N/A'},
+                    'date': str(transaction.transaction_date),
+                    'reference': transaction.reference_number or '',
+                    'type': {'name': transaction.transaction_type.name if transaction.transaction_type else 'N/A'},
                     'payment_method': {'name': transaction.payment_method.name if transaction.payment_method else 'N/A'},
                     'amount': transaction.amount
                 }

@@ -518,43 +518,110 @@ def get_enrollment_bill_summary(
     FEE_TYPES = {"fee", "other", "general", "General"}
     TUITION_TYPES = {"tuition", "Tuition Fee", "Tuition"}
 
-    # Use prefetched student_bills if available, otherwise query
-    if (
-        hasattr(enrollment, "_prefetched_objects_cache")
-        and "student_bills" in enrollment._prefetched_objects_cache
-    ):
-        # Use prefetched bills (no query)
-        prefetched_bills = enrollment._prefetched_objects_cache["student_bills"]
-        total_fees = sum(
-            float(bill.amount) for bill in prefetched_bills if bill.type in FEE_TYPES
-        )
-        tuition = sum(
-            float(bill.amount)
-            for bill in prefetched_bills
-            if bill.type in TUITION_TYPES
-        )
-    else:
-        # Fallback: query if not prefetched
-        total_fees = (
-            enrollment.student_bills.filter(type__in=FEE_TYPES).aggregate(
-                total=Sum("amount")
-            )["total"]
-            or 0
-        )
-        tuition = (
-            enrollment.student_bills.filter(type__in=TUITION_TYPES).aggregate(
-                total=Sum("amount")
-            )["total"]
-            or 0
+    total_fees = Decimal("0")
+    tuition = Decimal("0")
+    accounting_mode = False
+    accounting_bill_totals = None
+    try:
+        from accounting.models import (
+            AccountingConcession,
+            AccountingStudentBill,
+            AccountingStudentBillLine,
         )
 
+        bill_totals = AccountingStudentBill.objects.filter(
+            enrollment=enrollment,
+            academic_year=enrollment.academic_year,
+        ).aggregate(
+            gross_total=Sum("gross_amount"),
+            concession_total=Sum("concession_amount"),
+            net_total=Sum("net_amount"),
+            paid_total=Sum("paid_amount"),
+            outstanding_total=Sum("outstanding_amount"),
+        )
+        if any(bill_totals.get(key) is not None for key in bill_totals):
+            accounting_bill_totals = {
+                key: Decimal(str(bill_totals.get(key) or 0))
+                for key in bill_totals
+            }
+
+        accounting_lines = AccountingStudentBillLine.objects.filter(
+            student_bill__enrollment=enrollment,
+            student_bill__academic_year=enrollment.academic_year,
+        )
+        if accounting_lines.exists():
+            accounting_mode = True
+            total_fees = Decimal(
+                str(
+                    accounting_lines.exclude(fee_item__category="tuition").aggregate(
+                        total=Sum("line_amount")
+                    )["total"]
+                    or 0
+                )
+            )
+            tuition = Decimal(
+                str(
+                    accounting_lines.filter(fee_item__category="tuition").aggregate(
+                        total=Sum("line_amount")
+                    )["total"]
+                    or 0
+                )
+            )
+        elif accounting_bill_totals is not None:
+            accounting_mode = True
+    except Exception:
+        accounting_mode = False
+
     # Calculate gross total amount (before concessions)
-    gross_total_bill = Decimal(str(total_fees)) + Decimal(str(tuition))
+    gross_total_bill = total_fees + tuition
     # Calculate concessions
     concession_data = {"items": [], "total_concession": Decimal("0")}
     try:
-        from students.models.billing import calculate_concessions_for_enrollment
-        concession_data = calculate_concessions_for_enrollment(enrollment)
+        if accounting_mode:
+            active_concessions = AccountingConcession.objects.filter(
+                student=enrollment.student,
+                academic_year=enrollment.academic_year,
+                is_active=True,
+                active=True,
+            ).order_by("created_at")
+
+            concession_items = []
+            total_concession = Decimal("0")
+
+            for concession in active_concessions:
+                target = concession.target
+                if target == AccountingConcession.ConcessionTarget.TUITION:
+                    base_amount = tuition
+                elif target == AccountingConcession.ConcessionTarget.OTHER_FEES:
+                    base_amount = total_fees
+                else:
+                    base_amount = gross_total_bill
+
+                if base_amount <= 0:
+                    amount = Decimal("0")
+                elif concession.concession_type == AccountingConcession.ConcessionType.PERCENTAGE:
+                    amount = (base_amount * Decimal(str(concession.value))) / Decimal("100")
+                else:
+                    amount = Decimal(str(concession.value))
+
+                amount = min(base_amount, max(Decimal("0"), amount)).quantize(Decimal("0.01"))
+                total_concession += amount
+                concession_items.append(
+                    {
+                        "id": str(concession.id),
+                        "concession_type": concession.concession_type,
+                        "target": concession.target,
+                        "value": float(concession.value),
+                        "amount": float(amount),
+                        "notes": concession.notes,
+                        "active": concession.is_active,
+                    }
+                )
+
+            concession_data = {
+                "items": concession_items,
+                "total_concession": total_concession,
+            }
     except Exception:
         pass
 
@@ -565,44 +632,12 @@ def get_enrollment_bill_summary(
     if net_total_bill < 0:
         net_total_bill = Decimal("0")
 
-    # Get transactional paid amount from transactions
-    # Try to use prefetched transactions first
-    # Only count approved income transactions for the current academic year
-    transactional_paid = Decimal("0")
+    if accounting_bill_totals is not None:
+        gross_total_bill = accounting_bill_totals["gross_total"]
+        total_concession = accounting_bill_totals["concession_total"]
+        net_total_bill = accounting_bill_totals["net_total"]
+
     academic_year = enrollment.academic_year
-    try:
-        if (
-            hasattr(enrollment.student, "_prefetched_objects_cache")
-            and "transactions" in enrollment.student._prefetched_objects_cache
-        ):
-            # Use prefetched transactions (no query)
-            prefetched_transactions = enrollment.student._prefetched_objects_cache[
-                "transactions"
-            ]
-            transactional_paid = sum(
-                Decimal(str(t.amount))
-                for t in prefetched_transactions
-                if t.status == "approved" 
-                and getattr(t, "academic_year_id", None) == academic_year.id
-                and getattr(getattr(t, "type", None), "type", None) == "income"
-            )
-        else:
-            # Fallback: query if not prefetched
-            transactional_paid = Decimal(
-                str(
-                    enrollment.student.transactions.filter(
-                        status="approved",
-                        academic_year=academic_year,
-                        type__type="income"  # Only income transactions (payments received)
-                    ).aggregate(
-                        total=Sum("amount")
-                    )["total"]
-                    or 0
-                )
-            )
-    except (ImportError, AttributeError):
-        # Fallback if Transaction model doesn't exist or different structure
-        transactional_paid = Decimal("0")
     # Get payment plan and payment status.
     # IMPORTANT: Always calculate these with live helpers so installment
     # schedules are based on net bill (gross - concessions), not stale snapshots.
@@ -628,14 +663,24 @@ def get_enrollment_bill_summary(
         # If payment plan/status cannot be generated, return defaults
         pass
 
-    # Payments should always reflect transactional payments only.
-    # Concessions reduce the bill (net total) and are not counted as paid cash.
-    amount_paid = transactional_paid
+    # Keep bill summary and payment schedule aligned by using the same
+    # effective-paid helper used by payment plan/status.
+    if accounting_bill_totals is not None:
+        try:
+            from finance.models import _get_effective_paid_for_enrollment
 
-    # Balance is always computed from net bill.
-    balance = net_total_bill - amount_paid
-    if balance < 0:
-        balance = Decimal("0")
+            amount_paid = Decimal(
+                str(_get_effective_paid_for_enrollment(enrollment, academic_year) or 0)
+            )
+        except Exception:
+            amount_paid = accounting_bill_totals["paid_total"]
+
+        balance = net_total_bill - amount_paid
+        if balance < 0:
+            balance = Decimal("0")
+    else:
+        amount_paid = Decimal("0")
+        balance = max(Decimal("0"), net_total_bill)
 
     return {
         "total_fees": float(total_fees),

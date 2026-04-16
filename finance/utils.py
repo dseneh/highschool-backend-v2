@@ -3,11 +3,31 @@ Utility functions for finance calculations
 """
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal
 from django.db.models import Sum
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+_PAYMENT_SUMMARY_REFRESH_DISABLED = ContextVar(
+    "payment_summary_refresh_disabled",
+    default=False,
+)
+
+
+def is_payment_summary_refresh_disabled() -> bool:
+    return bool(_PAYMENT_SUMMARY_REFRESH_DISABLED.get())
+
+
+@contextmanager
+def disable_payment_summary_refresh():
+    token = _PAYMENT_SUMMARY_REFRESH_DISABLED.set(True)
+    try:
+        yield
+    finally:
+        _PAYMENT_SUMMARY_REFRESH_DISABLED.reset(token)
 
 
 def _calculate_payment_plan_direct(enrollment, academic_year):
@@ -15,53 +35,26 @@ def _calculate_payment_plan_direct(enrollment, academic_year):
     Direct calculation of payment plan without checking cache.
     Used when explicitly recalculating for StudentPaymentSummary.
     """
-    from finance.models import PaymentInstallment
+    from finance.models import (
+        _get_effective_paid_for_enrollment,
+        _get_installments_for_academic_year,
+        _get_net_total_bills_for_enrollment,
+    )
 
-    # Get gross total bills for this enrollment
-    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))[
-        "total"
-    ] or Decimal("0")
-
-    if gross_total_bills <= 0:
+    total_bills = _get_net_total_bills_for_enrollment(enrollment)
+    if total_bills <= 0:
         return []
 
-    # Calculate concessions
-    total_concession = Decimal("0")
-    try:
-        from students.models.billing import calculate_concessions_for_enrollment
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
-    except Exception:
-        total_concession = Decimal("0")
-    
-    # Payment plan percentages and balances should be based on net total bill.
-    total_bills = gross_total_bills - total_concession
-    if total_bills < 0:
-        total_bills = Decimal("0")
-
-    # Get approved payments for this academic year
-    # Only count income transactions (payments received), not expenses
-    approved_payments = enrollment.student.transactions.filter(
-        academic_year=academic_year,
-        status="approved",
-        type__type="income",  # Only income transactions (payments received)
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
-    # Paid amount should only be real transactions.
-    effective_paid = approved_payments
+    effective_paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
     # Calculate remaining balance (total bill - effective paid)
     remaining_balance = total_bills - effective_paid
     if remaining_balance <= 0:
         # Already paid in full or overpaid - no payment plan needed
         return []
-    # Get active installments for this academic year, ordered by sequence
-    installments = PaymentInstallment.objects.filter(
-        academic_year=academic_year,
-        active=True,
-    ).order_by("sequence")
 
-    if not installments.exists():
+    installments = _get_installments_for_academic_year(academic_year)
+    if not installments:
         return []
 
     payment_plan = []
@@ -71,10 +64,10 @@ def _calculate_payment_plan_direct(enrollment, academic_year):
 
     for installment in installments:
         # Get due date from installment
-        due_date = installment.due_date
+        due_date = installment["due_date"]
 
         # Value is individual percentage (e.g., 50%, 25%, 25%)
-        individual_percentage = installment.value
+        individual_percentage = installment["percentage"]
         # Calculate installment amount based on TOTAL BILL percentages
         individual_amount = (total_bills * individual_percentage) / Decimal("100")
 
@@ -102,7 +95,7 @@ def _calculate_payment_plan_direct(enrollment, academic_year):
 
         payment_plan.append(
             {
-                "id": str(installment.id),
+                "id": installment["id"],
                 "percentage": float(individual_percentage),
                 "cumulative_percentage": float(cumulative_percentage),
                 "amount": float(individual_amount),
@@ -123,17 +116,17 @@ def _calculate_payment_status_direct(enrollment, academic_year):
     Direct calculation of payment status without checking cache.
     Used when explicitly recalculating for StudentPaymentSummary.
     """
-    from finance.models import PaymentInstallment
+    from finance.models import (
+        _get_effective_paid_for_enrollment,
+        _get_installments_for_academic_year,
+        _get_net_total_bills_for_enrollment,
+    )
     from django.utils import timezone as tz
 
     today = tz.now().date()
 
-    # Get gross total bills for this enrollment
-    gross_total_bills = enrollment.student_bills.aggregate(total=Sum("amount"))[
-        "total"
-    ] or Decimal("0")
-    
-    if gross_total_bills <= 0:
+    total_bills = _get_net_total_bills_for_enrollment(enrollment)
+    if total_bills <= 0:
         return {
             "is_on_time": True,
             "overdue_count": 0,
@@ -148,30 +141,7 @@ def _calculate_payment_status_direct(enrollment, academic_year):
             "is_paid_in_full": True,
         }
 
-    # Calculate concessions
-    total_concession = Decimal("0")
-    try:
-        from students.models.billing import calculate_concessions_for_enrollment
-        concession_data = calculate_concessions_for_enrollment(enrollment)
-        total_concession = Decimal(str(concession_data.get("total_concession", 0)))
-    except Exception:
-        total_concession = Decimal("0")
-    
-    # Payment status percentages and balances should be based on net total bill.
-    total_bills = gross_total_bills - total_concession
-    if total_bills < 0:
-        total_bills = Decimal("0")
-
-    # Get approved payments for this academic year
-    # Only count income transactions (payments received), not expenses
-    approved_payments = enrollment.student.transactions.filter(
-        academic_year=academic_year,
-        status="approved",
-        type__type="income",  # Only income transactions (payments received)
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
-    # Paid amount should only be real transactions.
-    effective_paid = approved_payments
+    effective_paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
     # Calculate overall balance and payment status
     total_bills_float = float(total_bills)
@@ -200,11 +170,7 @@ def _calculate_payment_status_direct(enrollment, academic_year):
             "is_paid_in_full": True,
         }
 
-    # Get active installments for this academic year, ordered by sequence
-    installments = PaymentInstallment.objects.filter(
-        academic_year=academic_year,
-        active=True,
-    ).order_by("sequence")
+    installments = _get_installments_for_academic_year(academic_year)
 
     overdue_count = 0
     overdue_amount = Decimal("0")
@@ -213,10 +179,10 @@ def _calculate_payment_status_direct(enrollment, academic_year):
     expected_payment_percentage = Decimal("0")
 
     for installment in installments:
-        due_date = installment.due_date
+        due_date = installment["due_date"]
 
         # Calculate individual and cumulative amounts based on total bill percentages
-        individual_percentage = installment.value
+        individual_percentage = installment["percentage"]
         individual_amount = (total_bills * individual_percentage) / Decimal("100")
         cumulative_amount_due += individual_amount
 
@@ -279,12 +245,36 @@ def calculate_student_payment_summary(enrollment, academic_year=None):
         academic_year: Optional academic year (defaults to enrollment's academic year)
 
     Returns:
-        StudentPaymentSummary instance
+        StudentPaymentSummary instance, or None if the enrollment was already deleted.
     """
     from students.models import StudentPaymentSummary
 
+    if is_payment_summary_refresh_disabled():
+        logger.debug(
+            "Payment summary refresh is temporarily disabled; skipping enrollment %s",
+            getattr(enrollment, "pk", None),
+        )
+        return None
+
+    if not enrollment or not getattr(enrollment, "pk", None):
+        return None
+
     if not academic_year:
         academic_year = enrollment.academic_year
+
+    enrollment_manager = getattr(enrollment.__class__, "_default_manager", None)
+    if enrollment_manager and not enrollment_manager.filter(pk=enrollment.pk).exists():
+        # Re-enrollment deletes the previous enrollment and cascades bill deletion.
+        # Those delete signals can still attempt a summary refresh for the now-gone row.
+        StudentPaymentSummary.objects.filter(
+            enrollment_id=enrollment.pk,
+            academic_year=academic_year,
+        ).delete()
+        logger.debug(
+            "Skipping payment summary refresh for deleted enrollment %s",
+            enrollment.pk,
+        )
+        return None
 
     # Calculate expensive operations
     # IMPORTANT: Force recalculation by bypassing cache - we're explicitly updating the summary
@@ -297,15 +287,10 @@ def calculate_student_payment_summary(enrollment, academic_year=None):
     payment_status_for_storage = payment_status.copy()
     payment_status_for_storage.pop("next_due_date", None)
 
-    # Calculate transactional paid (income only)
-    transactional_paid = enrollment.student.transactions.filter(
-        academic_year=academic_year,
-        status="approved",
-        type__type="income",  # Only income transactions (payments received)
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    from finance.models import _get_effective_paid_for_enrollment
 
-    # Store transactional paid only.
-    total_paid = transactional_paid
+    # Persist the same accounting-backed paid amount used by the live payment plan/status helpers.
+    total_paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
     # Create or update summary record
     summary, created = StudentPaymentSummary.objects.update_or_create(

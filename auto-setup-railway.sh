@@ -9,9 +9,9 @@ echo "RELEASE PHASE: Starting setup/migrations"
 echo "###############################################"
 echo ""
 
-# Step 1: Create migrations if they don't exist
-echo "Step 1: Creating migrations from models..."
-python manage.py makemigrations --noinput
+# Step 1: Validate that all model changes are already captured in committed migrations
+echo "Step 1: Checking for missing migration files..."
+python manage.py makemigrations --check --dry-run --noinput
 echo "✅ Step 1 complete"
 echo ""
 

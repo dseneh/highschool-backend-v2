@@ -174,6 +174,10 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
 
         if show_balance:
             balance_value = getattr(instance, "balance_total", None)
+            if balance_value is None:
+                balance_value = instance.get_approved_balance(
+                    selected_academic_year.id if selected_academic_year else None
+                )
             try:
                 response["balance"] = float(balance_value) if balance_value is not None else None
             except (TypeError, ValueError):
@@ -181,6 +185,10 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
 
         if show_paid:
             paid_value = getattr(instance, "paid_total", None)
+            if paid_value is None:
+                paid_value = instance.get_balance_summary(
+                    selected_academic_year.id if selected_academic_year else None
+                ).get("approved_payments")
             try:
                 response["paid"] = float(paid_value) if paid_value is not None else None
             except (TypeError, ValueError):
