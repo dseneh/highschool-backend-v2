@@ -40,9 +40,18 @@ class TeacherSectionViewSet(viewsets.ModelViewSet):
         # Apply filters
         teacher_id = self.request.query_params.get("teacher")
         if teacher_id:
-            queryset = queryset.filter(
-                Q(teacher__id=teacher_id) | Q(teacher__id_number=teacher_id)
-            )
+            staff_filter = Q(teacher__id=teacher_id) | Q(teacher__id_number=teacher_id)
+            # Also resolve via hr.Employee UUID or id_number
+            from hr.models import Employee
+
+            emp = Employee.objects.filter(
+                Q(id=teacher_id) | Q(id_number=teacher_id)
+            ).first()
+            if emp:
+                staff_filter |= Q(teacher__id_number=emp.id_number)
+                if emp.user_account_id_number:
+                    staff_filter |= Q(teacher__user_account_id_number=emp.user_account_id_number)
+            queryset = queryset.filter(staff_filter).distinct()
 
         section_id = self.request.query_params.get("section")
         if section_id:

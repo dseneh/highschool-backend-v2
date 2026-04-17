@@ -54,6 +54,7 @@ urlpatterns = [
     path(api_base, include("finance.urls")),
     path(api_base, include("accounting.urls")),
     path(api_base, include("staff.urls")),
+    path(api_base, include("hr.urls")),
     path(api_base + "grading/", include("grading.urls")),
     path(api_base + "settings/", include("settings.urls")),
     path(api_base + "reports/", include("reports.urls")),

@@ -14,6 +14,54 @@ from .models import (
 )
 
 
+class StaffOrEmployeePKField(serializers.PrimaryKeyRelatedField):
+    """Accept either a Staff UUID or an hr.Employee UUID (resolved to Staff
+    via shared user_account_id_number, auto-creating Staff if needed)."""
+
+    def to_internal_value(self, data):
+        try:
+            return super().to_internal_value(data)
+        except serializers.ValidationError:
+            from hr.models import Employee
+
+            try:
+                emp = Employee.objects.get(id=data)
+            except (Employee.DoesNotExist, ValueError):
+                self.fail("does_not_exist", pk_value=data)
+
+            # Try to find existing Staff via user_account_id_number
+            if emp.user_account_id_number:
+                staff = (
+                    self.get_queryset()
+                    .filter(user_account_id_number=emp.user_account_id_number)
+                    .first()
+                )
+                if staff:
+                    return staff
+
+            # Try to find existing Staff via matching id_number
+            staff = self.get_queryset().filter(id_number=emp.id_number).first()
+            if staff:
+                return staff
+
+            # Auto-create a Staff record from the Employee
+            staff = Staff.objects.create(
+                first_name=emp.first_name,
+                middle_name=emp.middle_name or "",
+                last_name=emp.last_name,
+                email=emp.email or "",
+                phone_number=emp.phone_number or "",
+                gender=emp.gender or "",
+                date_of_birth=emp.date_of_birth,
+                id_number=emp.id_number,
+                is_teacher=emp.is_teacher,
+                hire_date=emp.hire_date,
+                user_account_id_number=emp.user_account_id_number,
+                status=emp.employment_status or "active",
+            )
+            return staff
+
+
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -368,6 +416,8 @@ class StaffDetailSerializer(StaffSerializer):
 
 
 class TeacherSectionSerializer(serializers.ModelSerializer):
+    teacher = StaffOrEmployeePKField(queryset=Staff.objects.all())
+
     class Meta:
         model = TeacherSection
         fields = [
@@ -401,6 +451,7 @@ class TeacherSectionSerializer(serializers.ModelSerializer):
 
 
 class TeacherSubjectSerializer(serializers.ModelSerializer):
+    teacher = StaffOrEmployeePKField(queryset=Staff.objects.all())
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
         required=False,

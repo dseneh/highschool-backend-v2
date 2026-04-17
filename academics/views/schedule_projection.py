@@ -9,13 +9,41 @@ from academics.serializers import (
     StudentScheduleProjectionSerializer,
     TeacherScheduleProjectionSerializer,
 )
-from staff.models import TeacherSchedule
+from staff.models import Staff, TeacherSchedule
+
+
+def _resolve_staff_id(teacher_id):
+    """Resolve an Employee UUID or Staff UUID to a Staff UUID."""
+    if Staff.objects.filter(id=teacher_id).exists():
+        return teacher_id
+
+    from hr.models import Employee
+    from django.db.models import Q
+
+    try:
+        emp = Employee.objects.get(id=teacher_id)
+    except (Employee.DoesNotExist, ValueError):
+        return teacher_id
+
+    if emp.user_account_id_number:
+        staff = Staff.objects.filter(
+            user_account_id_number=emp.user_account_id_number
+        ).first()
+        if staff:
+            return str(staff.id)
+
+    staff = Staff.objects.filter(id_number=emp.id_number).first()
+    if staff:
+        return str(staff.id)
+
+    return teacher_id
 
 
 class TeacherScheduleProjectionListView(APIView):
     permission_classes = [AcademicsAccessPolicy]
 
     def get(self, request, teacher_id):
+        resolved_id = _resolve_staff_id(teacher_id)
         queryset = (
             TeacherSchedule.objects.select_related(
                 "teacher",
@@ -27,7 +55,7 @@ class TeacherScheduleProjectionListView(APIView):
                 "class_schedule__subject",
                 "class_schedule__subject__subject",
             )
-            .filter(teacher_id=teacher_id, active=True, class_schedule__active=True)
+            .filter(teacher_id=resolved_id, active=True, class_schedule__active=True)
             .order_by("class_schedule__section_time_slot__day_of_week", "class_schedule__section_time_slot__start_time")
         )
 

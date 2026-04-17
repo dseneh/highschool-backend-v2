@@ -27,11 +27,27 @@ def _get_teacher_staff(user):
 
 
 def _get_teacher_staff_by_id_number(teacher_id_number):
-    """Resolve a teacher staff record by staff id_number."""
+    """Resolve a teacher staff record by staff id_number or hr.Employee id_number."""
     if not teacher_id_number:
         return None
 
+    # Try Staff model first
     staff = Staff.objects.filter(id_number=teacher_id_number).only("id", "id_number", "is_teacher").first()
+
+    # Fallback: look up via hr.Employee → user_account_id_number → Staff
+    if not staff:
+        from hr.models import Employee
+
+        employee = Employee.objects.filter(
+            id_number=teacher_id_number
+        ).only("user_account_id_number").first()
+
+        if employee and employee.user_account_id_number:
+            staff = Staff.objects.filter(
+                Q(user_account_id_number=employee.user_account_id_number)
+                | Q(id_number=employee.user_account_id_number)
+            ).only("id", "id_number", "is_teacher").first()
+
     if not staff or not staff.is_teacher:
         raise PermissionDenied("Selected staff is not a valid teacher.")
 

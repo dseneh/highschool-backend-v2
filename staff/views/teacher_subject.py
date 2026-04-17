@@ -46,9 +46,18 @@ class TeacherSubjectViewSet(viewsets.ModelViewSet):
         # Apply filters
         teacher_id = self.request.query_params.get("teacher")
         if teacher_id:
-            queryset = queryset.filter(
-                Q(teacher__id=teacher_id) | Q(teacher__id_number=teacher_id)
-            )
+            staff_filter = Q(teacher__id=teacher_id) | Q(teacher__id_number=teacher_id)
+            # Also resolve via hr.Employee UUID or id_number
+            from hr.models import Employee
+
+            emp = Employee.objects.filter(
+                Q(id=teacher_id) | Q(id_number=teacher_id)
+            ).first()
+            if emp:
+                staff_filter |= Q(teacher__id_number=emp.id_number)
+                if emp.user_account_id_number:
+                    staff_filter |= Q(teacher__user_account_id_number=emp.user_account_id_number)
+            queryset = queryset.filter(staff_filter).distinct()
 
         section_subject_id = self.request.query_params.get("section_subject")
         if section_subject_id:
@@ -81,35 +90,18 @@ class TeacherSubjectViewSet(viewsets.ModelViewSet):
                 {"detail": "section_subject is required for teacher subject assignment."}
             )
 
-        # teacher_has_section = TeacherSection.objects.filter(
-        #     teacher=teacher,
-        #     section=section_subject.section,
-        # ).exists()
-        # if not teacher_has_section:
-        #     raise serializers.ValidationError(
-        #         {"detail": "Teacher must be assigned to the section before assigning its subjects"}
-        #     )
-        created, _ = TeacherSubject.objects.get_or_create(
+        # Use get_or_create to prevent duplicates – do NOT also call
+        # serializer.save() because that would insert a second row.
+        obj, created = TeacherSubject.objects.get_or_create(
             teacher=teacher,
             section_subject=section_subject,
             defaults={
                 "subject": subject or section_subject.subject,
                 "created_by": self.request.user,
                 "updated_by": self.request.user,
-            })
-
-        # Check if assignment already exists
-        # if TeacherSubject.objects.filter(
-        #     teacher=teacher,
-        #     section_subject=section_subject,
-        # ).exists():
-        #     raise serializers.ValidationError(
-        #         {"detail": "Teacher is already assigned to this section subject"}
-        #     )
-
-        serializer.save(
-            subject=subject or section_subject.subject,
-            created_by=self.request.user,
-            updated_by=self.request.user,
+            },
         )
+        # Point the serializer at the (possibly existing) instance so
+        # DRF's CreateModelMixin.create() can serialize the response.
+        serializer.instance = obj
 

@@ -390,6 +390,12 @@ class TeacherSubject(BaseModel):
 
     class Meta:
         db_table = 'teacher_subject'
+        constraints = [
+            models.UniqueConstraint(
+                fields=["teacher", "section_subject"],
+                name="unique_teacher_section_subject",
+            ),
+        ]
 
 
 class TeacherSchedule(BaseModel):
