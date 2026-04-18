@@ -16,7 +16,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # Security
 SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-me-in-production")
 DEBUG = config("DEBUG", default=True, cast=bool)
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
+# ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
+ALLOWED_HOSTS = ["*"]
 
 if not ALLOWED_HOSTS:
     railway_public_domain = config("RAILWAY_PUBLIC_DOMAIN", default="").strip()
@@ -57,6 +58,8 @@ SHARED_APPS = [
     "rest_framework_simplejwt",
     "corsheaders",
     "storages",
+    # Audit trail
+    "auditlog",  # django-auditlog - change tracking (LogEntry in public + tenant schemas)
     # Local shared apps (data in public schema OR abstract models/utilities)
     "common",  # Abstract base models (BaseModel, BasePersonModel) - no DB tables
     "users",  # User - lives in public schema (global users)
@@ -73,6 +76,8 @@ TENANT_APPS = [
     "django.contrib.staticfiles",  # Tenant-specific static file references
     # django-tenant-users permissions (needed in tenant schemas)
     "tenant_users.permissions",
+    # Audit trail
+    "auditlog",  # django-auditlog - change tracking (LogEntry per tenant)
     # Local tenant apps (tenant-specific data)
     "academics",  # Academic models (AcademicYear, Semester, Division, GradeLevel, etc.)
     "students",  # Student models (Student, Enrollment, Attendance, GradeBook, etc.)
@@ -103,6 +108,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "common.audit_middleware.AuditlogDeviceMiddleware",  # Captures actor + IP + User-Agent for audit trail
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

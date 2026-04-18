@@ -400,6 +400,9 @@ class UserViewSet(viewsets.ModelViewSet):
             user.is_default_password = False
             user.last_password_updated = timezone.now()
             user.save()
+
+        from common.audit_utils import log_auth_event
+        log_auth_event(request, user, "password_changed")
         
         # Return updated user payload (same format as login)
         user_serializer = UserSerializer(user, context={'request': request})
@@ -492,5 +495,8 @@ class UserViewSet(viewsets.ModelViewSet):
             sent = send_password_reset_email(user, reset_url)
             if not sent:
                 logger.error("Failed to send password reset email to user %s", user.username)
+
+            from common.audit_utils import log_auth_event
+            log_auth_event(request, user, "password_reset_requested")
 
             return safe_response

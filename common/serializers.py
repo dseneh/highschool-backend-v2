@@ -1,6 +1,40 @@
 """
 Common serializer mixins and utilities for reusable serializer functionality.
 """
+from rest_framework import serializers
+
+from auditlog.models import LogEntry
+
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    """Read-only serializer for django-auditlog LogEntry records."""
+
+    actor_email = serializers.EmailField(source="actor.email", read_only=True, default=None)
+    content_type_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LogEntry
+        fields = [
+            "id",
+            "content_type",
+            "content_type_name",
+            "object_id",
+            "object_repr",
+            "action",
+            "changes",
+            "actor",
+            "actor_email",
+            "remote_addr",
+            "timestamp",
+            "additional_data",
+        ]
+        read_only_fields = fields
+
+    def get_content_type_name(self, obj) -> str:
+        ct = obj.content_type
+        if ct:
+            return f"{ct.app_label}.{ct.model}"
+        return ""
 
 
 class PhotoURLMixin:

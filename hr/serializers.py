@@ -157,7 +157,7 @@ class EmployeeDocumentSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "id_number": instance.employee.id_number,
+            "employee_number": instance.employee.employee_number,
             "full_name": instance.employee.get_full_name(),
         }
         data["compliance_status"] = instance.get_compliance_status()
@@ -212,13 +212,13 @@ class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "id_number": instance.employee.id_number,
+            "employee_number": instance.employee.employee_number,
             "full_name": instance.employee.get_full_name(),
         }
         if instance.reviewer:
             data["reviewer"] = {
                 "id": str(instance.reviewer.id),
-                "id_number": instance.reviewer.id_number,
+                "employee_number": instance.reviewer.employee_number,
                 "full_name": instance.reviewer.get_full_name(),
             }
         return data
@@ -271,13 +271,13 @@ class EmployeeWorkflowTaskSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "id_number": instance.employee.id_number,
+            "employee_number": instance.employee.employee_number,
             "full_name": instance.employee.get_full_name(),
         }
         if instance.assigned_to:
             data["assigned_to"] = {
                 "id": str(instance.assigned_to.id),
-                "id_number": instance.assigned_to.id_number,
+                "employee_number": instance.assigned_to.employee_number,
                 "full_name": instance.assigned_to.get_full_name(),
             }
         return data
@@ -364,7 +364,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "id_number": instance.employee.id_number,
+            "employee_number": instance.employee.employee_number,
             "full_name": instance.employee.get_full_name(),
         }
         data["leave_type"] = {
@@ -406,7 +406,7 @@ class EmployeeAttendanceSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "id_number": instance.employee.id_number,
+            "employee_number": instance.employee.employee_number,
             "full_name": instance.employee.get_full_name(),
         }
         return data
@@ -508,7 +508,7 @@ class EmployeeCompensationSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "id_number": instance.employee.id_number,
+            "employee_number": instance.employee.employee_number,
             "full_name": instance.employee.get_full_name(),
         }
         summary = instance.get_compensation_summary()
@@ -578,7 +578,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
 
 
 class EmployeeSerializer(serializers.ModelSerializer):
-    id_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    employee_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     department = serializers.PrimaryKeyRelatedField(
         queryset=EmployeeDepartment.objects.all(),
         required=False,
@@ -601,7 +601,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = [
             "id",
-            "id_number",
+            "employee_number",
             "first_name",
             "middle_name",
             "last_name",
@@ -642,8 +642,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
-        if not validated_data.get("id_number"):
-            validated_data["id_number"] = self._generate_id_number()
+        if not validated_data.get("employee_number"):
+            validated_data["employee_number"] = self._generate_employee_number()
 
         position = validated_data.get("position")
         if position and not validated_data.get("job_title"):
@@ -661,12 +661,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validated_data["employment_type"] = position.employment_type
         return super().update(instance, validated_data)
 
-    def _generate_id_number(self):
+    def _generate_employee_number(self):
         last_employee = Employee.objects.order_by("created_at").last()
         next_number = 1
 
-        if last_employee and last_employee.id_number:
-            suffix = "".join(ch for ch in last_employee.id_number if ch.isdigit())
+        if last_employee and last_employee.employee_number:
+            suffix = "".join(ch for ch in last_employee.employee_number if ch.isdigit())
             if suffix.isdigit():
                 next_number = int(suffix) + 1
 
@@ -677,9 +677,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
         data["full_name"] = instance.get_full_name()
         data["photo_url"] = instance.photo.url if getattr(instance, "photo", None) else None
         data["has_photo"] = bool(getattr(instance, "photo", None))
-        data["is_teaching_staff"] = instance.is_teacher or (
-            instance.position is not None and getattr(instance.position, "can_teach", False)
-        )
 
         if instance.department:
             data["department"] = {
@@ -698,7 +695,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if instance.manager:
             data["manager"] = {
                 "id": str(instance.manager.id),
-                "id_number": instance.manager.id_number,
+                "employee_number": instance.manager.employee_number,
                 "full_name": instance.manager.get_full_name(),
             }
 
@@ -713,96 +710,4 @@ class EmployeeSerializer(serializers.ModelSerializer):
             data["leave_requests"] = []
             data["leave_balances"] = []
 
-        # Add teacher sections/subjects from the staff module
-        if instance.is_teacher:
-            staff = self._resolve_staff(instance)
-            if staff:
-                data["sections"] = self._get_staff_sections(staff)
-                data["subjects"] = self._get_staff_subjects(staff)
-            else:
-                data["sections"] = []
-                data["subjects"] = []
-        else:
-            data["sections"] = []
-            data["subjects"] = []
-
         return data
-
-    def _resolve_staff(self, employee):
-        """Find the matching Staff record for an Employee."""
-        from staff.models import Staff
-
-        if employee.user_account_id_number:
-            staff = Staff.objects.filter(
-                user_account_id_number=employee.user_account_id_number
-            ).first()
-            if staff:
-                return staff
-
-        return Staff.objects.filter(id_number=employee.id_number).first()
-
-    def _get_staff_sections(self, staff):
-        sections = staff.classes.select_related(
-            "section", "section__grade_level"
-        ).all()
-        return [
-            {
-                "id": ts.section.id,
-                "name": ts.section.name,
-                "grade_level": (
-                    {
-                        "id": ts.section.grade_level.id,
-                        "name": ts.section.grade_level.name,
-                    }
-                    if ts.section.grade_level
-                    else None
-                ),
-            }
-            for ts in sections
-        ]
-
-    def _get_staff_subjects(self, staff):
-        subjects = staff.subjects.select_related(
-            "subject",
-            "section_subject",
-            "section_subject__section",
-            "section_subject__section__grade_level",
-            "section_subject__subject",
-        ).all()
-        return [
-            {
-                "id": ts.id,
-                "section_subject": (
-                    {
-                        "id": ts.section_subject.id,
-                        "section": {
-                            "id": ts.section_subject.section.id,
-                            "name": ts.section_subject.section.name,
-                            "grade_level": (
-                                {
-                                    "id": ts.section_subject.section.grade_level.id,
-                                    "name": ts.section_subject.section.grade_level.name,
-                                }
-                                if ts.section_subject.section.grade_level
-                                else None
-                            ),
-                        },
-                        "subject": {
-                            "id": ts.section_subject.subject.id,
-                            "name": ts.section_subject.subject.name,
-                        },
-                    }
-                    if ts.section_subject
-                    else None
-                ),
-                "subject": (
-                    {
-                        "id": ts.subject.id,
-                        "name": ts.subject.name,
-                    }
-                    if ts.subject
-                    else None
-                ),
-            }
-            for ts in subjects
-        ]

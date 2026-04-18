@@ -1,12 +1,21 @@
 """
-URL configuration for common app (cache and dashboard endpoints).
+URL configuration for common app (cache, dashboard, and audit log endpoints).
 """
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+
 from common import views_cache, views_dashboard
+from common.views import AuditLogViewSet
 
 app_name = 'common'
 
+router = DefaultRouter()
+router.register(r'audit-logs', AuditLogViewSet, basename='audit-log')
+
 urlpatterns = [
+    # Audit log API (router-based)
+    path('', include(router.urls)),
+
     # Dashboard summary
     path('dashboard/summary/', views_dashboard.get_dashboard_summary, name='dashboard_summary'),
     

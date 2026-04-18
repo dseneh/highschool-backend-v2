@@ -4,10 +4,8 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
-from common.utils import get_object_by_uuid_or_fields
 from .access_policies import HRAccessPolicy
 
 from .models import (
@@ -98,7 +96,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__id_number__icontains=search)
+                | Q(employee__employee_number__icontains=search)
                 | Q(leave_type__name__icontains=search)
             )
 
@@ -153,7 +151,7 @@ class EmployeeDocumentViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__id_number__icontains=search)
+                | Q(employee__employee_number__icontains=search)
                 | Q(title__icontains=search)
                 | Q(document_number__icontains=search)
                 | Q(issuing_authority__icontains=search)
@@ -197,7 +195,7 @@ class EmployeeAttendanceViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__id_number__icontains=search)
+                | Q(employee__employee_number__icontains=search)
                 | Q(notes__icontains=search)
             )
 
@@ -234,7 +232,7 @@ class EmployeePerformanceReviewViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__id_number__icontains=search)
+                | Q(employee__employee_number__icontains=search)
                 | Q(review_title__icontains=search)
                 | Q(review_period__icontains=search)
             )
@@ -272,7 +270,7 @@ class EmployeeWorkflowTaskViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__id_number__icontains=search)
+                | Q(employee__employee_number__icontains=search)
                 | Q(title__icontains=search)
                 | Q(description__icontains=search)
             )
@@ -398,7 +396,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 | Q(last_name__icontains=search)
                 | Q(middle_name__icontains=search)
                 | Q(email__icontains=search)
-                | Q(id_number__icontains=search)
+                | Q(employee_number__icontains=search)
                 | Q(job_title__icontains=search)
             )
 
@@ -410,30 +408,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         if employment_status:
             queryset = queryset.filter(employment_status__iexact=employment_status)
 
-        is_teacher = self.request.query_params.get("is_teacher")
-        if is_teacher is not None:
-            if is_teacher.lower() in ['true', '1']:
-                queryset = queryset.filter(
-                    Q(is_teacher=True) | Q(position__can_teach=True)
-                )
-            elif is_teacher.lower() in ['false', '0']:
-                queryset = queryset.filter(
-                    Q(is_teacher=False) & (Q(position__can_teach=False) | Q(position__isnull=True))
-                )
-
         return queryset.order_by("first_name", "last_name")
-
-    def get_object(self):
-        """Support lookup by both UUID id and id_number."""
-        lookup_value = self.kwargs.get("pk")
-        try:
-            return get_object_by_uuid_or_fields(
-                Employee,
-                lookup_value,
-                fields=['id_number']
-            )
-        except Employee.DoesNotExist:
-            raise NotFound("Employee does not exist with this id")
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -441,22 +416,12 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
 
-    @action(detail=False, methods=["get"], url_path=r"number/(?P<id_number>[^/.]+)")
-    def by_number(self, request, id_number=None):
-        employee = self.get_queryset().filter(id_number=id_number).first()
+    @action(detail=False, methods=["get"], url_path=r"number/(?P<employee_number>[^/.]+)")
+    def by_number(self, request, employee_number=None):
+        employee = self.get_queryset().filter(employee_number=employee_number).first()
         if not employee:
             return Response({"detail": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(self.get_serializer(employee).data)
-
-    @action(detail=False, methods=["get"], url_path="teachers")
-    def teachers(self, request):
-        queryset = self.get_queryset().filter(
-            Q(is_teacher=True) | Q(position__can_teach=True)
-        ).distinct()
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            return self.get_paginated_response(self.get_serializer(page, many=True).data)
-        return Response(self.get_serializer(queryset, many=True).data)
 
     @action(detail=True, methods=["post"])
     def terminate(self, request, pk=None):

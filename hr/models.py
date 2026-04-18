@@ -92,7 +92,7 @@ class Employee(BasePersonModel):
         ON_LEAVE = "on_leave", "On Leave"
         RETIRED = "retired", "Retired"
 
-    id_number = models.CharField(max_length=30, unique=True)
+    employee_number = models.CharField(max_length=30, unique=True)
     hire_date = models.DateField(null=True, blank=True, default=None)
     termination_date = models.DateField(null=True, blank=True, default=None)
     termination_reason = models.TextField(blank=True, null=True, default=None)
@@ -144,14 +144,14 @@ class Employee(BasePersonModel):
         ordering = ["first_name", "last_name"]
         constraints = [
             models.UniqueConstraint(
-                fields=["id_number"],
-                name="hr_uniq_id_number_per_tenant",
-                condition=~models.Q(id_number=""),
+                fields=["employee_number"],
+                name="hr_uniq_employee_number_per_tenant",
+                condition=~models.Q(employee_number=""),
             )
         ]
 
     def __str__(self):
-        return f"{self.id_number} - {self.get_full_name()}"
+        return f"{self.employee_number} - {self.get_full_name()}"
 
     def get_leave_requests_for_display(self, leave_requests=None):
         if leave_requests is not None:

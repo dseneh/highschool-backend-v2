@@ -42,7 +42,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             department=department,
             position=position,
             employment_status=Employee.EmploymentStatus.ACTIVE,
@@ -52,7 +52,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         self.assertEqual(employee.position.title, "HR Officer")
         self.assertEqual(employee.get_full_name(), "Ada Lovelace")
 
-    def test_employee_serializer_allows_missing_id_number(self):
+    def test_employee_serializer_allows_missing_employee_number(self):
         serializer = EmployeeSerializer(
             data={
                 "first_name": "Ada",
@@ -66,7 +66,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         )
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        self.assertNotIn("id_number", serializer.errors)
+        self.assertNotIn("employee_number", serializer.errors)
 
     def test_employee_viewset_uses_hr_access_policy(self):
         self.assertEqual(EmployeeViewSet.permission_classes, [HRAccessPolicy])
@@ -76,7 +76,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         leave_request = LeaveRequest(
@@ -103,7 +103,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         approved_request = LeaveRequest(
@@ -151,7 +151,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
             hire_date=date(2025, 1, 15),
         )
@@ -184,7 +184,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         housing = PayrollComponent(
@@ -228,7 +228,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         attendance = EmployeeAttendance(
@@ -248,7 +248,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         expired_document = EmployeeDocument(
@@ -274,7 +274,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         review = EmployeePerformanceReview(
@@ -295,7 +295,7 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         employee = Employee(
             first_name="Ada",
             last_name="Lovelace",
-            id_number="EMP-0001",
+            employee_number="EMP-0001",
             employment_status=Employee.EmploymentStatus.ACTIVE,
         )
         task = EmployeeWorkflowTask(

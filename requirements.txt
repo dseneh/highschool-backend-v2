@@ -51,6 +51,9 @@ adrf>=0.1.12
 redis==5.2.1
 django-redis==5.4.0
 
+# Audit trail
+django-auditlog>=3.0.0
+
 # Monitoring and debugging
 sentry-sdk==2.20.0
 django-debug-toolbar==4.4.6
@@ -66,3 +69,4 @@ wheel==0.45.1
 # django-brotli==0.3.0  # Removed - doesn't support Django 6 (requires django<6)
 # The application handles missing django-brotli gracefully via try/except in settings
 # Alternative: Use Django's built-in GZipMiddleware or WhiteNoise compression
+geoip2>=5.0.0

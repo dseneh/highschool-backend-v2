@@ -730,6 +730,9 @@ class StudentDetailView(APIView):
         
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def patch(self, request, id):
+        return self.put(request, id)
+
     def delete(self, request, id):
         student = self.get_object(id)
         force_delete = request.query_params.get("force_delete", "false").lower()

@@ -75,3 +75,6 @@ htmlcov/
 
 # Test artifacts
 .pytest_cache/
+# GeoIP database (downloaded, not committed)
+geoip/*.mmdb
+geo.key

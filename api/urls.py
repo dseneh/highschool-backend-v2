@@ -58,6 +58,7 @@ urlpatterns = [
     path(api_base + "grading/", include("grading.urls")),
     path(api_base + "settings/", include("settings.urls")),
     path(api_base + "reports/", include("reports.urls")),
+    path(api_base, include("common.urls")),
 ]
 
 # Serve media files in development

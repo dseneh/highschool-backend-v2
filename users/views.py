@@ -65,6 +65,31 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
     """
     serializer_class = MultiFieldTokenObtainPairSerializer
 
+    def post(self, request, *args, **kwargs):
+        from common.audit_utils import log_auth_event
+
+        identifier = request.data.get("username", "")
+        try:
+            response = super().post(request, *args, **kwargs)
+        except Exception:
+            log_auth_event(
+                request,
+                None,
+                "login_failed",
+                details={"identifier": identifier},
+            )
+            raise
+
+        user_data = response.data.get("user", {})
+        user_id = user_data.get("id")
+        if user_id:
+            try:
+                user = User.objects.get(pk=user_id)
+                log_auth_event(request, user, "login_success")
+            except User.DoesNotExist:
+                pass
+        return response
+
 
 class CurrentUserView(APIView):
     """
@@ -636,6 +661,9 @@ class PasswordChangeView(APIView):
                     from django.utils import timezone
                     user.last_password_updated = timezone.now()
                     user.save()
+
+                    from common.audit_utils import log_auth_event
+                    log_auth_event(request, user, "password_changed")
                     
                     return Response(
                         {
@@ -752,6 +780,9 @@ class PasswordResetRequestView(APIView):
                 if not sent:
                     logger.error("Failed to send password reset email to user %s", user.username)
 
+                from common.audit_utils import log_auth_event
+                log_auth_event(request, user, "password_reset_requested")
+
                 return _safe_response
 
             except Exception as exc:
@@ -848,6 +879,9 @@ class PasswordResetConfirmView(APIView):
             user.is_default_password = False
             user.last_password_updated = timezone.now()
             user.save(update_fields=["password", "is_default_password", "last_password_updated"])
+
+            from common.audit_utils import log_auth_event
+            log_auth_event(request, user, "password_reset")
 
             school = getattr(request, 'tenant', None)
             school_workspace = getattr(school, 'schema_name', None) if school else None
