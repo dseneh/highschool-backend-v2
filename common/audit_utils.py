@@ -14,7 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 def get_client_ip(request):
-    """Extract client IP address from the request."""
+    """Extract client IP address from the request.
+
+    Priority:
+    1. X-Real-Client-IP — set explicitly by our Next.js proxy (most trusted)
+    2. X-Forwarded-For — standard proxy header (first IP in chain)
+    3. REMOTE_ADDR — direct connection IP (fallback)
+    """
+    # Our own trusted header forwarded from the Next.js server
+    real_client_ip = request.META.get("HTTP_X_REAL_CLIENT_IP")
+    if real_client_ip:
+        return real_client_ip.strip()
+
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
         return x_forwarded_for.split(",")[0].strip()
