@@ -6,12 +6,12 @@ class AccountingTransactionAccessPolicy(BaseSchoolAccessPolicy):
 
     statements = [
         {
-            "action": ["list", "retrieve"],
+            "action": ["list", "retrieve", "export_transactions"],
             "principal": "authenticated",
             "effect": "allow",
         },
         {
-            "action": ["create", "update", "partial_update", "set_status", "approve", "reject"],
+            "action": ["create", "update", "partial_update", "set_status", "approve", "reject", "bulk_upload"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:admin,accountant,data_entry",

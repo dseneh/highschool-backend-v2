@@ -2,9 +2,10 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
 from accounting.access_policies import (
@@ -147,6 +148,43 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if isinstance(value, int):
             return value == 1
         return False
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Compute summary aggregates on the full filtered queryset (before pagination).
+        agg = queryset.aggregate(
+            pending_count=Count("id", filter=Q(status="pending")),
+            approved_count=Count("id", filter=Q(status="approved")),
+            rejected_count=Count("id", filter=Q(status="rejected")),
+            posted_count=Count("id", filter=Q(journal_entry__isnull=False)),
+            not_posted_count=Count("id", filter=Q(journal_entry__isnull=True)),
+            approved_net_total=Sum("amount", filter=Q(status="approved")),
+            approved_expense_total=Sum(
+                "amount",
+                filter=Q(status="approved", transaction_type__transaction_category="expense"),
+            ),
+        )
+
+        summary = {
+            "pending_count": agg["pending_count"] or 0,
+            "approved_count": agg["approved_count"] or 0,
+            "rejected_count": agg["rejected_count"] or 0,
+            "posted_count": agg["posted_count"] or 0,
+            "not_posted_count": agg["not_posted_count"] or 0,
+            "approved_net_total": str(agg["approved_net_total"] or Decimal("0")),
+            "approved_expense_total": str(agg["approved_expense_total"] or Decimal("0")),
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            paginated = self.get_paginated_response(serializer.data)
+            paginated.data["summary"] = summary
+            return paginated
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({"results": serializer.data, "count": queryset.count(), "summary": summary})
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -418,6 +456,126 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             },
             status=status.HTTP_200_OK,
         )
+
+    # ------------------------------------------------------------------
+    #  Export
+    # ------------------------------------------------------------------
+
+    # Column registry – maps column keys to (header, extractor) pairs.
+    # Headers are chosen so CSVGenerator._get_data_keys produces the column key.
+    _EXPORT_COLUMNS = {
+        "reference": ("Reference", lambda t: t.reference_number or ""),
+        "date": ("Date", lambda t: str(t.transaction_date) if t.transaction_date else ""),
+        "type": ("Type", lambda t: t.transaction_type.name if t.transaction_type else ""),
+        "description": ("Description", lambda t: t.description or ""),
+        "bank_account": ("Bank Account", lambda t: t.bank_account.account_name if t.bank_account else ""),
+        "payment_method": ("Payment Method", lambda t: t.payment_method.name if t.payment_method else ""),
+        "ledger_account": ("Ledger Account", lambda t: t.ledger_account.name if t.ledger_account else ""),
+        "payer_payee": ("Payer Payee", lambda t: t.payer_payee or ""),
+        "amount": ("Amount", lambda t: float(t.amount or 0)),
+        "currency": ("Currency", lambda t: t.currency.code if t.currency else ""),
+        "exchange_rate": ("Exchange Rate", lambda t: float(t.exchange_rate or 0)),
+        "base_amount": ("Base Amount", lambda t: float(t.base_amount or 0)),
+        "status": ("Status", lambda t: t.status or ""),
+        "journal_entry": ("Journal Entry", lambda t: t.journal_entry.reference_number if t.journal_entry else ""),
+        "source_reference": ("Source Reference", lambda t: t.source_reference or ""),
+        "created_at": ("Created At", lambda t: t.created_at.strftime("%Y-%m-%d %H:%M") if t.created_at else ""),
+    }
+
+    _DEFAULT_COLUMNS = [
+        "reference", "date", "type", "description",
+        "bank_account", "payer_payee", "amount", "currency", "status",
+    ]
+
+    @action(detail=False, methods=["get"], url_path="export")
+    def export_transactions(self, request):
+        from common.file_generators import FileGenerator, FileGeneratorConfig
+
+        file_format = request.query_params.get("file_format", "csv")
+        if file_format not in ("csv", "excel"):
+            return Response(
+                {"detail": "file_format must be 'csv' or 'excel'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Determine which columns to include
+        columns_param = request.query_params.get("columns")
+        if columns_param:
+            col_keys = [c for c in columns_param.split(",") if c in self._EXPORT_COLUMNS]
+        else:
+            col_keys = self._DEFAULT_COLUMNS
+
+        if not col_keys:
+            return Response(
+                {"detail": "No valid columns specified"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Reuse get_queryset() which already handles all filter params
+        queryset = self.get_queryset()
+
+        headers = [self._EXPORT_COLUMNS[k][0] for k in col_keys]
+        extractors = [self._EXPORT_COLUMNS[k][1] for k in col_keys]
+
+        data = []
+        for txn in queryset.iterator():
+            row = {}
+            for key, header, extractor in zip(col_keys, headers, extractors):
+                # FileGenerator looks up by snake-cased header
+                row[key] = extractor(txn)
+            data.append(row)
+
+        # Build metadata
+        metadata = {}
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+        if start_date:
+            metadata["From"] = start_date
+        if end_date:
+            metadata["To"] = end_date
+        status_param = request.query_params.get("status")
+        if status_param:
+            metadata["Status"] = status_param
+
+        config = FileGeneratorConfig(
+            title="Cash Transactions",
+            filename_prefix="cash_transactions",
+            headers=headers,
+            metadata=metadata,
+        )
+
+        return FileGenerator.generate_file(
+            data=data,
+            config=config,
+            file_format=file_format,
+        )
+
+    @action(detail=False, methods=["post"], url_path="bulk-upload", parser_classes=[MultiPartParser, FormParser])
+    def bulk_upload(self, request):
+        from accounting.services.bulk_upload import bulk_upload_cash_transactions
+
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            return Response({"detail": "No file provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        replace_existing = str(request.data.get("replace_existing", "false")).lower() in ("true", "1")
+        bank_account_id = request.data.get("bank_account_id") or None
+        override_status = request.data.get("override_status") or None
+        override_transaction_type_id = request.data.get("transaction_type_id") or None
+
+        try:
+            result = bulk_upload_cash_transactions(
+                uploaded_file,
+                replace_existing=replace_existing,
+                bank_account_id=bank_account_id,
+                override_status=override_status,
+                override_transaction_type_id=override_transaction_type_id,
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):

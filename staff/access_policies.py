@@ -26,7 +26,7 @@ class StaffAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:admin",
+            "condition": "is_role_in:admin,superadmin",
         },
         # 2) REGISTRAR & DATA_ENTRY: full manage rights by default
         {
@@ -57,7 +57,7 @@ class StaffAccessPolicy(BaseSchoolAccessPolicy):
             ],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:admin",
+            "condition": "is_role_in:admin,superadmin",
         },
         # VIEWER: Read-only access (list and retrieve)
         {
@@ -65,6 +65,20 @@ class StaffAccessPolicy(BaseSchoolAccessPolicy):
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:viewer",
+        },
+        # Privilege-based: full manage access
+        {
+            "action": ["*"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_privilege:CORE_MANAGE",
+        },
+        # Privilege-based: read-only access
+        {
+            "action": ["list", "retrieve"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_privilege:CORE_VIEW",
         },
     ]
 

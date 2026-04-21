@@ -168,11 +168,11 @@ class AccountingCashTransaction(BaseModel):
     )
     journal_entry = models.ForeignKey(
         "AccountingJournalEntry",
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="cash_transactions",
-        help_text="Posted journal entry",
+        help_text="Posted journal entry — deleting the journal entry also deletes this transaction",
     )
 
     class Meta:

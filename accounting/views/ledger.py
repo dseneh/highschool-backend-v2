@@ -2,6 +2,8 @@ from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
 from accounting.access_policies import AccountingFinanceAccessPolicy
@@ -77,6 +79,24 @@ class AccountingLedgerAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mo
             self.perform_destroy(instance)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["post"], url_path="bulk-upload", parser_classes=[MultiPartParser, FormParser])
+    def bulk_upload(self, request):
+        from accounting.services.bulk_upload import bulk_upload_ledger_accounts
+
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            return Response({"detail": "No file provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        replace_existing = str(request.data.get("replace_existing", "false")).lower() in ("true", "1")
+
+        try:
+            result = bulk_upload_ledger_accounts(uploaded_file, replace_existing=replace_existing)
+            return Response(result, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
@@ -166,6 +186,24 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
         if error_response:
             return error_response
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=["post"], url_path="bulk-upload", parser_classes=[MultiPartParser, FormParser])
+    def bulk_upload(self, request):
+        from accounting.services.bulk_upload import bulk_upload_journal_entries
+
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            return Response({"detail": "No file provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        replace_existing = str(request.data.get("replace_existing", "false")).lower() in ("true", "1")
+
+        try:
+            result = bulk_upload_journal_entries(uploaded_file, replace_existing=replace_existing)
+            return Response(result, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AccountingJournalLineViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
