@@ -1,6 +1,7 @@
 
 import logging
 
+from django.core.cache import cache
 from django.db import transaction, router, connection
 from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When
 from django.db.models.functions import Coalesce
@@ -14,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from ..access_policies import StudentAccessPolicy
 
+from common.cache_service import DataCache
 from common.filter import get_student_queryparams
 from common.images import update_model_image
 from common.utils import (
@@ -566,9 +568,26 @@ class StudentSummaryView(APIView):
             logger.warning("Student table missing for tenant; returning empty student summary")
             return Response(default_summary, status=status.HTTP_200_OK)
 
-        try:
-            # Get current academic year
+        # Resolve selected academic year (query param or current).
+        year_id = request.GET.get("academic_year") or None
+        current_academic_year = None
+        if year_id:
+            current_academic_year = AcademicYear.objects.filter(id=year_id).first()
+        if not current_academic_year:
             current_academic_year = AcademicYear.objects.filter(current=True).first()
+
+        year_cache_suffix = (
+            f"_ay_{current_academic_year.id}" if current_academic_year else "_ay_none"
+        )
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_student_summary{year_cache_suffix}", request=request
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        try:
+            # Academic year context already resolved above.
             academic_year_name = current_academic_year.name if current_academic_year else "N/A"
 
             # Count total students
@@ -641,7 +660,7 @@ class StudentSummaryView(APIView):
             else:
                 avg_attendance = 0
 
-            return Response({
+            summary = {
                 "total_students": total_students,
                 "total_staff": total_staff,
                 "total_teachers": total_teachers,
@@ -651,7 +670,9 @@ class StudentSummaryView(APIView):
                 "total_courses": total_courses,
                 "active_sections": active_sections,
                 "avg_attendance": round(float(avg_attendance), 2) if avg_attendance else 0,
-            })
+            }
+            cache.set(cache_key, summary, 3600)
+            return Response(summary)
 
         except (ProgrammingError, OperationalError) as e:
             logger.warning(f"Student summary unavailable due to missing tables: {e}")

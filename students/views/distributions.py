@@ -14,11 +14,36 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import Count, Q, F, Case, When, Value as V, CharField, Avg, FloatField, ExpressionWrapper
 from django.db.models.functions import Coalesce
+from django.core.cache import cache
 from academics.models import AcademicYear, GradeLevel
 from students.models import Student, Enrollment, Attendance
+from common.cache_service import DataCache
 import logging
 
+DASHBOARD_CACHE_TTL = 3600  # 1 hour — dashboard aggregates change infrequently
+
 logger = logging.getLogger(__name__)
+
+
+def _resolve_academic_year(request):
+    """
+    Resolve the academic year to filter dashboard data by.
+
+    Looks for an ``academic_year`` UUID on the query string and falls back
+    to the tenant's current academic year. Returns ``None`` if neither is
+    configured.
+    """
+    year_id = request.GET.get('academic_year') or None
+    year = None
+    if year_id:
+        year = AcademicYear.objects.filter(id=year_id).first()
+    if not year:
+        year = AcademicYear.objects.filter(current=True).first()
+    return year
+
+
+def _year_cache_suffix(academic_year):
+    return f"_ay_{academic_year.id}" if academic_year else "_ay_none"
 
 
 @api_view(['GET'])
@@ -39,7 +64,15 @@ def get_grade_level_distribution(request):
     ]
     """
     try:
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
+        current_academic_year = _resolve_academic_year(request)
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_grade_distribution{_year_cache_suffix(current_academic_year)}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
         if not current_academic_year:
             return Response([], status=status.HTTP_200_OK)
         
@@ -66,7 +99,8 @@ def get_grade_level_distribution(request):
                 'percentage': round((dist['count'] / total * 100), 1) if total > 0 else 0,
                 'level': dist['grade_level__level']
             })
-        
+
+        cache.set(cache_key, result, DASHBOARD_CACHE_TTL)
         return Response(result, status=status.HTTP_200_OK)
     
     except Exception as e:
@@ -95,8 +129,16 @@ def get_payment_status_distribution(request):
     ]
     """
     try:
+        current_academic_year = _resolve_academic_year(request)
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_payment_status{_year_cache_suffix(current_academic_year)}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
         from students.models import StudentPaymentSummary
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
         if not current_academic_year:
             return Response([], status=status.HTTP_200_OK)
         
@@ -149,7 +191,8 @@ def get_payment_status_distribution(request):
                         'pending': '#6b7280'
                     }.get(s, '#6b7280')
                 })
-        
+
+        cache.set(cache_key, result, DASHBOARD_CACHE_TTL)
         return Response(result, status=status.HTTP_200_OK)
     
     except Exception as e:
@@ -183,7 +226,7 @@ def get_attendance_distribution(request):
     }
     """
     try:
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
+        current_academic_year = _resolve_academic_year(request)
         if not current_academic_year:
             return Response(
                 {
@@ -250,7 +293,7 @@ def get_section_distribution(request):
     ]
     """
     try:
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
+        current_academic_year = _resolve_academic_year(request)
         if not current_academic_year:
             return Response([], status=status.HTTP_200_OK)
         
@@ -306,11 +349,19 @@ def get_payment_summary(request):
     }
     """
     try:
+        current_academic_year = _resolve_academic_year(request)
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_payment_summary{_year_cache_suffix(current_academic_year)}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
         from django.db.models import Sum, F
         from students.models import StudentEnrollmentBill
         from finance.models import Transaction
         
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
         if not current_academic_year:
             return Response(
                 {
@@ -343,14 +394,16 @@ def get_payment_summary(request):
         total_paid = float(total_paid)
         total_pending = total_expected - total_paid
         collection_rate = round((total_paid / total_expected * 100), 1) if total_expected > 0 else 0
-        
-        return Response({
+
+        result = {
             'total_expected': total_expected,
             'total_paid': total_paid,
             'total_pending': max(0, total_pending),  # Ensure non-negative
             'collection_rate': collection_rate,
             'enrollment_count': enrollments_count
-        }, status=status.HTTP_200_OK)
+        }
+        cache.set(cache_key, result, DASHBOARD_CACHE_TTL)
+        return Response(result, status=status.HTTP_200_OK)
     
     except Exception as e:
         logger.error(f"Error in get_payment_summary: {str(e)}")
@@ -371,7 +424,12 @@ def get_payment_summary(request):
 def get_top_students_by_grade(request):
     """
     Get top 5 students by cumulative final grade average.
-    
+
+    Query params:
+        marking_period (uuid, optional): If provided, restricts grades to assessments
+            tied to the given marking period. Otherwise uses all approved grades for
+            the current academic year.
+
     Returns:
     [
         {
@@ -385,26 +443,42 @@ def get_top_students_by_grade(request):
     ]
     """
     try:
+        marking_period_id = request.GET.get('marking_period') or None
+        current_academic_year = _resolve_academic_year(request)
+
+        cache_suffix = f"_mp_{marking_period_id}" if marking_period_id else ""
+        cache_suffix += _year_cache_suffix(current_academic_year)
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_top_students{cache_suffix}", request=request
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
         from grading.models import Grade
-        
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
+
         if not current_academic_year:
             return Response([], status=status.HTTP_200_OK)
-        
+
         # One-query aggregate avoids the expensive per-student/per-gradebook loops.
         percentage_expr = ExpressionWrapper(
             (F('score') * 100.0) / F('assessment__max_score'),
             output_field=FloatField(),
         )
 
+        grade_qs = Grade.objects.filter(
+            academic_year=current_academic_year,
+            status='approved',
+            assessment__is_calculated=True,
+            score__isnull=False,
+            assessment__max_score__gt=0,
+        )
+
+        if marking_period_id:
+            grade_qs = grade_qs.filter(assessment__marking_period_id=marking_period_id)
+
         top_students_qs = (
-            Grade.objects.filter(
-                academic_year=current_academic_year,
-                status='approved',
-                assessment__is_calculated=True,
-                score__isnull=False,
-                assessment__max_score__gt=0,
-            )
+            grade_qs
             .values(
                 'student_id',
                 'student__first_name',
@@ -431,11 +505,136 @@ def get_top_students_by_grade(request):
                     'final_average': round(float(row['final_average'] or 0), 1),
                 }
             )
-        
+
+        cache.set(cache_key, top_students, DASHBOARD_CACHE_TTL)
         return Response(top_students, status=status.HTTP_200_OK)
     
     except Exception as e:
         logger.error(f"Error in get_top_students_by_grade: {str(e)}")
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_honor_distribution(request):
+    """
+    Distribute students across the school's configured honor categories based on
+    their cumulative final-grade average for the current (or supplied) academic year.
+
+    Returns a list of category buckets plus an "Unclassified" bucket for students
+    whose average falls outside any configured band.
+
+    [
+        {
+            "id": "<uuid or 'unclassified'>",
+            "label": "Principal's List",
+            "min_average": 95,
+            "max_average": 100,
+            "color": "#...",
+            "icon": "",
+            "order": 1,
+            "count": 12,
+            "percentage": 8.3
+        },
+        ...
+    ]
+    """
+    try:
+        current_academic_year = _resolve_academic_year(request)
+
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_honor_distribution{_year_cache_suffix(current_academic_year)}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        if not current_academic_year:
+            return Response([], status=status.HTTP_200_OK)
+
+        from grading.models import Grade, HonorCategory
+
+        percentage_expr = ExpressionWrapper(
+            (F('score') * 100.0) / F('assessment__max_score'),
+            output_field=FloatField(),
+        )
+
+        averages_qs = (
+            Grade.objects.filter(
+                academic_year=current_academic_year,
+                status='approved',
+                assessment__is_calculated=True,
+                score__isnull=False,
+                assessment__max_score__gt=0,
+            )
+            .values('student_id')
+            .annotate(final_average=Avg(percentage_expr))
+        )
+
+        student_averages = [
+            float(row['final_average'])
+            for row in averages_qs
+            if row['final_average'] is not None
+        ]
+        total_students = len(student_averages)
+
+        categories = list(
+            HonorCategory.objects.filter(active=True).order_by('order', '-max_average')
+        )
+
+        buckets = []
+        remaining_total = total_students
+        for cat in categories:
+            count = sum(
+                1
+                for avg in student_averages
+                if float(cat.min_average) <= avg <= float(cat.max_average)
+            )
+            remaining_total -= count
+            buckets.append({
+                'id': str(cat.id),
+                'label': cat.label,
+                'min_average': float(cat.min_average),
+                'max_average': float(cat.max_average),
+                'color': cat.color or '',
+                'icon': cat.icon or '',
+                'order': cat.order,
+                'count': count,
+                'percentage': (
+                    round((count / total_students) * 100, 1) if total_students else 0
+                ),
+            })
+
+        # Unclassified = students with an average who don't fit any active category
+        unclassified_count = max(remaining_total, 0)
+        buckets.append({
+            'id': 'unclassified',
+            'label': 'Unclassified',
+            'min_average': None,
+            'max_average': None,
+            'color': '',
+            'icon': '',
+            'order': 9999,
+            'count': unclassified_count,
+            'percentage': (
+                round((unclassified_count / total_students) * 100, 1)
+                if total_students else 0
+            ),
+        })
+
+        payload = {
+            'total_students': total_students,
+            'categories': buckets,
+        }
+        cache.set(cache_key, payload, DASHBOARD_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in get_honor_distribution: {str(e)}")
         return Response(
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR

@@ -5,6 +5,7 @@ from .models import (
     Assessment,
     Grade,
     GradeLetter,
+    HonorCategory,
     DefaultAssessmentTemplate,
 )
 from .utils import get_grading_config, get_letter_grade
@@ -957,6 +958,43 @@ class GradeLetterOut(serializers.ModelSerializer):
         return (
             format_numeric_value(obj.max_percentage)
             if obj.max_percentage is not None
+            else None
+        )
+
+
+class HonorCategoryOut(serializers.ModelSerializer):
+    """Serializer for honor categories used on the dashboard."""
+
+    min_average = serializers.SerializerMethodField()
+    max_average = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HonorCategory
+        fields = [
+            "id",
+            "active",
+            "label",
+            "min_average",
+            "max_average",
+            "color",
+            "icon",
+            "order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_min_average(self, obj):
+        return (
+            format_numeric_value(obj.min_average)
+            if obj.min_average is not None
+            else None
+        )
+
+    def get_max_average(self, obj):
+        return (
+            format_numeric_value(obj.max_average)
+            if obj.max_average is not None
             else None
         )
 

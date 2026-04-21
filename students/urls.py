@@ -13,6 +13,7 @@ from students.views.distributions import (
     get_section_distribution,
     get_payment_summary,
     get_top_students_by_grade,
+    get_honor_distribution,
 )
 
 from .views import AttendanceDetailView  # StudentEnrollmentBillDetailView,
@@ -268,5 +269,10 @@ urlpatterns = [
         "students/distributions/top-students/",
         get_top_students_by_grade,
         name="top_students_by_grade",
+    ),
+    path(
+        "students/distributions/honors/",
+        get_honor_distribution,
+        name="honor_distribution",
     ),
 ]

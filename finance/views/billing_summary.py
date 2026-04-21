@@ -6,12 +6,16 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import Count, Sum, Q
+from django.core.cache import cache
 from django.utils import timezone
 from datetime import timedelta
+from common.cache_service import DataCache
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+DASHBOARD_CACHE_TTL = 3600  # 1 hour
 
 
 @api_view(['GET'])
@@ -34,11 +38,25 @@ def get_billing_summary(request):
         ]
     """
     try:
-        from finance.models import Transaction
         from academics.models import AcademicYear
-        
-        # Get current academic year
-        current_academic_year = AcademicYear.objects.filter(current=True).first()
+
+        # Resolve academic year from ?academic_year= or fall back to current
+        year_id = request.GET.get("academic_year")
+        current_academic_year = None
+        if year_id:
+            current_academic_year = AcademicYear.objects.filter(id=year_id).first()
+        if not current_academic_year:
+            current_academic_year = AcademicYear.objects.filter(current=True).first()
+        year_cache_suffix = f"_ay_{current_academic_year.id}" if current_academic_year else "_ay_none"
+
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_billing_summary{year_cache_suffix}", request=request
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        from finance.models import Transaction
         
         # Get last 12 months of data
         twelve_months_ago = timezone.now().date() - timedelta(days=365)
@@ -128,7 +146,8 @@ def get_billing_summary(request):
         # If no data, return empty array
         if not result:
             return Response([], status=status.HTTP_200_OK)
-        
+
+        cache.set(cache_key, result, DASHBOARD_CACHE_TTL)
         return Response(result, status=status.HTTP_200_OK)
         
     except Exception as e:

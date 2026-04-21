@@ -116,6 +116,117 @@ class GradeLetter(BaseModel):
             ).first().letter
 
 
+class HonorCategory(BaseModel):
+    """
+    School-specific honor/performance categories that classify students by their
+    final average. Each category defines a percentage band; the dashboard uses
+    these to produce an honor distribution (e.g., Principal's List, Honor Roll).
+
+    Examples:
+    - Label: "Principal's List",  Min: 95, Max: 100
+    - Label: "Honor Roll",        Min: 90, Max: 94.99
+    - Label: "Honorable Mention", Min: 85, Max: 89.99
+    """
+
+    label = models.CharField(
+        max_length=100,
+        help_text="Display name for the honor category (e.g., 'Principal's List')."
+    )
+    min_average = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        help_text="Minimum percentage average for this honor (inclusive)."
+    )
+    max_average = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        help_text="Maximum percentage average for this honor (inclusive)."
+    )
+    color = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Optional badge color (hex or tailwind token) for UI rendering."
+    )
+    icon = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Optional icon name for UI rendering."
+    )
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text="Display order (lower numbers first)."
+    )
+
+    class Meta:
+        db_table = 'honor_category'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['label'],
+                name='unique_honor_label_per_tenant'
+            ),
+            models.CheckConstraint(
+                check=models.Q(min_average__lte=models.F('max_average')),
+                name='honor_category_min_lte_max'
+            ),
+            models.CheckConstraint(
+                check=models.Q(
+                    min_average__gte=0,
+                    max_average__lte=100
+                ),
+                name='honor_category_percentage_valid_range'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['min_average', 'max_average']),
+            models.Index(fields=['order']),
+        ]
+        ordering = ['order', '-max_average']
+
+    def __str__(self):
+        return f"{self.label} ({self.min_average}%-{self.max_average}%)"
+
+    def clean(self):
+        super().clean()
+
+        if self.min_average > self.max_average:
+            raise ValidationError("Minimum average cannot be greater than maximum average.")
+
+        overlapping = HonorCategory.objects.all().exclude(pk=self.pk)
+        for other in overlapping:
+            if (self.min_average <= other.max_average and
+                    self.max_average >= other.min_average):
+                raise ValidationError(
+                    f"Average range {self.min_average}-{self.max_average}% "
+                    f"overlaps with {other.label} ({other.min_average}-{other.max_average}%)"
+                )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_category_for_average(cls, average):
+        """Return the HonorCategory containing the given percentage, or None."""
+        if average is None:
+            return None
+        try:
+            return cls.objects.get(
+                active=True,
+                min_average__lte=average,
+                max_average__gte=average,
+            )
+        except cls.DoesNotExist:
+            return None
+        except cls.MultipleObjectsReturned:
+            return cls.objects.filter(
+                active=True,
+                min_average__lte=average,
+                max_average__gte=average,
+            ).order_by('order').first()
+
+
 class AssessmentType(BaseModel):
     """
     Catalog of assessment types (e.g., Assignment, Quiz, Test, Project, Final Grade).

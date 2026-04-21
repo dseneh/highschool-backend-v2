@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     GradeLetter, AssessmentType, GradeBook, 
-    Assessment, Grade
+    Assessment, Grade, HonorCategory
 )
 
 
@@ -15,6 +15,20 @@ class GradeLetterAdmin(admin.ModelAdmin):
     fieldsets = (
         (None, {
             'fields': ( 'letter', 'min_percentage', 'max_percentage', 'order', 'active')
+        }),
+    )
+
+
+@admin.register(HonorCategory)
+class HonorCategoryAdmin(admin.ModelAdmin):
+    list_display = ['label', 'min_average', 'max_average', 'order', 'active']
+    list_filter = ['active']
+    search_fields = ['label']
+    ordering = ['order', '-max_average']
+
+    fieldsets = (
+        (None, {
+            'fields': ('label', 'min_average', 'max_average', 'color', 'icon', 'order', 'active')
         }),
     )
 

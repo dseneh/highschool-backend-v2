@@ -19,6 +19,7 @@ from .final_grades import (
 )
 from .gradebook import GradeBookListCreateView, GradeBookDetailView, TeacherGradebookListView
 from .grade_letter import GradeLetterListCreateView, GradeLetterDetailView
+from .honor_category import HonorCategoryListCreateView, HonorCategoryDetailView
 from .default_assessment_template import (
     DefaultAssessmentTemplateListCreateView,
     DefaultAssessmentTemplateDetailView,
@@ -52,6 +53,8 @@ __all__ = [
     "TeacherGradebookListView",
     "GradeLetterListCreateView",
     "GradeLetterDetailView",
+    "HonorCategoryListCreateView",
+    "HonorCategoryDetailView",
     "DefaultAssessmentTemplateListCreateView",
     "DefaultAssessmentTemplateDetailView",
     "GenerateAssessmentsForGradebookView",

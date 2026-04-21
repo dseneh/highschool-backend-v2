@@ -20,6 +20,8 @@ from grading.views import (
     AssessmentDetailView,
     GradeLetterListCreateView,
     GradeLetterDetailView,
+    HonorCategoryListCreateView,
+    HonorCategoryDetailView,
     DefaultAssessmentTemplateListCreateView,
     DefaultAssessmentTemplateDetailView,
     GenerateAssessmentsForGradebookView,
@@ -145,6 +147,17 @@ urlpatterns = [
         "grade-letters/<str:pk>/",
         GradeLetterDetailView.as_view(),
         name="grade-letter-detail",
+    ),
+    # Honor category management endpoints
+    path(
+        "honor-categories/",
+        HonorCategoryListCreateView.as_view(),
+        name="honor-categories-list-create",
+    ),
+    path(
+        "honor-categories/<str:pk>/",
+        HonorCategoryDetailView.as_view(),
+        name="honor-category-detail",
     ),
     # ============================================================================
     # Default Assessment Template Endpoints
