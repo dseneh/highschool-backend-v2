@@ -8,22 +8,34 @@ from django.db.utils import ProgrammingError
 
 
 class SafeAddField(migrations.AddField):
-    """AddField that silently skips if the column already exists (idempotent)."""
+    """AddField that silently skips if the column already exists (idempotent).
+
+    Uses savepoints so that a DuplicateColumn error does not abort the
+    surrounding PostgreSQL transaction (which would cause every subsequent
+    statement to fail with InFailedSqlTransaction).
+    """
 
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
         try:
             super().database_forwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
         except ProgrammingError as exc:
+            connection.savepoint_rollback(sid)
             if "already exists" in str(exc):
                 pass
             else:
                 raise
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
         try:
             super().database_backwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
         except ProgrammingError:
-            pass
+            connection.savepoint_rollback(sid)
 
 
 class Migration(migrations.Migration):
