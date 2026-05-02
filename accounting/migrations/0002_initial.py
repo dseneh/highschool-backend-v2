@@ -4,6 +4,26 @@ import django.db.models.deletion
 from decimal import Decimal
 from django.conf import settings
 from django.db import migrations, models
+from django.db.utils import ProgrammingError
+
+
+class SafeAddField(migrations.AddField):
+    """AddField that silently skips if the column already exists (idempotent)."""
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        try:
+            super().database_forwards(app_label, schema_editor, from_state, to_state)
+        except ProgrammingError as exc:
+            if "already exists" in str(exc):
+                pass
+            else:
+                raise
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        try:
+            super().database_backwards(app_label, schema_editor, from_state, to_state)
+        except ProgrammingError:
+            pass
 
 
 class Migration(migrations.Migration):
@@ -19,7 +39,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingaccounttransfer",
             name="created_by",
             field=models.ForeignKey(
@@ -31,7 +51,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingaccounttransfer",
             name="updated_by",
             field=models.ForeignKey(
@@ -43,14 +63,14 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingarsnapshot",
             name="academic_year",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.CASCADE, to="academics.academicyear"
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingarsnapshot",
             name="created_by",
             field=models.ForeignKey(
@@ -62,7 +82,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingarsnapshot",
             name="student",
             field=models.ForeignKey(
@@ -71,7 +91,7 @@ class Migration(migrations.Migration):
                 to="students.student",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingarsnapshot",
             name="updated_by",
             field=models.ForeignKey(
@@ -83,7 +103,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingbankaccount",
             name="created_by",
             field=models.ForeignKey(
@@ -95,7 +115,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingbankaccount",
             name="updated_by",
             field=models.ForeignKey(
@@ -107,7 +127,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingaccounttransfer",
             name="from_account",
             field=models.ForeignKey(
@@ -116,7 +136,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingbankaccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingaccounttransfer",
             name="to_account",
             field=models.ForeignKey(
@@ -125,7 +145,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingbankaccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="bank_account",
             field=models.ForeignKey(
@@ -134,7 +154,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingbankaccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="created_by",
             field=models.ForeignKey(
@@ -146,7 +166,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="updated_by",
             field=models.ForeignKey(
@@ -158,14 +178,14 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingconcession",
             name="academic_year",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.CASCADE, to="academics.academicyear"
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingconcession",
             name="created_by",
             field=models.ForeignKey(
@@ -177,7 +197,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingconcession",
             name="student",
             field=models.ForeignKey(
@@ -186,7 +206,7 @@ class Migration(migrations.Migration):
                 to="students.student",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingconcession",
             name="updated_by",
             field=models.ForeignKey(
@@ -198,7 +218,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcurrency",
             name="created_by",
             field=models.ForeignKey(
@@ -210,7 +230,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcurrency",
             name="updated_by",
             field=models.ForeignKey(
@@ -222,7 +242,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingconcession",
             name="currency",
             field=models.ForeignKey(
@@ -230,7 +250,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="currency",
             field=models.ForeignKey(
@@ -238,7 +258,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingbankaccount",
             name="currency",
             field=models.ForeignKey(
@@ -246,7 +266,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingarsnapshot",
             name="currency",
             field=models.ForeignKey(
@@ -254,7 +274,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingaccounttransfer",
             name="from_currency",
             field=models.ForeignKey(
@@ -263,7 +283,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingaccounttransfer",
             name="to_currency",
             field=models.ForeignKey(
@@ -272,7 +292,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexchangerate",
             name="created_by",
             field=models.ForeignKey(
@@ -284,7 +304,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexchangerate",
             name="from_currency",
             field=models.ForeignKey(
@@ -293,7 +313,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexchangerate",
             name="to_currency",
             field=models.ForeignKey(
@@ -302,7 +322,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexchangerate",
             name="updated_by",
             field=models.ForeignKey(
@@ -314,7 +334,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexpenserecord",
             name="created_by",
             field=models.ForeignKey(
@@ -326,7 +346,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexpenserecord",
             name="currency",
             field=models.ForeignKey(
@@ -334,7 +354,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexpenserecord",
             name="staff_member",
             field=models.ForeignKey(
@@ -345,7 +365,7 @@ class Migration(migrations.Migration):
                 to="staff.staff",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexpenserecord",
             name="updated_by",
             field=models.ForeignKey(
@@ -357,7 +377,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeeitem",
             name="created_by",
             field=models.ForeignKey(
@@ -369,7 +389,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeeitem",
             name="updated_by",
             field=models.ForeignKey(
@@ -381,7 +401,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeerate",
             name="academic_year",
             field=models.ForeignKey(
@@ -390,7 +410,7 @@ class Migration(migrations.Migration):
                 to="academics.academicyear",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeerate",
             name="created_by",
             field=models.ForeignKey(
@@ -402,7 +422,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeerate",
             name="currency",
             field=models.ForeignKey(
@@ -410,7 +430,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeerate",
             name="fee_item",
             field=models.ForeignKey(
@@ -419,7 +439,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingfeeitem",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeerate",
             name="grade_level",
             field=models.ForeignKey(
@@ -431,7 +451,7 @@ class Migration(migrations.Migration):
                 to="academics.gradelevel",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingfeerate",
             name="updated_by",
             field=models.ForeignKey(
@@ -443,7 +463,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountinginstallmentline",
             name="created_by",
             field=models.ForeignKey(
@@ -455,7 +475,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountinginstallmentline",
             name="updated_by",
             field=models.ForeignKey(
@@ -467,7 +487,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountinginstallmentplan",
             name="academic_year",
             field=models.ForeignKey(
@@ -476,7 +496,7 @@ class Migration(migrations.Migration):
                 to="academics.academicyear",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountinginstallmentplan",
             name="created_by",
             field=models.ForeignKey(
@@ -488,7 +508,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountinginstallmentplan",
             name="updated_by",
             field=models.ForeignKey(
@@ -500,7 +520,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountinginstallmentline",
             name="installment_plan",
             field=models.ForeignKey(
@@ -509,7 +529,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountinginstallmentplan",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalentry",
             name="academic_year",
             field=models.ForeignKey(
@@ -518,7 +538,7 @@ class Migration(migrations.Migration):
                 to="academics.academicyear",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalentry",
             name="created_by",
             field=models.ForeignKey(
@@ -530,7 +550,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalentry",
             name="reversal_of",
             field=models.ForeignKey(
@@ -541,7 +561,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingjournalentry",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalentry",
             name="updated_by",
             field=models.ForeignKey(
@@ -553,7 +573,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="journal_entry",
             field=models.ForeignKey(
@@ -565,7 +585,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingjournalentry",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalline",
             name="created_by",
             field=models.ForeignKey(
@@ -577,7 +597,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalline",
             name="currency",
             field=models.ForeignKey(
@@ -585,7 +605,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalline",
             name="journal_entry",
             field=models.ForeignKey(
@@ -594,7 +614,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingjournalentry",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalline",
             name="updated_by",
             field=models.ForeignKey(
@@ -606,7 +626,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingledgeraccount",
             name="created_by",
             field=models.ForeignKey(
@@ -618,7 +638,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingledgeraccount",
             name="parent_account",
             field=models.ForeignKey(
@@ -630,7 +650,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingledgeraccount",
             name="updated_by",
             field=models.ForeignKey(
@@ -642,7 +662,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingjournalline",
             name="ledger_account",
             field=models.ForeignKey(
@@ -651,7 +671,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingexpenserecord",
             name="ledger_account",
             field=models.ForeignKey(
@@ -661,7 +681,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="ledger_account",
             field=models.ForeignKey(
@@ -673,7 +693,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingbankaccount",
             name="ledger_account",
             field=models.ForeignKey(
@@ -685,7 +705,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpaymentmethod",
             name="created_by",
             field=models.ForeignKey(
@@ -697,7 +717,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpaymentmethod",
             name="updated_by",
             field=models.ForeignKey(
@@ -709,7 +729,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="payment_method",
             field=models.ForeignKey(
@@ -717,14 +737,14 @@ class Migration(migrations.Migration):
                 to="accounting.accountingpaymentmethod",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingbatch",
             name="academic_year",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.PROTECT, to="academics.academicyear"
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingbatch",
             name="created_by",
             field=models.ForeignKey(
@@ -736,7 +756,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingbatch",
             name="currency",
             field=models.ForeignKey(
@@ -744,7 +764,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingbatch",
             name="journal_entry",
             field=models.ForeignKey(
@@ -756,7 +776,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingjournalentry",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingbatch",
             name="payroll_run",
             field=models.ForeignKey(
@@ -768,7 +788,7 @@ class Migration(migrations.Migration):
                 to="payroll.payrollrun",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingbatch",
             name="updated_by",
             field=models.ForeignKey(
@@ -780,7 +800,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="created_by",
             field=models.ForeignKey(
@@ -792,7 +812,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="credit_account",
             field=models.ForeignKey(
@@ -803,7 +823,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="currency",
             field=models.ForeignKey(
@@ -811,7 +831,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="debit_account",
             field=models.ForeignKey(
@@ -822,7 +842,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="posting_batch",
             field=models.ForeignKey(
@@ -831,7 +851,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingpayrollpostingbatch",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="staff_member",
             field=models.ForeignKey(
@@ -840,7 +860,7 @@ class Migration(migrations.Migration):
                 to="staff.staff",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingpayrollpostingline",
             name="updated_by",
             field=models.ForeignKey(
@@ -852,14 +872,14 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="academic_year",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.PROTECT, to="academics.academicyear"
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="created_by",
             field=models.ForeignKey(
@@ -871,7 +891,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="currency",
             field=models.ForeignKey(
@@ -879,7 +899,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="enrollment",
             field=models.ForeignKey(
@@ -888,14 +908,14 @@ class Migration(migrations.Migration):
                 to="students.enrollment",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="grade_level",
             field=models.ForeignKey(
                 on_delete=django.db.models.deletion.PROTECT, to="academics.gradelevel"
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="student",
             field=models.ForeignKey(
@@ -904,7 +924,7 @@ class Migration(migrations.Migration):
                 to="students.student",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbill",
             name="updated_by",
             field=models.ForeignKey(
@@ -916,7 +936,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingconcession",
             name="student_bill",
             field=models.ForeignKey(
@@ -928,7 +948,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingstudentbill",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbillline",
             name="created_by",
             field=models.ForeignKey(
@@ -940,7 +960,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbillline",
             name="currency",
             field=models.ForeignKey(
@@ -948,7 +968,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbillline",
             name="fee_item",
             field=models.ForeignKey(
@@ -957,7 +977,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingfeeitem",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbillline",
             name="student_bill",
             field=models.ForeignKey(
@@ -966,7 +986,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingstudentbill",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentbillline",
             name="updated_by",
             field=models.ForeignKey(
@@ -978,7 +998,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentpaymentallocation",
             name="cash_transaction",
             field=models.ForeignKey(
@@ -989,7 +1009,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcashtransaction",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentpaymentallocation",
             name="created_by",
             field=models.ForeignKey(
@@ -1001,7 +1021,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentpaymentallocation",
             name="currency",
             field=models.ForeignKey(
@@ -1009,7 +1029,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentpaymentallocation",
             name="installment_line",
             field=models.ForeignKey(
@@ -1019,7 +1039,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountinginstallmentline",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentpaymentallocation",
             name="student_bill",
             field=models.ForeignKey(
@@ -1028,7 +1048,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingstudentbill",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingstudentpaymentallocation",
             name="updated_by",
             field=models.ForeignKey(
@@ -1040,7 +1060,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtaxcode",
             name="created_by",
             field=models.ForeignKey(
@@ -1052,7 +1072,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtaxcode",
             name="updated_by",
             field=models.ForeignKey(
@@ -1064,7 +1084,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtaxremittance",
             name="created_by",
             field=models.ForeignKey(
@@ -1076,7 +1096,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtaxremittance",
             name="currency",
             field=models.ForeignKey(
@@ -1084,7 +1104,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingcurrency",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtaxremittance",
             name="tax_code",
             field=models.ForeignKey(
@@ -1093,7 +1113,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingtaxcode",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtaxremittance",
             name="updated_by",
             field=models.ForeignKey(
@@ -1105,7 +1125,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtransactiontype",
             name="created_by",
             field=models.ForeignKey(
@@ -1117,7 +1137,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtransactiontype",
             name="default_ledger_account",
             field=models.ForeignKey(
@@ -1129,7 +1149,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtransactiontype",
             name="managed_ledger_account",
             field=models.ForeignKey(
@@ -1141,7 +1161,7 @@ class Migration(migrations.Migration):
                 to="accounting.accountingledgeraccount",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingtransactiontype",
             name="updated_by",
             field=models.ForeignKey(
@@ -1153,7 +1173,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="accountingcashtransaction",
             name="transaction_type",
             field=models.ForeignKey(
