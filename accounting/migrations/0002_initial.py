@@ -7,6 +7,11 @@ from django.db import migrations, models
 from django.db.utils import ProgrammingError
 
 
+def _is_already_exists_error(exc):
+    message = str(exc).lower()
+    return "already exists" in message or "duplicate" in message
+
+
 class SafeAddField(migrations.AddField):
     """AddField that silently skips if the column already exists (idempotent).
 
@@ -24,6 +29,84 @@ class SafeAddField(migrations.AddField):
         except ProgrammingError as exc:
             connection.savepoint_rollback(sid)
             if "already exists" in str(exc):
+                pass
+            else:
+                raise
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_backwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError:
+            connection.savepoint_rollback(sid)
+
+
+class SafeAddConstraint(migrations.AddConstraint):
+    """AddConstraint that tolerates pre-existing DB constraints/index relations."""
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_forwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError as exc:
+            connection.savepoint_rollback(sid)
+            if _is_already_exists_error(exc):
+                pass
+            else:
+                raise
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_backwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError:
+            connection.savepoint_rollback(sid)
+
+
+class SafeAddIndex(migrations.AddIndex):
+    """AddIndex that tolerates pre-existing DB indexes/relations."""
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_forwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError as exc:
+            connection.savepoint_rollback(sid)
+            if _is_already_exists_error(exc):
+                pass
+            else:
+                raise
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_backwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError:
+            connection.savepoint_rollback(sid)
+
+
+class SafeAlterUniqueTogether(migrations.AlterUniqueTogether):
+    """AlterUniqueTogether that tolerates pre-existing unique relations."""
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_forwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError as exc:
+            connection.savepoint_rollback(sid)
+            if _is_already_exists_error(exc):
                 pass
             else:
                 raise
@@ -1193,72 +1276,72 @@ class Migration(migrations.Migration):
                 to="accounting.accountingtransactiontype",
             ),
         ),
-        migrations.AlterUniqueTogether(
+        SafeAlterUniqueTogether(
             name="accountingarsnapshot",
             unique_together={("student", "academic_year")},
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="accountingexchangerate",
             constraint=models.CheckConstraint(
                 condition=models.Q(("rate__gt", Decimal("0"))),
                 name="exchange_rate_positive",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="accountinginstallmentline",
             constraint=models.UniqueConstraint(
                 fields=("installment_plan", "sequence"),
                 name="unique_installment_sequence",
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingjournalentry",
             index=models.Index(
                 fields=["posting_date", "status"], name="accounting__posting_544843_idx"
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingjournalentry",
             index=models.Index(
                 fields=["reference_number"], name="accounting__referen_d70ae3_idx"
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="accountingledgeraccount",
             constraint=models.UniqueConstraint(
                 fields=("code",), name="accounting_unique_account_code_per_tenant"
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="accountingjournalline",
             constraint=models.CheckConstraint(
                 condition=models.Q(("credit_amount__gte", 0), ("debit_amount__gte", 0)),
                 name="journal_line_non_negative_amounts",
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingexpenserecord",
             index=models.Index(fields=["status"], name="accounting__status_38e1ea_idx"),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingexpenserecord",
             index=models.Index(
                 fields=["category"], name="accounting__categor_b8207f_idx"
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingpayrollpostingbatch",
             index=models.Index(
                 fields=["idempotent_key"], name="accounting__idempot_f637e7_idx"
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingpayrollpostingbatch",
             index=models.Index(
                 fields=["batch_status"], name="accounting__batch_s_808b8c_idx"
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="accountingpayrollpostingline",
             constraint=models.CheckConstraint(
                 condition=models.Q(
@@ -1267,42 +1350,42 @@ class Migration(migrations.Migration):
                 name="payroll_posting_line_has_amount",
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingstudentbill",
             index=models.Index(
                 fields=["student", "academic_year"],
                 name="accounting__student_7d35c3_idx",
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingstudentbill",
             index=models.Index(fields=["status"], name="accounting__status_64e1bd_idx"),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="accountingstudentbillline",
             constraint=models.UniqueConstraint(
                 fields=("student_bill", "line_sequence"),
                 name="unique_student_bill_line_sequence",
             ),
         ),
-        migrations.AlterUniqueTogether(
+        SafeAlterUniqueTogether(
             name="accountingtaxremittance",
             unique_together={("tax_code", "period_start", "period_end")},
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingcashtransaction",
             index=models.Index(
                 fields=["transaction_date", "status"],
                 name="accounting__transac_fe7602_idx",
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingcashtransaction",
             index=models.Index(
                 fields=["bank_account", "status"], name="accounting__bank_ac_58bad2_idx"
             ),
         ),
-        migrations.AddIndex(
+        SafeAddIndex(
             model_name="accountingcashtransaction",
             index=models.Index(
                 fields=["transaction_type", "status"],
