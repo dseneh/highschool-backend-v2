@@ -3,6 +3,64 @@
 import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
+from django.db.utils import ProgrammingError
+
+
+def _is_already_exists_error(exc):
+    message = str(exc).lower()
+    return "already exists" in message or "duplicate" in message
+
+
+class SafeAddField(migrations.AddField):
+    """AddField that tolerates pre-existing DB columns/relations."""
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_forwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError as exc:
+            connection.savepoint_rollback(sid)
+            if _is_already_exists_error(exc):
+                pass
+            else:
+                raise
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_backwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError:
+            connection.savepoint_rollback(sid)
+
+
+class SafeAddConstraint(migrations.AddConstraint):
+    """AddConstraint that tolerates pre-existing DB constraints/index relations."""
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_forwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError as exc:
+            connection.savepoint_rollback(sid)
+            if _is_already_exists_error(exc):
+                pass
+            else:
+                raise
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        connection = schema_editor.connection
+        sid = connection.savepoint()
+        try:
+            super().database_backwards(app_label, schema_editor, from_state, to_state)
+            connection.savepoint_commit(sid)
+        except ProgrammingError:
+            connection.savepoint_rollback(sid)
 
 
 class Migration(migrations.Migration):
@@ -15,7 +73,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="created_by",
             field=models.ForeignKey(
@@ -27,7 +85,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="manager",
             field=models.ForeignKey(
@@ -38,7 +96,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="pay_schedule",
             field=models.ForeignKey(
@@ -49,7 +107,7 @@ class Migration(migrations.Migration):
                 to="payroll.payschedule",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="tax_rules",
             field=models.ManyToManyField(
@@ -59,7 +117,7 @@ class Migration(migrations.Migration):
                 to="payroll.taxrule",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="updated_by",
             field=models.ForeignKey(
@@ -71,7 +129,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeattendance",
             name="created_by",
             field=models.ForeignKey(
@@ -83,7 +141,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeattendance",
             name="employee",
             field=models.ForeignKey(
@@ -92,7 +150,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeattendance",
             name="updated_by",
             field=models.ForeignKey(
@@ -104,7 +162,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeecontact",
             name="created_by",
             field=models.ForeignKey(
@@ -116,7 +174,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeecontact",
             name="employee",
             field=models.ForeignKey(
@@ -125,7 +183,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeecontact",
             name="updated_by",
             field=models.ForeignKey(
@@ -137,7 +195,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeedepartment",
             name="created_by",
             field=models.ForeignKey(
@@ -149,7 +207,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeedepartment",
             name="updated_by",
             field=models.ForeignKey(
@@ -161,7 +219,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="department",
             field=models.ForeignKey(
@@ -172,7 +230,7 @@ class Migration(migrations.Migration):
                 to="hr.employeedepartment",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeedependent",
             name="created_by",
             field=models.ForeignKey(
@@ -184,7 +242,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeedependent",
             name="employee",
             field=models.ForeignKey(
@@ -193,7 +251,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeedependent",
             name="updated_by",
             field=models.ForeignKey(
@@ -205,7 +263,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeperformancereview",
             name="created_by",
             field=models.ForeignKey(
@@ -217,7 +275,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeperformancereview",
             name="employee",
             field=models.ForeignKey(
@@ -226,7 +284,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeperformancereview",
             name="reviewer",
             field=models.ForeignKey(
@@ -237,7 +295,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeperformancereview",
             name="updated_by",
             field=models.ForeignKey(
@@ -249,7 +307,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeposition",
             name="created_by",
             field=models.ForeignKey(
@@ -261,7 +319,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeposition",
             name="department",
             field=models.ForeignKey(
@@ -272,7 +330,7 @@ class Migration(migrations.Migration):
                 to="hr.employeedepartment",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employeeposition",
             name="updated_by",
             field=models.ForeignKey(
@@ -284,7 +342,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="employee",
             name="position",
             field=models.ForeignKey(
@@ -295,7 +353,7 @@ class Migration(migrations.Migration):
                 to="hr.employeeposition",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="leaverequest",
             name="created_by",
             field=models.ForeignKey(
@@ -307,7 +365,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="leaverequest",
             name="employee",
             field=models.ForeignKey(
@@ -316,7 +374,7 @@ class Migration(migrations.Migration):
                 to="hr.employee",
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="leaverequest",
             name="updated_by",
             field=models.ForeignKey(
@@ -328,7 +386,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="leavetype",
             name="created_by",
             field=models.ForeignKey(
@@ -340,7 +398,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="leavetype",
             name="updated_by",
             field=models.ForeignKey(
@@ -352,7 +410,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        migrations.AddField(
+        SafeAddField(
             model_name="leaverequest",
             name="leave_type",
             field=models.ForeignKey(
@@ -361,20 +419,20 @@ class Migration(migrations.Migration):
                 to="hr.leavetype",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="employeeattendance",
             constraint=models.UniqueConstraint(
                 fields=("employee", "attendance_date"),
                 name="hr_uniq_employee_attendance_per_day",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="employeedepartment",
             constraint=models.UniqueConstraint(
                 fields=("name",), name="hr_uniq_employee_department_name_per_tenant"
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="employeedepartment",
             constraint=models.UniqueConstraint(
                 condition=models.Q(("code", ""), _negated=True),
@@ -382,14 +440,14 @@ class Migration(migrations.Migration):
                 name="hr_uniq_employee_department_code_per_tenant",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="employeeposition",
             constraint=models.UniqueConstraint(
                 fields=("title", "department"),
                 name="hr_uniq_employee_position_title_per_department",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="employeeposition",
             constraint=models.UniqueConstraint(
                 condition=models.Q(("code", ""), _negated=True),
@@ -397,7 +455,7 @@ class Migration(migrations.Migration):
                 name="hr_uniq_employee_position_code_per_tenant",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="employee",
             constraint=models.UniqueConstraint(
                 condition=models.Q(("employee_number", ""), _negated=True),
@@ -405,13 +463,13 @@ class Migration(migrations.Migration):
                 name="hr_uniq_employee_number_per_tenant",
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="leavetype",
             constraint=models.UniqueConstraint(
                 fields=("name",), name="hr_uniq_leave_type_name_per_tenant"
             ),
         ),
-        migrations.AddConstraint(
+        SafeAddConstraint(
             model_name="leavetype",
             constraint=models.UniqueConstraint(
                 condition=models.Q(("code", ""), _negated=True),
