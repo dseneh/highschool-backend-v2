@@ -10,7 +10,7 @@ echo "========================================================="
 # Step 1: Run shared schema migrations (creates public schema)
 echo ""
 echo "📦 Step 1: Running shared schema migrations..."
-python manage.py migrate_schemas --shared
+python manage.py migrate_schemas --shared --fake-initial
 echo "✅ Shared schema migrations complete"
 
 # Step 2: Create public tenant (required for django-tenant-users)
@@ -76,7 +76,7 @@ fi
 # Step 5: Run tenant schema migrations
 echo ""
 echo "📦 Step 5: Running tenant schema migrations..."
-python manage.py migrate_schemas
+python manage.py migrate_schemas --fake-initial
 echo "✅ Tenant schema migrations complete"
 
 # Step 6: Collect static files

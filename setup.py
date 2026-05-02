@@ -185,7 +185,7 @@ def migrate_shared_schema(dry_run=False):
     
     print("Running shared schema migrations...")
     try:
-        call_command('migrate_schemas', '--shared', verbosity=1)
+        call_command('migrate_schemas', '--shared', verbosity=1, fake_initial=True)
         print("✓ Shared schema migrated!\n")
     except Exception as e:
         print(f"✗ Error migrating shared schema: {e}\n")
@@ -275,7 +275,7 @@ def migrate_tenant_schemas(dry_run=False):
     
     print("Running tenant schema migrations...")
     try:
-        call_command('migrate_schemas', verbosity=1)
+        call_command('migrate_schemas', verbosity=1, fake_initial=True)
         print("✓ Tenant schemas migrated!\n")
     except Exception as e:
         print(f"✗ Error migrating tenant schemas: {e}\n")

@@ -17,7 +17,7 @@ echo ""
 
 # Step 2: Shared schema migrations
 echo "Step 2: Running migrate_schemas --shared..."
-python manage.py migrate_schemas --shared --noinput
+python manage.py migrate_schemas --shared --fake-initial --noinput
 echo "✅ Step 2 complete"
 echo ""
 
@@ -31,7 +31,7 @@ echo ""
 # Step 4: Tenant migrations
 if [ "$SUPERUSER_EXISTS" = "true" ]; then
     echo "Step 4: Already initialized - running tenant migrations only..."
-    python manage.py migrate_schemas --noinput
+    python manage.py migrate_schemas --fake-initial --noinput
     python manage.py collectstatic --noinput --clear
     echo "✅ Step 4 complete"
 else
