@@ -578,6 +578,7 @@ class SubjectSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
+            "code",
             "description",
             "active",
             "can_delete",

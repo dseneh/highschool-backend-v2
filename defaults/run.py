@@ -296,6 +296,7 @@ def create_subjects(tenant, user):
         for s in subjects:
             subject = Subject.objects.create(
                 name=s["name"],
+                code=s.get("code") or None,
                 description=s["description"],
                 created_by=user,
                 updated_by=user,

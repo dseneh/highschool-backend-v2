@@ -87,8 +87,8 @@ class SectionAdmin(admin.ModelAdmin):
 
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
-    list_display = ["name",]
-    search_fields = ["name"]
+    list_display = ["name", "code"]
+    search_fields = ["name", "code"]
     readonly_fields = ["created_at", "updated_at"]
 
 

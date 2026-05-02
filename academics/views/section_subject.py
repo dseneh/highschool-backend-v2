@@ -13,6 +13,7 @@ from business.core.services import validate_section_subject_assignment, process_
 from business.core.adapters import get_section_by_id_or_name, get_section_subjects, bulk_create_section_subjects, get_assigned_subject_ids
 from grading.gradebook_initializer import create_gradebook_for_section_subject
 from academics.models import AcademicYear
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,180 @@ class SectionSubjectListView(APIView):
 
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def _sync_gradebooks_and_assessments(
+        self,
+        source_section,
+        target_section,
+        source_to_target_ss,
+        user,
+    ):
+        """
+        Sync gradebooks and assessments from source -> target section subjects.
+        Creates missing gradebooks and missing assessments, skips existing matches.
+        """
+        from grading.models import GradeBook, Assessment
+
+        if not source_to_target_ss:
+            return {
+                "gradebooks_created": 0,
+                "assessments_created": 0,
+                "assessments_skipped": 0,
+            }
+
+        source_gradebooks = (
+            GradeBook.objects
+            .filter(section_subject_id__in=source_to_target_ss.keys(), active=True)
+            .prefetch_related("assessments")
+            .select_related("academic_year", "section_subject")
+        )
+
+        gradebooks_created = 0
+        assessments_created = 0
+        assessments_skipped = 0
+
+        for src_gb in source_gradebooks:
+            target_ss = source_to_target_ss.get(str(src_gb.section_subject_id))
+            if target_ss is None:
+                continue
+
+            gb_name = (
+                src_gb.name.replace(source_section.name, target_section.name, 1)
+                if source_section.name in src_gb.name
+                else src_gb.name
+            )
+
+            target_gb, gb_created = GradeBook.objects.get_or_create(
+                section_subject=target_ss,
+                academic_year=src_gb.academic_year,
+                name=gb_name,
+                defaults={
+                    "section": target_section,
+                    "subject": target_ss.subject,
+                    "calculation_method": src_gb.calculation_method,
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+            if gb_created:
+                gradebooks_created += 1
+
+            for src_asmt in src_gb.assessments.filter(active=True):
+                exists = Assessment.objects.filter(
+                    gradebook=target_gb,
+                    name=src_asmt.name,
+                    assessment_type=src_asmt.assessment_type,
+                    marking_period=src_asmt.marking_period,
+                    max_score=src_asmt.max_score,
+                    weight=src_asmt.weight,
+                    due_date=src_asmt.due_date,
+                    is_calculated=src_asmt.is_calculated,
+                    active=True,
+                ).exists()
+
+                if exists:
+                    assessments_skipped += 1
+                    continue
+
+                Assessment.objects.create(
+                    gradebook=target_gb,
+                    name=src_asmt.name,
+                    assessment_type=src_asmt.assessment_type,
+                    marking_period=src_asmt.marking_period,
+                    max_score=src_asmt.max_score,
+                    weight=src_asmt.weight,
+                    due_date=src_asmt.due_date,
+                    is_calculated=src_asmt.is_calculated,
+                    created_by=user,
+                    updated_by=user,
+                )
+                assessments_created += 1
+
+        return {
+            "gradebooks_created": gradebooks_created,
+            "assessments_created": assessments_created,
+            "assessments_skipped": assessments_skipped,
+        }
+
+    @transaction.atomic
     def post(self, request, section_id):
         section = self.get_section_object(section_id)
         req_data: dict = request.data
+
+        source_section_id = req_data.get("source_section_id")
+        if source_section_id:
+            source_section = self.get_section_object(source_section_id)
+
+            source_section_subjects = list(
+                source_section.section_subjects.filter(active=True).select_related("subject")
+            )
+            if not source_section_subjects:
+                return Response(
+                    {"detail": "Source section has no active subjects to import."},
+                    status=status.HTTP_200_OK,
+                )
+
+            existing_target_subjects = {
+                str(ss.subject_id): ss
+                for ss in section.section_subjects.filter(active=True).select_related("subject")
+            }
+
+            created_section_subjects = []
+            existing_subject_count = 0
+            source_to_target_ss = {}
+
+            from academics.models import SectionSubject
+
+            for src_ss in source_section_subjects:
+                target_ss = existing_target_subjects.get(str(src_ss.subject_id))
+                if target_ss is None:
+                    target_ss = SectionSubject.objects.create(
+                        section=section,
+                        subject=src_ss.subject,
+                        created_by=request.user,
+                        updated_by=request.user,
+                    )
+                    created_section_subjects.append(target_ss)
+                    existing_target_subjects[str(src_ss.subject_id)] = target_ss
+                else:
+                    existing_subject_count += 1
+
+                source_to_target_ss[str(src_ss.id)] = target_ss
+
+            sync_summary = self._sync_gradebooks_and_assessments(
+                source_section=source_section,
+                target_section=section,
+                source_to_target_ss=source_to_target_ss,
+                user=request.user,
+            )
+
+            self._invalidate_cache()
+
+            serializer = SectionSubjectSerializer(
+                created_section_subjects,
+                many=True,
+                context={"request": request},
+            )
+
+            created_count = len(created_section_subjects)
+            response_data = {
+                "created": serializer.data,
+                "created_count": created_count,
+                "existing_count": existing_subject_count,
+                "message": (
+                    f"Imported {created_count} new subject(s); "
+                    f"synced assessments for {existing_subject_count} existing subject(s)."
+                ),
+                "gradebooks": {
+                    "created": sync_summary["gradebooks_created"],
+                    "assessments_created": sync_summary["assessments_created"],
+                    "assessments_skipped": sync_summary["assessments_skipped"],
+                },
+            }
+
+            return Response(
+                response_data,
+                status=status.HTTP_201_CREATED if created_count > 0 else status.HTTP_200_OK,
+            )
 
         subject_ids = req_data.get("subjects", [])
 

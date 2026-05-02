@@ -38,7 +38,7 @@ def create_subject_in_db(data: Dict[str, Any], user=None) -> Subject:
     
     subject = Subject.objects.create(
         name=data['name'],
-        code=data.get('code', ''),
+        code=data.get('code') or None,
         description=data.get('description'),
         credits=data.get('credits'),
         created_by=user,

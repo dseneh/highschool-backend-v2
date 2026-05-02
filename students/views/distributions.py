@@ -90,14 +90,35 @@ def get_grade_level_distribution(request):
         # Calculate total for percentages
         total = sum(d['count'] for d in distributions)
         
+        # Pre-fetch section breakdown for all grades in one query
+        section_qs = Enrollment.objects.filter(
+            academic_year=current_academic_year,
+            section__isnull=False,
+        ).values(
+            'grade_level__id',
+            'section__id',
+            'section__name',
+        ).annotate(count=Count('id')).order_by('grade_level__id', 'section__name')
+
+        sections_by_grade = {}
+        for row in section_qs:
+            gid = str(row['grade_level__id'])
+            sections_by_grade.setdefault(gid, []).append({
+                'section': row['section__name'],
+                'section_id': str(row['section__id']),
+                'count': row['count'],
+            })
+
         result = []
         for dist in distributions:
+            grade_id = str(dist['grade_level__id'])
             result.append({
                 'grade_level': dist['grade_level__name'],
-                'grade_id': str(dist['grade_level__id']),
+                'grade_id': grade_id,
                 'count': dist['count'],
                 'percentage': round((dist['count'] / total * 100), 1) if total > 0 else 0,
-                'level': dist['grade_level__level']
+                'level': dist['grade_level__level'],
+                'sections': sections_by_grade.get(grade_id, []),
             })
 
         cache.set(cache_key, result, DASHBOARD_CACHE_TTL)

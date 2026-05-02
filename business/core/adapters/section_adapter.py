@@ -9,7 +9,7 @@ from django.db import transaction
 from pathlib import Path
 import json
 
-from academics.models import Section, GradeLevel, Period, SectionTimeSlot
+from academics.models import Section, GradeLevel, Period, SectionTimeSlot, SectionSubject
 from business.core.core_models import SectionData
 
 
@@ -61,8 +61,131 @@ def create_section_in_db(data: Dict[str, Any],
         user=user,
         replace_existing=True,
     )
+
+    if source_section_id:
+        copy_section_subjects_and_fees(
+            source_section_id=source_section_id,
+            target_section=section,
+            user=user,
+        )
     
     return section
+
+
+@transaction.atomic
+def copy_section_subjects_and_fees(
+    source_section_id: str,
+    target_section: Section,
+    user=None,
+) -> tuple[int, int, int, int]:
+    """
+    Clone subjects, fees, gradebooks and assessments from an existing section.
+
+    Returns:
+        (subject_count, fee_count, gradebook_count, assessment_count)
+    """
+    source_section = Section.objects.filter(id=source_section_id, active=True).first()
+    if not source_section:
+        return 0, 0, 0, 0
+
+    # ── 1. Clone subjects, tracking old→new SectionSubject mapping ────────────
+    # Maps source SectionSubject.id → newly created SectionSubject
+    old_ss_to_new_ss: Dict[str, "SectionSubject"] = {}
+    subject_count = 0
+    for old_ss in source_section.section_subjects.filter(active=True).select_related("subject"):
+        new_ss = SectionSubject.objects.create(
+            section=target_section,
+            subject=old_ss.subject,
+            created_by=user,
+            updated_by=user,
+        )
+        old_ss_to_new_ss[str(old_ss.id)] = new_ss
+        subject_count += 1
+
+    # ── 2. Clone fees ──────────────────────────────────────────────────────────
+    from finance.models import SectionFee
+
+    fee_count = 0
+    for section_fee in source_section.section_fees.filter(active=True).select_related("general_fee"):
+        SectionFee.objects.create(
+            section=target_section,
+            general_fee=section_fee.general_fee,
+            amount=section_fee.amount,
+            created_by=user,
+            updated_by=user,
+        )
+        fee_count += 1
+
+    # ── 3. Clone gradebooks + assessments ─────────────────────────────────────
+    if not old_ss_to_new_ss:
+        return subject_count, fee_count, 0, 0
+
+    from grading.models import GradeBook, Assessment
+
+    gradebook_count = 0
+    assessment_count = 0
+
+    # Fetch all source gradebooks in one query (across all SectionSubjects)
+    source_gradebooks = (
+        GradeBook.objects
+        .filter(
+            section_subject_id__in=old_ss_to_new_ss.keys(),
+            active=True,
+        )
+        .prefetch_related(
+            "assessments"
+        )
+        .select_related("academic_year", "section_subject")
+    )
+
+    for src_gb in source_gradebooks:
+        new_ss = old_ss_to_new_ss.get(str(src_gb.section_subject_id))
+        if new_ss is None:
+            continue
+
+        # Build the new gradebook name by replacing the source section name
+        gb_name = src_gb.name.replace(
+            source_section.name, target_section.name, 1
+        ) if source_section.name in src_gb.name else src_gb.name
+
+        # Guard against the unique_together constraint:
+        # (section_subject, academic_year, name) must be unique.
+        if GradeBook.objects.filter(
+            section_subject=new_ss,
+            academic_year=src_gb.academic_year,
+            name=gb_name,
+        ).exists():
+            continue
+
+        new_gb = GradeBook.objects.create(
+            section_subject=new_ss,
+            section=target_section,
+            subject=new_ss.subject,
+            academic_year=src_gb.academic_year,
+            name=gb_name,
+            calculation_method=src_gb.calculation_method,
+            created_by=user,
+            updated_by=user,
+        )
+        gradebook_count += 1
+
+        # Clone assessments (structure only — no student grades)
+        for src_asmt in src_gb.assessments.filter(active=True):
+            Assessment.objects.create(
+                gradebook=new_gb,
+                name=src_asmt.name,
+                assessment_type=src_asmt.assessment_type,
+                marking_period=src_asmt.marking_period,
+                max_score=src_asmt.max_score,
+                weight=src_asmt.weight,
+                due_date=src_asmt.due_date,
+                is_calculated=src_asmt.is_calculated,
+                created_by=user,
+                updated_by=user,
+            )
+            assessment_count += 1
+
+    return subject_count, fee_count, gradebook_count, assessment_count
 
 
 def _load_default_section_timetable_template() -> Dict[str, Any]:

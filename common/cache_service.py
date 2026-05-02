@@ -500,6 +500,7 @@ class DataCache:
                 result.append({
                     'id': str(subject.id),
                     'name': subject.name,
+                    'code': subject.code,
                     'description': subject.description,
                     'active': subject.active,
                     'status': 'active' if subject.active else 'disabled',

@@ -1,3 +1,4 @@
+from django.core.cache import cache as django_cache
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import NotFound
@@ -6,7 +7,7 @@ from rest_framework.views import APIView
 from ..access_policies import AcademicsAccessPolicy
 import logging
 
-from common.utils import update_model_fields
+from common.utils import update_model_fields, get_tenant_from_request
 from common.cache_service import DataCache
 
 from ..models import GradeLevel, Section
@@ -75,18 +76,23 @@ class SectionListView(APIView):
                 source_section_id=req_data.get("source_section_id"),
                 user=request.user
             )
-            # Invalidate sections cache after creation
-            self._invalidate_cache()
+            # Invalidate sections and grade_levels cache after creation
+            self._invalidate_cache(request)
             
             serializer = SectionSerializer(section, context={"request": request})
             return Response(serializer.data, status=201)
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
     
-    def _invalidate_cache(self):
-        """Invalidate section caches after modifications"""
-        DataCache.invalidate_sections()
-        logger.debug(f"Invalidated section cache")
+    def _invalidate_cache(self, request=None):
+        """Invalidate section and grade_levels caches after modifications."""
+        DataCache.invalidate_sections(request=request)
+        DataCache.invalidate_grade_levels(request=request)
+        # Also clear the raw grade_levels:{tenant} key used by GradeLevelListView.get
+        tenant = get_tenant_from_request(request)
+        if tenant:
+            django_cache.delete(f"grade_levels:{tenant}")
+        logger.debug(f"Invalidated section + grade_levels cache for tenant {tenant}")
 
 class SectionDetailView(APIView):
     permission_classes = [AcademicsAccessPolicy]
@@ -115,8 +121,8 @@ class SectionDetailView(APIView):
             request, section, allowed_fields, SectionSerializer
         )
         
-        # Invalidate sections cache after update
-        self._invalidate_cache()
+        # Invalidate sections and grade_levels cache after update
+        self._invalidate_cache(request)
         
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -129,7 +135,7 @@ class SectionDetailView(APIView):
             section.save()
             
             # Invalidate cache even when deactivating
-            self._invalidate_cache()
+            self._invalidate_cache(request)
             
             return Response(
                 {
@@ -141,11 +147,16 @@ class SectionDetailView(APIView):
         # Delete the section
         section.delete()
         
-        self._invalidate_cache()
+        self._invalidate_cache(request)
         
         return Response(status=status.HTTP_204_NO_CONTENT)
     
-    def _invalidate_cache(self):
-        """Invalidate section caches after modifications"""
-        DataCache.invalidate_sections()
-        logger.debug(f"Invalidated section cache")
+    def _invalidate_cache(self, request=None):
+        """Invalidate section and grade_levels caches after modifications."""
+        DataCache.invalidate_sections(request=request)
+        DataCache.invalidate_grade_levels(request=request)
+        # Also clear the raw grade_levels:{tenant} key used by GradeLevelListView.get
+        tenant = get_tenant_from_request(request)
+        if tenant:
+            django_cache.delete(f"grade_levels:{tenant}")
+        logger.debug(f"Invalidated section + grade_levels cache for tenant {tenant}")

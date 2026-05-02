@@ -25,11 +25,15 @@ class SubjectListView(APIView):
 
     def post(self, request):
         req_data: dict = request.data
+        subject_code = (req_data.get("code") or req_data.get("subject_code") or "").strip()
+
+        if not subject_code:
+            return Response({"detail": "Subject code is required"}, status=400)
 
         # Validate using business logic
         validation_result = subject_service.validate_subject_creation(
             name=req_data.get("name"),
-            code=req_data.get("code"),
+            code=subject_code,
             credits=req_data.get("credits")
         )
         
@@ -41,10 +45,15 @@ class SubjectListView(APIView):
             return Response(
                 {"detail": f"Subject already exists with '{validation_result['data']['name']}'"}, status=400
             )
+
+        if Subject.objects.filter(code__iexact=subject_code).exists():
+            return Response(
+                {"detail": f"Subject code '{subject_code}' is already in use"}, status=400
+            )
         
         data = {
             "name": validation_result["data"]["name"],
-            "code": validation_result["data"].get("code"),
+            "code": subject_code,
             "description": validation_result["data"].get("description"),
             "credits": validation_result["data"].get("credits"),
         }
@@ -78,9 +87,20 @@ class SubjectDetailView(APIView):
 
         allowed_fields = [
             "name",
+            "code",
             "description",
             "active",
         ]
+
+        requested_code = request.data.get("code")
+        if requested_code is not None:
+            normalized_code = str(requested_code).strip()
+            if not normalized_code:
+                return Response({"detail": "Subject code is required"}, status=400)
+
+            duplicate_code_exists = Subject.objects.filter(code__iexact=normalized_code).exclude(id=subject.id).exists()
+            if duplicate_code_exists:
+                return Response({"detail": f"Subject code '{normalized_code}' is already in use"}, status=400)
 
         serializer = update_model_fields(
             request, subject, allowed_fields, SubjectSerializer
