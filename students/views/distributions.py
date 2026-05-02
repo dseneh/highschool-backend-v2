@@ -15,6 +15,7 @@ from rest_framework import status
 from django.db.models import Count, Q, F, Case, When, Value as V, CharField, Avg, FloatField, ExpressionWrapper
 from django.db.models.functions import Coalesce
 from django.core.cache import cache
+from django.utils import timezone
 from academics.models import AcademicYear, GradeLevel
 from students.models import Student, Enrollment, Attendance
 from common.cache_service import DataCache
@@ -159,14 +160,14 @@ def get_payment_status_distribution(request):
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
-        from students.models import StudentPaymentSummary
+        from accounting.models import AccountingStudentBill
         if not current_academic_year:
             return Response([], status=status.HTTP_200_OK)
         
-        # Build payment status from StudentPaymentSummary
-        enrollments_with_status = StudentPaymentSummary.objects.filter(
+        # Build payment status from accounting bills (source of truth).
+        bills = AccountingStudentBill.objects.filter(
             academic_year=current_academic_year
-        ).all()
+        ).exclude(status=AccountingStudentBill.BillStatus.CANCELLED)
         
         status_counts = {
             'paid': 0,
@@ -175,21 +176,14 @@ def get_payment_status_distribution(request):
             'overdue': 0
         }
         
-        status_amounts = {
-            'paid': 0,
-            'partially_paid': 0,
-            'pending': 0,
-            'overdue': 0
-        }
-        
-        for payment_summary in enrollments_with_status:
-            payment_status = payment_summary.payment_status or {}
-            
-            # Extract status from payment_status dict
-            pstatus = payment_status.get('status', 'pending')
-            
-            if pstatus in status_counts:
-                status_counts[pstatus] += 1
+        today = timezone.localdate()
+        for bill in bills:
+            if (bill.outstanding_amount or 0) <= 0 or bill.status == AccountingStudentBill.BillStatus.PAID:
+                status_counts['paid'] += 1
+            elif bill.due_date and bill.due_date < today:
+                status_counts['overdue'] += 1
+            elif (bill.paid_amount or 0) > 0:
+                status_counts['partially_paid'] += 1
             else:
                 status_counts['pending'] += 1
         
@@ -379,9 +373,8 @@ def get_payment_summary(request):
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
-        from django.db.models import Sum, F
-        from students.models import StudentEnrollmentBill
-        from finance.models import Transaction
+        from django.db.models import Sum
+        from accounting.models import AccountingStudentBill
         
         if not current_academic_year:
             return Response(
@@ -400,16 +393,17 @@ def get_payment_summary(request):
             academic_year=current_academic_year
         ).count()
         
-        total_bills = StudentEnrollmentBill.objects.filter(
-            enrollment__academic_year=current_academic_year
-        ).aggregate(total=Sum('amount'))['total'] or 0
-        
-        # Get total paid from transactions
-        total_paid = Transaction.objects.filter(
-            status='approved',
-            type__type='income',
+        bill_totals = AccountingStudentBill.objects.filter(
             academic_year=current_academic_year
-        ).aggregate(total=Sum('amount'))['total'] or 0
+        ).exclude(
+            status=AccountingStudentBill.BillStatus.CANCELLED
+        ).aggregate(
+            total_expected=Coalesce(Sum('net_amount'), 0),
+            total_paid=Coalesce(Sum('paid_amount'), 0),
+        )
+
+        total_bills = bill_totals.get('total_expected') or 0
+        total_paid = bill_totals.get('total_paid') or 0
         
         total_expected = float(total_bills)
         total_paid = float(total_paid)

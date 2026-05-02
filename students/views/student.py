@@ -648,11 +648,15 @@ class StudentSummaryView(APIView):
             else:
                 total_enrolled = 0
 
-            # Calculate pending bills (active bills from StudentEnrollmentBill)
-            # Note: StudentEnrollmentBill doesn't have a 'status' field, only 'active'
-            pending_bills = StudentEnrollmentBill.objects.filter(
-                active=True
-            ).aggregate(total=Sum('amount'))['total'] or 0
+            # Calculate pending receivables from accounting student bills.
+            pending_bills_qs = AccountingStudentBill.objects.exclude(
+                status=AccountingStudentBill.BillStatus.CANCELLED
+            )
+            if current_academic_year:
+                pending_bills_qs = pending_bills_qs.filter(academic_year=current_academic_year)
+            pending_bills = pending_bills_qs.aggregate(
+                total=Coalesce(Sum("outstanding_amount"), Value(0), output_field=DecimalField(max_digits=18, decimal_places=2))
+            )["total"] or 0
 
             # Count active courses/sections
             # Note: Sections don't have academic_year field directly,

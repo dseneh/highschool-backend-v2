@@ -56,7 +56,7 @@ def get_billing_summary(request):
         if cached is not None:
             return Response(cached, status=status.HTTP_200_OK)
 
-        from finance.models import Transaction
+        from accounting.models import AccountingCashTransaction
         
         # Get last 12 months of data
         twelve_months_ago = timezone.now().date() - timedelta(days=365)
@@ -64,28 +64,26 @@ def get_billing_summary(request):
         # Aggregate transactions by month and type
         monthly_data = {}
         
-        # Get all approved transactions from the last 12 months
-        transactions = Transaction.objects.filter(
-            status='approved',
-            date__gte=twelve_months_ago
+        # Get approved accounting cash transactions from the last 12 months.
+        transactions = AccountingCashTransaction.objects.filter(
+            status=AccountingCashTransaction.TransactionStatus.APPROVED,
+            transaction_date__gte=twelve_months_ago,
         )
-        
+
         if current_academic_year:
-            transactions = transactions.filter(academic_year=current_academic_year)
-        
-        # Aggregate by month and type
-        monthly_stats = transactions.values('type__type').annotate(
-            month=Sum('date'),  # This won't work for grouping, need to use annotations differently
-        ).order_by('date')
-        
-        # Better approach: use values with date truncation
+            transactions = transactions.filter(
+                transaction_date__gte=current_academic_year.start_date,
+                transaction_date__lte=current_academic_year.end_date,
+            )
+
+        # Aggregate by month and transaction category.
         from django.db.models.functions import TruncMonth
-        
+
         monthly_totals = transactions.annotate(
-            month=TruncMonth('date')
-        ).values('month', 'type__type').annotate(
+            month=TruncMonth('transaction_date')
+        ).values('month', 'transaction_type__transaction_category').annotate(
             total=Sum('amount')
-        ).order_by('month', 'type__type')
+        ).order_by('month', 'transaction_type__transaction_category')
         
         # Process the data into the expected format
         months_dict = {}
@@ -103,9 +101,9 @@ def get_billing_summary(request):
                 }
             
             amount = float(entry['total'] or 0)
-            if entry['type__type'] == 'income':
+            if entry['transaction_type__transaction_category'] == 'income':
                 months_dict[month_str]['income'] += amount
-            else:  # expense
+            elif entry['transaction_type__transaction_category'] == 'expense':
                 months_dict[month_str]['expense'] += abs(amount)  # Make positive
         
         # Calculate percentage changes and format for frontend
