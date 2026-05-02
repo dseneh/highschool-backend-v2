@@ -1,0 +1,20 @@
+Welcome to {{ school_name|default:"EzySchool" }} - Your Account Is Ready
+
+Hi {{ user_name }},
+
+Your account on the {{ school_name|default:"EzySchool" }} portal has been created.
+Use the credentials below to sign in for the first time.
+
+  Username:           {{ username }}
+  Temporary Password: {{ temporary_password }}
+
+IMPORTANT: For your security, please change your password immediately after your first login.
+
+{% if login_url %}Log in here:
+{{ login_url }}
+
+{% endif %}Need help? Contact: {{ support_email }}
+
+--
+{{ school_name|default:"EzySchool" }}
+Powered by {{ dev_name|default:"DewX IT Solutions" }}

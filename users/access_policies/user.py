@@ -24,7 +24,7 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
         },
         # ADMIN: Can list, retrieve, create, update, delete, and recreate users in their tenant
         {
-            "action": ["list", "retrieve", "create", "update", "partial_update", "delete", "current", "password_change", "change_status", "password_reset_default", "password_reset_request", "password_reset_confirm", "recreate", "get", "post", "put", "patch"],
+            "action": ["list", "retrieve", "create", "update", "partial_update", "delete", "current", "password_change", "change_status", "password_reset_default", "password_reset_request", "password_reset_confirm", "recreate", "privileges_catalog", "special_privileges", "get", "post", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:admin",

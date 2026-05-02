@@ -8,10 +8,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 from rest_framework.pagination import PageNumberPagination
+from django.conf import settings
 from django.db.models import Q
 from django.db import connection
 from django_tenants.utils import schema_context
-from django.conf import settings
 
 from users.serializers import (
     MultiFieldTokenObtainPairSerializer, 
@@ -323,6 +323,7 @@ class TenantUsersView(APIView):
         account_type = lookup_serializer.validated_data['account_type']
         id_number = lookup_serializer.validated_data['id_number']
         date_of_birth = lookup_serializer.validated_data['date_of_birth']
+        notify_user = lookup_serializer.validated_data.get('notify_user', True)
 
         def resolve_role() -> str:
             if account_type == UserAccountType.STUDENT:
@@ -361,6 +362,13 @@ class TenantUsersView(APIView):
                     id_number=id_number,
                     date_of_birth=date_of_birth,
                 ).first()
+                if not source_record:
+                    from hr.models import Employee
+
+                    source_record = Employee.objects.filter(
+                        id_number=id_number,
+                        date_of_birth=date_of_birth,
+                    ).first()
                 if source_record:
                     source_first_name = source_record.first_name or ""
                     source_last_name = source_record.last_name or ""
@@ -439,6 +447,25 @@ class TenantUsersView(APIView):
                     return Response(
                         {"detail": f"User resolved but tenant assignment failed: {str(e)}"},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+
+            if created and notify_user:
+                from common.email_service import send_account_created_email
+                from users.utils import build_frontend_url
+
+                login_url = build_frontend_url(tenant_schema_name, "/login")
+                email_sent = send_account_created_email(
+                    user=user,
+                    temporary_password=str(id_number),
+                    login_url=login_url,
+                    school=tenant,
+                )
+                if not email_sent:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        "Account-created email could not be sent to user %s",
+                        user.username,
                     )
 
             try:

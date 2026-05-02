@@ -415,11 +415,12 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         """
-        Only GLOBAL users can have user-level bio fields updated.
-        For STUDENT/STAFF/PARENT, bio is sourced from tenant records.
+        Only GLOBAL users can have user-level profile fields updated directly.
+        For STUDENT/STAFF/PARENT, first_name/last_name/gender/photo remain sourced
+        from tenant records, but email updates are allowed and synchronized by view logic.
         """
         if instance.account_type != UserAccountType.GLOBAL:
-            for field in ['first_name', 'last_name', 'gender', 'photo', 'email']:
+            for field in ['first_name', 'last_name', 'gender', 'photo']:
                 validated_data.pop(field, None)
 
         return super().update(instance, validated_data)
@@ -459,6 +460,7 @@ class UserRecreateSerializer(serializers.Serializer):
     id_number = serializers.CharField(required=True)
     date_of_birth = serializers.DateField(required=True)
     username = serializers.CharField(required=False, allow_blank=True, help_text="Defaults to id_number if not provided")
+    notify_user = serializers.BooleanField(required=False, default=True)
 
     def validate(self, attrs):
         if not attrs.get('id_number'):

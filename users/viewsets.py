@@ -2,6 +2,8 @@
 ViewSet for user management with proper DRF action-based permissions.
 Replaces APIView implementations for better permission integration.
 """
+import logging
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -14,7 +16,7 @@ from django_tenants.utils import schema_context
 from django.utils import timezone
 
 from common.utils import get_object_by_uuid_or_fields
-from users.models import User
+from users.models import User, SpecialPrivilege
 from users.serializers import (
     UserSerializer,
     UserCreateSerializer,
@@ -24,8 +26,12 @@ from users.serializers import (
     UserRecreateSerializer,
 )
 from users.access_policies import UserAccessPolicy
+from users.access_policies.permissions import PRIVILEGES
 from common.status import UserAccountType, Roles
 from django.conf import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class UserPagination(PageNumberPagination):
@@ -230,6 +236,75 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         return super().list(request, *args, **kwargs)
+
+    def _sync_email_to_linked_record(self, user: User, email: str) -> None:
+        """Sync user email to linked student/staff record in the current tenant schema."""
+        if connection.schema_name == 'public':
+            return
+
+        normalized_email = (email or "").strip()
+        if not normalized_email:
+            return
+
+        if user.account_type == UserAccountType.STUDENT:
+            from students.models import Student
+
+            student = Student.objects.filter(user_account_id_number=user.id_number).first()
+            if not student:
+                student = Student.objects.filter(id_number=user.id_number).first()
+            if student and student.email != normalized_email:
+                student.email = normalized_email
+                student.save(update_fields=['email'])
+            return
+
+        if user.account_type == UserAccountType.STAFF:
+            from staff.models import Staff
+
+            staff = Staff.objects.filter(user_account_id_number=user.id_number).first()
+            if not staff:
+                staff = Staff.objects.filter(id_number=user.id_number).first()
+            if staff and staff.email != normalized_email:
+                staff.email = normalized_email
+                staff.save(update_fields=['email'])
+                return
+
+            # Fallback for HR employee records that are not mirrored in staff table.
+            from hr.models import Employee
+
+            employee = Employee.objects.filter(user_account_id_number=user.id_number).first()
+            if not employee:
+                employee = Employee.objects.filter(id_number=user.id_number).first()
+            if employee and employee.email != normalized_email:
+                employee.email = normalized_email
+                employee.save(update_fields=['email'])
+
+    def update(self, request, *args, **kwargs):
+        """Update user and sync email to linked tenant source record when relevant."""
+        partial = kwargs.pop('partial', False)
+        user = self.get_object()
+
+        old_email = user.email
+        serializer = self.get_serializer(user, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        new_email = serializer.validated_data.get('email')
+        if new_email and new_email != old_email:
+            try:
+                self._sync_email_to_linked_record(user, new_email)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to sync email for user %s to source record: %s",
+                    user.id_number,
+                    exc,
+                )
+
+        response_serializer = UserSerializer(user, context={'request': request})
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
     
     def create(self, request, *args, **kwargs):
         """Create/attach user to current tenant from source record."""
@@ -251,6 +326,7 @@ class UserViewSet(viewsets.ModelViewSet):
         account_type = lookup_serializer.validated_data['account_type']
         id_number = lookup_serializer.validated_data['id_number']
         date_of_birth = lookup_serializer.validated_data['date_of_birth']
+        notify_user = lookup_serializer.validated_data.get('notify_user', True)
         
         # Lookup source record
         source_record = None
@@ -270,6 +346,13 @@ class UserViewSet(viewsets.ModelViewSet):
                     id_number=id_number,
                     date_of_birth=date_of_birth,
                 ).first()
+                if not source_record:
+                    from hr.models import Employee
+
+                    source_record = Employee.objects.filter(
+                        id_number=id_number,
+                        date_of_birth=date_of_birth,
+                    ).first()
             
             elif account_type == UserAccountType.PARENT:
                 from students.models import Student
@@ -360,6 +443,7 @@ class UserViewSet(viewsets.ModelViewSet):
             user = create_serializer.save()
             
             # Add user to tenant
+            tenant = None
             try:
                 from core.models import Tenant
                 tenant = Tenant.objects.get(schema_name=tenant_schema_name)
@@ -370,6 +454,23 @@ class UserViewSet(viewsets.ModelViewSet):
                     return Response(
                         {"detail": f"User created but tenant assignment failed: {str(e)}"},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+
+            if notify_user:
+                from common.email_service import send_account_created_email
+                from users.utils import build_frontend_url
+
+                login_url = build_frontend_url(tenant_schema_name, "/login")
+                email_sent = send_account_created_email(
+                    user=user,
+                    temporary_password=str(id_number),
+                    login_url=login_url,
+                    school=tenant,
+                )
+                if not email_sent:
+                    logger.warning(
+                        "Account-created email could not be sent to user %s",
+                        user.username,
                     )
         
         # Update source record with user account id_number
@@ -396,6 +497,99 @@ class UserViewSet(viewsets.ModelViewSet):
             candidate = f"{base_username}_{index}"
             index += 1
         return candidate
+
+    @action(detail=False, methods=['get'],
+            permission_classes=[UserAccessPolicy], url_path='privileges')
+    def privileges_catalog(self, request):
+        """Return all assignable special privilege definitions."""
+        data = [
+            {
+                "code": privilege.code,
+                "label": privilege.label,
+                "description": privilege.description,
+            }
+            for privilege in sorted(PRIVILEGES.values(), key=lambda item: item.code)
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get', 'put'],
+            permission_classes=[UserAccessPolicy], url_path='special-privileges')
+    def special_privileges(self, request, id_number=None):
+        """Get or replace user-specific special privilege assignments."""
+        user = self.get_object()
+
+        if request.method == 'GET':
+            assigned_codes = list(
+                SpecialPrivilege.objects.filter(user=user)
+                .values_list('code', flat=True)
+            )
+            return Response(
+                {
+                    "user_id_number": user.id_number,
+                    "assigned_codes": sorted(set(assigned_codes)),
+                    "effective_codes": user.get_privileges(),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        raw_codes = request.data.get('codes', [])
+        if not isinstance(raw_codes, list):
+            return Response(
+                {"detail": "codes must be an array of privilege codes."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        requested_codes = sorted({str(code).strip().upper() for code in raw_codes if str(code).strip()})
+        invalid_codes = [code for code in requested_codes if code not in PRIVILEGES]
+        if invalid_codes:
+            return Response(
+                {"detail": "Invalid privilege code(s).", "invalid_codes": invalid_codes},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        current_codes = set(
+            SpecialPrivilege.objects.filter(user=user).values_list('code', flat=True)
+        )
+        requested_set = set(requested_codes)
+        to_add = requested_set - current_codes
+        to_remove = current_codes - requested_set
+
+        actor = request.user
+        unmanaged = [
+            code for code in sorted(to_add | to_remove)
+            if not actor.can_grant_privilege(code)
+        ]
+        if unmanaged:
+            return Response(
+                {
+                    "detail": "You are not allowed to grant or revoke one or more privileges.",
+                    "forbidden_codes": unmanaged,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        for code in to_add:
+            SpecialPrivilege.objects.create(
+                user=user,
+                code=code,
+                granted_by=actor,
+            )
+
+        if to_remove:
+            SpecialPrivilege.objects.filter(user=user, code__in=list(to_remove)).delete()
+
+        assigned_codes = list(
+            SpecialPrivilege.objects.filter(user=user).values_list('code', flat=True)
+        )
+        return Response(
+            {
+                "detail": "Special privileges updated successfully.",
+                "user_id_number": user.id_number,
+                "assigned_codes": sorted(set(assigned_codes)),
+                "effective_codes": user.get_privileges(),
+            },
+            status=status.HTTP_200_OK,
+        )
     
     @action(detail=False, methods=['get'], 
             authentication_classes=[JWTStatelessUserAuthentication],
@@ -454,6 +648,29 @@ class UserViewSet(viewsets.ModelViewSet):
                 "is_default_password": False
             },
             status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'],
+            permission_classes=[UserAccessPolicy], url_path='password/default')
+    def password_default(self, request, id_number=None):
+        """Allow admins to reset any account password to the default (id_number)."""
+        user = self.get_object()
+
+        with schema_context('public'):
+            user.set_password(user.id_number)
+            user.is_default_password = True
+            user.last_password_updated = None
+            user.save(update_fields=["password", "is_default_password", "last_password_updated"])
+
+        from common.audit_utils import log_auth_event
+        log_auth_event(request, user, "password_reset_to_default")
+
+        return Response(
+            {
+                "detail": f"Password reset to default for {user.username}",
+                "is_default_password": True,
+            },
+            status=status.HTTP_200_OK,
         )
     
     @action(detail=False, methods=['post'],

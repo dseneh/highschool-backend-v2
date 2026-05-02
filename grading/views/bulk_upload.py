@@ -5,6 +5,7 @@ Handles uploading student grades from Excel files.
 """
 
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from ..access_policies import GradebookAccessPolicy
@@ -32,9 +33,9 @@ class BulkGradeUploadView(APIView):
     
     Row 1: Grade Level: | <grade_level_name>
     Row 2: Section: | <section_name>
-    Row 3: Subject: | <subject_name>
+    Row 3: Subject Code: | <subject_code_or_name>
     Row 4: Academic Year: | <academic_year>
-    Row 5: Marking Period: | <marking_period_name>
+    Row 5: Marking Period Code: | <marking_period_code_or_name>
     Row 6: (blank)
     Row 7: Instructions: Do NOT modify...
     Row 8: (blank)
@@ -44,9 +45,9 @@ class BulkGradeUploadView(APIView):
     Example:
     Grade Level:	Nursery 1
     Section:	General
-    Subject:	Art
+    Subject Code:	ART
     Academic Year:	2025-2026
-    Marking Period:	Marking Period 6
+    Marking Period Code:	MP6
     
     Instructions: Do NOT modify the metadata above or student information columns below. Only enter scores in the assessment columns.
     
@@ -117,6 +118,8 @@ class BulkGradeUploadView(APIView):
         """Process the uploaded Excel file and create/update grades"""
         import pandas as pd
         from academics.models import Subject, GradeLevel
+
+        subject_has_code = any(field.name == 'code' for field in Subject._meta.fields)
 
         def _normalize_excel_text(value):
             """
@@ -195,13 +198,13 @@ class BulkGradeUploadView(APIView):
             raise ValueError("Section is missing in row 2. Format: 'Section:' in column A, value in column B")
         
         if not metadata.get('subject') or metadata['subject'] == 'nan':
-            raise ValueError("Subject is missing in row 3. Format: 'Subject:' in column A, value in column B")
+            raise ValueError("Subject Code is missing in row 3. Format: 'Subject Code:' in column A, value in column B")
         
         if not metadata.get('academic_year') or metadata['academic_year'] == 'nan':
             raise ValueError("Academic Year is missing in row 4. Format: 'Academic Year:' in column A, value in column B")
         
         if not metadata.get('marking_period') or metadata['marking_period'] == 'nan':
-            raise ValueError("Marking Period is missing in row 5. Format: 'Marking Period:' in column A, value in column B")
+            raise ValueError("Marking Period Code is missing in row 5. Format: 'Marking Period Code:' in column A, value in column B")
         
         # ========================================================================
         # STEP 2: Validate metadata against database
@@ -226,11 +229,17 @@ class BulkGradeUploadView(APIView):
         # Validate Marking Period
         try:
             marking_period = MarkingPeriod.objects.get(
-                name=metadata['marking_period'],
+                Q(name=metadata['marking_period']) | Q(short_name=metadata['marking_period']),
                 semester__academic_year=academic_year
             )
         except MarkingPeriod.DoesNotExist:
-            raise ValueError(f"Marking Period '{metadata['marking_period']}' not found for academic year '{metadata['academic_year']}'")
+            raise ValueError(
+                f"Marking Period '{metadata['marking_period']}' was not found by code or name for academic year '{metadata['academic_year']}'"
+            )
+        except MarkingPeriod.MultipleObjectsReturned:
+            raise ValueError(
+                f"Marking Period '{metadata['marking_period']}' is ambiguous for academic year '{metadata['academic_year']}'. Use a unique short name or name."
+            )
         
         # ========================================================================
         # STEP 3: Read student data (headers row is dynamic based on metadata position)
@@ -279,8 +288,13 @@ class BulkGradeUploadView(APIView):
             raise ValueError("No assessment columns found. Please add at least one assessment column after 'Student Name'.")
 
         # Validate Subject using the current upload context instead of a global name lookup.
+        subject_identifier = metadata['subject']
+        subject_lookup = Q(name=subject_identifier)
+        if subject_has_code:
+            subject_lookup |= Q(code=subject_identifier)
+
         subject_candidates = Subject.objects.filter(
-            name=metadata['subject'],
+            subject_lookup,
             gradebooks__section=section,
             gradebooks__academic_year=academic_year,
             gradebooks__assessments__marking_period=marking_period,
@@ -291,7 +305,7 @@ class BulkGradeUploadView(APIView):
         subject_count = subject_candidates.count()
         if subject_count == 0:
             raise ValueError(
-                f"Subject '{metadata['subject']}' was not found for section '{section.name}' in academic year '{academic_year.name}'."
+                f"Subject '{metadata['subject']}' was not found by code or name for section '{section.name}' in academic year '{academic_year.name}'."
             )
         if subject_count > 1:
             raise ValueError(

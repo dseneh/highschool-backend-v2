@@ -34,6 +34,7 @@ from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.utils import create_enrollment_for_student
 from finance.models import Transaction
 from grading.services.ranking import RankingService
+from common.status import StudentStatus
 
 # Import business logic (framework-agnostic)
 from business.students.services import student_service
@@ -537,6 +538,8 @@ class StudentSummaryView(APIView):
         "total_students": int,
         "total_staff": int,
         "total_teachers": int,
+        "student_status_counts": {"active": int, ...},
+        "employee_status_counts": {"active": int, ...},
         "academic_year": str,
         "total_enrolled": int,
         "pending_bills": float,
@@ -554,6 +557,10 @@ class StudentSummaryView(APIView):
             "total_students": 0,
             "total_staff": 0,
             "total_teachers": 0,
+            "student_status_counts": {
+                status_key: 0 for status_key in StudentStatus.all()
+            },
+            "employee_status_counts": {},
             "academic_year": "N/A",
             "total_enrolled": 0,
             "pending_bills": 0.0,
@@ -591,20 +598,47 @@ class StudentSummaryView(APIView):
             academic_year_name = current_academic_year.name if current_academic_year else "N/A"
 
             # Count total students
-            total_students = Student.objects.all().count()
+            student_qs = Student.objects.all()
+            total_students = student_qs.count()
+            student_status_counts = {
+                status_key: 0 for status_key in StudentStatus.all()
+            }
+            for row in student_qs.values("status").annotate(count=Count("id")):
+                status_key = row.get("status")
+                if status_key:
+                    student_status_counts[status_key] = row.get("count") or 0
 
-            # Count total staff and teachers
+            # Count total staff and teachers from the HR employee table
             try:
-                from staff.models import Staff
+                from hr.models import Employee
 
-                staff_qs = Staff.objects.all()
-                total_staff = staff_qs.count()
-                total_teachers = staff_qs.filter(
-                    Q(is_teacher=True) | Q(position__teaching_role=True)
-                ).distinct().count()
-            except:
+                employee_status_counts = {
+                    status_key: 0
+                    for status_key, _ in Employee.EmploymentStatus.choices
+                }
+
+                if _table_exists("employee"):
+                    employee_qs = Employee.objects.all()
+                    total_staff = employee_qs.count()
+                    total_teachers = employee_qs.filter(
+                        Q(is_teacher=True) | Q(position__can_teach=True)
+                    ).distinct().count()
+
+                    for row in employee_qs.values("employment_status").annotate(count=Count("id")):
+                        status_key = row.get("employment_status")
+                        if status_key:
+                            employee_status_counts[status_key] = row.get("count") or 0
+                else:
+                    total_staff = 0
+                    total_teachers = 0
+                    employee_status_counts = {
+                        status_key: 0
+                        for status_key, _ in Employee.EmploymentStatus.choices
+                    }
+            except Exception:
                 total_staff = 0
                 total_teachers = 0
+                employee_status_counts = {}
 
             # Count total enrolled students in current academic year
             if current_academic_year:
@@ -664,6 +698,8 @@ class StudentSummaryView(APIView):
                 "total_students": total_students,
                 "total_staff": total_staff,
                 "total_teachers": total_teachers,
+                "student_status_counts": student_status_counts,
+                "employee_status_counts": employee_status_counts,
                 "academic_year": academic_year_name,
                 "total_enrolled": total_enrolled,
                 "pending_bills": float(pending_bills),

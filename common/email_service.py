@@ -294,3 +294,38 @@ def send_password_reset_success_email(user, login_url: str = "", school=None) ->
         html_body=html_body,
         text_body=text_body,
     )
+
+
+def send_account_created_email(
+    user,
+    temporary_password: str,
+    login_url: str = "",
+    school=None,
+) -> bool:
+    """Send a welcome email with initial login instructions for a newly created account."""
+    if not user.email or user.email.endswith("@local.user"):
+        logger.info(
+            "send_account_created_email: skipping user %s due to missing/placeholder email",
+            user.username,
+        )
+        return False
+
+    context = _build_branding_context(user, school)
+    context["username"] = user.username
+    context["temporary_password"] = temporary_password
+    context["login_url"] = login_url or context.get("school_website", "")
+
+    try:
+        html_body = render_to_string("emails/account_created.html", context)
+        text_body = render_to_string("emails/account_created.txt", context)
+    except Exception as exc:
+        logger.error("send_account_created_email: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=f"Welcome to {context['school_name']} - Your Account Is Ready",
+        html_body=html_body,
+        text_body=text_body,
+    )
