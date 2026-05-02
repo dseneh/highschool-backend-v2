@@ -47,6 +47,28 @@ class AccountingTransactionType(BaseModel):
         related_name="default_transaction_types",
         help_text="Default income/expense ledger account used for auto-posting",
     )
+    auto_manage_ledger_account = models.BooleanField(
+        default=False,
+        help_text=(
+            "When enabled, the system creates and keeps a chart-of-accounts entry "
+            "in sync with this transaction type."
+        ),
+    )
+    managed_ledger_account = models.ForeignKey(
+        "AccountingLedgerAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="managed_by_transaction_types",
+        help_text="Auto-managed chart-of-accounts entry created/updated from this type.",
+    )
+    is_system_managed = models.BooleanField(
+        default=False,
+        help_text=(
+            "When true, this transaction type is created and maintained by the platform "
+            "and cannot be edited or deleted from the UI."
+        ),
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

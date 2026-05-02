@@ -600,15 +600,17 @@ class UserDetailView(APIView):
                             logger.warning(f"Failed to remove user from tenant {perm.tenant.schema_name}: {e}")
                     
                     username = user.username
-                    user.delete()
+                    # tenant_users overrides delete() to block accidental deletion;
+                    # use force_drop=True for an actual hard delete after unlinking tenants.
+                    user.delete(force_drop=True)
                     return Response(
                         {"detail": f"User {username} permanently deleted"},
                         status=status.HTTP_204_NO_CONTENT
                     )
                 else:
-                    # Soft delete: just deactivate
-                    user.is_active = False
-                    user.save()
+                    # Soft delete: use the manager's delete_user() which unlinks tenants
+                    # and sets is_active=False (per django-tenant-users contract).
+                    User.objects.delete_user(user)
                     return Response(
                         {"detail": f"User {user.username} deactivated"},
                         status=status.HTTP_200_OK

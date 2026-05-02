@@ -732,6 +732,14 @@ class StudentImportValidator:
 
     VALID_ENROLLMENT_STATUS = {"new", "returning", "transferred"}
     VALID_GENDERS = {"male", "female"}
+    ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xls")
+    ALLOWED_CONTENT_TYPE_MARKERS = (
+        "csv",
+        "excel",
+        "spreadsheetml",
+        "application/vnd.ms-excel",
+        "application/octet-stream",
+    )
 
     @classmethod
     def validate_file_safety(cls, file_obj):
@@ -745,6 +753,8 @@ class StudentImportValidator:
             list: List of error messages
         """
         errors = []
+        file_name = (file_obj.name or "").lower()
+        is_excel_file = file_name.endswith((".xlsx", ".xls"))
 
         # Check file size
         if file_obj.size > cls.MAX_FILE_SIZE:
@@ -753,11 +763,14 @@ class StudentImportValidator:
             )
 
         # Check file extension
-        if not file_obj.name.lower().endswith(".csv"):
-            errors.append("Only CSV files are supported")
+        if not file_name.endswith(cls.ALLOWED_EXTENSIONS):
+            errors.append("Only CSV or Excel files (.csv, .xlsx, .xls) are supported")
 
         # Check content type
-        if file_obj.content_type and "csv" not in file_obj.content_type.lower():
+        content_type = (file_obj.content_type or "").lower()
+        if content_type and not any(
+            marker in content_type for marker in cls.ALLOWED_CONTENT_TYPE_MARKERS
+        ):
             errors.append("Invalid file content type")
 
         # Basic file corruption check - try to read first few bytes
@@ -766,15 +779,17 @@ class StudentImportValidator:
             first_chunk = file_obj.read(1024)
             file_obj.seek(0)
 
-            # Check for null bytes (sign of corruption)
-            if b"\x00" in first_chunk:
-                errors.append("File appears to be corrupted (contains null bytes)")
+            # For CSV, enforce text safety checks. For Excel, skip binary checks.
+            if not is_excel_file:
+                # Check for null bytes (sign of corruption in text files)
+                if b"\x00" in first_chunk:
+                    errors.append("File appears to be corrupted (contains null bytes)")
 
-            # Check if it's actually text
-            try:
-                first_chunk.decode("utf-8")
-            except UnicodeDecodeError:
-                errors.append("File encoding is not supported (must be UTF-8)")
+                # Check if it's actually text
+                try:
+                    first_chunk.decode("utf-8")
+                except UnicodeDecodeError:
+                    errors.append("File encoding is not supported (must be UTF-8)")
         except Exception:
             errors.append("Unable to read file - may be corrupted")
 
@@ -986,7 +1001,7 @@ def parse_date_safely(date_value):
 
     # First try pandas to_datetime which is very flexible
     try:
-        parsed_date = pd.to_datetime(date_str, infer_datetime_format=True)
+        parsed_date = pd.to_datetime(date_str)
         return parsed_date.date()
     except:
         pass
@@ -1302,14 +1317,22 @@ def read_csv_safely(file_obj):
     Raises:
         Exception: If CSV cannot be read
     """
-    df = pd.read_csv(
-        file_obj,
-        encoding="utf-8",
-        skipinitialspace=True,
-        na_filter=True,
-        keep_default_na=True,
-        dtype=str,  # Read everything as string initially
-    )
+    file_name = (getattr(file_obj, "name", "") or "").lower()
+    file_obj.seek(0)
+
+    if file_name.endswith((".xlsx", ".xls")):
+        # Read first sheet from Excel uploads; default dtype=str keeps behavior
+        # aligned with CSV imports.
+        df = pd.read_excel(file_obj, sheet_name=0, dtype=str)
+    else:
+        df = pd.read_csv(
+            file_obj,
+            encoding="utf-8",
+            skipinitialspace=True,
+            na_filter=True,
+            keep_default_na=True,
+            dtype=str,  # Read everything as string initially
+        )
 
     # Clean up the DataFrame to handle common issues
     # Replace empty strings with NaN for consistent null handling

@@ -197,10 +197,6 @@ def register_all_models():
         EmployeeAttendance,
         EmployeePerformanceReview,
         EmployeeWorkflowTask,
-        PayrollComponent,
-        EmployeeCompensation,
-        EmployeeCompensationItem,
-        PayrollRun,
     )
 
     auditlog.register(EmployeeDepartment, exclude_fields=COMMON_EXCLUDE)
@@ -214,10 +210,23 @@ def register_all_models():
     auditlog.register(EmployeeAttendance, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(EmployeePerformanceReview, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(EmployeeWorkflowTask, exclude_fields=COMMON_EXCLUDE)
-    auditlog.register(PayrollComponent, exclude_fields=COMMON_EXCLUDE)
-    auditlog.register(EmployeeCompensation, exclude_fields=COMMON_EXCLUDE)
-    auditlog.register(EmployeeCompensationItem, exclude_fields=COMMON_EXCLUDE)
+
+    # ── Payroll ────────────────────────────────────────────────────────
+    from payroll.models import (
+        PaySchedule,
+        PayrollPeriod,
+        PayrollRun,
+        Payslip,
+        PayrollItem,
+        TaxRule,
+    )
+
+    auditlog.register(PaySchedule, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(PayrollPeriod, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(PayrollRun, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(Payslip, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(PayrollItem, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(TaxRule, exclude_fields=COMMON_EXCLUDE)
 
     # ── Settings ───────────────────────────────────────────────────────
     from settings.models import GradingSettings

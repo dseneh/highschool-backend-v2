@@ -99,7 +99,8 @@ def delete_migration_files(dry_run=False):
     # Find all local apps with migrations
     local_apps = [
         'common', 'users', 'core', 'academics', 'students', 'staff',
-        'grading', 'finance', 'settings', 'reports', 'defaults'
+        'grading', 'finance', 'accounting', 'hr', 'payroll',
+        'settings', 'reports', 'defaults'
     ]
     
     total = 0

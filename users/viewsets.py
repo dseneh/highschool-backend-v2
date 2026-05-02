@@ -168,7 +168,48 @@ class UserViewSet(viewsets.ModelViewSet):
         elif self.action in ['update', 'partial_update']:
             return UserUpdateSerializer
         return UserSerializer
-    
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a user.
+
+        Soft delete by default (?hard=false): uses User.objects.delete_user()
+        which unlinks tenants and sets is_active=False (django-tenant-users contract).
+
+        Hard delete (?hard=true): unlinks the user from every tenant, then calls
+        delete(force_drop=True) — the documented escape hatch in tenant_users.
+        """
+        user = self.get_object()
+        hard_delete = request.query_params.get('hard', 'false').lower() == 'true'
+
+        with schema_context('public'):
+            if hard_delete:
+                from core.models import Tenant
+                from tenant_users.permissions.models import UserTenantPermissions
+
+                tenant_permissions = UserTenantPermissions.objects.filter(profile=user)
+                for perm in tenant_permissions:
+                    try:
+                        tenant = Tenant.objects.get(schema_name=perm.tenant.schema_name)
+                        tenant.remove_user(user)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"Failed to remove user from tenant {perm.tenant.schema_name}: {e}"
+                        )
+
+                username = user.username
+                user.delete(force_drop=True)
+                return Response(
+                    {"detail": f"User {username} permanently deleted"},
+                    status=status.HTTP_204_NO_CONTENT,
+                )
+
+            User.objects.delete_user(user)
+            return Response(
+                {"detail": f"User {user.username} deactivated"},
+                status=status.HTTP_200_OK,
+            )
+
     def get_object(self):
         """Get user by id_number."""
         lookup_value = self.kwargs.get(self.lookup_field)

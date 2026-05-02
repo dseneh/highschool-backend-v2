@@ -65,7 +65,16 @@ class BaseModel(models.Model):
 
 
 class BasePersonModel(BaseModel):
-    # id_number = models.CharField(max_length=50, unique=True)
+    id_number = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        default=None,
+        help_text=(
+            "National / government-issued identification number. "
+            "Per-tenant uniqueness is enforced by subclasses where required."
+        ),
+    )
     first_name = models.CharField(max_length=150)
     middle_name = models.CharField(max_length=150, blank=True, null=True, default=None)
     last_name = models.CharField(max_length=150)

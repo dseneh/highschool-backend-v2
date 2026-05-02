@@ -139,6 +139,45 @@ class Employee(BasePersonModel):
     )
     is_teacher = models.BooleanField(default=False)
 
+    # ---- Payroll fields ---------------------------------------------------
+    class SalaryType(models.TextChoices):
+        MONTHLY = "monthly", "Monthly Salary"
+        HOURLY = "hourly", "Hourly Wage"
+
+    salary_type = models.CharField(
+        max_length=20,
+        choices=SalaryType.choices,
+        default=SalaryType.MONTHLY,
+    )
+    basic_salary = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Monthly base for MONTHLY salary types; ignored for HOURLY.",
+    )
+    hourly_rate = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Hourly rate; required for HOURLY and used for overtime computation.",
+    )
+    pay_schedule = models.ForeignKey(
+        "payroll.PaySchedule",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employees",
+    )
+    tax_rules = models.ManyToManyField(
+        "payroll.TaxRule",
+        blank=True,
+        related_name="employees",
+        help_text="Override tax rules for this employee. If empty, all active rules apply.",
+    )
+    tax_id = models.CharField(max_length=60, blank=True, null=True, default=None)
+    bank_name = models.CharField(max_length=120, blank=True, null=True, default=None)
+    bank_account_number = models.CharField(max_length=60, blank=True, null=True, default=None)
+
     class Meta:
         db_table = "employee"
         ordering = ["first_name", "last_name"]
@@ -152,6 +191,33 @@ class Employee(BasePersonModel):
 
     def __str__(self):
         return f"{self.employee_number} - {self.get_full_name()}"
+
+    def save(self, *args, **kwargs):
+        if not self.id_number:
+            self.id_number = self._generate_id_number()
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def _generate_id_number(cls) -> str:
+        """Generate a tenant-unique ID number like ``EMP-ID-000001``.
+
+        Used as a default when callers don't supply one. The value is
+        derived from the highest existing numeric suffix to avoid races
+        with concurrent inserts of arbitrary user-supplied values.
+        """
+        prefix = "EMP-"
+        next_seq = 1
+        last = (
+            cls.objects.filter(id_number__startswith=prefix)
+            .order_by("-id_number")
+            .values_list("id_number", flat=True)
+            .first()
+        )
+        if last:
+            suffix = "".join(ch for ch in last[len(prefix):] if ch.isdigit())
+            if suffix.isdigit():
+                next_seq = int(suffix) + 1
+        return f"{prefix}{next_seq:06d}"
 
     def get_leave_requests_for_display(self, leave_requests=None):
         if leave_requests is not None:
@@ -227,6 +293,28 @@ class Employee(BasePersonModel):
 
         return summary
 
+    def payroll_readiness(self):
+        """Return ``{ready: bool, missing: [str]}`` summarizing payroll setup.
+
+        An employee is payroll-ready when they have an assigned pay
+        schedule and either a non-zero basic salary (MONTHLY) or hourly
+        rate (HOURLY).
+        """
+        missing: list[str] = []
+        if not self.pay_schedule_id:
+            missing.append("pay_schedule")
+        if self.salary_type == self.SalaryType.MONTHLY:
+            if not self.basic_salary or self.basic_salary <= 0:
+                missing.append("basic_salary")
+        else:  # HOURLY
+            if not self.hourly_rate or self.hourly_rate <= 0:
+                missing.append("hourly_rate")
+        if self.pk and not self.tax_rules.exists():
+            missing.append("tax_rules")
+        if self.employment_status != self.EmploymentStatus.ACTIVE:
+            missing.append("active_status")
+        return {"ready": not missing, "missing": missing}
+
 
 class EmployeeContact(BaseModel):
     """Emergency or related contacts for an employee."""
@@ -275,59 +363,6 @@ class EmployeeDependent(BasePersonModel):
 
     def __str__(self):
         return f"{self.get_full_name()} ({self.relationship or 'Dependent'})"
-
-
-class EmployeeDocument(BaseModel):
-    """Compliance and certification documents attached to an employee."""
-
-    class DocumentType(models.TextChoices):
-        CONTRACT = "contract", "Contract"
-        IDENTIFICATION = "identification", "Identification"
-        CERTIFICATION = "certification", "Certification"
-        LICENSE = "license", "License"
-        PERMIT = "permit", "Permit"
-        OTHER = "other", "Other"
-
-    employee = models.ForeignKey(
-        Employee,
-        on_delete=models.CASCADE,
-        related_name="documents",
-    )
-    title = models.CharField(max_length=180)
-    document_type = models.CharField(
-        max_length=30,
-        choices=DocumentType.choices,
-        default=DocumentType.OTHER,
-    )
-    document_number = models.CharField(max_length=100, blank=True, null=True, default=None)
-    issue_date = models.DateField(blank=True, null=True, default=None)
-    expiry_date = models.DateField(blank=True, null=True, default=None)
-    issuing_authority = models.CharField(max_length=150, blank=True, null=True, default=None)
-    document_url = models.URLField(blank=True, null=True, default=None)
-    notes = models.TextField(blank=True, null=True, default=None)
-
-    class Meta:
-        db_table = "employee_document"
-        ordering = ["employee__first_name", "employee__last_name", "title"]
-
-    def __str__(self):
-        return f"{self.employee.get_full_name()} - {self.title}"
-
-    def get_compliance_status(self, as_of_date=None):
-        as_of_date = as_of_date or timezone.localdate()
-        if not self.expiry_date:
-            return "valid"
-        if self.expiry_date < as_of_date:
-            return "expired"
-        if (self.expiry_date - as_of_date).days <= 30:
-            return "expiring_soon"
-        return "valid"
-
-    @property
-    def days_until_expiry(self):
-        if not self.expiry_date:
-            return None
-        return (self.expiry_date - timezone.localdate()).days
 
 
 class LeaveType(BaseModel):
@@ -626,303 +661,3 @@ class EmployeePerformanceReview(BaseModel):
         return self.status in {self.Status.COMPLETED, self.Status.ACKNOWLEDGED}
 
 
-class EmployeeWorkflowTask(BaseModel):
-    """Checklist item for employee onboarding and offboarding workflows."""
-
-    class WorkflowType(models.TextChoices):
-        ONBOARDING = "onboarding", "Onboarding"
-        OFFBOARDING = "offboarding", "Offboarding"
-
-    class TaskStatus(models.TextChoices):
-        PENDING = "pending", "Pending"
-        IN_PROGRESS = "in_progress", "In Progress"
-        COMPLETED = "completed", "Completed"
-        BLOCKED = "blocked", "Blocked"
-
-    class Category(models.TextChoices):
-        DOCUMENTATION = "documentation", "Documentation"
-        ACCESS_SETUP = "access_setup", "Access Setup"
-        PAYROLL_SETUP = "payroll_setup", "Payroll Setup"
-        EQUIPMENT = "equipment", "Equipment"
-        ORIENTATION = "orientation", "Orientation"
-        EXIT_CLEARANCE = "exit_clearance", "Exit Clearance"
-        KNOWLEDGE_TRANSFER = "knowledge_transfer", "Knowledge Transfer"
-        OTHER = "other", "Other"
-
-    employee = models.ForeignKey(
-        Employee,
-        on_delete=models.CASCADE,
-        related_name="workflow_tasks",
-    )
-    assigned_to = models.ForeignKey(
-        Employee,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="assigned_workflow_tasks",
-    )
-    workflow_type = models.CharField(
-        max_length=20,
-        choices=WorkflowType.choices,
-        default=WorkflowType.ONBOARDING,
-    )
-    category = models.CharField(
-        max_length=30,
-        choices=Category.choices,
-        default=Category.OTHER,
-    )
-    title = models.CharField(max_length=180)
-    description = models.TextField(blank=True, null=True, default=None)
-    due_date = models.DateField(blank=True, null=True, default=None)
-    status = models.CharField(
-        max_length=20,
-        choices=TaskStatus.choices,
-        default=TaskStatus.PENDING,
-    )
-    completed_at = models.DateTimeField(blank=True, null=True, default=None)
-    notes = models.TextField(blank=True, null=True, default=None)
-
-    class Meta:
-        db_table = "employee_workflow_task"
-        ordering = ["workflow_type", "due_date", "employee__first_name", "employee__last_name"]
-
-    def __str__(self):
-        return f"{self.employee.get_full_name()} - {self.title}"
-
-    def is_overdue(self, as_of_date=None):
-        as_of_date = as_of_date or timezone.localdate()
-        return bool(
-            self.due_date
-            and self.due_date < as_of_date
-            and self.status != self.TaskStatus.COMPLETED
-        )
-
-    def mark_completed(self):
-        self.status = self.TaskStatus.COMPLETED
-        self.completed_at = timezone.now()
-        if self.pk and not self._state.adding:
-            self.save(update_fields=["status", "completed_at", "updated_by", "updated_at"])
-
-
-class PayrollComponent(BaseModel):
-    """Reusable earnings and deductions for employee compensation packages."""
-
-    class ComponentType(models.TextChoices):
-        EARNING = "earning", "Earning"
-        DEDUCTION = "deduction", "Deduction"
-
-    class CalculationMethod(models.TextChoices):
-        FIXED = "fixed", "Fixed Amount"
-        PERCENTAGE = "percentage", "Percentage of Base"
-
-    name = models.CharField(max_length=150)
-    code = models.CharField(max_length=30, blank=True, default="")
-    description = models.TextField(blank=True, null=True, default=None)
-    component_type = models.CharField(
-        max_length=20,
-        choices=ComponentType.choices,
-        default=ComponentType.EARNING,
-    )
-    calculation_method = models.CharField(
-        max_length=20,
-        choices=CalculationMethod.choices,
-        default=CalculationMethod.FIXED,
-    )
-    default_value = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    taxable = models.BooleanField(default=False)
-
-    class Meta:
-        db_table = "payroll_component"
-        ordering = ["component_type", "name"]
-        constraints = [
-            models.UniqueConstraint(fields=["name"], name="hr_uniq_payroll_component_name_per_tenant"),
-            models.UniqueConstraint(
-                fields=["code"],
-                name="hr_uniq_payroll_component_code_per_tenant",
-                condition=~models.Q(code=""),
-            ),
-        ]
-
-    def __str__(self):
-        return self.name
-
-    def calculate_amount(self, base_salary, override_value=None):
-        base_amount = Decimal(base_salary or 0)
-        configured_value = Decimal(override_value if override_value is not None else self.default_value or 0)
-
-        if self.calculation_method == self.CalculationMethod.PERCENTAGE:
-            return (base_amount * configured_value) / Decimal("100")
-        return configured_value
-
-
-class EmployeeCompensation(BaseModel):
-    """Compensation profile for an employee."""
-
-    class PaymentFrequency(models.TextChoices):
-        MONTHLY = "monthly", "Monthly"
-        BIWEEKLY = "biweekly", "Bi-Weekly"
-        WEEKLY = "weekly", "Weekly"
-        ANNUALLY = "annually", "Annually"
-
-    employee = models.OneToOneField(
-        Employee,
-        on_delete=models.CASCADE,
-        related_name="compensation",
-    )
-    base_salary = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    currency = models.CharField(max_length=10, default="USD")
-    payment_frequency = models.CharField(
-        max_length=20,
-        choices=PaymentFrequency.choices,
-        default=PaymentFrequency.MONTHLY,
-    )
-    effective_date = models.DateField(default=timezone.localdate)
-    notes = models.TextField(blank=True, null=True, default=None)
-
-    class Meta:
-        db_table = "employee_compensation"
-        ordering = ["employee__first_name", "employee__last_name"]
-
-    def __str__(self):
-        return f"Compensation for {self.employee.get_full_name()}"
-
-    def get_compensation_summary(self, component_amounts=None):
-        base_salary = Decimal(self.base_salary or 0)
-        earning_total = Decimal("0.00")
-        deduction_total = Decimal("0.00")
-
-        if component_amounts is None:
-            component_amounts = [
-                {
-                    "component": item.component,
-                    "override_value": item.override_value,
-                }
-                for item in self.items.select_related("component").all()
-            ] if self.pk and not self._state.adding else []
-
-        earnings = []
-        deductions = []
-        for entry in component_amounts:
-            component = entry.get("component")
-            if component is None:
-                continue
-            if component.component_type == PayrollComponent.ComponentType.DEDUCTION:
-                deductions.append(entry)
-            else:
-                earnings.append(entry)
-
-        for entry in earnings:
-            component = entry["component"]
-            amount = Decimal(
-                entry.get(
-                    "amount",
-                    component.calculate_amount(base_salary, override_value=entry.get("override_value")),
-                )
-            )
-            earning_total += amount
-
-        gross_pay = base_salary + earning_total
-
-        for entry in deductions:
-            component = entry["component"]
-            amount = Decimal(
-                entry.get(
-                    "amount",
-                    component.calculate_amount(gross_pay, override_value=entry.get("override_value")),
-                )
-            )
-            deduction_total += amount
-
-        net_pay = gross_pay - deduction_total
-
-        return {
-            "base_salary": base_salary,
-            "total_earnings": earning_total,
-            "gross_pay": gross_pay,
-            "total_deductions": deduction_total,
-            "net_pay": net_pay,
-        }
-
-
-class EmployeeCompensationItem(BaseModel):
-    """Line items attached to an employee compensation profile."""
-
-    compensation = models.ForeignKey(
-        EmployeeCompensation,
-        on_delete=models.CASCADE,
-        related_name="items",
-    )
-    component = models.ForeignKey(
-        PayrollComponent,
-        on_delete=models.PROTECT,
-        related_name="compensation_items",
-    )
-    override_value = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True, default=None)
-
-    class Meta:
-        db_table = "employee_compensation_item"
-        ordering = ["component__component_type", "component__name"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["compensation", "component"],
-                name="hr_uniq_compensation_component_per_employee",
-            )
-        ]
-
-    def __str__(self):
-        return f"{self.compensation.employee.get_full_name()} - {self.component.name}"
-
-    def get_amount(self):
-        return self.component.calculate_amount(
-            self.compensation.base_salary,
-            override_value=self.override_value,
-        )
-
-
-class PayrollRun(BaseModel):
-    """Payroll run model kept as the finance bridge anchor."""
-
-    class Status(models.TextChoices):
-        DRAFT = "draft", "Draft"
-        PROCESSING = "processing", "Processing"
-        COMPLETED = "completed", "Completed"
-        PAID = "paid", "Paid"
-
-    name = models.CharField(max_length=255)
-    run_date = models.DateField()
-    period_start = models.DateField(blank=True, null=True, default=None)
-    period_end = models.DateField(blank=True, null=True, default=None)
-    payment_date = models.DateField(blank=True, null=True, default=None)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    currency = models.CharField(max_length=10, default="USD")
-    notes = models.TextField(blank=True, null=True, default=None)
-
-    class Meta:
-        db_table = "hr_payroll_run"
-        verbose_name = "Payroll Run"
-        verbose_name_plural = "Payroll Runs"
-        ordering = ["-run_date", "name"]
-
-    def __str__(self):
-        return f"{self.name} - {self.run_date}"
-
-    def get_summary(self, compensations=None):
-        if compensations is None:
-            compensations = EmployeeCompensation.objects.filter(active=True).prefetch_related("items__component")
-
-        gross_total = Decimal("0.00")
-        deduction_total = Decimal("0.00")
-        net_total = Decimal("0.00")
-
-        for compensation in compensations:
-            summary = compensation.get_compensation_summary()
-            gross_total += summary["gross_pay"]
-            deduction_total += summary["total_deductions"]
-            net_total += summary["net_pay"]
-
-        return {
-            "employee_count": len(compensations),
-            "gross_pay": gross_total,
-            "total_deductions": deduction_total,
-            "net_pay": net_total,
-        }

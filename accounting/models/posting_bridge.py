@@ -17,12 +17,12 @@ class AccountingPayrollPostingBatch(BaseModel):
         REVERSED = "reversed", "Reversed"
 
     payroll_run = models.ForeignKey(
-        "hr.PayrollRun",
+        "payroll.PayrollRun",
         on_delete=models.PROTECT,
         related_name="accounting_posting_batches",
         null=True,
         blank=True,
-        help_text="HR payroll run this batch was generated from",
+        help_text="Payroll run this batch was generated from",
     )
     posting_date = models.DateField()
     academic_year = models.ForeignKey(

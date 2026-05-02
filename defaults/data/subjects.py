@@ -100,17 +100,7 @@ subjects = [
         "code": "REL",
     },
     {
-        "name": "Agricultural Science",
-        "description": "Introduction to farming and agriculture.",
-        "code": "AGR",
-    },
-    {
-        "name": "Local Language",
-        "description": "Instruction in indigenous Liberian languages.",
-        "code": "LOC",
-    },
-    {
-        "name": "Literature-in-English",
+        "name": "Literature",
         "description": "Intro to African and world literature.",
         "code": "LIT",
     },
@@ -120,16 +110,10 @@ subjects = [
         "code": "GEOJ",
     },
     {
-        "name": "Introductory Technology",
-        "description": "Basic tech, tools, and problem-solving.",
-        "code": "TECH",
-    },
-    {
         "name": "Business Education",
         "description": "Basic commerce, bookkeeping, and business concepts.",
         "code": "BUS",
     },
-    {"name": "French", "description": "Basic French language skills.", "code": "FREJ"},
     {
         "name": "English Language",
         "description": "Study of grammar, composition, and comprehension in English.",
@@ -139,11 +123,6 @@ subjects = [
         "name": "Mathematics",
         "description": "Core mathematical concepts including algebra and geometry.",
         "code": "MATH",
-    },
-    {
-        "name": "Literature-in-English",
-        "description": "Study of prose, poetry, and drama from African and global authors.",
-        "code": "LIT",
     },
     {
         "name": "Civic Education",
@@ -166,11 +145,6 @@ subjects = [
         "description": "Study of living organisms and life processes.",
         "code": "BIO",
     },
-    {
-        "name": "Agricultural Science",
-        "description": "Advanced study of farming and food systems.",
-        "code": "AGR",
-    },
     # Arts Stream
     {
         "name": "History",
@@ -186,16 +160,6 @@ subjects = [
         "name": "Government",
         "description": "Structures of government, constitutions, and politics.",
         "code": "GOV",
-    },
-    {
-        "name": "Christian Religious Studies",
-        "description": "Biblical principles and Christian doctrines.",
-        "code": "CRS",
-    },
-    {
-        "name": "Islamic Religious Studies",
-        "description": "Teachings of Islam, Qur’an, and Hadith.",
-        "code": "IRS",
     },
     {
         "name": "French",

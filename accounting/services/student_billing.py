@@ -103,7 +103,7 @@ def build_billing_lines_for_enrollment(enrollment: Enrollment) -> list[BillingLi
     tuition_fee = enrollment.grade_level.tuition_fees.filter(targeted_student_type=enrollment.enrolled_as).first()
     if not tuition_fee or tuition_fee.amount is None or _to_decimal(tuition_fee.amount) <= 0:
         raise ValueError(
-            f"No {str(enrollment.enrolled_as).upper()} tuition fee found for grade level. Cannot create student bill."
+            f"No tuition fee found for {str(enrollment.enrolled_as).capitalize()} students for {str(enrollment.grade_level).capitalize()}. Cannot create student bill."
         )
 
     lines.append(

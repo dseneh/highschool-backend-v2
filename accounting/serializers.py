@@ -259,9 +259,22 @@ class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
             validated_data.pop("code")
         return super().update(instance, validated_data)
 
+    def validate(self, attrs):
+        if self.instance is not None and getattr(self.instance, "is_system_managed", False):
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "This chart-of-accounts entry is system-managed and cannot be edited "
+                        "directly. Update the linked transaction type instead."
+                    )
+                }
+            )
+        return super().validate(attrs)
+
     class Meta:
         model = AccountingLedgerAccount
         fields = "__all__"
+        read_only_fields = ["is_system_managed"]
 
 
 class AccountingJournalEntrySerializer(serializers.ModelSerializer):
@@ -390,8 +403,24 @@ class AccountingTransactionTypeSerializer(serializers.ModelSerializer):
     default_ledger_account_name = serializers.CharField(
         source="default_ledger_account.name", read_only=True
     )
+    managed_ledger_account_code = serializers.CharField(
+        source="managed_ledger_account.code", read_only=True
+    )
+    managed_ledger_account_name = serializers.CharField(
+        source="managed_ledger_account.name", read_only=True
+    )
 
     def validate(self, attrs):
+        if self.instance is not None and getattr(self.instance, "is_system_managed", False):
+            locked_fields = {"name", "code", "transaction_category", "is_active"}
+            for field in locked_fields:
+                if field in attrs:
+                    current_value = getattr(self.instance, field, None)
+                    if attrs[field] != current_value:
+                        raise serializers.ValidationError(
+                            {field: "This field cannot be changed for system-managed transaction types."}
+                        )
+
         category = attrs.get(
             "transaction_category",
             getattr(self.instance, "transaction_category", None),
@@ -459,8 +488,14 @@ class AccountingTransactionTypeSerializer(serializers.ModelSerializer):
             "description",
             "default_ledger_account",
             "default_ledger_account_name",
+            "auto_manage_ledger_account",
+            "managed_ledger_account",
+            "managed_ledger_account_code",
+            "managed_ledger_account_name",
+            "is_system_managed",
             "is_active",
         ]
+        read_only_fields = ["managed_ledger_account", "is_system_managed"]
 
 
 class AccountingPaymentMethodSerializer(serializers.ModelSerializer):

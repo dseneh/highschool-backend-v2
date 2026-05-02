@@ -7,7 +7,6 @@ from hr.serializers import EmployeeSerializer
 from hr.models import (
     Employee,
     EmployeeAttendance,
-    EmployeeCompensation,
     EmployeeDepartment,
     EmployeeDocument,
     EmployeePerformanceReview,
@@ -15,19 +14,14 @@ from hr.models import (
     EmployeeWorkflowTask,
     LeaveRequest,
     LeaveType,
-    PayrollComponent,
-    PayrollRun,
 )
 from hr.views import (
     EmployeeAttendanceViewSet,
-    EmployeeCompensationViewSet,
     EmployeeDocumentViewSet,
     EmployeePerformanceReviewViewSet,
     EmployeeViewSet,
     EmployeeWorkflowTaskViewSet,
     LeaveRequestViewSet,
-    PayrollComponentViewSet,
-    PayrollRunViewSet,
 )
 
 
@@ -179,50 +173,6 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         self.assertEqual(summary[0]["entitled_days"], 12)
         self.assertEqual(summary[0]["used_days"], 3)
         self.assertEqual(summary[0]["remaining_days"], 9)
-
-    def test_employee_compensation_calculates_gross_and_net_pay(self):
-        employee = Employee(
-            first_name="Ada",
-            last_name="Lovelace",
-            employee_number="EMP-0001",
-            employment_status=Employee.EmploymentStatus.ACTIVE,
-        )
-        housing = PayrollComponent(
-            name="Housing Allowance",
-            code="HOUSE",
-            component_type=PayrollComponent.ComponentType.EARNING,
-            calculation_method=PayrollComponent.CalculationMethod.FIXED,
-            default_value=500,
-        )
-        tax = PayrollComponent(
-            name="PAYE",
-            code="PAYE",
-            component_type=PayrollComponent.ComponentType.DEDUCTION,
-            calculation_method=PayrollComponent.CalculationMethod.PERCENTAGE,
-            default_value=10,
-        )
-        compensation = EmployeeCompensation(
-            employee=employee,
-            base_salary=2000,
-        )
-
-        summary = compensation.get_compensation_summary(
-            [{"component": housing, "amount": 500}, {"component": tax}]
-        )
-
-        self.assertEqual(summary["gross_pay"], 2500)
-        self.assertEqual(summary["total_deductions"], 250)
-        self.assertEqual(summary["net_pay"], 2250)
-
-    def test_payroll_run_retains_name_and_date(self):
-        payroll_run = PayrollRun(name="April 2026 Payroll", run_date=date(2026, 4, 30))
-
-        self.assertEqual(str(payroll_run), "April 2026 Payroll - 2026-04-30")
-
-    def test_payroll_viewsets_use_hr_access_policy(self):
-        self.assertEqual(PayrollComponentViewSet.permission_classes, [HRAccessPolicy])
-        self.assertEqual(EmployeeCompensationViewSet.permission_classes, [HRAccessPolicy])
-        self.assertEqual(PayrollRunViewSet.permission_classes, [HRAccessPolicy])
 
     def test_employee_attendance_calculates_hours_worked(self):
         employee = Employee(

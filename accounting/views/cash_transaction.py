@@ -32,6 +32,7 @@ from accounting.services import (
     post_cash_transaction_to_ledger,
     recalculate_bank_account_current_balance,
     reverse_cash_transaction_journal_entry,
+    sync_ledger_account_for_type,
 )
 from accounting.views.base import AccountingErrorFormattingMixin
 
@@ -64,10 +65,38 @@ def _delete_transfer_bundle(transfer: AccountingAccountTransfer) -> None:
 
 
 class AccountingTransactionTypeViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
-    queryset = AccountingTransactionType.objects.select_related("default_ledger_account").order_by("name")
+    queryset = AccountingTransactionType.objects.select_related(
+        "default_ledger_account", "managed_ledger_account"
+    ).order_by("name")
     serializer_class = AccountingTransactionTypeSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
     pagination_class = None
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_system_managed:
+            return Response(
+                {"detail": "System-managed transaction types cannot be deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"], url_path="sync-ledger-account")
+    def sync_ledger_account(self, request, pk=None):
+        tx_type = self.get_object()
+        try:
+            result = sync_ledger_account_for_type(tx_type)
+        except ValidationError as exc:
+            payload = exc.message_dict if hasattr(exc, "message_dict") else {"detail": exc.messages}
+            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+        tx_type.refresh_from_db()
+        return Response(
+            {
+                "result": result.to_dict(),
+                "transaction_type": AccountingTransactionTypeSerializer(tx_type).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AccountingPaymentMethodViewSet(AccountingErrorFormattingMixin, viewsets.ReadOnlyModelViewSet):

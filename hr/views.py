@@ -1,4 +1,5 @@
 from datetime import timedelta
+from uuid import UUID
 
 from django.db.models import Q
 from django.utils import timezone
@@ -12,15 +13,10 @@ from .models import (
     Employee,
     EmployeeDepartment,
     EmployeePosition,
-    EmployeeDocument,
     EmployeeAttendance,
     EmployeePerformanceReview,
-    EmployeeWorkflowTask,
     LeaveRequest,
     LeaveType,
-    PayrollComponent,
-    EmployeeCompensation,
-    PayrollRun,
 )
 from .serializers import (
     EmployeeContactSerializer,
@@ -28,15 +24,10 @@ from .serializers import (
     EmployeeDependentSerializer,
     EmployeePositionSerializer,
     EmployeeSerializer,
-    EmployeeDocumentSerializer,
     EmployeeAttendanceSerializer,
     EmployeePerformanceReviewSerializer,
-    EmployeeWorkflowTaskSerializer,
     LeaveRequestSerializer,
     LeaveTypeSerializer,
-    PayrollComponentSerializer,
-    EmployeeCompensationSerializer,
-    PayrollRunSerializer,
 )
 
 
@@ -139,50 +130,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(leave_request).data)
 
 
-class EmployeeDocumentViewSet(viewsets.ModelViewSet):
-    serializer_class = EmployeeDocumentSerializer
-    permission_classes = [HRAccessPolicy]
-
-    def get_queryset(self):
-        queryset = EmployeeDocument.objects.select_related("employee")
-
-        search = self.request.query_params.get("search")
-        if search:
-            queryset = queryset.filter(
-                Q(employee__first_name__icontains=search)
-                | Q(employee__last_name__icontains=search)
-                | Q(employee__employee_number__icontains=search)
-                | Q(title__icontains=search)
-                | Q(document_number__icontains=search)
-                | Q(issuing_authority__icontains=search)
-            )
-
-        employee_id = self.request.query_params.get("employee") or self.request.query_params.get("employee_id")
-        if employee_id:
-            queryset = queryset.filter(employee_id=employee_id)
-
-        document_type = self.request.query_params.get("document_type")
-        if document_type:
-            queryset = queryset.filter(document_type__iexact=document_type)
-
-        compliance_status = self.request.query_params.get("compliance_status")
-        if compliance_status == "expired":
-            queryset = queryset.filter(expiry_date__lt=timezone.localdate())
-        elif compliance_status == "expiring_soon":
-            today = timezone.localdate()
-            queryset = queryset.filter(expiry_date__gte=today, expiry_date__lte=today + timedelta(days=30))
-        elif compliance_status == "valid":
-            queryset = queryset.filter(Q(expiry_date__isnull=True) | Q(expiry_date__gt=timezone.localdate() + timedelta(days=30)))
-
-        return queryset.order_by("employee__first_name", "employee__last_name", "title")
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
-
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
-
-
 class EmployeeAttendanceViewSet(viewsets.ModelViewSet):
     serializer_class = EmployeeAttendanceSerializer
     permission_classes = [HRAccessPolicy]
@@ -258,126 +205,6 @@ class EmployeePerformanceReviewViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeeWorkflowTaskViewSet(viewsets.ModelViewSet):
-    serializer_class = EmployeeWorkflowTaskSerializer
-    permission_classes = [HRAccessPolicy]
-
-    def get_queryset(self):
-        queryset = EmployeeWorkflowTask.objects.select_related("employee", "assigned_to")
-
-        search = self.request.query_params.get("search")
-        if search:
-            queryset = queryset.filter(
-                Q(employee__first_name__icontains=search)
-                | Q(employee__last_name__icontains=search)
-                | Q(employee__employee_number__icontains=search)
-                | Q(title__icontains=search)
-                | Q(description__icontains=search)
-            )
-
-        employee_id = self.request.query_params.get("employee") or self.request.query_params.get("employee_id")
-        if employee_id:
-            queryset = queryset.filter(employee_id=employee_id)
-
-        workflow_type = self.request.query_params.get("workflow_type")
-        if workflow_type:
-            queryset = queryset.filter(workflow_type__iexact=workflow_type)
-
-        status_param = self.request.query_params.get("status")
-        if status_param:
-            queryset = queryset.filter(status__iexact=status_param)
-
-        category_param = self.request.query_params.get("category")
-        if category_param:
-            queryset = queryset.filter(category__iexact=category_param)
-
-        return queryset.order_by("workflow_type", "due_date", "employee__first_name", "employee__last_name")
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
-
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
-
-    @action(detail=True, methods=["post"], url_path="mark-complete")
-    def mark_complete(self, request, pk=None):
-        task = self.get_object()
-        task.updated_by = request.user
-        task.mark_completed()
-        return Response(self.get_serializer(task).data)
-
-
-class PayrollComponentViewSet(viewsets.ModelViewSet):
-    queryset = PayrollComponent.objects.all().order_by("component_type", "name")
-    serializer_class = PayrollComponentSerializer
-    permission_classes = [HRAccessPolicy]
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
-
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
-
-
-class EmployeeCompensationViewSet(viewsets.ModelViewSet):
-    serializer_class = EmployeeCompensationSerializer
-    permission_classes = [HRAccessPolicy]
-
-    def get_queryset(self):
-        queryset = EmployeeCompensation.objects.select_related("employee").prefetch_related("items__component")
-        employee_id = self.request.query_params.get("employee") or self.request.query_params.get("employee_id")
-        if employee_id:
-            queryset = queryset.filter(employee_id=employee_id)
-        return queryset.order_by("employee__first_name", "employee__last_name")
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
-
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
-
-
-class PayrollRunViewSet(viewsets.ModelViewSet):
-    serializer_class = PayrollRunSerializer
-    permission_classes = [HRAccessPolicy]
-
-    def get_queryset(self):
-        queryset = PayrollRun.objects.all()
-
-        search = self.request.query_params.get("search")
-        if search:
-            queryset = queryset.filter(name__icontains=search)
-
-        status_param = self.request.query_params.get("status")
-        if status_param:
-            queryset = queryset.filter(status__iexact=status_param)
-
-        return queryset.order_by("-run_date", "name")
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
-
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
-
-    @action(detail=True, methods=["post"], url_path="process")
-    def process(self, request, pk=None):
-        payroll_run = self.get_object()
-        payroll_run.status = PayrollRun.Status.COMPLETED
-        payroll_run.updated_by = request.user
-        payroll_run.save(update_fields=["status", "updated_by", "updated_at"])
-        return Response(self.get_serializer(payroll_run).data, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=["post"], url_path="mark-paid")
-    def mark_paid(self, request, pk=None):
-        payroll_run = self.get_object()
-        payroll_run.status = PayrollRun.Status.PAID
-        payroll_run.payment_date = request.data.get("payment_date") or payroll_run.payment_date or timezone.localdate()
-        payroll_run.updated_by = request.user
-        payroll_run.save(update_fields=["status", "payment_date", "updated_by", "updated_at"])
-        return Response(self.get_serializer(payroll_run).data, status=status.HTTP_200_OK)
-
-
 class EmployeeViewSet(viewsets.ModelViewSet):
     serializer_class = EmployeeSerializer
     permission_classes = [HRAccessPolicy]
@@ -387,7 +214,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             "department",
             "position",
             "manager",
-        ).prefetch_related("contacts", "dependents", "documents", "performance_reviews", "workflow_tasks", "leave_requests__leave_type")
+        ).prefetch_related("contacts", "dependents", "performance_reviews", "leave_requests__leave_type")
 
         search = self.request.query_params.get("search")
         if search:
@@ -415,6 +242,34 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+    def get_object(self):
+        """Look up employees by either UUID ``id`` or ``id_number``.
+
+        The default router uses ``pk`` in the URL. Callers may pass either
+        the UUID primary key or the human-readable ``id_number`` (e.g.
+        ``EMP-000001``) and we resolve to the right record.
+        """
+        from django.http import Http404
+
+        queryset = self.filter_queryset(self.get_queryset())
+        lookup_value = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
+
+        obj = None
+        if lookup_value:
+            try:
+                UUID(str(lookup_value))
+                obj = queryset.filter(pk=lookup_value).first()
+            except (ValueError, TypeError):
+                obj = None
+            if obj is None:
+                obj = queryset.filter(id_number=lookup_value).first()
+
+        if obj is None:
+            raise Http404("Employee not found.")
+
+        self.check_object_permissions(self.request, obj)
+        return obj
 
     @action(detail=False, methods=["get"], url_path=r"number/(?P<employee_number>[^/.]+)")
     def by_number(self, request, employee_number=None):

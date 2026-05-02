@@ -1045,13 +1045,13 @@ class StudentImportView(APIView):
             else f"g{grade_level.level}".lower()
         )
 
-        if file_prefix != expected_prefix:
-            return Response(
-                {
-                    "error": f"File name validation failed. If you intend to upload this file for {grade_level.name}, expected file name should start with '{expected_prefix}_', instead of got '{file_prefix}_'. Please rename your file to follow the convention: {expected_prefix}_students.csv"
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # if file_prefix != expected_prefix:
+        #     return Response(
+        #         {
+        #             "error": f"File name validation failed. If you intend to upload this file for {grade_level.name}, expected file name should start with '{expected_prefix}_', instead of got '{file_prefix}_'. Please rename your file to follow the convention: {expected_prefix}_students.csv"
+        #         },
+        #         status=status.HTTP_400_BAD_REQUEST,
+        #     )
 
         # File safety validation using utility
         safety_errors = StudentImportValidator.validate_file_safety(file_obj)
@@ -1060,12 +1060,12 @@ class StudentImportView(APIView):
                 {"errors": safety_errors}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Read and validate CSV using utility
+        # Read and validate CSV/Excel using utility
         try:
             df = read_csv_safely(file_obj)
         except Exception as e:
             return Response(
-                {"error": f"Failed to read CSV file: {str(e)}"},
+                {"error": f"Failed to read file (CSV/Excel): {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

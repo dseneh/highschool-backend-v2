@@ -90,6 +90,13 @@ class AccountingLedgerAccount(BaseModel):
     )
     is_active = models.BooleanField(default=True)
     is_header = models.BooleanField(default=False, help_text="Header account (no direct postings)")
+    is_system_managed = models.BooleanField(
+        default=False,
+        help_text=(
+            "System-managed accounts are seeded/maintained by the platform "
+            "(e.g., transfer clearing accounts) and cannot be edited or deleted by users."
+        ),
+    )
     description = models.TextField(blank=True, null=True)
 
     class Meta:

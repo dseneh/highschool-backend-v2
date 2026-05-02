@@ -1,13 +1,24 @@
 # Import data from data folder
 from .data.academic_year import get_academic_year
+from .data.accounting import (
+    accounting_bank_accounts,
+    accounting_currency,
+    accounting_fee_items,
+    accounting_ledger_accounts,
+    accounting_payment_methods,
+    accounting_transaction_types,
+)
 from .data.assessment_templates import assessment_templates_data
 from .data.assessment_types import assessment_types_data
 from .data.currency import currency
 from .data.division_list import division_list
 from .data.fees import fee_list
 from .data.gade_level import grade_level_data
+from .data.honor_categories import honor_categories
+from .data.hr import employee_departments, employee_positions, leave_types
 from .data.marking_period import get_marking_periods_dict
 from .data.payment_methods import payment_method_data
+from .data.payroll import get_default_pay_schedule
 from .data.semester import get_semester_list
 from .data.subjects import subjects
 from .data.transaction_types import transaction_types_data
@@ -657,6 +668,325 @@ def create_assessment_templates(tenant, user):
     print("Created assessment templates...")
 
 
+def create_honor_categories(tenant, user):
+    """Create default honor categories used by the dashboard honor distribution."""
+    from django_tenants.utils import schema_context
+    from grading.models import HonorCategory
+
+    with schema_context(tenant.schema_name):
+        for cat in honor_categories:
+            HonorCategory.objects.get_or_create(
+                label=cat["label"],
+                defaults={
+                    "min_average": cat["min_average"],
+                    "max_average": cat["max_average"],
+                    "color": cat.get("color", ""),
+                    "icon": cat.get("icon", ""),
+                    "order": cat.get("order", 0),
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created honor categories...")
+
+
+def create_grading_settings(tenant, user):
+    """Create the singleton GradingSettings row using model field defaults."""
+    from django_tenants.utils import schema_context
+    from settings.models import GradingSettings
+
+    with schema_context(tenant.schema_name):
+        if not GradingSettings.objects.exists():
+            GradingSettings.objects.create(created_by=user, updated_by=user)
+    print("Created grading settings...")
+
+
+def create_school_calendar_settings(tenant, user):
+    """Create the singleton SchoolCalendarSettings row (Mon–Fri operating days)."""
+    from django_tenants.utils import schema_context
+    from academics.models import SchoolCalendarSettings
+
+    with schema_context(tenant.schema_name):
+        if not SchoolCalendarSettings.objects.exists():
+            SchoolCalendarSettings.objects.create(
+                operating_days=[1, 2, 3, 4, 5],
+                timezone="UTC",
+                created_by=user,
+                updated_by=user,
+            )
+    print("Created school calendar settings...")
+
+
+def create_employee_departments(tenant, user):
+    """Create default HR employee departments."""
+    from django_tenants.utils import schema_context
+    from hr.models import EmployeeDepartment
+
+    with schema_context(tenant.schema_name):
+        for dept in employee_departments:
+            EmployeeDepartment.objects.get_or_create(
+                name=dept["name"],
+                defaults={
+                    "code": dept.get("code", ""),
+                    "description": dept.get("description"),
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created employee departments...")
+
+
+def create_employee_positions(tenant, user):
+    """Create default HR employee positions, linked to departments by code."""
+    from django_tenants.utils import schema_context
+    from hr.models import EmployeeDepartment, EmployeePosition
+
+    with schema_context(tenant.schema_name):
+        dept_by_code = {
+            d.code: d for d in EmployeeDepartment.objects.exclude(code="")
+        }
+        for pos in employee_positions:
+            department = dept_by_code.get(pos.get("department_code"))
+            EmployeePosition.objects.get_or_create(
+                title=pos["title"],
+                department=department,
+                defaults={
+                    "code": pos.get("code", ""),
+                    "description": pos.get("description"),
+                    "employment_type": pos.get("employment_type", "full_time"),
+                    "can_teach": pos.get("can_teach", False),
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created employee positions...")
+
+
+def create_leave_types(tenant, user):
+    """Create default HR leave types."""
+    from django_tenants.utils import schema_context
+    from hr.models import LeaveType
+
+    with schema_context(tenant.schema_name):
+        for lt in leave_types:
+            LeaveType.objects.get_or_create(
+                name=lt["name"],
+                defaults={
+                    "code": lt.get("code", ""),
+                    "description": lt.get("description"),
+                    "default_days": lt.get("default_days", 1),
+                    "requires_approval": lt.get("requires_approval", True),
+                    "accrual_frequency": lt.get("accrual_frequency", "upfront"),
+                    "allow_carryover": lt.get("allow_carryover", False),
+                    "max_carryover_days": lt.get("max_carryover_days", 0),
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created leave types...")
+
+
+def create_accounting_currency(tenant, user):
+    """Create the tenant's base AccountingCurrency."""
+    from django_tenants.utils import schema_context
+    from accounting.models import AccountingCurrency
+
+    with schema_context(tenant.schema_name):
+        obj, _ = AccountingCurrency.objects.get_or_create(
+            code=accounting_currency["code"],
+            defaults={
+                "name": accounting_currency["name"],
+                "symbol": accounting_currency["symbol"],
+                "is_base_currency": accounting_currency.get("is_base_currency", True),
+                "decimal_places": accounting_currency.get("decimal_places", 2),
+                "is_active": True,
+                "created_by": user,
+                "updated_by": user,
+            },
+        )
+    print("Created accounting currency...")
+    return obj
+
+
+def create_accounting_ledger_accounts(tenant, user):
+    """Create the default chart of accounts.
+
+    Two-pass create: parents/headers first, then children with their
+    `parent_account` FK resolved by `parent_code`.
+    """
+    from django_tenants.utils import schema_context
+    from accounting.models import AccountingLedgerAccount
+
+    parents = [a for a in accounting_ledger_accounts if not a.get("parent_code")]
+    children = [a for a in accounting_ledger_accounts if a.get("parent_code")]
+
+    with schema_context(tenant.schema_name):
+        for acct in parents + children:
+            parent_obj = None
+            if acct.get("parent_code"):
+                parent_obj = AccountingLedgerAccount.objects.filter(
+                    code=acct["parent_code"]
+                ).first()
+
+            AccountingLedgerAccount.objects.get_or_create(
+                code=acct["code"],
+                defaults={
+                    "name": acct["name"],
+                    "account_type": acct["account_type"],
+                    "category": acct.get("category", ""),
+                    "normal_balance": acct["normal_balance"],
+                    "is_active": True,
+                    "is_header": acct.get("is_header", False),
+                    "is_system_managed": acct.get("is_system_managed", False),
+                    "parent_account": parent_obj,
+                    "description": acct.get("description"),
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created accounting ledger accounts...")
+
+
+def create_accounting_payment_methods(tenant, user):
+    """Create default accounting payment methods."""
+    from django_tenants.utils import schema_context
+    from accounting.models import AccountingPaymentMethod
+
+    with schema_context(tenant.schema_name):
+        for pm in accounting_payment_methods:
+            AccountingPaymentMethod.objects.get_or_create(
+                code=pm["code"],
+                defaults={
+                    "name": pm["name"],
+                    "description": pm.get("description"),
+                    "is_active": True,
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created accounting payment methods...")
+
+
+def create_accounting_transaction_types(tenant, user):
+    """Create default accounting transaction types.
+
+    Resolves `default_ledger_account_code` to the seeded chart-of-accounts entry
+    so income/expense/transfer postings auto-route to the correct GL account.
+    """
+    from django_tenants.utils import schema_context
+    from accounting.models import AccountingLedgerAccount, AccountingTransactionType
+
+    with schema_context(tenant.schema_name):
+        for tt in accounting_transaction_types:
+            ledger_account = (
+                AccountingLedgerAccount.objects.filter(code=tt.get("default_ledger_account_code")).first()
+                if tt.get("default_ledger_account_code")
+                else None
+            )
+            AccountingTransactionType.objects.get_or_create(
+                code=tt["code"],
+                defaults={
+                    "name": tt["name"],
+                    "transaction_category": tt["transaction_category"],
+                    "description": tt.get("description"),
+                    "default_ledger_account": ledger_account,
+                    "is_system_managed": tt.get("is_system_managed", False),
+                    "is_active": True,
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created accounting transaction types...")
+
+
+def create_accounting_fee_items(tenant, user):
+    """Create default accounting fee item catalog."""
+    from django_tenants.utils import schema_context
+    from accounting.models import AccountingFeeItem
+
+    with schema_context(tenant.schema_name):
+        for fi in accounting_fee_items:
+            AccountingFeeItem.objects.get_or_create(
+                code=fi["code"],
+                defaults={
+                    "name": fi["name"],
+                    "category": fi["category"],
+                    "description": fi.get("description"),
+                    "is_active": True,
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created accounting fee items...")
+
+
+def create_accounting_bank_accounts(tenant, user, accounting_currency_obj):
+    """Create the default in-house savings bank account.
+
+    Linked to the matching ledger account (e.g. 1100 Bank) by code so postings
+    auto-resolve to a balance-sheet bank account.
+    """
+    from django_tenants.utils import schema_context
+    from accounting.models import AccountingBankAccount, AccountingLedgerAccount
+
+    if accounting_currency_obj is None:
+        print("Skipped bank accounts (no accounting currency)...")
+        return
+
+    with schema_context(tenant.schema_name):
+        for ba in accounting_bank_accounts:
+            ledger_account = (
+                AccountingLedgerAccount.objects.filter(code=ba.get("ledger_account_code")).first()
+                if ba.get("ledger_account_code")
+                else None
+            )
+            AccountingBankAccount.objects.get_or_create(
+                account_number=ba["account_number"],
+                defaults={
+                    "account_name": ba["account_name"],
+                    "bank_name": ba.get("bank_name", ""),
+                    "account_type": ba["account_type"],
+                    "currency": accounting_currency_obj,
+                    "ledger_account": ledger_account,
+                    "opening_balance": ba.get("opening_balance", 0),
+                    "status": ba.get("status", "active"),
+                    "description": ba.get("description"),
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+    print("Created accounting bank accounts...")
+
+
+def create_default_pay_schedule(tenant, user, accounting_currency_obj):
+    """Create the default monthly PaySchedule for the tenant."""
+    from django_tenants.utils import schema_context
+    from payroll.models import PaySchedule
+
+    if accounting_currency_obj is None:
+        print("Skipped pay schedule (no accounting currency)...")
+        return None
+
+    data = get_default_pay_schedule()
+    with schema_context(tenant.schema_name):
+        obj, _ = PaySchedule.objects.get_or_create(
+            name=data["name"],
+            defaults={
+                "frequency": data["frequency"],
+                "anchor_date": data["anchor_date"],
+                "currency": accounting_currency_obj,
+                "payment_day_offset": data["payment_day_offset"],
+                "overtime_multiplier": data["overtime_multiplier"],
+                "is_default": data["is_default"],
+                "is_active": data["is_active"],
+                "created_by": user,
+                "updated_by": user,
+            },
+        )
+    print("Created default pay schedule...")
+    return obj
+
+
 def run_data_creation(tenant, user):
     """
     Create default tenant data after a tenant is created.
@@ -688,15 +1018,36 @@ def run_data_creation(tenant, user):
     periods = create_periods(tenant, user)
     create_period_times(tenant, periods, user)
 
+    # Calendar
+    create_school_calendar_settings(tenant, user)
+
     # Grading initialization
     create_grade_letters(tenant, user)
     create_grade_settings(tenant, user)
+    create_grading_settings(tenant, user)
     create_assessment_types(tenant, user)
     create_assessment_templates(tenant, user)
+    create_honor_categories(tenant, user)
 
-    # Staff initialization
+    # Staff initialization (legacy staff app)
     create_departments(tenant, user)
     create_position_categories(tenant, user)
     create_positions(tenant, user)
+
+    # HR initialization (employee-first)
+    create_employee_departments(tenant, user)
+    create_employee_positions(tenant, user)
+    create_leave_types(tenant, user)
+
+    # Accounting initialization (chart of accounts + lookups)
+    accounting_currency_obj = create_accounting_currency(tenant, user)
+    create_accounting_ledger_accounts(tenant, user)
+    create_accounting_payment_methods(tenant, user)
+    create_accounting_transaction_types(tenant, user)
+    create_accounting_fee_items(tenant, user)
+    create_accounting_bank_accounts(tenant, user, accounting_currency_obj)
+
+    # Payroll initialization (depends on accounting currency)
+    create_default_pay_schedule(tenant, user, accounting_currency_obj)
     
     print(f"Default data creation completed for {tenant.name}!")

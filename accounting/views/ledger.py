@@ -68,6 +68,15 @@ class AccountingLedgerAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mo
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        if instance.is_system_managed:
+            return Response(
+                {
+                    "detail": (
+                        "This chart-of-accounts entry is system-managed and cannot be deleted."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         delete_children = self._should_delete_children()
 
         with transaction.atomic():
