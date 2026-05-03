@@ -7,6 +7,8 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from hr.models import Employee
+
 from .access_policies import PayrollAccessPolicy
 from .models import (
     PayrollItem,
@@ -72,6 +74,32 @@ class PayScheduleViewSet(_BaseAuditedViewSet):
                 "end_date": derived.end_date,
                 "payment_date": derived.payment_date,
             }
+        )
+
+    @action(detail=True, methods=["post"], url_path="sync-employees")
+    def sync_employees(self, request, pk=None):
+        """Assign this pay schedule to all employees.
+
+        Optional body:
+        - `only_without_schedule`: when true, only employees with no pay schedule are updated.
+        """
+        schedule = self.get_object()
+        only_without_schedule = bool(request.data.get("only_without_schedule", False))
+
+        qs = Employee.objects.all()
+        if only_without_schedule:
+            qs = qs.filter(pay_schedule__isnull=True)
+
+        updated = qs.update(pay_schedule=schedule, updated_by=request.user)
+
+        return Response(
+            {
+                "detail": f"Assigned schedule '{schedule.name}' to {updated} employee(s).",
+                "updated": updated,
+                "schedule_id": str(schedule.id),
+                "only_without_schedule": only_without_schedule,
+            },
+            status=status.HTTP_200_OK,
         )
 
 
