@@ -123,6 +123,16 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             
             # Try header first (for frontend-driven routing)
             tenant_header = request.META.get('HTTP_X_TENANT') or request.META.get('HTTP_X_WORKSPACE')
+
+            # Tenant-scoped API routes must provide tenant context explicitly.
+            # Falling back to hostname can resolve to public schema and cause
+            # runtime errors when tenant tables (e.g., employee) are queried.
+            if path.startswith('/api/') and not _is_public_path(path) and not tenant_header:
+                from rest_framework.exceptions import NotFound
+                raise NotFound(
+                    detail="Missing tenant context. Provide a valid X-Tenant header.",
+                    code="tenant_header_required"
+                )
             
             if tenant_header:
                 # Special case: "admin" is an alias for the public schema

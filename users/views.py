@@ -363,12 +363,14 @@ class TenantUsersView(APIView):
                     date_of_birth=date_of_birth,
                 ).first()
                 if not source_record:
-                    from hr.models import Employee
+                        # In public schema, hr tenant tables may not exist.
+                        if "employee" in connection.introspection.table_names():
+                            from hr.models import Employee
 
-                    source_record = Employee.objects.filter(
-                        id_number=id_number,
-                        date_of_birth=date_of_birth,
-                    ).first()
+                            source_record = Employee.objects.filter(
+                                id_number=id_number,
+                                date_of_birth=date_of_birth,
+                            ).first()
                 if source_record:
                     source_first_name = source_record.first_name or ""
                     source_last_name = source_record.last_name or ""
