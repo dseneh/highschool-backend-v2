@@ -11,6 +11,8 @@ from rest_framework.pagination import PageNumberPagination
 from django.conf import settings
 from django.db.models import Q
 from django.db import connection
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django_tenants.utils import schema_context
 
 from users.serializers import (
@@ -357,20 +359,41 @@ class TenantUsersView(APIView):
                     source_email = source_record.email
 
             elif account_type == UserAccountType.STAFF:
-                from staff.models import Staff
-                source_record = Staff.objects.filter(
-                    id_number=id_number,
-                    date_of_birth=date_of_birth,
-                ).first()
-                if not source_record:
-                        # In public schema, hr tenant tables may not exist.
-                        if "employee" in connection.introspection.table_names():
-                            from hr.models import Employee
+                staff_record = None
+                employee_record = None
 
-                            source_record = Employee.objects.filter(
-                                id_number=id_number,
-                                date_of_birth=date_of_birth,
-                            ).first()
+                try:
+                    from staff.models import Staff
+
+                    staff_record = Staff.objects.filter(
+                        id_number=id_number,
+                        date_of_birth=date_of_birth,
+                    ).first()
+                except Exception:
+                    staff_record = None
+
+                if "employee" in connection.introspection.table_names():
+                    try:
+                        from hr.models import Employee
+
+                        employee_record = Employee.objects.filter(
+                            id_number=id_number,
+                            date_of_birth=date_of_birth,
+                        ).first()
+                    except Exception:
+                        employee_record = None
+
+                # Prefer a record with a real email. If neither has email, prefer Employee over Staff.
+                staff_email = (getattr(staff_record, "email", "") or "").strip() if staff_record else ""
+                employee_email = (getattr(employee_record, "email", "") or "").strip() if employee_record else ""
+
+                if employee_record and employee_email:
+                    source_record = employee_record
+                elif staff_record and staff_email:
+                    source_record = staff_record
+                else:
+                    source_record = employee_record or staff_record
+
                 if source_record:
                     source_first_name = source_record.first_name or ""
                     source_last_name = source_record.last_name or ""
@@ -409,14 +432,105 @@ class TenantUsersView(APIView):
 
         with schema_context('public'):
             existing_user = User.objects.filter(id_number=id_number).first()
+            normalized_source_email = (source_email or "").strip()
 
             if existing_user:
                 user = existing_user
                 created = False
+
+                fields_to_update = []
+
+                if normalized_source_email:
+                    try:
+                        validate_email(normalized_source_email)
+                    except DjangoValidationError:
+                        return Response(
+                            {
+                                "detail": "Cannot attach account because source email is invalid.",
+                                "errors": {
+                                    "email": [
+                                        "A valid email is required on the source record before generating a user account."
+                                    ]
+                                },
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    duplicate_email_owner = User.objects.filter(
+                        email__iexact=normalized_source_email,
+                    ).exclude(id=user.id).exists()
+                    if duplicate_email_owner:
+                        return Response(
+                            {
+                                "detail": "Cannot attach account because this email is already linked to another user.",
+                                "errors": {
+                                    "email": [
+                                        "A user with this email already exists."
+                                    ]
+                                },
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    if (user.email or "").strip().lower() != normalized_source_email.lower():
+                        user.email = normalized_source_email
+                        fields_to_update.append("email")
+
+                # Ensure account is active when (re)attaching from staff/student records.
+                if not user.is_active:
+                    user.is_active = True
+                    fields_to_update.append("is_active")
+
+                if fields_to_update:
+                    user.save(update_fields=fields_to_update)
             else:
-                email = source_email or f"{account_type}.{id_number}@local.user"
-                if User.objects.filter(email=email).exists():
-                    email = f"{account_type}.{id_number}@local.user"
+                email = normalized_source_email
+                if not email:
+                    return Response(
+                        {
+                            "detail": (
+                                f"Cannot create {account_type} account because the source record "
+                                "does not have an email address."
+                            ),
+                            "errors": {
+                                "email": [
+                                    "A valid email is required on the source record before generating a user account."
+                                ]
+                            },
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                try:
+                    validate_email(email)
+                except DjangoValidationError:
+                    return Response(
+                        {
+                            "detail": (
+                                f"Cannot create {account_type} account because the source record "
+                                "email is invalid."
+                            ),
+                            "errors": {
+                                "email": [
+                                    "A valid email is required on the source record before generating a user account."
+                                ]
+                            },
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                if User.objects.filter(email__iexact=email).exists():
+                    return Response(
+                        {
+                            "detail": "Cannot create account because this email is already linked to another user.",
+                            "errors": {
+                                "email": [
+                                    "A user with this email already exists."
+                                ]
+                            },
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
                 # Default username to id_number, allow override via request data
                 username = request_data.get('username') or build_unique_username(str(id_number))
@@ -629,9 +743,10 @@ class UserDetailView(APIView):
                             logger.warning(f"Failed to remove user from tenant {perm.tenant.schema_name}: {e}")
                     
                     username = user.username
-                    # tenant_users overrides delete() to block accidental deletion;
-                    # use force_drop=True for an actual hard delete after unlinking tenants.
-                    user.delete(force_drop=True)
+                    # Use a raw delete in public schema to avoid Django relation collection
+                    # across tenant-scoped models (e.g., academic_year) that do not exist
+                    # in public schema.
+                    User.objects.filter(pk=user.pk)._raw_delete(User.objects.db)
                     return Response(
                         {"detail": f"User {username} permanently deleted"},
                         status=status.HTTP_204_NO_CONTENT

@@ -13,6 +13,7 @@ from .models import (
     Employee,
     EmployeeDepartment,
     EmployeePosition,
+    EmployeeSpecialization,
     EmployeeAttendance,
     EmployeePerformanceReview,
     LeaveRequest,
@@ -23,6 +24,7 @@ from .serializers import (
     EmployeeDepartmentSerializer,
     EmployeeDependentSerializer,
     EmployeePositionSerializer,
+    EmployeeSpecializationSerializer,
     EmployeeSerializer,
     EmployeeAttendanceSerializer,
     EmployeePerformanceReviewSerializer,
@@ -55,6 +57,25 @@ class EmployeePositionViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
+class EmployeeSpecializationViewSet(viewsets.ModelViewSet):
+    queryset = EmployeeSpecialization.objects.select_related("employee", "subject").all()
+    serializer_class = EmployeeSpecializationSerializer
+    permission_classes = [HRAccessPolicy]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        employee_id = self.request.query_params.get("employee")
+        if employee_id:
+            qs = qs.filter(employee_id=employee_id)
+        return qs.order_by("subject__name")
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
+
+
 class LeaveTypeViewSet(viewsets.ModelViewSet):
     queryset = LeaveType.objects.all().order_by("name")
     serializer_class = LeaveTypeSerializer
@@ -78,6 +99,18 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+    def perform_destroy(self, instance):
+        # Keep employee lifecycle consistent when deleting an already-approved leave.
+        if (
+            instance.status == LeaveRequest.Status.APPROVED
+            and instance.employee.employment_status == Employee.EmploymentStatus.ON_LEAVE
+        ):
+            instance.employee.employment_status = Employee.EmploymentStatus.ACTIVE
+            instance.employee.updated_by = self.request.user
+            instance.employee.save(update_fields=["employment_status", "updated_by", "updated_at"])
+
+        instance.delete()
 
     def get_queryset(self):
         queryset = LeaveRequest.objects.select_related("employee", "leave_type")
@@ -127,6 +160,23 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         leave_request.review_note = request.data.get("review_note") or request.data.get("note")
         leave_request.updated_by = request.user
         leave_request.cancel(review_note=leave_request.review_note)
+        return Response(self.get_serializer(leave_request).data)
+
+    @action(detail=True, methods=["post"])
+    def revert(self, request, pk=None):
+        leave_request = self.get_object()
+
+        leave_request.status = LeaveRequest.Status.PENDING
+        leave_request.reviewed_at = None
+        leave_request.review_note = request.data.get("review_note") or request.data.get("note") or None
+        leave_request.updated_by = request.user
+        leave_request.save(update_fields=["status", "reviewed_at", "review_note", "updated_by", "updated_at"])
+
+        if leave_request.employee.employment_status == Employee.EmploymentStatus.ON_LEAVE:
+            leave_request.employee.employment_status = Employee.EmploymentStatus.ACTIVE
+            leave_request.employee.updated_by = request.user
+            leave_request.employee.save(update_fields=["employment_status", "updated_by", "updated_at"])
+
         return Response(self.get_serializer(leave_request).data)
 
 
@@ -214,7 +264,13 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             "department",
             "position",
             "manager",
-        ).prefetch_related("contacts", "dependents", "performance_reviews", "leave_requests__leave_type")
+        ).prefetch_related(
+            "contacts",
+            "dependents",
+            "specializations__subject",
+            "performance_reviews",
+            "leave_requests__leave_type",
+        )
 
         search = self.request.query_params.get("search")
         if search:
@@ -229,11 +285,29 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
         department = self.request.query_params.get("department") or self.request.query_params.get("department_id")
         if department:
-            queryset = queryset.filter(department_id=department)
+            department_values = [value.strip() for value in str(department).split(",") if value.strip()]
+            if department_values:
+                queryset = queryset.filter(department_id__in=department_values)
 
         employment_status = self.request.query_params.get("employment_status")
         if employment_status:
-            queryset = queryset.filter(employment_status__iexact=employment_status)
+            status_values = [value.strip().lower() for value in str(employment_status).split(",") if value.strip()]
+            if status_values:
+                queryset = queryset.filter(employment_status__in=status_values)
+
+        is_teacher_param = self.request.query_params.get("is_teacher")
+        if is_teacher_param is not None:
+            normalized = str(is_teacher_param).strip().lower()
+            if normalized in {"true", "1", "yes"}:
+                queryset = queryset.filter(is_teacher=True)
+            elif normalized in {"false", "0", "no"}:
+                queryset = queryset.filter(is_teacher=False)
+
+        gender_param = self.request.query_params.get("gender")
+        if gender_param:
+            gender_values = [value.strip().lower() for value in str(gender_param).split(",") if value.strip()]
+            if gender_values:
+                queryset = queryset.filter(gender__in=gender_values)
 
         return queryset.order_by("first_name", "last_name")
 

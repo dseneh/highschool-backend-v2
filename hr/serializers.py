@@ -1,5 +1,6 @@
 from django.utils import timezone
 from rest_framework import serializers
+from academics.models import Subject
 
 from .models import (
     Employee,
@@ -7,6 +8,7 @@ from .models import (
     EmployeeDepartment,
     EmployeeDependent,
     EmployeePosition,
+    EmployeeSpecialization,
     EmployeeAttendance,
     EmployeePerformanceReview,
     LeaveRequest,
@@ -105,6 +107,35 @@ class EmployeeDependentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+class EmployeeSpecializationSerializer(serializers.ModelSerializer):
+    subject = serializers.PrimaryKeyRelatedField(
+        queryset=Subject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = EmployeeSpecialization
+        fields = [
+            "id",
+            "employee",
+            "subject",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.subject:
+            data["subject"] = {
+                "id": str(instance.subject.id),
+                "name": instance.subject.name,
+                "code": instance.subject.code,
+            }
+        else:
+            data["subject"] = None
+        return data
 
 class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
@@ -313,6 +344,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
     )
     contacts = EmployeeContactSerializer(many=True, read_only=True)
     dependents = EmployeeDependentSerializer(many=True, read_only=True)
+    specializations = EmployeeSpecializationSerializer(many=True, read_only=True)
 
     class Meta:
         model = Employee
@@ -358,10 +390,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "bank_account_number",
             "contacts",
             "dependents",
+            "specializations",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "contacts", "dependents"]
+        read_only_fields = ["id", "created_at", "updated_at", "contacts", "dependents", "specializations"]
 
     def validate_manager(self, value):
         if self.instance and value and self.instance.pk == value.pk:
@@ -445,6 +478,14 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 "employee_number": instance.manager.employee_number,
                 "full_name": instance.manager.get_full_name(),
             }
+
+        data["specializations"] = [
+            {
+                "id": str(spec.subject_id) if spec.subject_id else None,
+                "subject_name": spec.subject.name if spec.subject else "Any",
+            }
+            for spec in instance.specializations.all()
+        ]
 
         view = self.context.get("view")
         include_leave_details = getattr(view, "action", None) == "retrieve"

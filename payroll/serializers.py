@@ -105,6 +105,8 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
 class PayslipSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     employee_number = serializers.CharField(source="employee.employee_number", read_only=True)
+    payroll_run_status = serializers.CharField(source="payroll_run.status", read_only=True)
+    payroll_run_period_name = serializers.CharField(source="payroll_run.period.name", read_only=True)
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     currency_symbol = serializers.CharField(source="currency.symbol", read_only=True)
 
@@ -113,6 +115,8 @@ class PayslipSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "payroll_run",
+            "payroll_run_status",
+            "payroll_run_period_name",
             "employee",
             "employee_name",
             "employee_number",

@@ -204,7 +204,10 @@ class UserViewSet(viewsets.ModelViewSet):
                         )
 
                 username = user.username
-                user.delete(force_drop=True)
+                # Use a raw delete in public schema to avoid Django relation collection
+                # across tenant-scoped models (e.g., academic_year) that do not exist
+                # in public schema.
+                User.objects.filter(pk=user.pk)._raw_delete(User.objects.db)
                 return Response(
                     {"detail": f"User {username} permanently deleted"},
                     status=status.HTTP_204_NO_CONTENT,

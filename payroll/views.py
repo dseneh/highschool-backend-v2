@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+from decimal import Decimal
+
 from django.db.models import Q
+from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
 
 from hr.models import Employee
 
@@ -39,6 +47,8 @@ from .services import (
     recalculate_payslip,
     revert_to_draft as revert_to_draft_service,
     submit_for_approval,
+    get_formula_guide,
+    preview_formula_amount,
 )
 
 
@@ -247,6 +257,110 @@ class PayslipViewSet(_BaseAuditedViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(payslip).data)
 
+    @action(detail=True, methods=["get"], url_path="download-pdf")
+    def download_pdf(self, request, pk=None):
+        payslip = self.get_object()
+        if payslip.payroll_run.status != PayrollRun.Status.PAID:
+            return Response(
+                {"detail": "Payslip PDF is available only when payroll run status is PAID."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        buf = BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        width, height = A4
+        left = 18 * mm
+        right = width - (18 * mm)
+        y = height - (18 * mm)
+
+        employee_name = f"{payslip.employee.first_name} {payslip.employee.last_name}".strip()
+        period_name = payslip.payroll_run.period.name
+        currency_code = payslip.currency.code
+
+        def money(value: Decimal | int | float | str) -> str:
+            return f"{currency_code} {Decimal(str(value)).quantize(Decimal('0.01'))}"
+
+        def line(label: str, value: str):
+            nonlocal y
+            pdf.setFont("Helvetica", 10)
+            pdf.setFillColor(colors.black)
+            pdf.drawString(left, y, label)
+            pdf.drawRightString(right, y, value)
+            y -= 6 * mm
+
+        pdf.setTitle(f"Payslip {employee_name}")
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(left, y, "Payslip")
+        y -= 8 * mm
+
+        pdf.setFont("Helvetica", 10)
+        pdf.setFillColor(colors.grey)
+        pdf.drawString(left, y, f"Employee: {employee_name or payslip.employee.employee_number}")
+        y -= 5 * mm
+        pdf.drawString(left, y, f"Employee No: {payslip.employee.employee_number}")
+        y -= 5 * mm
+        pdf.drawString(left, y, f"Period: {period_name}")
+        y -= 5 * mm
+        pdf.drawString(left, y, f"Generated: {payslip.generated_at:%Y-%m-%d %H:%M}")
+        y -= 8 * mm
+
+        pdf.setStrokeColor(colors.HexColor("#E5E7EB"))
+        pdf.line(left, y, right, y)
+        y -= 8 * mm
+
+        line("Gross Pay", money(payslip.gross_pay))
+        line("Tax", money(payslip.tax))
+        line("Deductions", money(payslip.deductions))
+        line("Net Pay", money(payslip.net_pay))
+
+        def draw_breakdown(title: str, rows: list[dict], value_key: str = "amount"):
+            nonlocal y
+            if y < 50 * mm:
+                pdf.showPage()
+                y = height - (18 * mm)
+            pdf.setFillColor(colors.black)
+            pdf.setFont("Helvetica-Bold", 11)
+            pdf.drawString(left, y, title)
+            y -= 6 * mm
+            if not rows:
+                pdf.setFillColor(colors.grey)
+                pdf.setFont("Helvetica", 9)
+                pdf.drawString(left, y, "No entries")
+                y -= 6 * mm
+                return
+            for row in rows:
+                if y < 35 * mm:
+                    pdf.showPage()
+                    y = height - (18 * mm)
+                name = str(row.get("name") or row.get("rule") or "-")
+                code = row.get("code")
+                label = f"{name} ({code})" if code else name
+                amount = row.get(value_key)
+                pdf.setFillColor(colors.black)
+                pdf.setFont("Helvetica", 9)
+                pdf.drawString(left, y, label)
+                pdf.drawRightString(right, y, money(amount or 0))
+                y -= 5 * mm
+            y -= 2 * mm
+
+        breakdown = payslip.breakdown or {}
+        draw_breakdown("Allowances", breakdown.get("allowances", []))
+        draw_breakdown("Deductions", breakdown.get("deductions", []))
+        draw_breakdown("Tax Breakdown", breakdown.get("tax", []))
+
+        pdf.showPage()
+        pdf.save()
+        pdf_bytes = buf.getvalue()
+        buf.close()
+
+        safe_employee = (employee_name or payslip.employee.employee_number).replace(" ", "_")
+        safe_period = period_name.replace(" ", "_")
+        filename = f"payslip_{safe_employee}_{safe_period}.pdf"
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
 
 class PayrollItemViewSet(_BaseAuditedViewSet):
     queryset = PayrollItem.objects.select_related("employee", "item_type_ref").all()
@@ -299,6 +413,27 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
             )
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=False, methods=["get"], url_path="formula-guide")
+    def formula_guide(self, request):
+        return Response(get_formula_guide())
+
+    @action(detail=False, methods=["post"], url_path="preview-formula")
+    def preview_formula(self, request):
+        try:
+            result = preview_formula_amount(
+                calculation_type=str(request.data.get("calculation_type", "flat")),
+                value=request.data.get("value", "0"),
+                formula=str(request.data.get("formula", "") or ""),
+                applies_to=str(request.data.get("applies_to", "basic")),
+                gross=Decimal(str(request.data.get("gross", "1000"))),
+                basic=Decimal(str(request.data.get("basic", request.data.get("gross", "1000")))),
+                allowances=Decimal(str(request.data.get("allowances", "0"))),
+                deductions=Decimal(str(request.data.get("deductions", "0"))),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
 
 class TaxRuleViewSet(_BaseAuditedViewSet):
     queryset = TaxRule.objects.all()
@@ -310,6 +445,73 @@ class TaxRuleViewSet(_BaseAuditedViewSet):
         if search:
             qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
         return qs
+
+    @action(detail=False, methods=["get"], url_path="formula-guide")
+    def formula_guide(self, request):
+        return Response(get_formula_guide())
+
+    @action(detail=False, methods=["post"], url_path="preview-formula")
+    def preview_formula(self, request):
+        try:
+            result = preview_formula_amount(
+                calculation_type=str(request.data.get("calculation_type", "flat")),
+                value=request.data.get("value", "0"),
+                formula=str(request.data.get("formula", "") or ""),
+                applies_to=str(request.data.get("applies_to", "gross")),
+                gross=Decimal(str(request.data.get("gross", "1000"))),
+                basic=Decimal(str(request.data.get("basic", request.data.get("gross", "1000")))),
+                allowances=Decimal(str(request.data.get("allowances", "0"))),
+                deductions=Decimal(str(request.data.get("deductions", "0"))),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=True, methods=["post"], url_path="sync-employees")
+    def sync_employees(self, request, pk=None):
+        rule = self.get_object()
+        scope = str(request.data.get("scope", "all"))
+        employee_ids = request.data.get("employee_ids") or []
+        employee_identifiers = request.data.get("employee_identifiers") or []
+        department_id = request.data.get("department_id")
+        position_id = request.data.get("position_id")
+
+        qs = Employee.objects.all()
+        if scope == "selected":
+            selector = Q()
+            if employee_ids:
+                selector |= Q(id__in=employee_ids)
+            if employee_identifiers:
+                selector |= Q(id_number__in=employee_identifiers)
+            qs = qs.filter(selector) if selector else qs.none()
+        elif scope == "department":
+            if not department_id:
+                return Response({"detail": "department_id is required for department scope."}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(department_id=department_id)
+        elif scope == "position":
+            if not position_id:
+                return Response({"detail": "position_id is required for position scope."}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(position_id=position_id)
+        elif scope != "all":
+            return Response({"detail": "Invalid scope. Use all, selected, department, or position."}, status=status.HTTP_400_BAD_REQUEST)
+
+        targeted = qs.count()
+        updated = 0
+        for employee in qs.iterator():
+            if not employee.tax_rules.filter(id=rule.id).exists():
+                employee.tax_rules.add(rule)
+                updated += 1
+
+        return Response(
+            {
+                "detail": f"Assigned tax rule '{rule.name}' to {updated} employee(s).",
+                "targeted": targeted,
+                "updated": updated,
+                "rule_id": str(rule.id),
+                "scope": scope,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=["post"])
     def preview(self, request):

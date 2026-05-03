@@ -91,6 +91,17 @@ def derive_next_period(schedule: PaySchedule) -> DerivedPeriod:
 
 _FORMULA_BUILTINS = {"min": min, "max": max, "abs": abs, "Decimal": Decimal}
 
+FORMULA_GUIDE = {
+    "variables": ["gross", "basic", "allowances", "deductions", "taxable_gross"],
+    "helpers": ["min", "max", "abs", "Decimal"],
+    "templates": [
+        {"label": "10% of gross", "formula": "gross * Decimal('0.10')"},
+        {"label": "5% of basic capped at 500", "formula": "min(basic * Decimal('0.05'), Decimal('500'))"},
+        {"label": "Fixed 150", "formula": "Decimal('150')"},
+        {"label": "Taxable gross floor", "formula": "max(taxable_gross, Decimal('0'))"},
+    ],
+}
+
 
 def _evaluate_formula(formula: str, ctx: dict) -> Decimal:
     """Evaluate a tax formula in a restricted namespace.
@@ -105,6 +116,52 @@ def _evaluate_formula(formula: str, ctx: dict) -> Decimal:
     safe_locals = {k: v for k, v in ctx.items()}
     result = eval(formula, safe_globals, safe_locals)  # noqa: S307 - intentional sandbox
     return Decimal(str(result))
+
+
+def get_formula_guide() -> dict:
+    return FORMULA_GUIDE
+
+
+def preview_formula_amount(
+    *,
+    calculation_type: str,
+    value: Decimal | str | int | float | None,
+    formula: str,
+    applies_to: str,
+    gross: Decimal,
+    basic: Decimal,
+    allowances: Decimal,
+    deductions: Decimal,
+) -> dict:
+    taxable_gross = gross
+    ctx = {
+        "gross": Decimal(gross or 0),
+        "basic": Decimal(basic or 0),
+        "allowances": Decimal(allowances or 0),
+        "deductions": Decimal(deductions or 0),
+        "taxable_gross": Decimal(taxable_gross or 0),
+    }
+
+    if applies_to == "basic":
+        base = ctx["basic"]
+    elif applies_to == "taxable_gross":
+        base = ctx["taxable_gross"]
+    else:
+        base = ctx["gross"]
+
+    if calculation_type == "flat":
+        amount = Decimal(value or 0)
+    elif calculation_type == "percentage":
+        amount = (base * Decimal(value or 0)) / Decimal("100")
+    else:
+        amount = _evaluate_formula(formula, ctx)
+
+    amount = amount.quantize(Decimal("0.01"))
+    return {
+        "amount": str(amount),
+        "base": str(base.quantize(Decimal("0.01"))),
+        "context": {k: str(v.quantize(Decimal("0.01"))) for k, v in ctx.items()},
+    }
 
 
 def _base_for_rule(rule: TaxRule, ctx: dict) -> Decimal:

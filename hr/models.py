@@ -358,6 +358,39 @@ class Employee(BasePersonModel):
         return {"ready": not missing, "missing": missing}
 
 
+class EmployeeSpecialization(BaseModel):
+    """Subject specialization for an employee (typically teachers)."""
+
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name="specializations",
+    )
+    subject = models.ForeignKey(
+        "academics.Subject",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employee_specializations",
+    )
+
+    class Meta:
+        db_table = "employee_specialization"
+        ordering = ["subject__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "subject"],
+                name="hr_uniq_employee_specialization_subject",
+                condition=models.Q(subject__isnull=False),
+            )
+        ]
+
+    def __str__(self):
+        if self.subject:
+            return f"{self.employee.get_full_name()} - {self.subject.name}"
+        return f"{self.employee.get_full_name()} - Any"
+
+
 class EmployeeContact(BaseModel):
     """Emergency or related contacts for an employee."""
 
