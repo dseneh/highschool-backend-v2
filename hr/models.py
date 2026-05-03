@@ -139,6 +139,27 @@ class Employee(BasePersonModel):
     )
     is_teacher = models.BooleanField(default=False)
 
+    # ---- Education / qualifications ---------------------------------------
+    class HighestQualification(models.TextChoices):
+        NONE = "none", "None"
+        PRIMARY = "primary", "Primary School"
+        JUNIOR_HIGH = "junior_high", "Junior High School"
+        HIGH_SCHOOL = "high_school", "High School / Secondary"
+        VOCATIONAL = "vocational", "Vocational / Technical Certificate"
+        ASSOCIATE = "associate", "Associate Degree"
+        BACHELOR = "bachelor", "Bachelor's Degree"
+        POSTGRADUATE_DIPLOMA = "postgraduate_diploma", "Postgraduate Diploma"
+        MASTER = "master", "Master's Degree"
+        DOCTORATE = "doctorate", "Doctorate (PhD)"
+
+    highest_qualification = models.CharField(
+        max_length=30,
+        choices=HighestQualification.choices,
+        blank=True,
+        null=True,
+        default=None,
+    )
+
     # ---- Payroll fields ---------------------------------------------------
     class SalaryType(models.TextChoices):
         MONTHLY = "monthly", "Monthly Salary"

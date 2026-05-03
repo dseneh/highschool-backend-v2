@@ -347,6 +347,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "passport_number",
             "user_account_id_number",
             "is_teacher",
+            "highest_qualification",
             "salary_type",
             "basic_salary",
             "hourly_rate",
