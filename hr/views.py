@@ -309,6 +309,57 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             if gender_values:
                 queryset = queryset.filter(gender__in=gender_values)
 
+        position_param = self.request.query_params.get("position")
+        if position_param:
+            position_values = [value.strip() for value in str(position_param).split(",") if value.strip()]
+            if position_values:
+                queryset = queryset.filter(position_id__in=position_values)
+
+        manager_param = self.request.query_params.get("manager")
+        if manager_param:
+            manager_values = [value.strip() for value in str(manager_param).split(",") if value.strip()]
+            if manager_values:
+                queryset = queryset.filter(manager_id__in=manager_values)
+
+        is_manager_param = self.request.query_params.get("is_manager")
+        if is_manager_param is not None:
+            normalized = str(is_manager_param).strip().lower()
+            if normalized in {"true", "1", "yes"}:
+                # Return only employees who are the manager of at least one other employee
+                from django.db.models import Subquery, OuterRef
+                queryset = queryset.filter(
+                    id__in=Employee.objects.filter(manager__isnull=False).values("manager_id")
+                )
+
+        payroll_ready_param = self.request.query_params.get("payroll_ready")
+        if payroll_ready_param is not None:
+            normalized = str(payroll_ready_param).strip().lower()
+            if normalized in {"true", "1", "yes"}:
+                queryset = queryset.filter(
+                    pay_schedule__isnull=False,
+                    employment_status=Employee.EmploymentStatus.ACTIVE,
+                ).filter(
+                    Q(salary_type=Employee.SalaryType.MONTHLY, basic_salary__gt=0)
+                    | Q(~Q(salary_type=Employee.SalaryType.MONTHLY), hourly_rate__gt=0)
+                )
+            elif normalized in {"false", "0", "no"}:
+                queryset = queryset.filter(
+                    Q(pay_schedule__isnull=True)
+                    | Q(salary_type=Employee.SalaryType.MONTHLY, basic_salary__isnull=True)
+                    | Q(salary_type=Employee.SalaryType.MONTHLY, basic_salary=0)
+                    | Q(~Q(salary_type=Employee.SalaryType.MONTHLY), hourly_rate__isnull=True)
+                    | Q(~Q(salary_type=Employee.SalaryType.MONTHLY), hourly_rate=0)
+                    | ~Q(employment_status=Employee.EmploymentStatus.ACTIVE)
+                )
+
+        hire_date_after = self.request.query_params.get("hire_date_after")
+        if hire_date_after:
+            queryset = queryset.filter(hire_date__gte=hire_date_after)
+
+        hire_date_before = self.request.query_params.get("hire_date_before")
+        if hire_date_before:
+            queryset = queryset.filter(hire_date__lte=hire_date_before)
+
         return queryset.order_by("first_name", "last_name")
 
     def perform_create(self, serializer):
