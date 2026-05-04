@@ -160,6 +160,13 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             )
 
         if getattr(tenant, 'maintenance_mode', False):
+            user = self._resolve_api_user(request)
+            if user:
+                role = str(getattr(user, 'role', '') or '').lower()
+                is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or role in {'admin', 'superadmin'}
+                if is_tenant_admin:
+                    return None
+
             return self._blocked_tenant_response(
                 'This workspace is currently in maintenance mode. Tenant operations are temporarily paused.',
                 'TENANT_MAINTENANCE_MODE',
