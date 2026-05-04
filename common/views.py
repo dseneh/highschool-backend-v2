@@ -10,6 +10,16 @@ from common.access_policies import AuditLogAccessPolicy
 from common.serializers import AuditLogSerializer
 
 
+ADMIN_AUDIT_APP_LABELS = {
+    "admin",
+    "auth",
+    "contenttypes",
+    "core",
+    "sessions",
+    "users",
+}
+
+
 class AuditLogPagination(PageNumberPagination):
     page_size = 25
     page_size_query_param = "page_size"
@@ -62,7 +72,18 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ["object_repr", "actor__email"]
 
     def get_queryset(self):
-        return (
+        queryset = (
             LogEntry.objects.select_related("content_type", "actor")
             .order_by("-timestamp")
         )
+
+        scope = str(self.request.query_params.get("scope") or "").strip().lower()
+        if scope == "admin":
+            queryset = queryset.filter(content_type__app_label__in=ADMIN_AUDIT_APP_LABELS)
+        elif scope == "tenant":
+            tenant = getattr(self.request, "tenant", None)
+            schema_name = str(getattr(tenant, "schema_name", "")).lower()
+            if schema_name in {"public", "admin"}:
+                queryset = queryset.exclude(content_type__app_label__in=ADMIN_AUDIT_APP_LABELS)
+
+        return queryset

@@ -107,6 +107,8 @@ class TenantListSerializer(BaseTenantSerializer):
             "domain",
             "active",
             "status",
+            "maintenance_mode",
+            "login_access_policy",
             "logo_shape",
         ]
         read_only_fields = fields
@@ -131,6 +133,8 @@ class PublicTenantSerializer(BaseTenantSerializer):
             "website",
             "status",
             "active",
+            "maintenance_mode",
+            "login_access_policy",
             "logo",
             "logo_shape",
             "theme_color",
@@ -187,6 +191,8 @@ class TenantSerializer(BaseTenantSerializer):
             # Status and configuration
             "status",
             "active",
+            "maintenance_mode",
+            "login_access_policy",
             # Branding
             "logo",
             "logo_shape",
@@ -265,6 +271,12 @@ class CreateTenantSerializer(serializers.Serializer):
         help_text="Email of the owner user (optional, uses request user if not provided)"
     )
     active = serializers.BooleanField(default=True)
+    maintenance_mode = serializers.BooleanField(default=False, required=False)
+    login_access_policy = serializers.ChoiceField(
+        choices=["all_users", "tenant_admin_only", "disabled"],
+        default="all_users",
+        required=False,
+    )
 
     def validate_value(self, value, field_name):
         """Validate schema_name format and uniqueness"""

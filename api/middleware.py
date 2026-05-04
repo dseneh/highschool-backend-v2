@@ -23,6 +23,67 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
     - Special case: X-Tenant: admin → routes to public schema (for global users)
     - If no header provided, falls back to public schema for auth endpoints
     """
+
+    BLOCKED_TENANT_ALLOWED_PATHS = {
+        '/api/v1/auth/login/',
+        '/api/v1/auth/token/refresh/',
+        '/api/v1/auth/verify/',
+        '/api/v1/auth/users/current/',
+        '/api/v1/auth/password/forgot/',
+        '/api/v1/auth/password/reset/',
+        '/api/v1/tenants/current/',
+    }
+
+    def _blocked_tenant_response(self, detail: str, error_code: str, status_code: int = 423):
+        from django.http import JsonResponse
+
+        return JsonResponse(
+            {
+                'detail': detail,
+                'error_code': error_code,
+            },
+            status=status_code,
+            json_dumps_params={'ensure_ascii': False},
+        )
+
+    def _is_blocked_tenant_path_allowed(self, path: str) -> bool:
+        return path in self.BLOCKED_TENANT_ALLOWED_PATHS
+
+    def _enforce_tenant_runtime_controls(self, request):
+        path = request.path
+        if not path.startswith('/api/'):
+            return None
+
+        tenant = getattr(request, 'tenant', None)
+        if not tenant:
+            return None
+
+        public_schema = get_public_schema_name()
+        if getattr(tenant, 'schema_name', None) == public_schema:
+            return None
+
+        if self._is_blocked_tenant_path_allowed(path):
+            return None
+
+        if not getattr(tenant, 'active', True):
+            return self._blocked_tenant_response(
+                'This workspace is disabled. Tenant operations are currently blocked.',
+                'TENANT_DISABLED',
+            )
+
+        if getattr(tenant, 'status', 'active') != 'active':
+            return self._blocked_tenant_response(
+                f"This workspace is currently {tenant.status}. Tenant operations are currently blocked.",
+                'TENANT_STATUS_BLOCKED',
+            )
+
+        if getattr(tenant, 'maintenance_mode', False):
+            return self._blocked_tenant_response(
+                'This workspace is currently in maintenance mode. Tenant operations are temporarily paused.',
+                'TENANT_MAINTENANCE_MODE',
+            )
+
+        return None
     
     def process_request(self, request):
         """
@@ -43,7 +104,11 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         
         self.request = request
         try:
-            return super().process_request(request)
+            response = super().process_request(request)
+            if response is not None:
+                return response
+
+            return self._enforce_tenant_runtime_controls(request)
         except Exception as exc:
             # If it's an API endpoint and we have a DRF or Http404 exception, handle it
             if request.path.startswith('/api/'):

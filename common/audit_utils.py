@@ -13,6 +13,50 @@ from django.contrib.contenttypes.models import ContentType
 logger = logging.getLogger(__name__)
 
 
+def log_tenant_control_change(request, actor, tenant, before, after):
+    """Create an audit entry for admin changes to tenant runtime controls."""
+    try:
+        from core.models import Tenant
+
+        changed = {}
+        for key, previous in before.items():
+            current = after.get(key)
+            if previous != current:
+                changed[key] = {
+                    "from": previous,
+                    "to": current,
+                }
+
+        if not changed:
+            return
+
+        content_type = ContentType.objects.get_for_model(Tenant)
+        remote_addr = get_client_ip(request) if request else ""
+        user_agent = request.META.get("HTTP_USER_AGENT", "") if request else ""
+
+        additional = {
+            "event_type": "tenant_runtime_controls_updated",
+            "tenant_schema": tenant.schema_name,
+            "tenant_name": tenant.name,
+            "changes": changed,
+        }
+        if user_agent:
+            additional["user_agent"] = user_agent
+
+        LogEntry.objects.create(
+            content_type=content_type,
+            object_pk=str(tenant.pk),
+            object_repr=str(tenant),
+            action=LogEntry.Action.UPDATE,
+            changes=str(changed),
+            actor=actor if actor and hasattr(actor, "pk") else None,
+            remote_addr=remote_addr,
+            additional_data=additional,
+        )
+    except Exception as exc:
+        logger.error("Failed to create tenant control audit log: %s", exc, exc_info=True)
+
+
 def get_client_ip(request):
     """Extract client IP address from the request.
 

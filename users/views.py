@@ -27,6 +27,7 @@ from users.serializers import (
 from users.models import User
 from users.access_policies import UserAccessPolicy
 from common.status import UserAccountType, Roles
+from core.models import Tenant
 
 
 def build_unique_username(base_username: str) -> str:
@@ -67,6 +68,60 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
     """
     serializer_class = MultiFieldTokenObtainPairSerializer
 
+    def _deny_login(self, request, user, identifier, detail, error_code, extra_details=None):
+        from common.audit_utils import log_auth_event
+
+        details = {"identifier": identifier, "reason": error_code.lower()}
+        if extra_details:
+            details.update(extra_details)
+        log_auth_event(request, user, "login_failed", details=details)
+        return Response(
+            {
+                "detail": detail,
+                "error_code": error_code,
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    def _enforce_login_policy(self, request, user, identifier):
+        if connection.schema_name == 'public':
+            return None
+
+        with schema_context('public'):
+            tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+
+        if not tenant:
+            return None
+
+        login_policy = getattr(tenant, 'login_access_policy', 'all_users')
+        if login_policy == 'disabled':
+            return self._deny_login(
+                request,
+                user,
+                identifier,
+                'Login is currently disabled for this workspace.',
+                'TENANT_LOGIN_DISABLED',
+                {"workspace": tenant.schema_name},
+            )
+
+        if login_policy == 'tenant_admin_only':
+            user_role = str(getattr(user, 'role', '') or '').lower()
+            is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or user_role in {
+                Roles.ADMIN,
+                Roles.SUPERADMIN,
+            }
+            if not is_tenant_admin:
+                return self._deny_login(
+                    request,
+                    user,
+                    identifier,
+                    'Only tenant administrators can sign in to this workspace right now.',
+                    'TENANT_ADMIN_ONLY_LOGIN',
+                    {"workspace": tenant.schema_name},
+                )
+
+        return None
+
     def post(self, request, *args, **kwargs):
         from common.audit_utils import log_auth_event
 
@@ -87,6 +142,9 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
         if user_id:
             try:
                 user = User.objects.get(pk=user_id)
+                denied = self._enforce_login_policy(request, user, identifier)
+                if denied is not None:
+                    return denied
                 log_auth_event(request, user, "login_success")
             except User.DoesNotExist:
                 pass

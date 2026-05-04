@@ -121,7 +121,21 @@ class Tenant(TenantBase):
     )
     active = models.BooleanField(
         default=True, 
-        help_text="Quick boolean flag for active status (status='active' = active=True)"
+        help_text="Controls whether the workspace is operational. This is independent of lifecycle status."
+    )
+    maintenance_mode = models.BooleanField(
+        default=False,
+        help_text="When enabled, tenant workspace operations are paused except for allowed auth/status checks."
+    )
+    login_access_policy = models.CharField(
+        max_length=32,
+        choices=[
+            ("all_users", "All Users"),
+            ("tenant_admin_only", "Tenant Admin Only"),
+            ("disabled", "Disabled"),
+        ],
+        default="all_users",
+        help_text="Controls who can sign in to this tenant workspace."
     )
     
     # Logo and Branding
@@ -170,11 +184,9 @@ class Tenant(TenantBase):
     def __str__(self):
         return self.name
     
-    def save(self, *args, **kwargs):
-        """Override save to sync active with status."""
-        # Sync active with status field
-        self.active = (self.status == "active")
-        super().save(*args, **kwargs)
+    @property
+    def is_operational(self):
+        return self.active and self.status == "active" and not self.maintenance_mode
 
 
 class Domain(DomainMixin):

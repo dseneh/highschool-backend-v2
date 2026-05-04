@@ -88,6 +88,47 @@ class UserViewSet(viewsets.ModelViewSet):
         )
 
         return linked_id_numbers
+
+    def _apply_user_filters(self, queryset):
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(username__icontains=search) |
+                Q(email__icontains=search) |
+                Q(id_number__icontains=search)
+            )
+
+        roles = self.request.query_params.getlist('role')
+        if roles:
+            queryset = queryset.filter(role__in=roles)
+
+        account_types = self.request.query_params.getlist('account_type')
+        if account_types:
+            queryset = queryset.filter(account_type__in=account_types)
+
+        for field in ['is_active', 'is_staff', 'is_superuser', 'is_default_password']:
+            value = self.request.query_params.get(field)
+            if value is not None:
+                bool_value = value.lower() in ['true', '1', 'yes']
+                queryset = queryset.filter(**{field: bool_value})
+
+        ordering = self.request.query_params.get('ordering', '-id')
+        valid_orderings = [
+            'first_name', '-first_name',
+            'last_name', '-last_name',
+            'username', '-username',
+            'email', '-email',
+            'role', '-role',
+            'id', '-id',
+            'last_login', '-last_login',
+            'id_number', '-id_number',
+        ]
+
+        if ordering in valid_orderings:
+            return queryset.order_by(ordering)
+        return queryset.order_by('-id')
     
     def get_queryset(self):
         """Get users based on context (tenant or global)."""
@@ -109,54 +150,7 @@ class UserViewSet(viewsets.ModelViewSet):
                         Q(id__in=list(permission_user_ids)) |
                         Q(id_number__in=list(linked_user_id_numbers))
                     ).distinct()
-                    
-                    # Apply filters from query params
-                    search = self.request.query_params.get('search')
-                    if search:
-                        queryset = queryset.filter(
-                            Q(first_name__icontains=search) |
-                            Q(last_name__icontains=search) |
-                            Q(username__icontains=search) |
-                            Q(email__icontains=search) |
-                            Q(id_number__icontains=search)
-                        )
-                    
-                    # Apply role filter (multi-value support)
-                    roles = self.request.query_params.getlist('role')
-                    if roles:
-                        queryset = queryset.filter(role__in=roles)
-                    
-                    # Apply account_type filter (multi-value support)
-                    account_types = self.request.query_params.getlist('account_type')
-                    if account_types:
-                        queryset = queryset.filter(account_type__in=account_types)
-                    
-                    # Apply boolean filters
-                    for field in ['is_active', 'is_staff', 'is_superuser', 'is_default_password']:
-                        value = self.request.query_params.get(field)
-                        if value is not None:
-                            bool_value = value.lower() in ['true', '1', 'yes']
-                            queryset = queryset.filter(**{field: bool_value})
-                    
-                    # Apply ordering
-                    ordering = self.request.query_params.get('ordering', '-id')
-                    valid_orderings = [
-                        'first_name', '-first_name',
-                        'last_name', '-last_name',
-                        'username', '-username',
-                        'email', '-email',
-                        'role', '-role',
-                        'id', '-id',
-                        'last_login', '-last_login',
-                        'id_number', '-id_number',
-                    ]
-                    
-                    if ordering in valid_orderings:
-                        queryset = queryset.order_by(ordering)
-                    else:
-                        queryset = queryset.order_by('-id')
-                    
-                    return queryset
+                    return self._apply_user_filters(queryset)
             except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)
@@ -165,7 +159,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # For global context, return all users
         with schema_context('public'):
-            return User.objects.all()
+            return self._apply_user_filters(User.objects.all())
     
     def get_serializer_class(self):
         """Return appropriate serializer based on action."""
@@ -233,7 +227,8 @@ class UserViewSet(viewsets.ModelViewSet):
     
     def list(self, request, *args, **kwargs):
         """List users in current tenant."""
-        if connection.schema_name == 'public':
+        scope = str(request.query_params.get('scope') or '').strip().lower()
+        if connection.schema_name == 'public' and scope not in {'global', 'admin'}:
             return Response(
                 {"detail": "This endpoint must be accessed from a tenant context (with x-tenant header)"},
                 status=status.HTTP_400_BAD_REQUEST

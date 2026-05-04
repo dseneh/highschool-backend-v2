@@ -31,6 +31,7 @@ from core.serializers import (
     TenantInfoSearchResultSerializer,
 )
 from common.utils import update_model_fields
+from common.audit_utils import log_tenant_control_change
 from common.permissions import IsSuperAdmin
 from students.models import Student
 from staff.models import Staff
@@ -115,7 +116,30 @@ class TenantViewSet(ModelViewSet):
         "theme_color",
         "theme_config",
         "active",
+        "maintenance_mode",
+        "login_access_policy",
     ]
+    AUDITED_CONTROL_FIELDS = ["status", "active", "maintenance_mode", "login_access_policy"]
+
+    def _capture_control_state(self, instance):
+        return {
+            "status": getattr(instance, "status", None),
+            "active": getattr(instance, "active", None),
+            "maintenance_mode": getattr(instance, "maintenance_mode", None),
+            "login_access_policy": getattr(instance, "login_access_policy", None),
+        }
+
+    def _log_control_change_if_needed(self, request, instance, before_state, response):
+        if response.status_code < 200 or response.status_code >= 300:
+            return response
+
+        if not any(field in request.data for field in self.AUDITED_CONTROL_FIELDS):
+            return response
+
+        instance.refresh_from_db()
+        after_state = self._capture_control_state(instance)
+        log_tenant_control_change(request, request.user, instance, before_state, after_state)
+        return response
 
     def get_permissions(self):
         """
@@ -216,16 +240,16 @@ class TenantViewSet(ModelViewSet):
         validate_tenant_is_in_public_schema()
 
         instance = self.get_object()
+        before_state = self._capture_control_state(instance)
 
-        # Use update_model_fields utility to filter and update only allowed fields
-        # This returns a Response object, not a serializer
-        return update_model_fields(
+        response = update_model_fields(
             request,
             instance,
             self.ALLOWED_UPDATE_FIELDS,
             TenantSerializer,
             context={"request": request},
         )
+        return self._log_control_change_if_needed(request, instance, before_state, response)
 
     def partial_update(self, request, *args, **kwargs):
         """
@@ -235,16 +259,16 @@ class TenantViewSet(ModelViewSet):
         validate_tenant_is_in_public_schema()
 
         instance = self.get_object()
+        before_state = self._capture_control_state(instance)
 
-        # Use update_model_fields utility to filter and update only allowed fields
-        # This returns a Response object, not a serializer
-        return update_model_fields(
+        response = update_model_fields(
             request,
             instance,
             self.ALLOWED_UPDATE_FIELDS,
             TenantSerializer,
             context={"request": request},
         )
+        return self._log_control_change_if_needed(request, instance, before_state, response)
 
     def perform_destroy(self, instance):
         """
