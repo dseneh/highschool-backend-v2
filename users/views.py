@@ -84,14 +84,34 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
         )
 
     def _enforce_login_policy(self, request, user, identifier):
-        if connection.schema_name == 'public':
+        # Capture schema name BEFORE entering schema_context — it changes inside.
+        current_schema = connection.schema_name
+        if current_schema == 'public':
             return None
 
         with schema_context('public'):
-            tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+            tenant = Tenant.objects.filter(schema_name=current_schema).first()
 
         if not tenant:
             return None
+
+        user_role = str(getattr(user, 'role', '') or '').lower()
+        is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or user_role in {
+            Roles.ADMIN,
+            Roles.SUPERADMIN,
+        }
+
+        # Maintenance mode: only tenant admins may log in.
+        if getattr(tenant, 'maintenance_mode', False):
+            if not is_tenant_admin:
+                return self._deny_login(
+                    request,
+                    user,
+                    identifier,
+                    'This workspace is in maintenance mode. Only administrators can sign in.',
+                    'TENANT_MAINTENANCE_MODE',
+                    {"workspace": tenant.schema_name},
+                )
 
         login_policy = getattr(tenant, 'login_access_policy', 'all_users')
         if login_policy == 'disabled':
@@ -105,11 +125,6 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
             )
 
         if login_policy == 'tenant_admin_only':
-            user_role = str(getattr(user, 'role', '') or '').lower()
-            is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or user_role in {
-                Roles.ADMIN,
-                Roles.SUPERADMIN,
-            }
             if not is_tenant_admin:
                 return self._deny_login(
                     request,

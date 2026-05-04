@@ -240,6 +240,8 @@ class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
             "logo",
             "active",
             "status",
+            "maintenance_mode",
+            "login_access_policy",
             "theme_config",
         ]
 
