@@ -137,6 +137,20 @@ class Tenant(TenantBase):
         default="all_users",
         help_text="Controls who can sign in to this tenant workspace."
     )
+    disabled_access_allow_tenant_admins = models.BooleanField(
+        default=True,
+        help_text="When workspace access is disabled, tenant admins can still access explicitly allowed pages."
+    )
+    disabled_access_allowed_paths = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of tenant page path prefixes allowed while workspace is disabled (for approved users/admins)."
+    )
+    disabled_access_allowed_users = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of user identifiers (id_number/username/email) allowed on disabled workspace override paths."
+    )
     
     # Logo and Branding
     logo = models.ImageField(

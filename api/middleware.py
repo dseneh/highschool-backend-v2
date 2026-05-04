@@ -6,6 +6,7 @@ from django_tenants.middleware.main import TenantMainMiddleware
 from django_tenants.utils import get_public_schema_name
 from django.http import Http404
 from core.models import Tenant
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 
 class HeaderBasedTenantMiddleware(TenantMainMiddleware):
@@ -49,6 +50,80 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
     def _is_blocked_tenant_path_allowed(self, path: str) -> bool:
         return path in self.BLOCKED_TENANT_ALLOWED_PATHS
 
+    @staticmethod
+    def _normalize_frontend_path(path: str) -> str:
+        value = str(path or "").strip()
+        if not value:
+            return ""
+        if not value.startswith('/'):
+            value = f'/{value}'
+        return value if value == '/' else value.rstrip('/')
+
+    @staticmethod
+    def _is_allowed_path(path: str, allowed_prefixes) -> bool:
+        normalized_path = HeaderBasedTenantMiddleware._normalize_frontend_path(path)
+        if not normalized_path:
+            return False
+
+        for prefix in (allowed_prefixes or []):
+            normalized_prefix = HeaderBasedTenantMiddleware._normalize_frontend_path(prefix)
+            if not normalized_prefix:
+                continue
+            if normalized_prefix == '/':
+                if normalized_path == '/':
+                    return True
+                continue
+            if normalized_prefix.endswith('-'):
+                if normalized_path.startswith(normalized_prefix):
+                    return True
+                continue
+            if normalized_path == normalized_prefix or normalized_path.startswith(f"{normalized_prefix}/"):
+                return True
+
+        return False
+
+    def _resolve_api_user(self, request):
+        try:
+            auth_result = JWTAuthentication().authenticate(request)
+        except Exception:
+            return None
+        if not auth_result:
+            return None
+        user, _ = auth_result
+        return user
+
+    def _is_disabled_override_allowed(self, request, tenant) -> bool:
+        frontend_path = request.META.get('HTTP_X_APP_PATH', '')
+        allowed_paths = getattr(tenant, 'disabled_access_allowed_paths', []) or []
+
+        if not self._is_allowed_path(frontend_path, allowed_paths):
+            return False
+
+        user = self._resolve_api_user(request)
+        if not user:
+            return False
+
+        role = str(getattr(user, 'role', '') or '').lower()
+        is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or role in {'admin', 'superadmin'}
+        allow_tenant_admins = bool(getattr(tenant, 'disabled_access_allow_tenant_admins', True))
+
+        allowed_users = {
+            str(value or '').strip().lower()
+            for value in (getattr(tenant, 'disabled_access_allowed_users', []) or [])
+            if str(value or '').strip()
+        }
+
+        candidates = {
+            str(getattr(user, 'id', '') or '').strip().lower(),
+            str(getattr(user, 'id_number', '') or '').strip().lower(),
+            str(getattr(user, 'username', '') or '').strip().lower(),
+            str(getattr(user, 'email', '') or '').strip().lower(),
+        }
+        candidates.discard('')
+
+        is_selected_user = bool(allowed_users.intersection(candidates))
+        return (allow_tenant_admins and is_tenant_admin) or is_selected_user
+
     def _enforce_tenant_runtime_controls(self, request):
         path = request.path
         if not path.startswith('/api/'):
@@ -65,13 +140,20 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if self._is_blocked_tenant_path_allowed(path):
             return None
 
-        if not getattr(tenant, 'active', True):
+        is_disabled = not getattr(tenant, 'active', True)
+        is_non_operational = getattr(tenant, 'status', 'active') != 'active'
+
+        if is_disabled or is_non_operational:
+            if self._is_disabled_override_allowed(request, tenant):
+                return None
+
+        if is_disabled:
             return self._blocked_tenant_response(
                 'This workspace is disabled. Tenant operations are currently blocked.',
                 'TENANT_DISABLED',
             )
 
-        if getattr(tenant, 'status', 'active') != 'active':
+        if is_non_operational:
             return self._blocked_tenant_response(
                 f"This workspace is currently {tenant.status}. Tenant operations are currently blocked.",
                 'TENANT_STATUS_BLOCKED',

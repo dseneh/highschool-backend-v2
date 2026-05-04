@@ -109,6 +109,7 @@ class TenantListSerializer(BaseTenantSerializer):
             "status",
             "maintenance_mode",
             "login_access_policy",
+            "disabled_access_allow_tenant_admins",
             "logo_shape",
         ]
         read_only_fields = fields
@@ -135,6 +136,9 @@ class PublicTenantSerializer(BaseTenantSerializer):
             "active",
             "maintenance_mode",
             "login_access_policy",
+            "disabled_access_allow_tenant_admins",
+            "disabled_access_allowed_paths",
+            "disabled_access_allowed_users",
             "logo",
             "logo_shape",
             "theme_color",
@@ -193,6 +197,9 @@ class TenantSerializer(BaseTenantSerializer):
             "active",
             "maintenance_mode",
             "login_access_policy",
+            "disabled_access_allow_tenant_admins",
+            "disabled_access_allowed_paths",
+            "disabled_access_allowed_users",
             # Branding
             "logo",
             "logo_shape",
@@ -242,6 +249,9 @@ class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
             "status",
             "maintenance_mode",
             "login_access_policy",
+            "disabled_access_allow_tenant_admins",
+            "disabled_access_allowed_paths",
+            "disabled_access_allowed_users",
             "theme_config",
         ]
 
@@ -278,6 +288,17 @@ class CreateTenantSerializer(serializers.Serializer):
         choices=["all_users", "tenant_admin_only", "disabled"],
         default="all_users",
         required=False,
+    )
+    disabled_access_allow_tenant_admins = serializers.BooleanField(default=True, required=False)
+    disabled_access_allowed_paths = serializers.ListField(
+        child=serializers.CharField(max_length=120),
+        required=False,
+        default=list,
+    )
+    disabled_access_allowed_users = serializers.ListField(
+        child=serializers.CharField(max_length=120),
+        required=False,
+        default=list,
     )
 
     def validate_value(self, value, field_name):
@@ -409,6 +430,11 @@ class CreateTenantSerializer(serializers.Serializer):
             # Status and configuration
             "status": validated_data.get("status", "active"),
             "active": validated_data.get("active", True),
+            "maintenance_mode": validated_data.get("maintenance_mode", False),
+            "login_access_policy": validated_data.get("login_access_policy", "all_users"),
+            "disabled_access_allow_tenant_admins": validated_data.get("disabled_access_allow_tenant_admins", True),
+            "disabled_access_allowed_paths": validated_data.get("disabled_access_allowed_paths", []),
+            "disabled_access_allowed_users": validated_data.get("disabled_access_allowed_users", []),
             # Branding
             "logo_shape": validated_data.get("logo_shape", "square"),
             "theme_color": validated_data.get("theme_color"),

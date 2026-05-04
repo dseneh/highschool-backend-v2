@@ -118,8 +118,19 @@ class TenantViewSet(ModelViewSet):
         "active",
         "maintenance_mode",
         "login_access_policy",
+        "disabled_access_allow_tenant_admins",
+        "disabled_access_allowed_paths",
+        "disabled_access_allowed_users",
     ]
-    AUDITED_CONTROL_FIELDS = ["status", "active", "maintenance_mode", "login_access_policy"]
+    AUDITED_CONTROL_FIELDS = [
+        "status",
+        "active",
+        "maintenance_mode",
+        "login_access_policy",
+        "disabled_access_allow_tenant_admins",
+        "disabled_access_allowed_paths",
+        "disabled_access_allowed_users",
+    ]
 
     def _capture_control_state(self, instance):
         return {
@@ -127,6 +138,9 @@ class TenantViewSet(ModelViewSet):
             "active": getattr(instance, "active", None),
             "maintenance_mode": getattr(instance, "maintenance_mode", None),
             "login_access_policy": getattr(instance, "login_access_policy", None),
+            "disabled_access_allow_tenant_admins": getattr(instance, "disabled_access_allow_tenant_admins", None),
+            "disabled_access_allowed_paths": getattr(instance, "disabled_access_allowed_paths", None),
+            "disabled_access_allowed_users": getattr(instance, "disabled_access_allowed_users", None),
         }
 
     def _log_control_change_if_needed(self, request, instance, before_state, response):
