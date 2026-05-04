@@ -83,10 +83,20 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         return False
 
     def _resolve_api_user(self, request):
+        from django_tenants.utils import schema_context
         try:
             auth_result = JWTAuthentication().authenticate(request)
         except Exception:
-            return None
+            auth_result = None
+
+        if not auth_result:
+            # Users may live in the public schema; retry there if current schema is a tenant schema
+            try:
+                with schema_context(get_public_schema_name()):
+                    auth_result = JWTAuthentication().authenticate(request)
+            except Exception:
+                return None
+
         if not auth_result:
             return None
         user, _ = auth_result

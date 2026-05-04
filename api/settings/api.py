@@ -89,6 +89,7 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
     "x-tenant",  # Custom header for tenant identification
     "x-workspace",  # Alternative header for tenant identification
+    "x-app-path",  # Frontend path for maintenance/disabled override checks
 ]
 CORS_ALLOW_METHODS = [
     "DELETE",
