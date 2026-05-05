@@ -9,6 +9,11 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
       - grading.approve-> approve
       - grading.reject -> reject
     Applies to grading_assessment, grading_gradebook, grading_grade, etc.
+
+        Note:
+            Many grading endpoints are APIView-based and expose HTTP-method actions
+            (post/put/patch/delete) instead of ViewSet actions
+            (create/update/partial_update/destroy). Include both forms.
     """
 
     statements = [
@@ -61,26 +66,52 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
         #     "condition": "is_role_in:SCHOOL_ADMINISTRATOR",
         # },
 
-        # 3) REGISTRAR / TEACHER / DATA_ENTRY: enter & review by default
+        # 3a) REGISTRAR: enter only (review/approve require special privilege)
         {
             "action": [
                 "list",
                 "retrieve",
+                "get",
+                "head",
+                "options",
                 "create",
                 "update",
                 "partial_update",
+                "post",
+                "put",
+                "patch",
                 "bulk_enter",
-                "review",
             ],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:registrar,teacher",
+            "condition": "is_role_in:registrar",
+        },
+
+        # 3b) TEACHER: role OR teaching-staff flag (Employee.is_teacher)
+        {
+            "action": [
+                "list",
+                "retrieve",
+                "get",
+                "head",
+                "options",
+                "create",
+                "update",
+                "partial_update",
+                "post",
+                "put",
+                "patch",
+                "bulk_enter",
+            ],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_teacher_user",
         },
 
         # 4) Special privileges (per-user)
         # GRADING_ENTER -> create/update/bulk
         {
-            "action": ["create", "update", "partial_update", "bulk_enter"],
+            "action": ["create", "update", "partial_update", "post", "put", "patch", "bulk_enter"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_privilege:GRADING_ENTER",
@@ -88,7 +119,7 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
 
         # GRADING_REVIEW -> review action
         {
-            "action": ["review"],
+            "action": ["review", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_privilege:GRADING_REVIEW",
@@ -96,7 +127,7 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
 
         # GRADING_APPROVE -> approve
         {
-            "action": ["approve"],
+            "action": ["approve", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_privilege:GRADING_APPROVE",
@@ -104,7 +135,7 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
 
         # GRADING_REJECT -> reject
         {
-            "action": ["reject"],
+            "action": ["reject", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_privilege:GRADING_REJECT",

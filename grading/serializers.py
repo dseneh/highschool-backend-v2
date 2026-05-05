@@ -9,6 +9,7 @@ from .models import (
     DefaultAssessmentTemplate,
 )
 from .utils import get_grading_config, get_letter_grade
+from hr.models import EmployeeTeacherSubject
 from students.models import Student
 
 
@@ -87,14 +88,24 @@ class GradeBookOut(serializers.ModelSerializer):
             "name": instance.academic_year.name,
         }
 
-        # Resolve teacher assignment for this section-subject.
+        # Resolve teacher assignment for this section-subject from HR assignments.
         # If multiple assignments exist, return the most recently updated one.
         teacher_assignment = (
-            instance.section_subject.staff_teachers.select_related("teacher")
+            EmployeeTeacherSubject.objects.select_related("teacher")
+            .filter(section_subject=instance.section_subject, active=True)
             .order_by("-updated_at", "-created_at")
             .first()
         )
         teacher = teacher_assignment.teacher if teacher_assignment else None
+
+        # Backward-compatible fallback while legacy staff assignments still exist.
+        if not teacher:
+            legacy_teacher_assignment = (
+                instance.section_subject.staff_teachers.select_related("teacher")
+                .order_by("-updated_at", "-created_at")
+                .first()
+            )
+            teacher = legacy_teacher_assignment.teacher if legacy_teacher_assignment else None
         response["teacher"] = (
             {
                 "id": str(teacher.id),

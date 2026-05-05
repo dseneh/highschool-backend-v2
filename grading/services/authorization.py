@@ -2,10 +2,46 @@ from django.db.models import Q
 from rest_framework.exceptions import PermissionDenied
 
 from common.status import Roles
-from staff.models import Staff, TeacherSection, TeacherSubject
+from hr.models import Employee, EmployeeTeacherSection, EmployeeTeacherSubject
 
 
-def _get_teacher_staff(user):
+def _is_teacher_role(user) -> bool:
+    return (getattr(user, "role", "") or "").strip().lower() == Roles.TEACHER
+
+
+def _find_employee_for_user(user):
+    if not user:
+        return None
+    return (
+        Employee.objects.filter(
+            Q(user_account_id_number=user.id_number) | Q(id_number=user.id_number)
+        )
+        .only("id", "id_number", "user_account_id_number", "is_teacher")
+        .first()
+    )
+
+
+def _find_employee_by_id_number(teacher_id_number):
+    if not teacher_id_number:
+        return None
+
+    return (
+        Employee.objects.filter(
+            Q(id_number=teacher_id_number) | Q(user_account_id_number=teacher_id_number)
+        )
+        .only("id", "id_number", "user_account_id_number", "is_teacher")
+        .first()
+    )
+
+
+def _is_teacher_user(user) -> bool:
+    if _is_teacher_role(user):
+        return True
+    employee = _find_employee_for_user(user)
+    return bool(employee and employee.is_teacher)
+
+
+def _get_teacher_employee(user):
     """
     Resolve the current user to a staff record when the user is a teacher.
     Non-teacher users return None and are handled by role-based access policy.
@@ -13,50 +49,36 @@ def _get_teacher_staff(user):
     if not user or not user.is_authenticated:
         return None
 
-    if user.role != Roles.TEACHER:
+    employee = _find_employee_for_user(user)
+    has_teacher_flag = bool(employee and employee.is_teacher)
+
+    if not _is_teacher_role(user):
+        # Non-teacher roles are only treated as teacher when the HR employee record is marked as teacher.
+        if has_teacher_flag:
+            return employee
         return None
 
-    staff = Staff.objects.filter(
-        Q(user_account_id_number=user.id_number) | Q(id_number=user.id_number)
-    ).only("id", "is_teacher").first()
-
-    if not staff or not staff.is_teacher:
+    if not has_teacher_flag:
         raise PermissionDenied("Teacher profile not found or not marked as teacher.")
 
-    return staff
+    return employee
 
 
-def _get_teacher_staff_by_id_number(teacher_id_number):
-    """Resolve a teacher staff record by staff id_number or hr.Employee id_number."""
+def _get_teacher_employee_by_id_number(teacher_id_number):
+    """Resolve a teacher employee record by HR employee id_number or linked user id number."""
     if not teacher_id_number:
         return None
 
-    # Try Staff model first
-    staff = Staff.objects.filter(id_number=teacher_id_number).only("id", "id_number", "is_teacher").first()
-
-    # Fallback: look up via hr.Employee → user_account_id_number → Staff
-    if not staff:
-        from hr.models import Employee
-
-        employee = Employee.objects.filter(
-            id_number=teacher_id_number
-        ).only("user_account_id_number").first()
-
-        if employee and employee.user_account_id_number:
-            staff = Staff.objects.filter(
-                Q(user_account_id_number=employee.user_account_id_number)
-                | Q(id_number=employee.user_account_id_number)
-            ).only("id", "id_number", "is_teacher").first()
-
-    if not staff or not staff.is_teacher:
+    employee = _find_employee_by_id_number(teacher_id_number)
+    if not employee or not employee.is_teacher:
         raise PermissionDenied("Selected staff is not a valid teacher.")
 
-    return staff
+    return employee
 
 
-def _get_teacher_section_ids(staff_id):
+def _get_teacher_section_ids(teacher_id):
     return set(
-        TeacherSection.objects.filter(teacher_id=staff_id).values_list("section_id", flat=True)
+        EmployeeTeacherSection.objects.filter(teacher_id=teacher_id).values_list("section_id", flat=True)
     )
 
 
@@ -69,24 +91,24 @@ def get_teacher_allowed_section_ids_for_subject(user, subject_id):
     - Subject permission can be section-scoped (TeacherSubject.section_subject)
       or teacher-subject scoped (TeacherSubject.subject).
     """
-    teacher_staff = _get_teacher_staff(user)
-    if not teacher_staff:
+    teacher_employee = _get_teacher_employee(user)
+    if not teacher_employee:
         return None
 
-    section_ids = _get_teacher_section_ids(teacher_staff.id)
+    section_ids = _get_teacher_section_ids(teacher_employee.id)
     if not section_ids:
         return set()
 
     section_scoped_subject_sections = set(
-        TeacherSubject.objects.filter(
-            teacher_id=teacher_staff.id,
+        EmployeeTeacherSubject.objects.filter(
+            teacher_id=teacher_employee.id,
             section_subject__subject_id=subject_id,
             section_subject__section_id__in=section_ids,
         ).values_list("section_subject__section_id", flat=True)
     )
 
-    has_general_subject_assignment = TeacherSubject.objects.filter(
-        teacher_id=teacher_staff.id,
+    has_general_subject_assignment = EmployeeTeacherSubject.objects.filter(
+        teacher_id=teacher_employee.id,
         subject_id=subject_id,
         section_subject__isnull=True,
     ).exists()
@@ -106,7 +128,10 @@ def enforce_teacher_grade_access(user, section_id, subject_id):
     if allowed_sections is None:
         return
 
-    if section_id not in allowed_sections:
+    # Normalize to str for comparison: section_id may be a str (from URL params)
+    # while allowed_sections contains uuid.UUID objects from values_list().
+    normalized = str(section_id)
+    if normalized not in {str(s) for s in allowed_sections}:
         raise PermissionDenied(
             "You are not assigned to this class/subject."
         )
@@ -118,11 +143,11 @@ def get_teacher_allowed_section_ids(user):
     Returns None for non-teachers (meaning no teacher-based filtering needed).
     Returns empty set if teacher has no section assignments.
     """
-    teacher_staff = _get_teacher_staff(user)
-    if not teacher_staff:
+    teacher_employee = _get_teacher_employee(user)
+    if not teacher_employee:
         return None
     
-    return _get_teacher_section_ids(teacher_staff.id)
+    return _get_teacher_section_ids(teacher_employee.id)
 
 
 def get_teacher_gradebook_scope(user, teacher_id_number=None):
@@ -141,20 +166,20 @@ def get_teacher_gradebook_scope(user, teacher_id_number=None):
     """
     # If a specific teacher is requested, only admin/registrar can scope by another teacher.
     if teacher_id_number:
-        if user.role == Roles.TEACHER and user.id_number != teacher_id_number:
+        if _is_teacher_user(user) and user.id_number != teacher_id_number:
             raise PermissionDenied("Teachers can only access their own gradebooks.")
 
-        teacher_staff = _get_teacher_staff_by_id_number(teacher_id_number)
+        teacher_employee = _get_teacher_employee_by_id_number(teacher_id_number)
     else:
-        teacher_staff = _get_teacher_staff(user)
-        if not teacher_staff:
+        teacher_employee = _get_teacher_employee(user)
+        if not teacher_employee:
             return None
 
-    section_ids = _get_teacher_section_ids(teacher_staff.id)
+    section_ids = _get_teacher_section_ids(teacher_employee.id)
 
     explicit_section_subject_ids = set(
-        TeacherSubject.objects.filter(
-            teacher_id=teacher_staff.id,
+        EmployeeTeacherSubject.objects.filter(
+            teacher_id=teacher_employee.id,
             section_subject__isnull=False,
         ).values_list("section_subject_id", flat=True)
     )
@@ -162,8 +187,8 @@ def get_teacher_gradebook_scope(user, teacher_id_number=None):
     # "General" subject assignment means subject is assigned to teacher
     # but not tied to one specific section_subject row.
     general_subject_ids = set(
-        TeacherSubject.objects.filter(
-            teacher_id=teacher_staff.id,
+        EmployeeTeacherSubject.objects.filter(
+            teacher_id=teacher_employee.id,
             section_subject__isnull=True,
         ).values_list("subject_id", flat=True)
     )

@@ -391,6 +391,71 @@ class EmployeeSpecialization(BaseModel):
         return f"{self.employee.get_full_name()} - Any"
 
 
+class EmployeeTeacherSection(BaseModel):
+    """Employee-first teacher-to-section assignment."""
+
+    teacher = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name="teacher_sections",
+    )
+    section = models.ForeignKey(
+        "academics.Section",
+        on_delete=models.CASCADE,
+        related_name="employee_teacher_sections",
+    )
+
+    class Meta:
+        db_table = "employee_teacher_section"
+        ordering = ["teacher__first_name", "teacher__last_name", "section__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["teacher", "section"],
+                name="hr_uniq_employee_teacher_section",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.teacher.get_full_name()} - {self.section.name}"
+
+
+class EmployeeTeacherSubject(BaseModel):
+    """Employee-first teacher-to-subject assignment."""
+
+    teacher = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name="teacher_subjects",
+    )
+    subject = models.ForeignKey(
+        "academics.Subject",
+        on_delete=models.CASCADE,
+        related_name="employee_teacher_subjects",
+    )
+    section_subject = models.ForeignKey(
+        "academics.SectionSubject",
+        on_delete=models.CASCADE,
+        related_name="employee_teacher_subjects",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "employee_teacher_subject"
+        ordering = ["teacher__first_name", "teacher__last_name", "subject__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["teacher", "section_subject"],
+                name="hr_uniq_employee_teacher_section_subject",
+            )
+        ]
+
+    def __str__(self):
+        if self.section_subject_id:
+            return f"{self.teacher.get_full_name()} - {self.section_subject_id}"
+        return f"{self.teacher.get_full_name()} - {self.subject.name}"
+
+
 class EmployeeContact(BaseModel):
     """Emergency or related contacts for an employee."""
 

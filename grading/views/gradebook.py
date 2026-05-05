@@ -42,7 +42,7 @@ class GradeBookListCreateView(APIView):
             "section_subject",
             "section_subject__section", "section_subject__subject"
         ).prefetch_related(
-            "section_subject__staff_teachers__teacher"
+            "section_subject__employee_teacher_subjects__teacher"
         ).only(
             "id", "active", "name", "calculation_method",
             "section_subject", "academic_year", "created_at", "updated_at",
@@ -127,7 +127,7 @@ class GradeBookDetailView(APIView):
                 "section_subject", "academic_year",
                 "section_subject__section", "section_subject__subject"
             ).prefetch_related(
-                "section_subject__staff_teachers__teacher"
+                "section_subject__employee_teacher_subjects__teacher"
             ).get(f)
         except GradeBook.DoesNotExist:
             raise NotFound("This grade book does not exist.")
@@ -188,7 +188,7 @@ class TeacherGradebookListView(APIView):
             "section_subject__subject",
             "academic_year"
         ).prefetch_related(
-            "section_subject__staff_teachers__teacher"
+            "section_subject__employee_teacher_subjects__teacher"
         ).only(
             "id", "active", "name", "calculation_method",
             "section_subject", "academic_year", "created_at", "updated_at",

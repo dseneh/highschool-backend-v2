@@ -7,6 +7,8 @@ from .views import (
     EmployeePerformanceReviewViewSet,
     EmployeePositionViewSet,
     EmployeeSpecializationViewSet,
+    EmployeeTeacherSectionViewSet,
+    EmployeeTeacherSubjectViewSet,
     EmployeeViewSet,
     LeaveRequestViewSet,
     LeaveTypeViewSet,
@@ -17,6 +19,8 @@ router.register(r"employees", EmployeeViewSet, basename="employee")
 router.register(r"employee-departments", EmployeeDepartmentViewSet, basename="employee-department")
 router.register(r"employee-positions", EmployeePositionViewSet, basename="employee-position")
 router.register(r"employee-specializations", EmployeeSpecializationViewSet, basename="employee-specialization")
+router.register(r"teacher-sections", EmployeeTeacherSectionViewSet, basename="employee-teacher-section")
+router.register(r"teacher-subjects", EmployeeTeacherSubjectViewSet, basename="employee-teacher-subject")
 router.register(r"leave-types", LeaveTypeViewSet, basename="leave-type")
 router.register(r"leave-requests", LeaveRequestViewSet, basename="leave-request")
 router.register(r"employee-attendance", EmployeeAttendanceViewSet, basename="employee-attendance")

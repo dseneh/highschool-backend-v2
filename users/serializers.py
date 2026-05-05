@@ -26,6 +26,8 @@ class UserSerializer(serializers.ModelSerializer):
     tenants = serializers.SerializerMethodField()
     # Add flag to identify the currently logged-in user
     is_current_user = serializers.SerializerMethodField()
+    # Add effective privileges (role defaults + special grants)
+    privileges = serializers.SerializerMethodField()
     
     class Meta:
         model = User
@@ -48,9 +50,16 @@ class UserSerializer(serializers.ModelSerializer):
             'is_staff',
             'is_superuser',
             'is_current_user',
+            'privileges',
             # 'date_joined',
         ]
         read_only_fields = fields
+
+    def get_privileges(self, obj):
+        try:
+            return obj.get_privileges()
+        except Exception:
+            return []
     
     def get_tenants(self, obj):
         """

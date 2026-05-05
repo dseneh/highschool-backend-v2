@@ -1,9 +1,10 @@
 from datetime import timedelta
 from uuid import UUID
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import status, viewsets
+from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -14,6 +15,8 @@ from .models import (
     EmployeeDepartment,
     EmployeePosition,
     EmployeeSpecialization,
+    EmployeeTeacherSection,
+    EmployeeTeacherSubject,
     EmployeeAttendance,
     EmployeePerformanceReview,
     LeaveRequest,
@@ -25,6 +28,8 @@ from .serializers import (
     EmployeeDependentSerializer,
     EmployeePositionSerializer,
     EmployeeSpecializationSerializer,
+    EmployeeTeacherSectionSerializer,
+    EmployeeTeacherSubjectSerializer,
     EmployeeSerializer,
     EmployeeAttendanceSerializer,
     EmployeePerformanceReviewSerializer,
@@ -74,6 +79,143 @@ class EmployeeSpecializationViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+
+class EmployeeTeacherSectionViewSet(viewsets.ModelViewSet):
+    serializer_class = EmployeeTeacherSectionSerializer
+    permission_classes = [HRAccessPolicy]
+
+    def get_queryset(self):
+        queryset = EmployeeTeacherSection.objects.select_related(
+            "teacher",
+            "section",
+            "section__grade_level",
+        )
+
+        teacher_id = self.request.query_params.get("teacher")
+        if teacher_id:
+            teacher_filter = Q(teacher__id=teacher_id) | Q(teacher__id_number=teacher_id)
+
+            from staff.models import Staff
+
+            staff = Staff.objects.filter(Q(id=teacher_id) | Q(id_number=teacher_id)).first()
+            if staff:
+                teacher_filter |= Q(teacher__id_number=staff.id_number)
+                if staff.user_account_id_number:
+                    teacher_filter |= Q(teacher__user_account_id_number=staff.user_account_id_number)
+
+            queryset = queryset.filter(teacher_filter).distinct()
+
+        section_id = self.request.query_params.get("section")
+        if section_id:
+            queryset = queryset.filter(section_id=section_id)
+
+        ordering = self.request.query_params.get("ordering", "-created_at")
+        return queryset.order_by(ordering)
+
+    def perform_create(self, serializer):
+        teacher = serializer.validated_data.get("teacher")
+        section = serializer.validated_data.get("section")
+
+        if EmployeeTeacherSection.objects.filter(teacher=teacher, section=section).exists():
+            raise serializers.ValidationError("Teacher is already assigned to this section")
+
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
+
+
+class EmployeeTeacherSubjectViewSet(viewsets.ModelViewSet):
+    serializer_class = EmployeeTeacherSubjectSerializer
+    permission_classes = [HRAccessPolicy]
+
+    def get_queryset(self):
+        queryset = EmployeeTeacherSubject.objects.select_related(
+            "teacher",
+            "subject",
+            "section_subject",
+            "section_subject__section",
+            "section_subject__section__grade_level",
+            "section_subject__subject",
+        )
+
+        teacher_id = self.request.query_params.get("teacher")
+        if teacher_id:
+            teacher_filter = Q(teacher__id=teacher_id) | Q(teacher__id_number=teacher_id)
+
+            from staff.models import Staff
+
+            staff = Staff.objects.filter(Q(id=teacher_id) | Q(id_number=teacher_id)).first()
+            if staff:
+                teacher_filter |= Q(teacher__id_number=staff.id_number)
+                if staff.user_account_id_number:
+                    teacher_filter |= Q(teacher__user_account_id_number=staff.user_account_id_number)
+
+            queryset = queryset.filter(teacher_filter).distinct()
+
+        section_subject_id = self.request.query_params.get("section_subject")
+        if section_subject_id:
+            queryset = queryset.filter(section_subject_id=section_subject_id)
+
+        section_id = self.request.query_params.get("section")
+        if section_id:
+            queryset = queryset.filter(section_subject__section_id=section_id)
+
+        subject_id = self.request.query_params.get("subject")
+        if subject_id:
+            queryset = queryset.filter(
+                Q(subject_id=subject_id) | Q(section_subject__subject_id=subject_id)
+            )
+
+        ordering = self.request.query_params.get("ordering", "-created_at")
+        return queryset.order_by(ordering)
+
+    def perform_create(self, serializer):
+        teacher = serializer.validated_data.get("teacher")
+        section_subject = serializer.validated_data.get("section_subject")
+        subject = serializer.validated_data.get("subject")
+
+        if not section_subject:
+            raise serializers.ValidationError(
+                {"detail": "section_subject is required for teacher subject assignment."}
+            )
+
+        with transaction.atomic():
+            obj, _created = EmployeeTeacherSubject.objects.get_or_create(
+                teacher=teacher,
+                section_subject=section_subject,
+                defaults={
+                    "subject": subject or section_subject.subject,
+                    "created_by": self.request.user,
+                    "updated_by": self.request.user,
+                },
+            )
+
+            # Keep section assignment in sync with subject assignment.
+            EmployeeTeacherSection.objects.get_or_create(
+                teacher=teacher,
+                section=section_subject.section,
+                defaults={
+                    "created_by": self.request.user,
+                    "updated_by": self.request.user,
+                },
+            )
+
+            serializer.instance = obj
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            obj = serializer.save(updated_by=self.request.user)
+            if obj.section_subject_id:
+                EmployeeTeacherSection.objects.get_or_create(
+                    teacher=obj.teacher,
+                    section=obj.section_subject.section,
+                    defaults={
+                        "created_by": self.request.user,
+                        "updated_by": self.request.user,
+                    },
+                )
 
 
 class LeaveTypeViewSet(viewsets.ModelViewSet):

@@ -1,6 +1,7 @@
 from django.utils import timezone
 from rest_framework import serializers
-from academics.models import Subject
+from academics.models import Section, SectionSubject, Subject
+from staff.models import Staff
 
 from .models import (
     Employee,
@@ -9,11 +10,40 @@ from .models import (
     EmployeeDependent,
     EmployeePosition,
     EmployeeSpecialization,
+    EmployeeTeacherSection,
+    EmployeeTeacherSubject,
     EmployeeAttendance,
     EmployeePerformanceReview,
     LeaveRequest,
     LeaveType,
 )
+
+
+class EmployeeOrStaffPKField(serializers.PrimaryKeyRelatedField):
+    """Accept either an Employee identifier or a legacy Staff identifier."""
+
+    def to_internal_value(self, data):
+        try:
+            return super().to_internal_value(data)
+        except serializers.ValidationError:
+            try:
+                staff = Staff.objects.get(id=data)
+            except (Staff.DoesNotExist, ValueError, TypeError):
+                staff = Staff.objects.filter(id_number=data).first()
+
+            if not staff:
+                self.fail("does_not_exist", pk_value=data)
+
+            employee = Employee.objects.filter(id_number=staff.id_number).first()
+            if not employee and staff.user_account_id_number:
+                employee = Employee.objects.filter(
+                    user_account_id_number=staff.user_account_id_number
+                ).first()
+
+            if not employee:
+                self.fail("does_not_exist", pk_value=data)
+
+            return employee
 
 
 class EmployeeDepartmentSerializer(serializers.ModelSerializer):
@@ -192,6 +222,103 @@ class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
                 "id": str(instance.reviewer.id),
                 "employee_number": instance.reviewer.employee_number,
                 "full_name": instance.reviewer.get_full_name(),
+            }
+        return data
+
+
+class EmployeeTeacherSectionSerializer(serializers.ModelSerializer):
+    teacher = EmployeeOrStaffPKField(queryset=Employee.objects.all())
+    section = serializers.PrimaryKeyRelatedField(queryset=Section.objects.all())
+
+    class Meta:
+        model = EmployeeTeacherSection
+        fields = ["id", "teacher", "section"]
+        read_only_fields = ["id"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["teacher"] = {
+            "id": str(instance.teacher.id),
+            "id_number": instance.teacher.id_number,
+            "full_name": instance.teacher.get_full_name(),
+        }
+        if instance.section:
+            data["section"] = {
+                "id": str(instance.section.id),
+                "name": instance.section.name,
+                "grade_level": (
+                    {
+                        "id": str(instance.section.grade_level.id),
+                        "name": instance.section.grade_level.name,
+                    }
+                    if instance.section.grade_level
+                    else None
+                ),
+            }
+        return data
+
+
+class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
+    teacher = EmployeeOrStaffPKField(queryset=Employee.objects.all())
+    subject = serializers.PrimaryKeyRelatedField(
+        queryset=Subject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    section_subject = serializers.PrimaryKeyRelatedField(
+        queryset=SectionSubject.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = EmployeeTeacherSubject
+        fields = ["id", "teacher", "subject", "section_subject"]
+        read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        section_subject = attrs.get("section_subject")
+        subject = attrs.get("subject")
+
+        if not section_subject and not subject:
+            raise serializers.ValidationError({"section_subject": "This field is required."})
+
+        if section_subject:
+            attrs["subject"] = section_subject.subject
+
+        return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["teacher"] = {
+            "id": str(instance.teacher.id),
+            "id_number": instance.teacher.id_number,
+            "full_name": instance.teacher.get_full_name(),
+        }
+        if instance.section_subject:
+            data["section_subject"] = {
+                "id": str(instance.section_subject.id),
+                "section": {
+                    "id": str(instance.section_subject.section.id),
+                    "name": instance.section_subject.section.name,
+                    "grade_level": (
+                        {
+                            "id": str(instance.section_subject.section.grade_level.id),
+                            "name": instance.section_subject.section.grade_level.name,
+                        }
+                        if instance.section_subject.section.grade_level
+                        else None
+                    ),
+                },
+                "subject": {
+                    "id": str(instance.section_subject.subject.id),
+                    "name": instance.section_subject.subject.name,
+                },
+            }
+        if instance.subject:
+            data["subject"] = {
+                "id": str(instance.subject.id),
+                "name": instance.subject.name,
             }
         return data
 
