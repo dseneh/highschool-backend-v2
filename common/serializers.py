@@ -10,6 +10,11 @@ class AuditLogSerializer(serializers.ModelSerializer):
     """Read-only serializer for django-auditlog LogEntry records."""
 
     actor_email = serializers.EmailField(source="actor.email", read_only=True, default=None)
+    actor_username = serializers.CharField(source="actor.username", read_only=True, default=None)
+    actor_id_number = serializers.CharField(source="actor.id_number", read_only=True, default=None)
+    actor_name = serializers.SerializerMethodField()
+    actor_photo = serializers.SerializerMethodField()
+    actor_display = serializers.SerializerMethodField()
     content_type_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -24,11 +29,55 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "changes",
             "actor",
             "actor_email",
+            "actor_username",
+            "actor_id_number",
+            "actor_name",
+            "actor_photo",
+            "actor_display",
             "remote_addr",
             "timestamp",
             "additional_data",
         ]
         read_only_fields = fields
+
+    def get_actor_name(self, obj) -> str | None:
+        actor = getattr(obj, "actor", None)
+        if not actor:
+            return None
+
+        full_name = f"{getattr(actor, 'first_name', '')} {getattr(actor, 'last_name', '')}".strip()
+        return full_name or None
+
+    def get_actor_photo(self, obj) -> str | None:
+        actor = getattr(obj, "actor", None)
+        if not actor or not getattr(actor, "photo", None):
+            return None
+
+        request = self.context.get("request")
+        try:
+            photo_url = actor.photo.url
+        except Exception:
+            return None
+
+        if request:
+            return request.build_absolute_uri(photo_url)
+        return photo_url
+
+    def get_actor_display(self, obj) -> str:
+        actor = getattr(obj, "actor", None)
+        if not actor:
+            return "System"
+
+        full_name = self.get_actor_name(obj)
+        return (
+            full_name
+            or
+            getattr(actor, "id_number", None)
+            or getattr(actor, "email", None)
+            or getattr(actor, "username", None)
+            or str(getattr(actor, "id", ""))
+            or "System"
+        )
 
     def get_content_type_name(self, obj) -> str:
         ct = obj.content_type

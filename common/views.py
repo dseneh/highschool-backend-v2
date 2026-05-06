@@ -48,6 +48,7 @@ class AuditLogFilter(django_filters.FilterSet):
     content_type_name = ContentTypeNameFilter()
     object_id = django_filters.CharFilter(field_name="object_id")
     actor = django_filters.UUIDFilter(field_name="actor_id")
+    actor_identifier = django_filters.CharFilter(method="filter_actor_identifier")
     action = django_filters.NumberFilter(field_name="action")
     timestamp_after = django_filters.IsoDateTimeFilter(
         field_name="timestamp", lookup_expr="gte"
@@ -58,7 +59,24 @@ class AuditLogFilter(django_filters.FilterSet):
 
     class Meta:
         model = LogEntry
-        fields = ["content_type", "content_type_name", "object_id", "actor", "action"]
+        fields = [
+            "content_type",
+            "content_type_name",
+            "object_id",
+            "actor",
+            "actor_identifier",
+            "action",
+        ]
+
+    def filter_actor_identifier(self, qs, _name, value):
+        identifier = str(value or "").strip()
+        if not identifier:
+            return qs
+        return qs.filter(
+            Q(actor__email__iexact=identifier)
+            | Q(actor__id_number__iexact=identifier)
+            | Q(actor__username__iexact=identifier)
+        )
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -69,7 +87,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     pagination_class = AuditLogPagination
     filter_backends = [django_filters.DjangoFilterBackend, SearchFilter]
     filterset_class = AuditLogFilter
-    search_fields = ["object_repr", "actor__email"]
+    search_fields = ["object_repr", "actor__email", "actor__id_number", "actor__username"]
 
     def get_queryset(self):
         queryset = (
