@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, transaction
 from django.db.models import Q
+from django.http import Http404
 from django_tenants.utils import get_public_schema_name
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -260,13 +262,92 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["put"], url_path="approve")
     def approve(self, request, pk=None, *args, **kwargs):
-        transaction_obj = self.get_object()
-        return self._set_status_action(request, transaction_obj, "approved")
+        try:
+            transaction_obj = self.get_object()
+            return self._set_status_action(request, transaction_obj, "approved")
+        except Http404:
+            pass
+        # Fallback: try AccountingCashTransaction (student payments live here)
+        return self._approve_accounting_transaction(request, pk)
+
+    def _approve_accounting_transaction(self, request, pk):
+        from accounting.services.posting import (
+            post_cash_transaction_to_ledger,
+            recalculate_bank_account_current_balance,
+        )
+        try:
+            cash_tx = AccountingCashTransaction.objects.select_related("bank_account").get(pk=pk)
+        except AccountingCashTransaction.DoesNotExist:
+            raise NotFound("No transaction found with the given ID.")
+
+        if cash_tx.status == AccountingCashTransaction.TransactionStatus.APPROVED:
+            return Response(
+                {"detail": "Transaction is already approved."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with transaction.atomic():
+                cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+                cash_tx.rejection_reason = None
+                cash_tx.save(update_fields=["status", "rejection_reason", "updated_at"])
+                post_cash_transaction_to_ledger(cash_tx, actor=request.user)
+        except DjangoValidationError as exc:
+            message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
+            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        recalculate_bank_account_current_balance(cash_tx.bank_account)
+        return Response(
+            {"id": str(cash_tx.id), "status": "approved", "transaction_id": cash_tx.reference_number},
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["put"], url_path="cancel")
     def cancel(self, request, pk=None, *args, **kwargs):
-        transaction_obj = self.get_object()
-        return self._set_status_action(request, transaction_obj, "canceled")
+        try:
+            transaction_obj = self.get_object()
+            return self._set_status_action(request, transaction_obj, "canceled")
+        except Http404:
+            pass
+        # Fallback: try AccountingCashTransaction (cancel maps to rejected)
+        return self._cancel_accounting_transaction(request, pk)
+
+    def _cancel_accounting_transaction(self, request, pk):
+        from accounting.services.posting import (
+            reverse_cash_transaction_journal_entry,
+            recalculate_bank_account_current_balance,
+        )
+        try:
+            cash_tx = AccountingCashTransaction.objects.select_related("bank_account").get(pk=pk)
+        except AccountingCashTransaction.DoesNotExist:
+            raise NotFound("No transaction found with the given ID.")
+
+        if cash_tx.status == AccountingCashTransaction.TransactionStatus.REJECTED:
+            return Response(
+                {"detail": "Transaction is already canceled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        previous_status = cash_tx.status
+        try:
+            with transaction.atomic():
+                cash_tx.status = AccountingCashTransaction.TransactionStatus.REJECTED
+                cash_tx.save(update_fields=["status", "updated_at"])
+                if previous_status == AccountingCashTransaction.TransactionStatus.APPROVED:
+                    reverse_cash_transaction_journal_entry(cash_tx, actor=request.user)
+        except DjangoValidationError as exc:
+            message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
+            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        recalculate_bank_account_current_balance(cash_tx.bank_account)
+        return Response(
+            {"id": str(cash_tx.id), "status": "canceled", "transaction_id": cash_tx.reference_number},
+            status=status.HTTP_200_OK,
+        )
 
     # @action(detail=True, methods=["delete"], url_path="delete")
     # def delete_action(self, request, pk=None, *args, **kwargs):
