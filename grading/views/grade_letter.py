@@ -1,3 +1,7 @@
+import json
+import os
+from decimal import Decimal
+
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.response import Response
@@ -11,9 +15,17 @@ from grading.utils import paginate_qs
 from grading.models import GradeLetter
 from grading.serializers import GradeLetterOut
 
+
+def _get_grade_letters_fixture_path() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "fixtures",
+        "grade_letters.json",
+    )
+
 class GradeLetterListCreateView(APIView):
 
-    def get(self, request, school_id):
+    def get(self, request):
         qs = GradeLetter.objects.only(
             "id", "active", "letter", "min_percentage", "max_percentage", 
             "order", "created_at", "updated_at"
@@ -82,3 +94,52 @@ class GradeLetterDetailView(APIView):
         
         obj.delete()
         return Response(status=204)
+
+
+class GenerateDefaultGradeLettersView(APIView):
+    """POST /grading/grade-letters/generate-defaults/
+    
+    Upserts the standard A+…F grade scale from the fixture file.
+    Works whether grade letters already exist or not.
+    """
+
+    @transaction.atomic
+    def post(self, request):
+        try:
+            fixture_path = _get_grade_letters_fixture_path()
+            with open(fixture_path, "r", encoding="utf-8") as f:
+                letters_data = json.load(f)
+        except FileNotFoundError:
+            return Response({"detail": "Grade letters fixture not found."}, status=500)
+        except json.JSONDecodeError as e:
+            return Response({"detail": f"Invalid fixture JSON: {e}"}, status=500)
+
+        # Delete all existing grade letters and recreate from defaults
+        GradeLetter.objects.all().delete()
+
+        created = 0
+        errors = []
+
+        for entry in letters_data:
+            try:
+                GradeLetter.objects.create(
+                    letter=entry["letter"],
+                    min_percentage=Decimal(str(entry["min_percentage"])),
+                    max_percentage=Decimal(str(entry["max_percentage"])),
+                    order=entry.get("order", 0),
+                    created_by=request.user,
+                    updated_by=request.user,
+                )
+                created += 1
+            except Exception as e:
+                errors.append(f"'{entry.get('letter')}': {e}")
+
+        all_letters = GradeLetter.objects.order_by("order", "-max_percentage")
+        return Response(
+            {
+                "created": created,
+                "errors": errors,
+                "results": GradeLetterOut(all_letters, many=True).data,
+            },
+            status=200,
+        )

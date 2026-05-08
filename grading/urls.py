@@ -20,6 +20,7 @@ from grading.views import (
     AssessmentDetailView,
     GradeLetterListCreateView,
     GradeLetterDetailView,
+    GenerateDefaultGradeLettersView,
     HonorCategoryListCreateView,
     HonorCategoryDetailView,
     DefaultAssessmentTemplateListCreateView,
@@ -138,6 +139,11 @@ urlpatterns = [
         name="section-final-grades",
     ),
     # Grade letter management endpoints
+    path(
+        "grade-letters/generate-defaults/",
+        GenerateDefaultGradeLettersView.as_view(),
+        name="grade-letters-generate-defaults",
+    ),
     path(
         "grade-letters/",
         GradeLetterListCreateView.as_view(),
