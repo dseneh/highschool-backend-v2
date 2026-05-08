@@ -102,10 +102,20 @@ class UserSerializer(serializers.ModelSerializer):
                         public_tenant = Tenant.objects.get(schema_name=public_schema)
                         result.append({
                             'id': str(public_tenant.id),
+                            'id_number': getattr(public_tenant, 'id_number', None),
                             'schema_name': 'admin',  # Display as "admin" instead of "public"
                             'workspace': 'admin',
                             'name': public_tenant.name or 'Admin',
+                            'short_name': getattr(public_tenant, 'short_name', None),
                             'logo': public_tenant.logo.url if public_tenant.logo else None,
+                            'phone': getattr(public_tenant, 'phone', None),
+                            'email': getattr(public_tenant, 'email', None),
+                            'website': getattr(public_tenant, 'website', None),
+                            'address': getattr(public_tenant, 'address', None),
+                            'city': getattr(public_tenant, 'city', None),
+                            'state': getattr(public_tenant, 'state', None),
+                            'country': getattr(public_tenant, 'country', None),
+                            'postal_code': getattr(public_tenant, 'postal_code', None),
                             'status': getattr(public_tenant, 'status', None),
                             'active': getattr(public_tenant, 'active', None),
                         })
@@ -113,10 +123,20 @@ class UserSerializer(serializers.ModelSerializer):
                         # If public tenant doesn't exist, create a placeholder entry
                         result.append({
                             'id': 'admin',
+                            'id_number': None,
                             'schema_name': 'admin',
                             'workspace': 'admin',
                             'name': 'Admin',
+                            'short_name': None,
                             'logo': None,
+                            'phone': None,
+                            'email': None,
+                            'website': None,
+                            'address': None,
+                            'city': None,
+                            'state': None,
+                            'country': None,
+                            'postal_code': None,
                             'status': 'active',
                             'active': True,
                         })
@@ -137,12 +157,22 @@ class UserSerializer(serializers.ModelSerializer):
                         if has_access:
                             result.append({
                                 'id': str(tenant.id),
+                                'id_number': getattr(tenant, 'id_number', None),
                                 'schema_name': tenant.schema_name,
                                 'workspace': tenant.schema_name,
                                 'name': tenant.name,
+                                'short_name': getattr(tenant, 'short_name', None),
                                 'logo': tenant.logo.url if tenant.logo else None,
                                 'status': getattr(tenant, 'status', None),
                                 'active': getattr(tenant, 'active', None),
+                                'phone': getattr(tenant, 'phone', None),
+                                'email': getattr(tenant, 'email', None),
+                                'website': getattr(tenant, 'website', None),
+                                'address': getattr(tenant, 'address', None),
+                                'city': getattr(tenant, 'city', None),
+                                'state': getattr(tenant, 'state', None),
+                                'country': getattr(tenant, 'country', None),
+                                'postal_code': getattr(tenant, 'postal_code', None),
                             })
                 except Exception as tenant_error:
                     # Skip this tenant if there's an error

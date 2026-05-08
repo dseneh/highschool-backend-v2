@@ -98,10 +98,20 @@ class TenantListSerializer(BaseTenantSerializer):
         model = Tenant
         fields = [
             "id",
+            "id_number",
             "schema_name",
             "name",
             "short_name",
+            "phone",
+            "email",
+            "website",
+            "address",
+            "city",
+            "state",
+            "country",
+            "postal_code",
             "logo",
+            "logo_shape",
             "theme_color",
             "domains",
             "domain",
@@ -110,7 +120,8 @@ class TenantListSerializer(BaseTenantSerializer):
             "maintenance_mode",
             "login_access_policy",
             "disabled_access_allow_tenant_admins",
-            "logo_shape",
+            "disabled_access_allowed_paths",
+            "disabled_access_allowed_users",
         ]
         read_only_fields = fields
 

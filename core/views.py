@@ -421,6 +421,18 @@ def search_tenant_info(request):
                 "schema_name": "admin",  # Display as "admin" instead of "public" for clarity
                 "name": public_tenant.name,
                 "short_name": public_tenant.short_name,
+                "id_number": getattr(public_tenant, "id_number", None),
+                "phone": getattr(public_tenant, "phone", None),
+                "email": getattr(public_tenant, "email", None),
+                "website": getattr(public_tenant, "website", None),
+                "address": getattr(public_tenant, "address", None),
+                "city": getattr(public_tenant, "city", None),
+                "state": getattr(public_tenant, "state", None),
+                "country": getattr(public_tenant, "country", None),
+                "postal_code": getattr(public_tenant, "postal_code", None),
+                "status": getattr(public_tenant, "status", None),
+                "active": getattr(public_tenant, "active", None),
+                "logo": public_tenant.logo.url if getattr(public_tenant, "logo", None) else None,
             }
         except Tenant.DoesNotExist:
             public_tenant_info = {
@@ -428,6 +440,18 @@ def search_tenant_info(request):
                 "schema_name": "admin",  # Display as "admin" for user-facing consistency
                 "name": "Admin",
                 "short_name": "Admin",
+                "id_number": None,
+                "phone": None,
+                "email": None,
+                "website": None,
+                "address": None,
+                "city": None,
+                "state": None,
+                "country": None,
+                "postal_code": None,
+                "status": "active",
+                "active": True,
+                "logo": None,
             }
 
         # Get all active tenants (optimized query)
@@ -435,7 +459,24 @@ def search_tenant_info(request):
             Tenant.objects.exclude(schema_name=get_public_schema_name())
             .filter(active=True)
             .exclude(status="deleted", active=False)
-            .only("id", "schema_name", "name", "short_name")
+            .only(
+                "id",
+                "id_number",
+                "schema_name",
+                "name",
+                "short_name",
+                "phone",
+                "email",
+                "website",
+                "address",
+                "city",
+                "state",
+                "country",
+                "postal_code",
+                "status",
+                "active",
+                "logo",
+            )
         )
 
         # Search in User model (public schema) - Users don't have phone field
@@ -483,6 +524,18 @@ def search_tenant_info(request):
                                         "schema_name": tenant.schema_name,
                                         "name": tenant.name,
                                         "short_name": tenant.short_name,
+                                        "id_number": getattr(tenant, "id_number", None),
+                                        "phone": getattr(tenant, "phone", None),
+                                        "email": getattr(tenant, "email", None),
+                                        "website": getattr(tenant, "website", None),
+                                        "address": getattr(tenant, "address", None),
+                                        "city": getattr(tenant, "city", None),
+                                        "state": getattr(tenant, "state", None),
+                                        "country": getattr(tenant, "country", None),
+                                        "postal_code": getattr(tenant, "postal_code", None),
+                                        "status": getattr(tenant, "status", None),
+                                        "active": getattr(tenant, "active", None),
+                                        "logo": tenant.logo.url if getattr(tenant, "logo", None) else None,
                                     }
                                 )
                 except Exception:
@@ -520,6 +573,18 @@ def search_tenant_info(request):
                     "schema_name": tenant.schema_name,
                     "name": tenant.name,
                     "short_name": tenant.short_name,
+                    "id_number": getattr(tenant, "id_number", None),
+                    "phone": getattr(tenant, "phone", None),
+                    "email": getattr(tenant, "email", None),
+                    "website": getattr(tenant, "website", None),
+                    "address": getattr(tenant, "address", None),
+                    "city": getattr(tenant, "city", None),
+                    "state": getattr(tenant, "state", None),
+                    "country": getattr(tenant, "country", None),
+                    "postal_code": getattr(tenant, "postal_code", None),
+                    "status": getattr(tenant, "status", None),
+                    "active": getattr(tenant, "active", None),
+                    "logo": tenant.logo.url if getattr(tenant, "logo", None) else None,
                 }
 
                 # Build Q object for Student/Staff filters (supports OR logic)
