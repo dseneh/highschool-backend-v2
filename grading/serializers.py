@@ -1973,6 +1973,24 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                     semester_totals[mp.semester.id]["sum"] += float(final_percentage)
                     semester_totals[mp.semester.id]["count"] += 1
 
+            # Resolve teacher assignment for this section-subject
+            teacher_assignment = (
+                EmployeeTeacherSubject.objects.select_related("teacher")
+                .filter(section_subject=gradebook.section_subject, active=True)
+                .order_by("-updated_at", "-created_at")
+                .first()
+            )
+            teacher = teacher_assignment.teacher if teacher_assignment else None
+
+            # Backward-compatible fallback while legacy staff assignments still exist
+            if not teacher:
+                legacy_teacher_assignment = (
+                    gradebook.section_subject.staff_teachers.select_related("teacher")
+                    .order_by("-updated_at", "-created_at")
+                    .first()
+                )
+                teacher = legacy_teacher_assignment.teacher if legacy_teacher_assignment else None
+
             # Build gradebook result data
             gradebook_result = {
                 "id": gradebook.id,
@@ -1980,6 +1998,15 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 "calculation_method": gradebook.calculation_method,
                 "subject": (
                     {"id": subject.id, "name": subject.name} if subject else None
+                ),
+                "teacher": (
+                    {
+                        "id": str(teacher.id),
+                        "full_name": teacher.get_full_name() if hasattr(teacher, "get_full_name") else "",
+                        "id_number": teacher.id_number,
+                    }
+                    if teacher
+                    else None
                 ),
             }
 
