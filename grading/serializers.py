@@ -1778,6 +1778,85 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
     def get_total_gradebooks(self, obj):
         return len(obj.get("gradebooks_data", []))
 
+    def _build_teacher_data(self, teacher, academic_year):
+        """Build extended teacher data including subjects and schedule"""
+        if not teacher:
+            return None
+        
+        from academics.models import SectionSchedule
+        
+        # Get assigned subjects
+        assigned_subjects = []
+        for teacher_subject in teacher.teacher_subjects.filter(active=True):
+            assigned_subjects.append({
+                "id": str(teacher_subject.subject.id),
+                "name": teacher_subject.subject.name,
+                "code": teacher_subject.subject.code,
+            })
+        
+        # Get teacher's schedule for the academic year
+        schedule = []
+        if academic_year:
+            schedules = SectionSchedule.objects.filter(
+                subject__isnull=False,
+                subject__section__grade_level__isnull=False,
+                period__isnull=False,
+                active=True,
+            ).select_related(
+                "section",
+                "subject__subject",
+                "period",
+                "period_time",
+                "section_time_slot"
+            )
+            
+            # Filter by teacher through the section_subject assignments
+            teacher_schedules = []
+            for schedule_item in schedules:
+                if schedule_item.subject:
+                    # Check if teacher is assigned to this section_subject
+                    from hr.models import EmployeeTeacherSubject
+                    is_assigned = EmployeeTeacherSubject.objects.filter(
+                        teacher=teacher,
+                        section_subject=schedule_item.subject,
+                        active=True
+                    ).exists()
+                    
+                    if is_assigned:
+                        teacher_schedules.append(schedule_item)
+            
+            for schedule_item in teacher_schedules:
+                period_time = schedule_item.period_time or (
+                    schedule_item.section_time_slot.period_time if schedule_item.section_time_slot else None
+                )
+                
+                schedule.append({
+                    "id": str(schedule_item.id),
+                    "section": {
+                        "id": str(schedule_item.section.id),
+                        "name": schedule_item.section.name,
+                    },
+                    "subject": {
+                        "id": str(schedule_item.subject.subject.id) if schedule_item.subject else "",
+                        "name": schedule_item.subject.subject.name if schedule_item.subject else "",
+                    },
+                    "period": {
+                        "id": str(schedule_item.period.id),
+                        "name": schedule_item.period.name,
+                        "start_time": period_time.start_time.isoformat() if period_time and period_time.start_time else None,
+                        "end_time": period_time.end_time.isoformat() if period_time and period_time.end_time else None,
+                    },
+                })
+        
+        return {
+            "id": str(teacher.id),
+            "full_name": teacher.get_full_name() if hasattr(teacher, "get_full_name") else "",
+            "email": getattr(teacher, "email", None),
+            "id_number": getattr(teacher, "id_number", ""),
+            "assigned_subjects": assigned_subjects,
+            "schedule": schedule,
+        }
+
     def get_gradebooks(self, obj):
         """
         Build gradebooks array. Returns object if single gradebook, array otherwise.
@@ -1999,15 +2078,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 "subject": (
                     {"id": subject.id, "name": subject.name} if subject else None
                 ),
-                "teacher": (
-                    {
-                        "id": str(teacher.id),
-                        "full_name": teacher.get_full_name() if hasattr(teacher, "get_full_name") else "",
-                        "id_number": teacher.id_number,
-                    }
-                    if teacher
-                    else None
-                ),
+                "teacher": self._build_teacher_data(teacher, academic_year),
             }
 
             # Add averages if requested
