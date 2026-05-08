@@ -113,7 +113,13 @@ class Student(BasePersonModel):
 
         # Ensure school_code is set
         if not self.school_code:
-            self.school_code = 1
+            try:
+                from django.db import connection
+                from core.models import Tenant
+                tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+                self.school_code = int(str(tenant.id_number)[-2:]) if (tenant and tenant.id_number) else 1
+            except Exception:
+                self.school_code = 1
 
         # keep the id_number column in sync
         if not self.id_number:
