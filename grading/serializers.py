@@ -8,7 +8,11 @@ from .models import (
     HonorCategory,
     DefaultAssessmentTemplate,
 )
-from .utils import get_grading_config, get_letter_grade
+from .utils import (
+    get_grading_config,
+    get_letter_grade,
+    calculate_marking_period_percentage,
+)
 from hr.models import EmployeeTeacherSubject
 from students.models import Student
 
@@ -1200,8 +1204,8 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
             for mp in all_marking_periods:
                 assessments_for_mp = assessments_by_mp.get(mp.id, [])
 
-                # Calculate final percentage for this marking period
-                mp_percentages = []
+                # Keep track of grade rows in this marking period for status/history.
+                mp_grades = []
                 assessments_output = []
                 mp_grade_ids = []  # Track grade IDs for this marking period
                 needs_correction = False  # Track if any grade needs correction
@@ -1215,18 +1219,18 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
 
                     # Track grade IDs and correction status
                     if student_grade:
+                        mp_grades.append(student_grade)
                         mp_grade_ids.append(student_grade.id)
                         if getattr(student_grade, 'needs_correction', False):
                             needs_correction = True
 
-                    # Calculate percentage if score exists
+                    # Calculate per-assessment percentage for display only.
                     percentage = None
                     if score is not None and assessment.max_score:
                         try:
                             percentage = round(
                                 (float(score) / float(assessment.max_score)) * 100, 2
                             )
-                            mp_percentages.append(percentage)
                         except (ValueError, ZeroDivisionError):
                             pass
 
@@ -1255,21 +1259,41 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                             }
                         )
 
-                # Calculate final percentage for this marking period
-                final_percentage = 0
-                if mp_percentages:
-                    final_percentage = sum(mp_percentages) / len(mp_percentages)
-                    all_percentages.extend(mp_percentages)
+                # Calculate final percentage for this marking period using
+                # the shared calculation utility (respects gradebook method + status filter).
+                final_percentage = calculate_marking_period_percentage(
+                    gradebook,
+                    student,
+                    mp,
+                    status=self.context.get("status", "any"),
+                )
+
+                if final_percentage is not None:
+                    final_percentage_float = float(final_percentage)
+                    all_percentages.append(final_percentage_float)
                     if mp.semester:
                         semester_percentages[mp.semester.id].append(
-                            {"semester": mp.semester, "percentage": final_percentage}
+                            {
+                                "semester": mp.semester,
+                                "percentage": final_percentage_float,
+                            }
                         )
+
+                # Use first calculated grade status for this marking period.
+                marking_period_status = next(
+                    (
+                        grade.status
+                        for grade in mp_grades
+                        if grade.assessment and grade.assessment.is_calculated and grade.status
+                    ),
+                    None,
+                )
 
                 # Get letter grade
                 letter_grade = "-"
-                if final_percentage and gradebook:
+                if final_percentage is not None and gradebook:
                     try:
-                        letter_grade = get_letter_grade(final_percentage)
+                        letter_grade = get_letter_grade(float(final_percentage))
                     except AttributeError:
                         pass
 
@@ -1281,7 +1305,7 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                     "end_date": mp.end_date.isoformat() if mp.end_date else None,
                     "final_percentage": format_numeric_value(final_percentage),
                     "letter_grade": letter_grade,
-                    "status": status if assessments_for_mp else None,
+                    "status": marking_period_status,
                     "needs_correction": needs_correction,
                 }
 
