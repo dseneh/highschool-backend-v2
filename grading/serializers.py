@@ -101,15 +101,6 @@ class GradeBookOut(serializers.ModelSerializer):
             .first()
         )
         teacher = teacher_assignment.teacher if teacher_assignment else None
-
-        # Backward-compatible fallback while legacy staff assignments still exist.
-        if not teacher:
-            legacy_teacher_assignment = (
-                instance.section_subject.staff_teachers.select_related("teacher")
-                .order_by("-updated_at", "-created_at")
-                .first()
-            )
-            teacher = legacy_teacher_assignment.teacher if legacy_teacher_assignment else None
         response["teacher"] = (
             {
                 "id": str(teacher.id),
@@ -2060,15 +2051,6 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 .first()
             )
             teacher = teacher_assignment.teacher if teacher_assignment else None
-
-            # Backward-compatible fallback while legacy staff assignments still exist
-            if not teacher:
-                legacy_teacher_assignment = (
-                    gradebook.section_subject.staff_teachers.select_related("teacher")
-                    .order_by("-updated_at", "-created_at")
-                    .first()
-                )
-                teacher = legacy_teacher_assignment.teacher if legacy_teacher_assignment else None
 
             # Build gradebook result data
             gradebook_result = {
