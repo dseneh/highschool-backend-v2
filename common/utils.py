@@ -582,29 +582,13 @@ def get_enrollment_bill_summary(
                 student=enrollment.student,
                 academic_year=enrollment.academic_year,
                 is_active=True,
-                active=True,
             ).order_by("created_at")
 
             concession_items = []
             total_concession = Decimal("0")
 
             for concession in active_concessions:
-                target = concession.target
-                if target == AccountingConcession.ConcessionTarget.TUITION:
-                    base_amount = tuition
-                elif target == AccountingConcession.ConcessionTarget.OTHER_FEES:
-                    base_amount = total_fees
-                else:
-                    base_amount = gross_total_bill
-
-                if base_amount <= 0:
-                    amount = Decimal("0")
-                elif concession.concession_type == AccountingConcession.ConcessionType.PERCENTAGE:
-                    amount = (base_amount * Decimal(str(concession.value))) / Decimal("100")
-                else:
-                    amount = Decimal(str(concession.value))
-
-                amount = min(base_amount, max(Decimal("0"), amount)).quantize(Decimal("0.01"))
+                amount = Decimal(str(concession.computed_amount or 0)).quantize(Decimal("0.01"))
                 total_concession += amount
                 concession_items.append(
                     {
@@ -634,8 +618,13 @@ def get_enrollment_bill_summary(
 
     if accounting_bill_totals is not None:
         gross_total_bill = accounting_bill_totals["gross_total"]
-        total_concession = accounting_bill_totals["concession_total"]
-        net_total_bill = accounting_bill_totals["net_total"]
+        accounting_concession_total = accounting_bill_totals["concession_total"]
+
+        if not concession_items:
+            total_concession = accounting_concession_total
+            net_total_bill = accounting_bill_totals["net_total"]
+        else:
+            net_total_bill = max(Decimal("0"), gross_total_bill - total_concession)
 
     academic_year = enrollment.academic_year
     # Get payment plan and payment status.

@@ -6,6 +6,7 @@ from students.views.student import (
     StudentWithdrawView,
     StudentReinstateView,
 )
+from finance.views import StudentPaymentStatusListView
 from students.views.distributions import (
     get_grade_level_distribution,
     get_payment_status_distribution,
@@ -58,6 +59,11 @@ urlpatterns = [
         "students/summary/",
         StudentSummaryView.as_view(),
         name="student_summary",
+    ),
+    path(
+        "students/payment-status/",
+        StudentPaymentStatusListView.as_view(),
+        name="student-payment-status-list",
     ),
     path("students/<str:id>/", StudentDetailView.as_view(), name="student_detail"),
     path(

@@ -7,7 +7,7 @@ Replaces the stock ``auditlog.middleware.AuditlogMiddleware`` in MIDDLEWARE.
 
 from auditlog.middleware import AuditlogMiddleware
 
-from common.audit_utils import get_client_ip
+from common.audit_utils import extract_device_metadata, get_client_ip
 from common.geoip import resolve_location
 
 
@@ -16,10 +16,7 @@ class AuditlogDeviceMiddleware(AuditlogMiddleware):
 
     def get_extra_data(self, request):
         context_data = super().get_extra_data(request)
-        user_agent = request.META.get("HTTP_USER_AGENT", "")
-        additional = {}
-        if user_agent:
-            additional["user_agent"] = user_agent
+        additional = extract_device_metadata(request)
         ip = get_client_ip(request)
         location = resolve_location(ip)
         if location:

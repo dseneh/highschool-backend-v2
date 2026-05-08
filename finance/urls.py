@@ -14,7 +14,6 @@ from finance.views import (
     PaymentMethodListView,
     SectionFeeDetailView,
     SectionFeeListView,
-    StudentPaymentStatusListView,
     TransactionTypeDetailView,
     TransactionTypeListView,
     TransactionViewSet,
@@ -101,12 +100,6 @@ urlpatterns = [
         "installments/<str:pk>/",
         PaymentInstallmentDetailView.as_view(),
         name="payment-installment-detail",
-    ),
-    # Student Payment Status endpoints
-    path(
-        "students/payment-status/",
-        StudentPaymentStatusListView.as_view(),
-        name="student-payment-status-list",
     ),
     # Billing Summary endpoint for dashboard
     path(

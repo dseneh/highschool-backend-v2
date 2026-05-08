@@ -90,6 +90,15 @@ CORS_ALLOW_HEADERS = [
     "x-tenant",  # Custom header for tenant identification
     "x-workspace",  # Alternative header for tenant identification
     "x-app-path",  # Frontend path for maintenance/disabled override checks
+    "x-app-platform",  # Native client platform, e.g. android or ios
+    "x-app-version",  # Native client app version
+    "x-client-name",  # Human-readable client name, e.g. mobile-app
+    "x-device-name",  # Device marketing name shown in audit logs
+    "x-device-model",  # Device model identifier
+    "x-device-brand",  # Device manufacturer or brand
+    "x-device-type",  # mobile, tablet, desktop
+    "x-device-os",  # Operating system family
+    "x-device-os-version",  # Operating system version
 ]
 CORS_ALLOW_METHODS = [
     "DELETE",

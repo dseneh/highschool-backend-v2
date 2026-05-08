@@ -122,3 +122,75 @@ class StudentAccountingBalanceTests(SimpleTestCase):
         self.assertEqual(summary["paid"], 120.0)
         self.assertEqual(summary["balance"], 180.0)
         mock_effective_paid.assert_called_once_with(enrollment, enrollment.academic_year)
+
+    @patch("accounting.models.AccountingConcession.objects.filter")
+    @patch("accounting.models.AccountingStudentBill.objects.filter")
+    @patch("accounting.models.AccountingStudentBillLine.objects.filter")
+    def test_enrollment_bill_summary_uses_student_concession_records_for_total_concession(
+        self,
+        mock_line_filter,
+        mock_bill_filter,
+        mock_concession_filter,
+    ):
+        academic_year = MagicMock(id="ay-1")
+
+        accounting_bill_qs = MagicMock()
+        accounting_bill_qs.aggregate.return_value = {
+            "gross_total": Decimal("350.00"),
+            "concession_total": Decimal("0.00"),
+            "net_total": Decimal("350.00"),
+            "paid_total": Decimal("0.00"),
+            "outstanding_total": Decimal("350.00"),
+        }
+        mock_bill_filter.return_value = accounting_bill_qs
+
+        accounting_lines = MagicMock()
+        accounting_lines.exists.return_value = True
+        accounting_lines.exclude.return_value.aggregate.return_value = {"total": Decimal("100.00")}
+        accounting_lines.filter.return_value.aggregate.return_value = {"total": Decimal("250.00")}
+        mock_line_filter.return_value = accounting_lines
+
+        concession_one = MagicMock(
+            id="con-1",
+            concession_type="flat",
+            target="entire_bill",
+            value=Decimal("20.00"),
+            computed_amount=Decimal("20.00"),
+            notes="Sibling discount",
+            is_active=True,
+        )
+        concession_two = MagicMock(
+            id="con-2",
+            concession_type="percentage",
+            target="tuition",
+            value=Decimal("10.00"),
+            computed_amount=Decimal("15.00"),
+            notes="Merit waiver",
+            is_active=True,
+        )
+        mock_concession_filter.return_value.order_by.return_value = [concession_one, concession_two]
+
+        student = Student(
+            first_name="Ada",
+            last_name="Lovelace",
+            gender="female",
+            entry_as="new",
+            school_code=1,
+        )
+        student._prefetched_objects_cache = {"transactions": []}
+
+        enrollment = MagicMock(
+            id="enr-1",
+            student=student,
+            academic_year=academic_year,
+        )
+
+        summary = get_enrollment_bill_summary(enrollment)
+
+        self.assertEqual(summary["total_concession"], 35.0)
+        self.assertEqual(len(summary["concessions"]), 2)
+        mock_concession_filter.assert_called_once_with(
+            student=student,
+            academic_year=academic_year,
+            is_active=True,
+        )

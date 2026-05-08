@@ -30,7 +30,7 @@ class StudentPaymentStatusListView(APIView):
     - school_id: Filter by school
     """
 
-    def get(self, request, school_id):
+    def get(self, request):
         """
         Get students filtered by payment status.
 
