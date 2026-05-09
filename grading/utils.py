@@ -417,30 +417,25 @@ def generate_assessments_for_gradebook_with_settings(
         ).order_by("start_date")
 
         for mp in marking_periods:
-            # Check if assessment already exists
-            existing = Assessment.objects.filter(
+            # Use get_or_create for atomic operation to prevent race conditions
+            # This is safer than filter().first() + create()
+            assessment, created = Assessment.objects.get_or_create(
                 gradebook=gradebook,
                 marking_period=mp,
                 assessment_type=single_entry_type,
-            ).first()
-
-            if existing:
-                continue
-
-            # Create single assessment for this marking period
-            assessment = Assessment.objects.create(
-                gradebook=gradebook,
-                name=f"{assessment_name}",
-                assessment_type=single_entry_type,
-                marking_period=mp,
-                max_score=100,  # Standard 100-point scale
-                weight=1,
-                due_date=mp.end_date,  # Due at end of marking period
-                is_calculated=True,
-                created_by=created_by or gradebook.created_by,
+                defaults={
+                    'name': assessment_name,
+                    'max_score': 100,  # Standard 100-point scale
+                    'weight': 1,
+                    'due_date': mp.end_date,  # Due at end of marking period
+                    'is_calculated': True,
+                    'created_by': created_by or gradebook.created_by,
+                    'updated_by': created_by or gradebook.created_by,
+                }
             )
-
-            created_assessments.append(assessment)
+            
+            if created:
+                created_assessments.append(assessment)
 
     else:
         # MULTIPLE ENTRY MODE: Use default assessment templates

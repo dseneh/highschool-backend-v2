@@ -138,11 +138,13 @@ def create_enrollment_for_student(
 
 def create_grades_for_enrolled_student(enrollment, created_by):
     """
-    Create grade entries for a newly enrolled student for all assessments
-    in their section's gradebooks.
+    Create grade entries for a newly enrolled student, respecting grading_style.
+    
+    For SINGLE_ENTRY mode: Only creates grades for single-entry assessments (typically "Final Grade")
+    For MULTIPLE_ENTRY mode: Creates grades for all assessments
     
     Optimized for performance:
-    - Single query to get all assessments
+    - Single query to get all assessments (filtered by grading_style)
     - Bulk insert with batch_size=250
     - No unnecessary counts or checks
     - Uses only() to fetch minimal fields
@@ -155,33 +157,59 @@ def create_grades_for_enrolled_student(enrollment, created_by):
         int: Number of grades created (or 0 if failed)
     """
     from grading.models import Grade, Assessment
+    from settings.models import GradingSettings
     from django.db import transaction
     
     logger.info(f"Creating grades for enrolled student: {enrollment.student} in {enrollment.section}")
     
-    # Single optimized query: Get all active assessments for this section/year
-    # Use only() to fetch minimal required fields for performance
-    assessments = Assessment.objects.filter(
+    # Get grading style setting to determine which assessments to grade
+    try:
+        grading_settings = GradingSettings.objects.first()
+        grading_style = grading_settings.grading_style if grading_settings else "multiple_entry"
+    except Exception as e:
+        logger.warning(f"Could not fetch GradingSettings, defaulting to multiple_entry: {e}")
+        grading_style = "multiple_entry"
+    
+    # Build base query for assessments
+    assessments_query = Assessment.objects.filter(
         gradebook__section=enrollment.section,
         gradebook__academic_year=enrollment.academic_year,
         gradebook__active=True,
         active=True
     ).select_related(
-        'gradebook__subject'
+        'gradebook__subject',
+        'assessment_type'
     ).only(
         'id',
-        'gradebook__subject__id'
+        'gradebook__subject__id',
+        'assessment_type__is_single_entry'
     )
     
-    # Quick check: if no assessments, log warning and return
-    assessments_list = list(assessments)  # Single query execution
-    if not assessments_list or len(assessments_list) == 0:
-        raise Exception(
-            f"No assessments found for {enrollment.section} - {enrollment.academic_year}. "
-            "Initialize gradebooks first."
+    # Filter assessments based on grading style
+    if grading_style == "single_entry":
+        # In single-entry mode: only create grades for single-entry assessments (typically "Final Grade")
+        assessments_query = assessments_query.filter(
+            assessment_type__is_single_entry=True
         )
-        return 0
-    print(f"Found {len(assessments_list)} assessments for section {enrollment.section.name}, creating grades...")
+        mode_desc = "SINGLE_ENTRY mode (Final Grades only)"
+    else:
+        # In multiple-entry mode: create grades for all assessments
+        mode_desc = "MULTIPLE_ENTRY mode (all assessments)"
+    
+    # Execute query
+    assessments_list = list(assessments_query)
+    
+    # Quick check: if no assessments, log warning and return
+    if not assessments_list:
+        raise Exception(
+            f"No assessments found for {enrollment.section} - {enrollment.academic_year} "
+            f"({mode_desc}). Initialize gradebooks first."
+        )
+    
+    logger.info(f"Found {len(assessments_list)} assessments for section {enrollment.section.name} "
+                f"({mode_desc}), creating grades...")
+    print(f"Found {len(assessments_list)} assessments for section {enrollment.section.name} "
+          f"({mode_desc}), creating grades...")
     
     # Prepare grades for bulk creation
     # Skip duplicate check since enrollment is new (trust referential integrity)
@@ -201,14 +229,17 @@ def create_grades_for_enrolled_student(enrollment, created_by):
         )
         for assessment in assessments_list
     ]
-    print(f"Prepared {len(grades_to_create)} grade entries for bulk creation.")
+    
+    logger.info(f"Prepared {len(grades_to_create)} grade entries for bulk creation ({mode_desc})")
+    print(f"Prepared {len(grades_to_create)} grade entries for bulk creation ({mode_desc})")
+    
     # Bulk create in single transaction
     try:
         with transaction.atomic():
             Grade.objects.bulk_create(grades_to_create, batch_size=250)
             grades_count = len(grades_to_create)
-            logger.info(f"✓ Created {grades_count} grades for {enrollment.student}")
-            print(f"✓ Successfully created {grades_count} grades for {enrollment.student}")
+            logger.info(f"✓ Created {grades_count} grades for {enrollment.student} ({mode_desc})")
+            print(f"✓ Successfully created {grades_count} grades for {enrollment.student} ({mode_desc})")
             return grades_count
     except Exception as e:
         print(f"Error creating grades for {enrollment.student}: {e}")

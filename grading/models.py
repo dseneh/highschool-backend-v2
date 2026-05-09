@@ -721,13 +721,32 @@ class Assessment(BaseModel):
 
     def clean(self):
         """
-        Optional: if a marking_period is set, enforce that due_date
-        falls within that MP's date window.
+        Validate assessment integrity:
+        1. Enforce that due_date falls within marking_period dates (if set)
+        2. For single-entry assessments: ensure only ONE exists per marking period per gradebook
         """
+        # Existing validation: due_date must be within marking_period dates
         if self.marking_period and self.due_date:
             mp = self.marking_period
             if not (mp.start_date <= self.due_date <= mp.end_date):
                 raise ValidationError(_(f"Due date must fall within the Marking Period dates ({mp.start_date} - {mp.end_date})."))
+        
+        # NEW: Validate single-entry assessment uniqueness
+        # Only allow ONE single-entry assessment per (gradebook, marking_period) combination
+        if self.assessment_type and self.assessment_type.is_single_entry and self.marking_period:
+            duplicate_query = Assessment.objects.filter(
+                gradebook=self.gradebook,
+                marking_period=self.marking_period,
+                assessment_type__is_single_entry=True,
+            ).exclude(pk=self.pk)  # Exclude current assessment if updating
+            
+            if duplicate_query.exists():
+                existing = duplicate_query.first()
+                raise ValidationError(
+                    _(f"Single-entry assessment already exists for this marking period. "
+                      f"Existing assessment: '{existing.name}' (ID: {existing.pk}). "
+                      f"Only one single-entry (final grade) assessment is allowed per marking period.")
+                )
 
 
 class Grade(BaseModel):
