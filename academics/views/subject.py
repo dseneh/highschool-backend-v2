@@ -64,6 +64,8 @@ class SubjectListView(APIView):
                 user=request.user
             )
             serializer = SubjectSerializer(subject, context={"request": request})
+            from common.cache_service import DataCache
+            DataCache.invalidate_subjects(request=request)
             return Response(serializer.data, status=201)
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
@@ -102,9 +104,11 @@ class SubjectDetailView(APIView):
             if duplicate_code_exists:
                 return Response({"detail": f"Subject code '{normalized_code}' is already in use"}, status=400)
 
+        from common.cache_service import DataCache
         serializer = update_model_fields(
             request, subject, allowed_fields, SubjectSerializer
         )
+        DataCache.invalidate_subjects(request=request)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):
@@ -114,6 +118,7 @@ class SubjectDetailView(APIView):
 
             # Check if any grades/gradebooks exist for this subject
             from grading.models import Grade, GradeBook
+            from common.cache_service import DataCache
             
             # Check if grades with scores exist
             has_scored_grades = Grade.objects.filter(subject=subject, score__isnull=False).exists()
@@ -125,6 +130,7 @@ class SubjectDetailView(APIView):
                 # Grades with scores exist - can only deactivate, never delete
                 subject.active = False
                 subject.save()
+                DataCache.invalidate_subjects(request=request)
                 return Response(
                     {
                         "detail": "Subject has grades with scores and has been deactivated. It cannot be deleted."
@@ -133,8 +139,8 @@ class SubjectDetailView(APIView):
                 )
             
             # No scored grades - check if safe to delete
-            if has_grades or subject.section_subjects.exists():
-                # Has unscored grades/gradebooks or related records
+            if has_grades:
+                # Has unscored grades/gradebooks - require force to delete
                 if force:
                     # Force delete - remove all related records
                     grades_count = Grade.objects.filter(subject=subject).count()
@@ -146,6 +152,7 @@ class SubjectDetailView(APIView):
                     GradeBook.objects.filter(subject=subject).delete()
                     subject.section_subjects.all().delete()
                     subject.delete()
+                    DataCache.invalidate_subjects(request=request)
                     
                     return Response(
                         {
@@ -157,15 +164,19 @@ class SubjectDetailView(APIView):
                     # No force - deactivate instead
                     subject.active = False
                     subject.save()
+                    DataCache.invalidate_subjects(request=request)
                     return Response(
                         {
-                            "detail": "Subject has associated records and has been deactivated. Pass 'force=true' to delete permanently."
+                            "detail": "Subject has grade records and has been deactivated. Pass 'force=true' to delete permanently."
                         },
                         status=status.HTTP_200_OK,
                     )
             
-            # No related records at all - safe to delete directly
+            # No grade records - safe to delete, also clean up section_subjects
+            section_subjects_count = subject.section_subjects.count()
+            subject.section_subjects.all().delete()
             subject.delete()
+            DataCache.invalidate_subjects(request=request)
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         except Exception as e:

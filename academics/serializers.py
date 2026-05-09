@@ -1010,15 +1010,36 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
         )
         response["teacher"] = None
         if instance.subject:
-            teacher_assignment = (
-                instance.subject.staff_teachers.select_related("teacher").filter(active=True).first()
-            )
-            if teacher_assignment:
+            # Prefer HR employee-first assignment source, then fallback to legacy staff assignments.
+            try:
+                from hr.models import EmployeeTeacherSubject
+
+                employee_assignment = (
+                    EmployeeTeacherSubject.objects.select_related("teacher")
+                    .filter(section_subject=instance.subject, active=True)
+                    .first()
+                )
+            except Exception:
+                employee_assignment = None
+
+            if employee_assignment and employee_assignment.teacher:
                 response["teacher"] = {
-                    "id": teacher_assignment.teacher.id,
-                    "id_number": teacher_assignment.teacher.id_number,
-                    "full_name": teacher_assignment.teacher.get_full_name(),
+                    "id": employee_assignment.teacher.id,
+                    "id_number": employee_assignment.teacher.id_number,
+                    "full_name": employee_assignment.teacher.get_full_name(),
                 }
+            else:
+                teacher_assignment = (
+                    instance.subject.staff_teachers.select_related("teacher")
+                    .filter(active=True)
+                    .first()
+                )
+                if teacher_assignment:
+                    response["teacher"] = {
+                        "id": teacher_assignment.teacher.id,
+                        "id_number": teacher_assignment.teacher.id_number,
+                        "full_name": teacher_assignment.teacher.get_full_name(),
+                    }
         response["period"] = {
             "id": instance.period.id,
             "name": instance.period.name,

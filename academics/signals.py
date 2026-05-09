@@ -161,6 +161,20 @@ def sync_schedule_projections_on_teacher_assignment_change(sender, instance, **k
         sync_schedule_projections_for_class_schedule(schedule)
 
 
+@receiver(post_save, sender="hr.EmployeeTeacherSubject")
+@receiver(post_delete, sender="hr.EmployeeTeacherSubject")
+def sync_schedule_projections_on_employee_teacher_assignment_change(sender, instance, **kwargs):
+    section_subject_id = getattr(instance, "section_subject_id", None)
+    if not section_subject_id:
+        return
+
+    from academics.models import SectionSchedule
+
+    schedules = SectionSchedule.objects.filter(subject_id=section_subject_id, active=True)
+    for schedule in schedules:
+        sync_schedule_projections_for_class_schedule(schedule)
+
+
 @receiver(post_save, sender="students.Enrollment")
 @receiver(post_delete, sender="students.Enrollment")
 def sync_schedule_projections_on_enrollment_change(sender, instance, **kwargs):

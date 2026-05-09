@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from django.db import transaction
+from django.db.models import Q
 
 from academics.models import (
     GradeBookScheduleProjection,
@@ -10,7 +11,7 @@ from academics.models import (
     StudentScheduleProjection,
 )
 from grading.models import GradeBook
-from staff.models import TeacherSchedule, TeacherSubject
+from staff.models import Staff, TeacherSchedule, TeacherSubject
 from students.models import Enrollment
 
 INACTIVE_ENROLLMENT_STATUSES = {"withdrawn", "canceled"}
@@ -62,6 +63,30 @@ def _sync_teacher_schedules(class_schedule: SectionSchedule):
             active=True,
         ).values_list("teacher_id", flat=True)
     )
+
+    # Also include HR employee-first teacher assignments by mapping employees
+    # to Staff IDs using user_account_id_number / id_number linkage.
+    try:
+        from hr.models import EmployeeTeacherSubject
+
+        employee_assignments = EmployeeTeacherSubject.objects.select_related("teacher").filter(
+            section_subject=class_schedule.subject,
+            active=True,
+        )
+        for assignment in employee_assignments:
+            employee = assignment.teacher
+            if not employee:
+                continue
+
+            staff = Staff.objects.filter(
+                Q(id_number=employee.id_number)
+                | Q(user_account_id_number=employee.user_account_id_number)
+            ).first()
+            if staff:
+                desired_teacher_ids.add(staff.id)
+    except Exception:
+        # HR app may be unavailable in certain environments; keep legacy behavior.
+        pass
 
     if not desired_teacher_ids:
         existing_qs.delete()

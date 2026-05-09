@@ -9,6 +9,7 @@ Business logic should NOT be in this file - only database interactions.
 from typing import Optional, List, Dict, Any
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 import logging
 
 from academics.models import (
@@ -194,7 +195,7 @@ def delete_period_time_from_db(period_time: PeriodTime) -> bool:
 def get_section_schedule_by_id(schedule_id: str) -> Optional[SectionSchedule]:
     """Get section schedule by ID"""
     try:
-        return SectionSchedule.objects.filter(id=schedule_id).first()
+        return SectionSchedule.objects.filter(id=schedule_id, active=True).first()
     except SectionSchedule.DoesNotExist:
         return None
 
@@ -217,7 +218,7 @@ def get_subject_by_id(subject_id: str) -> Optional[Subject]:
 
 def get_section_schedules(section: Section) -> List[SectionSchedule]:
     """Get all schedules for a section"""
-    return list(section.class_schedules.all())
+    return list(section.class_schedules.filter(active=True))
 
 
 def check_section_schedule_exists(section: Section, subject_id: str, 
@@ -257,11 +258,42 @@ def update_section_schedule_in_db(schedule: SectionSchedule, data: Dict[str, Any
 
 
 def delete_section_schedule_from_db(schedule: SectionSchedule) -> bool:
-    """Delete section schedule from database"""
+    """Delete section schedule from database.
+
+    Tries hard delete first. If that fails due constraints/runtime issues,
+    falls back to soft delete and projection sync cleanup.
+    """
     try:
         schedule.delete()
         return True
-    except Exception:
+    except Exception as hard_delete_error:
+        print(f"Hard delete failed for section schedule {schedule.id}: {hard_delete_error}. Falling back to soft delete.")
+        logger.warning(
+            "Hard delete failed for section schedule %s: %s. Falling back to soft delete.",
+            schedule.id,
+            hard_delete_error,
+        )
+
+    try:
+        schedule.active = False
+        SectionSchedule.objects.filter(id=schedule.id).update(
+            active=False,
+            updated_at=timezone.now(),
+        )
+
+        from academics.services import sync_schedule_projections_for_class_schedule
+
+        # Ensure projections are removed for inactive schedules.
+        sync_schedule_projections_for_class_schedule(schedule)
+        return True
+    except Exception as soft_delete_error:
+        print(f"Soft delete fallback failed for section schedule {schedule.id}: {soft_delete_error}. Manual cleanup may be required.")
+        logger.error(
+            "Soft delete fallback failed for section schedule %s: %s",
+            schedule.id,
+            soft_delete_error,
+            exc_info=True,
+        )
         return False
 
 
@@ -297,12 +329,12 @@ def get_subject_by_id_or_name(identifier: str) -> Optional[Subject]:
 
 def get_section_subjects(section: Section) -> List[SectionSubject]:
     """Get all subjects for a section"""
-    return list(section.section_subjects.all())
+    return list(section.section_subjects.filter(active=True))
 
 
 def get_assigned_subject_ids(section: Section) -> List[str]:
     """Get list of already assigned subject IDs for a section"""
-    return list(section.section_subjects.values_list('subject_id', flat=True))
+    return list(section.section_subjects.filter(active=True).values_list('subject_id', flat=True))
 
 
 @transaction.atomic

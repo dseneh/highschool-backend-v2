@@ -665,7 +665,8 @@ class SectionSchedule(BaseModel):
 
     def __str__(self):
         if self.subject:
-            return f"{self.section.name} - {self.subject.name} ({self.period.name})"
+            subject_name = getattr(getattr(self.subject, "subject", None), "name", "Subject")
+            return f"{self.section.name} - {subject_name} ({self.period.name})"
         return f"{self.section.name} - Recess ({self.period.name})"
 
     class Meta:

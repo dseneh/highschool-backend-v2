@@ -260,9 +260,9 @@ def is_valid_transition(
         
     Workflow:
     - With review & approval: draft → pending → reviewed → submitted → approved
-    - Without review: draft → pending → submitted → approved (skip reviewed)
-    - Without approval: draft → pending → reviewed → submitted (final, no approval)
-    - Without both: draft → pending → submitted (final, skip reviewed and approval)
+    - Without review & with approval: draft → pending → submitted → approved (skip reviewed)
+    - Without approval & with review: draft → pending → reviewed → approved (skip submitted, auto-approve)
+    - Without both: draft → pending → approved (skip reviewed and submitted, auto-approve)
     """
     # FROM DRAFT/REJECTED/NULL TO PENDING
     if (current in [None, Grade.Status.DRAFT, Grade.Status.REJECTED] 
@@ -277,8 +277,11 @@ def is_valid_transition(
         # If review required, go to reviewed
         if require_review and target == Grade.Status.REVIEWED:
             return True
-        # If review not required, skip directly to submitted
-        if not require_review and target == Grade.Status.SUBMITTED:
+        # If review not required and approval required, go to submitted
+        if not require_review and require_approval and target == Grade.Status.SUBMITTED:
+            return True
+        # If approval not required (regardless of review), go directly to approved
+        if not require_approval and target == Grade.Status.APPROVED:
             return True
     
     # FROM REVIEWED
@@ -286,8 +289,11 @@ def is_valid_transition(
         # Always allow going back
         if target in (Grade.Status.DRAFT, Grade.Status.REJECTED, Grade.Status.PENDING):
             return True
-        # Go to submitted
-        if target == Grade.Status.SUBMITTED:
+        # If approval required, go to submitted
+        if require_approval and target == Grade.Status.SUBMITTED:
+            return True
+        # If approval not required, go directly to approved (auto-approve)
+        if not require_approval and target == Grade.Status.APPROVED:
             return True
     
     # FROM SUBMITTED

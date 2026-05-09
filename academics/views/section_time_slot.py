@@ -95,12 +95,15 @@ class SectionTimeSlotCopyView(APIView):
         target_section = self.get_section(section_id)
         source_section_id = request.data.get("source_section_id")
 
-        seeded_count, source = initialize_section_time_slots(
-            section=target_section,
-            source_section_id=source_section_id,
-            user=request.user,
-            replace_existing=True,
-        )
+        try:
+            seeded_count, source = initialize_section_time_slots(
+                section=target_section,
+                source_section_id=source_section_id,
+                user=request.user,
+                replace_existing=True,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
             {

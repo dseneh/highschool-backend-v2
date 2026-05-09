@@ -86,6 +86,7 @@ class GradeBookOut(serializers.ModelSerializer):
         response["subject"] = {
             "id": instance.section_subject.subject.id,
             "name": instance.section_subject.subject.name,
+            "code": instance.section_subject.subject.code,
         }
         response["academic_year"] = {
             "id": instance.academic_year.id,
@@ -1817,10 +1818,10 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                         teacher_schedules.append(schedule_item)
             
             for schedule_item in teacher_schedules:
-                period_time = schedule_item.period_time or (
-                    schedule_item.section_time_slot.period_time if schedule_item.section_time_slot else None
-                )
-                
+                # SectionTimeSlot stores times directly (day_of_week, start_time, end_time).
+                # PeriodTime (legacy) also stores them directly. Neither nests the other.
+                time_source = schedule_item.period_time or schedule_item.section_time_slot
+
                 schedule.append({
                     "id": str(schedule_item.id),
                     "section": {
@@ -1834,8 +1835,9 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                     "period": {
                         "id": str(schedule_item.period.id),
                         "name": schedule_item.period.name,
-                        "start_time": period_time.start_time.isoformat() if period_time and period_time.start_time else None,
-                        "end_time": period_time.end_time.isoformat() if period_time and period_time.end_time else None,
+                        "day_of_week": time_source.day_of_week if time_source else None,
+                        "start_time": time_source.start_time.isoformat() if time_source and time_source.start_time else None,
+                        "end_time": time_source.end_time.isoformat() if time_source and time_source.end_time else None,
                     },
                 })
         

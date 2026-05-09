@@ -283,16 +283,20 @@ def initialize_section_time_slots(
     user=None,
     replace_existing: bool = True,
 ) -> tuple[int, str]:
-    if replace_existing:
-        section.time_slots.all().delete()
-
     source_section: Optional[Section] = None
+    source_has_slots = False
 
     if source_section_id:
         source_section = Section.objects.filter(
             id=source_section_id,
             active=True,
         ).first()
+        if source_section is None:
+            raise ValueError("Selected source section was not found.")
+
+        source_has_slots = source_section.time_slots.filter(active=True).exists()
+        if not source_has_slots:
+            raise ValueError("Selected source section has no active time slots to copy.")
 
     if source_section is None and section.grade_level_id:
         source_section = (
@@ -305,8 +309,12 @@ def initialize_section_time_slots(
             .distinct()
             .first()
         )
+        source_has_slots = bool(source_section)
 
-    if source_section:
+    if replace_existing:
+        section.time_slots.all().delete()
+
+    if source_section and source_has_slots:
         count = copy_section_time_slots(source_section, section, user=user)
         return count, f"section:{source_section.id}"
 
