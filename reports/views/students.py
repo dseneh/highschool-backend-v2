@@ -2,8 +2,9 @@
 
 import csv
 import json
+import threading
 from datetime import datetime
-from io import BytesIO
+from io import BytesIO, StringIO
 
 from django.db.models import Case, DecimalField, ExpressionWrapper, F, FloatField, OuterRef, Q, Subquery, Sum, Value, When
 from django.db.models.functions import Coalesce
@@ -26,7 +27,7 @@ from students.serializers import StudentDetailSerializer, StudentSerializer
 
 from ..access_policies import ReportsAccessPolicy
 from ..settings import get_reports_setting
-from ..tasks import TaskManager, MockTaskProcessor
+from ..tasks import TaskManager
 
 
 def _to_bool(value, default=False):
@@ -127,12 +128,12 @@ def _build_list_export_rows(
     return export_rows
 
 
-def _build_ranking_lookup(request, students, academic_year):
+def _build_ranking_lookup(query_params, students, academic_year):
     if not academic_year:
         return {}
 
-    section_param = (request.query_params.get("section") or "").strip()
-    grade_param = (request.query_params.get("grade_level") or "").strip()
+    section_param = (query_params.get("section") or "").strip()
+    grade_param = (query_params.get("grade_level") or "").strip()
 
     section_values = [value.strip() for value in section_param.split(",") if value.strip()]
     grade_values = [value.strip() for value in grade_param.split(",") if value.strip()]
@@ -197,7 +198,7 @@ def _build_ranking_lookup(request, students, academic_year):
     return ranking_lookup
 
 
-def _build_xlsx_response(headers, rows, filename_prefix):
+def _build_xlsx_bytes(headers, rows):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Students"
@@ -223,10 +224,146 @@ def _build_xlsx_response(headers, rows, filename_prefix):
     buffer = BytesIO()
     workbook.save(buffer)
     buffer.seek(0)
+    return buffer.getvalue()
 
+
+def _build_csv_bytes(headers, rows):
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+
+    for export_row in rows:
+        writer.writerow(export_row)
+
+    return output.getvalue().encode("utf-8")
+
+
+def _timestamped_filename(prefix: str, extension: str) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{prefix}_{timestamp}.{extension}"
+
+
+def _start_student_report_background_task(
+    task_id: str,
+    *,
+    cache_key: str,
+    query_params: dict,
+    report_format: str,
+    include_billing: bool,
+    show_rank: bool,
+    show_grade_average: bool,
+    academic_year_id: str | None,
+):
+    def background_work():
+        try:
+            TaskManager.update_task(task_id, status="processing", progress=10)
+
+            academic_year = _resolve_academic_year(academic_year_id)
+            queryset = _build_students_queryset(query_params, academic_year=academic_year)
+            total_count = queryset.count()
+
+            limit_raw = query_params.get("limit")
+            limit = None
+            if limit_raw not in [None, ""]:
+                try:
+                    limit = max(int(limit_raw), 1)
+                except (TypeError, ValueError):
+                    limit = None
+
+            if limit is not None:
+                queryset = queryset[:limit]
+
+            TaskManager.update_task(task_id, progress=40, estimated_count=total_count)
+
+            ranking_lookup = {}
+            if show_rank or show_grade_average:
+                ranking_lookup = _build_ranking_lookup(query_params, queryset, academic_year)
+
+            serializer = StudentSerializer(
+                queryset,
+                many=True,
+                context={
+                    "include_billing": include_billing,
+                    "include_payment_plan": include_billing,
+                    "include_payment_status": include_billing,
+                    "show_rank": show_rank,
+                    "show_grade_average": show_grade_average,
+                    "show_balance": True,
+                    "ranking_lookup": ranking_lookup,
+                    "academic_year": academic_year,
+                    "academic_year_id": str(academic_year.id) if academic_year else None,
+                },
+            )
+
+            rows = serializer.data
+            export_rows = _build_list_export_rows(
+                rows,
+                include_billing=include_billing,
+                show_rank=show_rank,
+                show_grade_average=show_grade_average,
+            )
+            headers = _build_export_headers(
+                include_billing=include_billing,
+                show_rank=show_rank,
+                show_grade_average=show_grade_average,
+            )
+
+            TaskManager.update_task(task_id, progress=80)
+
+            if report_format == "xlsx":
+                payload = {
+                    "kind": "file",
+                    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "filename": _timestamped_filename("students_report", "xlsx"),
+                    "content": _build_xlsx_bytes(headers, export_rows),
+                }
+            elif report_format == "csv":
+                payload = {
+                    "kind": "file",
+                    "content_type": "text/csv",
+                    "filename": _timestamped_filename("students_report", "csv"),
+                    "content": _build_csv_bytes(headers, export_rows),
+                }
+            else:
+                json_data = {
+                    "count": total_count if limit is None else len(rows),
+                    "limit": limit,
+                    "generated_at": datetime.now().isoformat(),
+                    "results": rows,
+                }
+                payload = {
+                    "kind": "file",
+                    "content_type": "application/json",
+                    "filename": _timestamped_filename("students_report", "json"),
+                    "content": json.dumps(json_data).encode("utf-8"),
+                }
+
+            task_timeout = int(get_reports_setting("TASK_CACHE_TIMEOUT", 3600) or 3600)
+            TaskManager.cache_result(cache_key, payload, timeout=task_timeout)
+
+            TaskManager.update_task(
+                task_id,
+                status="completed",
+                progress=100,
+                total_processed=len(rows),
+                result_url=f"/api/v1/reports/download/{task_id}/",
+            )
+        except Exception as exc:
+            TaskManager.update_task(
+                task_id,
+                status="failed",
+                error=str(exc),
+            )
+
+    thread = threading.Thread(target=background_work)
+    thread.daemon = True
+    thread.start()
+
+
+def _build_xlsx_response(headers, rows, filename_prefix):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     response = HttpResponse(
-        buffer.getvalue(),
+        _build_xlsx_bytes(headers, rows),
         content_type=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
@@ -237,7 +374,7 @@ def _build_xlsx_response(headers, rows, filename_prefix):
     return response
 
 
-def _build_students_queryset(request, academic_year=None):
+def _build_students_queryset(query_params, academic_year=None):
     students = Student.objects.select_related("grade_level").prefetch_related(
         "enrollments__academic_year",
         "enrollments__grade_level",
@@ -264,8 +401,8 @@ def _build_students_queryset(request, academic_year=None):
         "section",
     ]
 
-    status_filter = request.query_params.get("status", "")
-    query_params = request.query_params.copy()
+    status_filter = query_params.get("status", "")
+    query_params = query_params.copy()
     enrollment_statuses, other_statuses = student_service.parse_enrollment_status_filter(
         status_filter
     )
@@ -416,7 +553,7 @@ def _build_students_queryset(request, academic_year=None):
         elif enrollment_qs is not None:
             students = enrollment_qs
 
-    ordering = request.query_params.get("ordering", "id_number")
+    ordering = query_params.get("ordering", "id_number")
     sort_fields, is_descending = student_service.get_sorting_fields(ordering)
     if is_descending:
         sort_fields = [f"-{field}" for field in sort_fields]
@@ -433,12 +570,17 @@ class StudentReportView(APIView):
     permission_classes = [ReportsAccessPolicy]
 
     def get(self, request):
+        query_params = {
+            key: request.query_params.get(key)
+            for key in request.query_params.keys()
+        }
+
         report_format = (
-            request.query_params.get("file_format")
-            or request.query_params.get("format")
+            query_params.get("file_format")
+            or query_params.get("format")
             or "xlsx"
         ).lower()
-        limit_raw = request.query_params.get("limit")
+        limit_raw = query_params.get("limit")
         limit = None
         if limit_raw not in [None, ""]:
             try:
@@ -446,17 +588,17 @@ class StudentReportView(APIView):
             except (TypeError, ValueError):
                 limit = None
 
-        include_billing = _to_bool(request.query_params.get("include_billing"), default=True)
-        show_rank = _to_bool(request.query_params.get("show_rank"), default=False)
+        include_billing = _to_bool(query_params.get("include_billing"), default=True)
+        show_rank = _to_bool(query_params.get("show_rank"), default=False)
         show_grade_average = _to_bool(
-            request.query_params.get("show_grade_average"), default=False
+            query_params.get("show_grade_average"), default=False
         )
-        academic_year = _resolve_academic_year(request.query_params.get("academic_year_id"))
-        use_background = _to_bool(request.query_params.get("background"), default=False)
-        force_sync = _to_bool(request.query_params.get("force_sync"), default=False)
+        academic_year = _resolve_academic_year(query_params.get("academic_year_id"))
+        use_background = _to_bool(query_params.get("background"), default=False)
+        force_sync = _to_bool(query_params.get("force_sync"), default=False)
         max_sync_records = int(get_reports_setting("MAX_SYNC_RECORDS", 5000) or 5000)
 
-        queryset = _build_students_queryset(request, academic_year=academic_year)
+        queryset = _build_students_queryset(query_params, academic_year=academic_year)
 
         total_count = queryset.count()
 
@@ -467,12 +609,12 @@ class StudentReportView(APIView):
         ):
             if use_background:
                 task_params = {
-                    "query_params": dict(request.query_params),
+                    "query_params": query_params,
                     "report_format": report_format,
                     "cache_key": TaskManager.generate_cache_key(
                         {
                             "type": "student_report",
-                            **dict(request.query_params),
+                            **query_params,
                         }
                     ),
                 }
@@ -482,7 +624,16 @@ class StudentReportView(APIView):
                     user_id=getattr(request.user, "id", 0) or 0,
                     estimated_count=total_count,
                 )
-                MockTaskProcessor.process_student_report(task_id)
+                _start_student_report_background_task(
+                    task_id,
+                    cache_key=task_params["cache_key"],
+                    query_params=query_params,
+                    report_format=report_format,
+                    include_billing=include_billing,
+                    show_rank=show_rank,
+                    show_grade_average=show_grade_average,
+                    academic_year_id=(str(academic_year.id) if academic_year else None),
+                )
 
                 return Response(
                     {
@@ -516,7 +667,7 @@ class StudentReportView(APIView):
 
         ranking_lookup = {}
         if show_rank or show_grade_average:
-            ranking_lookup = _build_ranking_lookup(request, queryset, academic_year)
+            ranking_lookup = _build_ranking_lookup(query_params, queryset, academic_year)
 
         serializer = StudentSerializer(
             queryset,

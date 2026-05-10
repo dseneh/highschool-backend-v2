@@ -14,7 +14,7 @@ REPORTS_SETTINGS = {
     'TASK_CACHE_TIMEOUT': 3600,  # 1 hour for task data
     
     # Task processing
-    'MAX_SYNC_RECORDS': 5000,  # Maximum records for synchronous processing
+    'MAX_SYNC_RECORDS': 2000,  # Maximum records for synchronous processing
     'CHUNK_SIZE': 1000,  # Processing chunk size for background tasks
     
     # Export settings

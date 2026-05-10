@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from django.core.cache import cache
 from django.db.models import Q
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -283,6 +284,22 @@ class TransactionReportDownloadView(APIView):
         if cache_key:
             cached_result = TaskManager.get_cached_result(cache_key)
             if cached_result:
+                if isinstance(cached_result, dict) and cached_result.get("kind") == "file":
+                    content = cached_result.get("content")
+                    if content is None:
+                        return Response({
+                            'detail': 'Download content is missing'
+                        }, status=status.HTTP_404_NOT_FOUND)
+
+                    response = HttpResponse(
+                        content,
+                        content_type=cached_result.get("content_type", "application/octet-stream"),
+                    )
+                    response["Content-Disposition"] = (
+                        f'attachment; filename="{cached_result.get("filename", "report-download.bin")}"'
+                    )
+                    return response
+
                 return Response({
                     'download_ready': True,
                     'format': 'json',
