@@ -610,6 +610,35 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         except Exception as exc:
             return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=False, methods=["post"], url_path="upload", parser_classes=[MultiPartParser, FormParser])
+    def upload(self, request):
+        """Upload transactions using template-based schema."""
+        from accounting.services.transaction_upload import upload_transactions
+
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            return Response({"detail": "No file provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        template_type = request.data.get("template_type")
+        if not template_type:
+            return Response({"detail": "template_type is required (tuition, salary, or general)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        bank_account_id = request.data.get("bank_account_id") or None
+        gl_account_override = request.data.get("gl_account_override") or None
+
+        try:
+            result = upload_transactions(
+                uploaded_file,
+                template_type=template_type,
+                bank_account_id=bank_account_id,
+                gl_account_override=gl_account_override,
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
     queryset = AccountingAccountTransfer.objects.select_related(
