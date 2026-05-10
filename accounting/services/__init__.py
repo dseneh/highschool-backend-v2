@@ -19,7 +19,9 @@ from .bulk_upload import (
 )
 from .transaction_type_sync import (
 	SyncResult,
+	TransactionTypeSyncResult,
 	sync_ledger_account_for_type,
+	sync_transaction_type_for_ledger_account,
 )
 
 __all__ = [
@@ -35,5 +37,7 @@ __all__ = [
 	"bulk_upload_cash_transactions",
 	"bulk_upload_journal_entries",
 	"SyncResult",
+	"TransactionTypeSyncResult",
 	"sync_ledger_account_for_type",
+	"sync_transaction_type_for_ledger_account",
 ]

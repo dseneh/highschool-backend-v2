@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.db.models import DecimalField, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
@@ -13,7 +14,9 @@ from accounting.models import (
     AccountingJournalEntry,
     AccountingJournalLine,
     AccountingLedgerAccount,
+    AccountingTransactionType,
 )
+from accounting.services import sync_transaction_type_for_ledger_account
 from accounting.serializers import (
     AccountingCurrencySerializer,
     AccountingExchangeRateSerializer,
@@ -22,6 +25,7 @@ from accounting.serializers import (
     AccountingJournalEntrySerializer,
     AccountingJournalLineSerializer,
     AccountingLedgerAccountSerializer,
+    AccountingTransactionTypeSerializer,
 )
 from accounting.views.base import AccountingErrorFormattingMixin
 
@@ -106,6 +110,39 @@ class AccountingLedgerAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mo
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["post"], url_path="sync-transaction-type")
+    def sync_transaction_type(self, request, pk=None):
+        account = self.get_object()
+        try:
+            result = sync_transaction_type_for_ledger_account(
+                account,
+                transaction_type_code=request.data.get("code"),
+                transaction_type_name=request.data.get("name"),
+                transaction_category=request.data.get("transaction_category"),
+            )
+        except ValidationError as exc:
+            payload = exc.message_dict if hasattr(exc, "message_dict") else {"detail": exc.messages}
+            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+        transaction_type = None
+        if result.transaction_type_id is not None:
+            transaction_type = AccountingTransactionType.objects.filter(
+                pk=result.transaction_type_id
+            ).first()
+
+        serialized = (
+            AccountingTransactionTypeSerializer(transaction_type).data
+            if transaction_type is not None
+            else None
+        )
+        return Response(
+            {
+                "result": result.to_dict(),
+                "transaction_type": serialized,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):

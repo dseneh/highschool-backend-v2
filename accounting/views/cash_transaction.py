@@ -74,9 +74,13 @@ class AccountingTransactionTypeViewSet(AccountingErrorFormattingMixin, viewsets.
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.is_system_managed:
+        if instance.code.strip().upper() in {"TRANSFER_IN", "TRANSFER_OUT"}:
             return Response(
-                {"detail": "System-managed transaction types cannot be deleted."},
+                {
+                    "detail": (
+                        "TRANSFER_IN and TRANSFER_OUT transaction types cannot be deleted."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().destroy(request, *args, **kwargs)

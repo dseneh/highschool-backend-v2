@@ -1,24 +1,16 @@
-"""
-Synchronize an `AccountingTransactionType` with a managed
-`AccountingLedgerAccount` (chart of accounts entry).
+"""Synchronization between transaction types and chart-of-accounts entries.
 
-The link is one-way:
-    AccountingTransactionType.managed_ledger_account -> AccountingLedgerAccount
+Supported directions:
+- Transaction type -> ledger account (`sync_ledger_account_for_type`)
+- Ledger account -> transaction type (`sync_transaction_type_for_ledger_account`)
 
-Sync rules
-----------
-* Only runs when ``auto_manage_ledger_account`` is True on the type.
-* Refused for ``transaction_category == 'transfer'`` types — they don't map
-  to a single income/expense GL account.
-* Creates a new ledger account when none is linked yet.
-* Updates name / code / account_type / normal_balance / description on an
-  existing managed account. If the account already has journal lines posted
-  against it, structural changes (code / account_type) still proceed but a
-  warning is surfaced so the caller can inform the user.
+Transfer-specific types (TRANSFER_IN / TRANSFER_OUT) are supported and may map
+to a single asset ledger account.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -71,6 +63,28 @@ class SyncResult:
         }
 
 
+@dataclass
+class TransactionTypeSyncResult:
+    """Outcome of syncing/creating a transaction type from a ledger account."""
+
+    action: str  # "created" | "updated" | "skipped" | "noop"
+    transaction_type_id: Optional[int] = None
+    transaction_type_code: Optional[str] = None
+    transaction_type_name: Optional[str] = None
+    warnings: list[str] = field(default_factory=list)
+    reason: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "action": self.action,
+            "transaction_type_id": self.transaction_type_id,
+            "transaction_type_code": self.transaction_type_code,
+            "transaction_type_name": self.transaction_type_name,
+            "warnings": self.warnings,
+            "reason": self.reason,
+        }
+
+
 def _derive_fields(tx_type: AccountingTransactionType) -> dict:
     code = (tx_type.code or "").strip().upper()
     category = tx_type.transaction_category
@@ -96,6 +110,74 @@ def _derive_fields(tx_type: AccountingTransactionType) -> dict:
 
 def _account_has_postings(account: AccountingLedgerAccount) -> bool:
     return AccountingJournalLine.objects.filter(account=account).exists()
+
+
+def _derive_transaction_category_from_account(
+    account: AccountingLedgerAccount,
+) -> str:
+    if _infer_transfer_code_from_account(account) is not None:
+        return "transfer"
+    if account.account_type == AccountingLedgerAccount.AccountType.INCOME:
+        return "income"
+    if account.account_type == AccountingLedgerAccount.AccountType.EXPENSE:
+        return "expense"
+    return "transfer"
+
+
+def _normalize_transaction_type_code(value: str) -> str:
+    sanitized = re.sub(r"[^A-Z0-9]+", "_", (value or "").strip().upper()).strip("_")
+    if not sanitized:
+        return "GL_ACCOUNT"
+    return sanitized[:50]
+
+
+def _derive_transaction_type_code(account: AccountingLedgerAccount) -> str:
+    return (account.code or "").strip().upper()
+
+
+def _infer_transfer_code_from_account(
+    account: AccountingLedgerAccount,
+) -> Optional[str]:
+    haystack = f"{account.code} {account.name}".upper()
+    if "TRANSFER_IN" in haystack:
+        return "TRANSFER_IN"
+    if "TRANSFER_OUT" in haystack:
+        return "TRANSFER_OUT"
+    if "TRANSFER" in haystack and " IN" in haystack and " OUT" not in haystack:
+        return "TRANSFER_IN"
+    if "TRANSFER" in haystack and " OUT" in haystack and " IN" not in haystack:
+        return "TRANSFER_OUT"
+    return None
+
+
+def _find_linked_transaction_type(
+    account: AccountingLedgerAccount,
+) -> Optional[AccountingTransactionType]:
+    return (
+        AccountingTransactionType.objects.filter(default_ledger_account=account)
+        .order_by("-updated_at")
+        .first()
+        or AccountingTransactionType.objects.filter(managed_ledger_account=account)
+        .order_by("-updated_at")
+        .first()
+    )
+
+
+def _check_transaction_type_code_collision(
+    code: str, exclude_type_id: Optional[int]
+) -> None:
+    qs = AccountingTransactionType.objects.filter(code=code)
+    if exclude_type_id is not None:
+        qs = qs.exclude(pk=exclude_type_id)
+    if qs.exists():
+        raise ValidationError(
+            {
+                "code": (
+                    f"A transaction type with code '{code}' already exists. "
+                    "Provide a different code for this sync."
+                )
+            }
+        )
 
 
 def _check_code_collision(code: str, exclude_account_id: Optional[int]) -> None:
@@ -275,4 +357,117 @@ def _update_default_account(
         account_code=account.code,
         account_name=account.name,
         warnings=warnings,
+    )
+
+
+@db_transaction.atomic
+def sync_transaction_type_for_ledger_account(
+    account: AccountingLedgerAccount,
+    *,
+    transaction_type_code: Optional[str] = None,
+    transaction_type_name: Optional[str] = None,
+    transaction_category: Optional[str] = None,
+) -> TransactionTypeSyncResult:
+    """Create or update a transaction type linked to a ledger account.
+
+    Behavior:
+    - Finds an existing linked transaction type (default_ledger_account first,
+      then managed_ledger_account) and updates it.
+    - Creates a new system-managed transaction type when none is linked.
+    - Keeps transaction type metadata aligned with the source ledger account.
+
+    Notes:
+    - Income/expense account types map directly to income/expense categories.
+    - Other account types default to transfer category.
+    - TRANSFER_IN/TRANSFER_OUT codes are allowed to map to a single ledger account.
+    """
+
+    if account.is_system_managed:
+        return TransactionTypeSyncResult(
+            action="skipped",
+            reason="System-managed ledger accounts cannot sync transaction types.",
+        )
+
+    linked_tx_type = _find_linked_transaction_type(account)
+
+    resolved_category = (
+        (transaction_category or "").strip().lower()
+        or _derive_transaction_category_from_account(account)
+    )
+    if resolved_category not in {"income", "expense", "transfer"}:
+        raise ValidationError(
+            {
+                "transaction_category": (
+                    "Invalid transaction category. "
+                    "Supported values are income, expense, and transfer."
+                )
+            }
+        )
+
+    resolved_name = (transaction_type_name or "").strip() or account.name
+    default_code = _derive_transaction_type_code(account)
+    if resolved_category == "transfer":
+        default_code = _infer_transfer_code_from_account(account) or default_code
+
+    resolved_code = (transaction_type_code or default_code).strip().upper()
+    if not resolved_code:
+        raise ValidationError({"code": "Transaction type code could not be derived from the ledger account."})
+
+    if resolved_code in _TRANSFER_CLEARING_CODES and account.account_type != AccountingLedgerAccount.AccountType.ASSET:
+        raise ValidationError(
+            {
+                "default_ledger_account": (
+                    "TRANSFER_IN and TRANSFER_OUT transaction types must use an asset ledger account."
+                )
+            }
+        )
+
+    _check_transaction_type_code_collision(
+        resolved_code,
+        exclude_type_id=getattr(linked_tx_type, "pk", None),
+    )
+
+    if linked_tx_type is None:
+        created = AccountingTransactionType.objects.create(
+            name=resolved_name,
+            code=resolved_code,
+            transaction_category=resolved_category,
+            description=account.description or "",
+            default_ledger_account=account,
+            auto_manage_ledger_account=False,
+            is_system_managed=True,
+            is_active=account.is_active,
+        )
+        return TransactionTypeSyncResult(
+            action="created",
+            transaction_type_id=created.pk,
+            transaction_type_code=created.code,
+            transaction_type_name=created.name,
+        )
+
+    linked_tx_type.name = resolved_name
+    linked_tx_type.code = resolved_code
+    linked_tx_type.transaction_category = resolved_category
+    linked_tx_type.description = account.description or ""
+    linked_tx_type.default_ledger_account = account
+    linked_tx_type.auto_manage_ledger_account = False
+    linked_tx_type.is_active = account.is_active
+    linked_tx_type.save(
+        update_fields=[
+            "name",
+            "code",
+            "transaction_category",
+            "description",
+            "default_ledger_account",
+            "auto_manage_ledger_account",
+            "is_active",
+            "updated_at",
+        ]
+    )
+
+    return TransactionTypeSyncResult(
+        action="updated",
+        transaction_type_id=linked_tx_type.pk,
+        transaction_type_code=linked_tx_type.code,
+        transaction_type_name=linked_tx_type.name,
     )
