@@ -625,6 +625,8 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
 
         bank_account_id = request.data.get("bank_account_id") or None
         gl_account_override = request.data.get("gl_account_override") or None
+        status_override = request.data.get("status_override") or None
+        replace_by_ref_number = request.data.get("replace_by_ref_number") == "true"
 
         try:
             result = upload_transactions(
@@ -632,6 +634,8 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 template_type=template_type,
                 bank_account_id=bank_account_id,
                 gl_account_override=gl_account_override,
+                status_override=status_override,
+                replace_by_ref_number=replace_by_ref_number,
             )
             return Response(result, status=status.HTTP_200_OK)
         except ValueError as exc:

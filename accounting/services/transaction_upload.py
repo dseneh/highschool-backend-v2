@@ -2,11 +2,11 @@
 Template-based transaction upload service.
 
 Supports three templates:
-1. Student Tuition Payment (requires student id_number)
-2. Staff Salaries (requires staff id_number)
-3. General Transactions (no ID number required)
+1. Student Tuition Payment (requires student_id_number, auto-uses TUITION trans type)
+2. Staff Salaries (requires staff_id_number, auto-uses STAFF_* trans type)
+3. General Transactions (requires transaction_type_code from file)
 
-All templates require transaction_type code in the file.
+Transaction type is auto-assigned for tuition/salary.
 User can override GL account on preview screen.
 """
 
@@ -26,6 +26,8 @@ from accounting.models import (
     AccountingPaymentMethod,
     AccountingTransactionType,
 )
+from staff.models import Staff
+from students.models import Student
 
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -40,13 +42,13 @@ VALID_TEMPLATES = {TEMPLATE_TUITION, TEMPLATE_SALARY, TEMPLATE_GENERAL}
 
 # Template-specific required columns
 TEMPLATE_REQUIRED_COLUMNS = {
-    TEMPLATE_TUITION: {"transaction_date", "transaction_type_code", "id_number", "amount", "description"},
-    TEMPLATE_SALARY: {"transaction_date", "transaction_type_code", "id_number", "amount", "description"},
+    TEMPLATE_TUITION: {"transaction_date", "student_id_number", "amount", "description"},
+    TEMPLATE_SALARY: {"transaction_date", "staff_id_number", "amount", "description"},
     TEMPLATE_GENERAL: {"transaction_date", "transaction_type_code", "amount", "description"},
 }
 
 # Optional columns for all templates
-OPTIONAL_COLUMNS = {"reference_number", "payer_payee", "gl_account_code"}
+OPTIONAL_COLUMNS = {"reference_number", "payer_payee"}
 
 
 def _read_file_to_dataframe(uploaded_file) -> pd.DataFrame:
@@ -89,24 +91,112 @@ def _generate_ref(prefix: str = "TXN") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"
 
 
+def _resolve_transaction_type_with_fallback(transaction_types: dict, code: str, override_gl_account):
+    """
+    Resolve transaction type primarily by code; if missing, fall back to
+    transaction types linked to the selected GL override account.
+    """
+    normalized_code = (code or "").strip().lower()
+    if normalized_code:
+        by_code = transaction_types.get(normalized_code)
+        if by_code:
+            return by_code
+
+    if not override_gl_account:
+        return None
+
+    # Fallback 1: tx type code equals selected GL account code.
+    by_gl_code = transaction_types.get((override_gl_account.code or "").strip().lower())
+    if by_gl_code:
+        return by_gl_code
+
+    # Fallback 2: first active tx type whose default ledger account is this GL account.
+    return (
+        AccountingTransactionType.objects.filter(
+            is_active=True,
+            default_ledger_account=override_gl_account,
+        )
+        .order_by("name")
+        .first()
+    )
+
+
+def _get_tuition_transaction_type(transaction_types: dict):
+    """Get the dedicated TUITION transaction type."""
+    tx_type = transaction_types.get("tuition")
+    if tx_type:
+        return tx_type
+    # Fallback: query the database
+    return AccountingTransactionType.objects.filter(
+        code__iexact="TUITION", is_active=True
+    ).first()
+
+
+def _get_staff_transaction_type(transaction_types: dict):
+    """Get a transaction type with 'STAFF_' prefix."""
+    # Look for any transaction type starting with STAFF_
+    for code, tx_type in transaction_types.items():
+        if code.startswith("staff_"):
+            return tx_type
+    # Fallback: query the database
+    return AccountingTransactionType.objects.filter(
+        code__istartswith="STAFF_", is_active=True
+    ).order_by("code").first()
+
+
+def _validate_student_id(student_id: str) -> tuple[bool, str]:
+    """
+    Validate that student_id exists in the Student table.
+    Returns: (is_valid, error_message)
+    """
+    if not student_id or not student_id.isdigit() or len(student_id) != 6:
+        return False, f"Student ID '{student_id}' must be 6 digits"
+    
+    try:
+        Student.objects.get(id_number=student_id)
+        return True, ""
+    except Student.DoesNotExist:
+        return False, f"Student with ID '{student_id}' not found"
+
+
+def _validate_staff_id(staff_id: str) -> tuple[bool, str]:
+    """
+    Validate that staff_id exists in the Staff table.
+    Returns: (is_valid, error_message)
+    """
+    if not staff_id:
+        return False, "Staff ID is required"
+    
+    try:
+        Staff.objects.get(id_number=staff_id)
+        return True, ""
+    except Staff.DoesNotExist:
+        return False, f"Staff member with ID '{staff_id}' not found"
+
+
 def upload_transactions(
     uploaded_file,
     template_type: str,
     bank_account_id: str | None = None,
     gl_account_override: str | None = None,
+    status_override: str | None = None,
+    replace_by_ref_number: bool = False,
 ) -> dict:
     """
-    Parse and create cash transactions from CSV/Excel using template schema.
+    Parse and create/update cash transactions from CSV/Excel using template schema.
 
     Args:
         uploaded_file: Uploaded file object
         template_type: One of "tuition", "salary", or "general"
         bank_account_id: Optional override bank account ID
         gl_account_override: Optional override GL account code (applies to all rows)
+        status_override: Optional override transaction status (pending, approved, rejected)
+        replace_by_ref_number: If True, update existing transactions with matching reference numbers
 
     Returns:
         {
             "created": count,
+            "updated": count,
             "errors": [{"row": n, "errors": [...]}, ...],
             "total_rows": count,
             "warnings": [...],
@@ -182,7 +272,6 @@ def upload_transactions(
         description = _cell(row, "description")
         reference_number = _cell(row, "reference_number") or _generate_ref()
         payer_payee = _cell(row, "payer_payee")
-        gl_account_code = _cell(row, "gl_account_code").lower()
 
         # Validate transaction date
         if not transaction_date_str:
@@ -194,14 +283,35 @@ def upload_transactions(
                 row_errors.append(f"Invalid transaction_date format: {str(e)}")
                 transaction_date = None
 
-        # Validate transaction type code
-        if not transaction_type_code:
-            row_errors.append("transaction_type_code is required")
-        else:
-            tx_type = transaction_types.get(transaction_type_code)
+        # Resolve transaction type based on template
+        tx_type = None
+        if template_type == TEMPLATE_TUITION:
+            # Auto-assign TUITION transaction type
+            tx_type = _get_tuition_transaction_type(transaction_types)
             if not tx_type:
-                row_errors.append(f"Transaction type with code '{transaction_type_code}' not found")
-                tx_type = None
+                row_errors.append("TUITION transaction type not found. Create a transaction type with code 'TUITION'")
+        
+        elif template_type == TEMPLATE_SALARY:
+            # Auto-assign STAFF_* transaction type
+            tx_type = _get_staff_transaction_type(transaction_types)
+            if not tx_type:
+                row_errors.append("No transaction type with 'STAFF_' prefix found. Create a transaction type with code starting with 'STAFF_'")
+        
+        else:  # TEMPLATE_GENERAL
+            # Use transaction_type_code from file with fallback to GL override
+            transaction_type_code = _cell(row, "transaction_type_code").lower()
+            if not transaction_type_code:
+                row_errors.append("transaction_type_code is required for general template")
+            else:
+                tx_type = _resolve_transaction_type_with_fallback(
+                    transaction_types,
+                    transaction_type_code,
+                    override_gl_account,
+                )
+                if not tx_type:
+                    row_errors.append(
+                        f"Transaction type with code '{transaction_type_code}' not found and no active type is linked to selected GL override"
+                    )
 
         # Validate amount
         if not amount_str:
@@ -219,21 +329,26 @@ def upload_transactions(
         if not description:
             row_errors.append("description is required")
 
-        # Validate template-specific fields
+        # Validate template-specific fields with server-side checks
         if template_type == TEMPLATE_TUITION:
-            student_id_number = _cell(row, "id_number")
+            student_id_number = _cell(row, "student_id_number")
             if not student_id_number:
-                row_errors.append("id_number (student) is required for tuition template")
+                row_errors.append("student_id_number is required for tuition template")
             else:
-                # Just validate format - don't FK lookup to students table yet
-                if not student_id_number.isdigit() or len(student_id_number) != 6:
-                    warnings.append(f"Row {row_num}: Student ID '{student_id_number}' may be invalid (expected 6 digits)")
+                # Client-side validation already checked format, now validate existence
+                is_valid, error_msg = _validate_student_id(student_id_number)
+                if not is_valid:
+                    row_errors.append(f"Student validation failed: {error_msg}")
 
         elif template_type == TEMPLATE_SALARY:
-            staff_id_number = _cell(row, "id_number")
+            staff_id_number = _cell(row, "staff_id_number")
             if not staff_id_number:
-                row_errors.append("id_number (staff) is required for salary template")
-            # Staff ID can be various formats, just validate it's not empty
+                row_errors.append("staff_id_number is required for salary template")
+            else:
+                # Validate staff member exists
+                is_valid, error_msg = _validate_staff_id(staff_id_number)
+                if not is_valid:
+                    row_errors.append(f"Staff validation failed: {error_msg}")
 
         # Collect errors
         if row_errors:
@@ -242,11 +357,6 @@ def upload_transactions(
 
         # Resolve GL account for this row
         row_gl_account = override_gl_account  # Use override if provided
-        if not row_gl_account and gl_account_code:
-            row_gl_account = ledger_accounts.get(gl_account_code)
-            if not row_gl_account:
-                errors.append({"row": row_num, "errors": [f"GL account with code '{gl_account_code}' not found"]})
-                continue
 
         # Use transaction type's default GL account if not overridden
         if not row_gl_account and tx_type:
@@ -263,14 +373,30 @@ def upload_transactions(
             "ledger_account": row_gl_account,
             "bank_account": override_bank_account,
             "template_type": template_type,
-            "id_number": _cell(row, "id_number") if template_type != TEMPLATE_GENERAL else None,
+            "id_number": (
+                _cell(row, "student_id_number")
+                if template_type == TEMPLATE_TUITION
+                else _cell(row, "staff_id_number") if template_type == TEMPLATE_SALARY else None
+            ),
         }
 
         transactions_to_create.append(parsed)
 
+    # Determine status to use
+    status_to_use = AccountingCashTransaction.TransactionStatus.PENDING
+    if status_override:
+        status_lower = status_override.lower()
+        if status_lower == "approved":
+            status_to_use = AccountingCashTransaction.TransactionStatus.APPROVED
+        elif status_lower == "rejected":
+            status_to_use = AccountingCashTransaction.TransactionStatus.REJECTED
+        elif status_lower == "pending":
+            status_to_use = AccountingCashTransaction.TransactionStatus.PENDING
+
     # Create transactions atomically
     with transaction.atomic():
         created_count = 0
+        updated_count = 0
 
         for tx_data in transactions_to_create:
             bank_account = tx_data["bank_account"] or _get_default_bank_account()
@@ -282,28 +408,55 @@ def upload_transactions(
                 continue
 
             try:
-                AccountingCashTransaction.objects.create(
-                    bank_account=bank_account,
-                    transaction_date=tx_data["transaction_date"],
-                    reference_number=tx_data["reference_number"],
-                    transaction_type=tx_data["transaction_type"],
-                    payment_method=default_payment_method,
-                    ledger_account=tx_data["ledger_account"],
-                    amount=tx_data["amount"],
-                    currency=default_currency,
-                    exchange_rate=Decimal("1"),
-                    base_amount=tx_data["amount"],
-                    payer_payee=tx_data["payer_payee"],
-                    description=tx_data["description"],
-                    status=AccountingCashTransaction.TransactionStatus.PENDING,
-                    source_reference=f"{tx_data['template_type'].upper()}-UPLOAD",
-                )
-                created_count += 1
+                if replace_by_ref_number:
+                    # Update or create based on reference number
+                    obj, created = AccountingCashTransaction.objects.update_or_create(
+                        reference_number=tx_data["reference_number"],
+                        defaults={
+                            "bank_account": bank_account,
+                            "transaction_date": tx_data["transaction_date"],
+                            "transaction_type": tx_data["transaction_type"],
+                            "payment_method": default_payment_method,
+                            "ledger_account": tx_data["ledger_account"],
+                            "amount": tx_data["amount"],
+                            "currency": default_currency,
+                            "exchange_rate": Decimal("1"),
+                            "base_amount": tx_data["amount"],
+                            "payer_payee": tx_data["payer_payee"],
+                            "description": tx_data["description"],
+                            "status": status_to_use,
+                            "source_reference": f"{tx_data['template_type'].upper()}-UPLOAD",
+                        }
+                    )
+                    if created:
+                        created_count += 1
+                    else:
+                        updated_count += 1
+                else:
+                    # Create only
+                    AccountingCashTransaction.objects.create(
+                        bank_account=bank_account,
+                        transaction_date=tx_data["transaction_date"],
+                        reference_number=tx_data["reference_number"],
+                        transaction_type=tx_data["transaction_type"],
+                        payment_method=default_payment_method,
+                        ledger_account=tx_data["ledger_account"],
+                        amount=tx_data["amount"],
+                        currency=default_currency,
+                        exchange_rate=Decimal("1"),
+                        base_amount=tx_data["amount"],
+                        payer_payee=tx_data["payer_payee"],
+                        description=tx_data["description"],
+                        status=status_to_use,
+                        source_reference=f"{tx_data['template_type'].upper()}-UPLOAD",
+                    )
+                    created_count += 1
             except Exception as e:
                 errors.append({"row": 0, "errors": [f"Failed to create transaction: {str(e)}"]})
 
     return {
         "created": created_count,
+        "updated": updated_count,
         "errors": errors,
         "total_rows": len(df),
         "warnings": warnings,
