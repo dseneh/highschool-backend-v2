@@ -1426,9 +1426,9 @@ def format_import_response(total_created, all_errors, success=True):
 
 def compute_id_number(school_code: int, student_seq: int) -> str:
     """
-    Format: <2-digit school_code><sequence with at least 4 digits, then grows>.
-    Examples: 01 + 1 -> 010001 ; 01 + 10000 -> 0110000
+    Format: <school_code (no leading zeros)><sequence with at least 4 digits, then grows>.
+    Examples: 2 + 1 -> 20001 ; 2 + 10000 -> 210000
     """
     seq = str(int(student_seq))
     width = max(4, len(seq))  # 0001..9999 -> 4, then 10000 -> 5, etc.
-    return f"{int(school_code):02}{int(student_seq):0{width}d}"
+    return f"{int(school_code)}{int(student_seq):0{width}d}"

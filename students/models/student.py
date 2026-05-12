@@ -71,8 +71,8 @@ class Student(BasePersonModel):
     )  # 0–9999 (or higher if you want) student sequence number
 
     id_number = models.CharField(
-        max_length=6,
-        validators=[RegexValidator(r"^\d{6}$")],
+        max_length=20,
+        validators=[RegexValidator(r"^\d+$")],
         db_index=True,
         unique=True,  # or see multi-tenant note below
         editable=False,
@@ -133,7 +133,7 @@ class Student(BasePersonModel):
 
     @property
     def id_number_formatted(self):
-        return f"{self.school_code:02}{self.student_seq:04}"
+        return f"{self.school_code}{self.student_seq:04}"
 
     @classmethod
     def allocate_next_seq(cls) -> int:

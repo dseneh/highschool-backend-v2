@@ -237,7 +237,7 @@ class Employee(BasePersonModel):
             except (TypeError, ValueError):
                 school_code = 1
 
-        prefix = f"{school_code:02}"
+        prefix = f"{school_code}"
         next_seq = 1
 
         existing_ids = cls.objects.filter(
