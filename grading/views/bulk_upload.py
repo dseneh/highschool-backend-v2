@@ -73,6 +73,13 @@ class BulkGradeUploadView(APIView):
         if override_raw is None:
             override_raw = request.data.get('override_grades')
         override_grades = self._parse_bool(override_raw, default=False)
+
+        # dry_run=true processes the file and computes all stats/errors but rolls
+        # back the transaction so nothing is persisted.
+        dry_run_raw = request.query_params.get('dry_run')
+        if dry_run_raw is None:
+            dry_run_raw = request.data.get('dry_run')
+        dry_run = self._parse_bool(dry_run_raw, default=False)
         
         # Verify section exists
         section = get_object_or_404(Section, pk=section_id)
@@ -100,21 +107,38 @@ class BulkGradeUploadView(APIView):
         
         try:
             # Process the Excel file
+            template_type = request.data.get('template_type', request.query_params.get('template_type', 'assessment_columns'))
+
+            # grade_status lets the caller control what status newly created / updated grades receive.
+            # Only a safe subset is accepted so callers cannot inject arbitrary values.
+            _allowed_statuses = {
+                Grade.Status.DRAFT, Grade.Status.PENDING, Grade.Status.SUBMITTED,
+            }
+            raw_grade_status = request.data.get('grade_status', 'draft')
+            grade_status = raw_grade_status if raw_grade_status in _allowed_statuses else Grade.Status.DRAFT
+
             result = self._process_excel_file(
-                uploaded_file, 
-                section, 
+                uploaded_file,
+                section,
                 override_grades,
-                request.user
+                request.user,
+                template_type,
+                grade_status,
             )
-            
+
+            if dry_run:
+                # Roll back all DB writes; the caller just wants the preview stats.
+                transaction.set_rollback(True)
+                result['dry_run'] = True
+
             return Response(result, status=http_status.HTTP_200_OK)
-            
+
         except Exception as e:
             return Response({
                 'detail': f'Error processing file: {str(e)}'
             }, status=http_status.HTTP_400_BAD_REQUEST)
     
-    def _process_excel_file(self, file, section, override_grades, user):
+    def _process_excel_file(self, file, section, override_grades, user, template_type='assessment_columns', grade_status='draft'):
         """Process the uploaded Excel file and create/update grades"""
         import pandas as pd
         from academics.models import Subject, GradeLevel
@@ -181,11 +205,21 @@ class BulkGradeUploadView(APIView):
             metadata['section'] = str(df_raw.iloc[grade_level_row + 1, 1]).strip() if len(df_raw) > grade_level_row + 1 and len(df_raw.columns) > 1 else None
             metadata['subject'] = str(df_raw.iloc[grade_level_row + 2, 1]).strip() if len(df_raw) > grade_level_row + 2 and len(df_raw.columns) > 1 else None
             metadata['academic_year'] = str(df_raw.iloc[grade_level_row + 3, 1]).strip() if len(df_raw) > grade_level_row + 3 and len(df_raw.columns) > 1 else None
-            metadata['marking_period'] = str(df_raw.iloc[grade_level_row + 4, 1]).strip() if len(df_raw) > grade_level_row + 4 and len(df_raw.columns) > 1 else None
-            
-            # Store the header row index for later (it's after metadata + blank line + instructions + blank line)
-            # Typically: metadata ends at grade_level_row + 4, then blank, instructions, blank, headers
-            metadata['header_row'] = grade_level_row + 8
+
+            # Row 4 is Academic Year (row5 is Marking Period Code for Template 1, or blank for Template 2)
+            # Route based on the template_type parameter sent by the client.
+            is_mp_columns = (template_type == 'marking_period_columns')
+
+            if is_mp_columns:
+                metadata['template_type'] = 'marking_period_columns'
+                metadata['marking_period'] = None
+                # Template 2 has 4 metadata rows (no row5); layout: meta×4 + blank + instructions + blank + header
+                metadata['header_row'] = grade_level_row + 7
+            else:
+                metadata['template_type'] = 'assessment_columns'
+                metadata['marking_period'] = str(df_raw.iloc[grade_level_row + 4, 1]).strip() if len(df_raw) > grade_level_row + 4 and len(df_raw.columns) > 1 else None
+                # Template 1 has 5 metadata rows; layout: meta×5 + blank + instructions + blank + header
+                metadata['header_row'] = grade_level_row + 8
             
         except Exception as e:
             raise ValueError(f"Failed to extract metadata from Excel file. Ensure metadata format is correct. Error: {str(e)}")
@@ -202,7 +236,14 @@ class BulkGradeUploadView(APIView):
         
         if not metadata.get('academic_year') or metadata['academic_year'] == 'nan':
             raise ValueError("Academic Year is missing in row 4. Format: 'Academic Year:' in column A, value in column B")
-        
+
+        # Route to appropriate handler based on template type
+        if metadata.get('template_type') == 'marking_period_columns':
+            return self._process_marking_period_columns(
+                file, df_raw, metadata, section, override_grades, user, grade_status
+            )
+
+        # --- Original assessment_columns path ---
         if not metadata.get('marking_period') or metadata['marking_period'] == 'nan':
             raise ValueError("Marking Period Code is missing in row 5. Format: 'Marking Period Code:' in column A, value in column B")
         
@@ -229,7 +270,7 @@ class BulkGradeUploadView(APIView):
         # Validate Marking Period
         try:
             marking_period = MarkingPeriod.objects.get(
-                Q(name=metadata['marking_period']) | Q(short_name=metadata['marking_period']),
+                Q(name__iexact=metadata['marking_period']) | Q(short_name__iexact=metadata['marking_period']),
                 semester__academic_year=academic_year
             )
         except MarkingPeriod.DoesNotExist:
@@ -524,7 +565,7 @@ class BulkGradeUploadView(APIView):
                         
                         if can_update:
                             existing_grade.score = score
-                            existing_grade.status = Grade.Status.DRAFT
+                            existing_grade.status = grade_status
                             existing_grade.updated_by = user
                             grades_to_update.append(existing_grade)
                             stats['grades_updated'] += 1
@@ -542,7 +583,7 @@ class BulkGradeUploadView(APIView):
                             assessment=assessment,
                             student=student,
                             score=score,
-                            status=Grade.Status.DRAFT,
+                            status=grade_status,
                             enrollment_id=enrollment_id,
                             academic_year=academic_year,
                             section=section,
@@ -610,4 +651,420 @@ class BulkGradeUploadView(APIView):
             },
             'warnings': stats['warnings'][:50],
             'errors': stats['errors'][:50]
+        }
+
+    @transaction.atomic
+    def _process_marking_period_columns(self, file, df_raw, metadata, section, override_grades, user, grade_status='draft'):
+        """
+        Process Template 2: Marking Period Columns format.
+
+        Layout:
+          Row 1: Grade Level:  | <value>
+          Row 2: Section:      | <value>
+          Row 3: Subject Code: | <value>
+          Row 4: Academic Year:| <value>
+          Row 5: Template Type:| marking_period_columns
+          Row 6: (blank)
+          Row 7: Instructions: | ...
+          Row 8: (blank)
+          Row 9: Student ID | Student Name | <MP short_name1> | <MP short_name2> | ...
+          Row 10+: data rows
+
+        Each marking period column holds the single final grade for that student/period.
+        Grades are SKIPPED if the incoming value equals the existing score.
+        Grades are UPDATED if the incoming value differs (respecting override_grades for locked grades).
+        Grades are CREATED if none exist yet.
+        """
+        import pandas as pd
+        from academics.models import Subject, GradeLevel
+
+        subject_has_code = any(field.name == 'code' for field in Subject._meta.fields)
+
+        def _normalize_excel_text(value):
+            if value is None:
+                return ''
+            if isinstance(value, str):
+                return value.strip()
+            try:
+                if pd.isna(value):
+                    return ''
+            except Exception:
+                pass
+            if isinstance(value, float):
+                if value.is_integer():
+                    return str(int(value))
+                return format(value, 'f').rstrip('0').rstrip('.')
+            if isinstance(value, int):
+                return str(value)
+            return str(value).strip()
+
+        # =====================================================================
+        # STEP 1: Validate common metadata
+        # =====================================================================
+
+        try:
+            GradeLevel.objects.get(name=metadata['grade_level'])
+        except GradeLevel.DoesNotExist:
+            raise ValueError(f"Grade Level '{metadata['grade_level']}' not found in the system")
+
+        if section.name != metadata['section']:
+            raise ValueError(f"Section mismatch. Expected '{section.name}' but file has '{metadata['section']}'")
+
+        try:
+            academic_year = AcademicYear.objects.get(name=metadata['academic_year'])
+        except AcademicYear.DoesNotExist:
+            raise ValueError(f"Academic Year '{metadata['academic_year']}' not found in the system")
+
+        # =====================================================================
+        # STEP 2: Read student data rows
+        # =====================================================================
+        header_row_index = metadata.get('header_row', 7)
+        try:
+            df = pd.read_excel(file, header=header_row_index, dtype=object)
+        except Exception as e:
+            raise ValueError(f"Failed to read student data: {str(e)}")
+
+        if df.empty:
+            raise ValueError(f"No student data found. Student data should start from row {header_row_index + 2}.")
+
+        # Normalize student id/name columns
+        column_mapping = {}
+        for col in df.columns:
+            col_lower = str(col).strip().lower()
+            if col_lower in ['student id', 'id', 'id_number', 'student_id']:
+                column_mapping[col] = 'student_id'
+            elif col_lower in ['student name', 'name', 'full_name', 'student_name']:
+                column_mapping[col] = 'student_name'
+        df.rename(columns=column_mapping, inplace=True)
+
+        if 'student_id' in df.columns:
+            df['student_id'] = df['student_id'].apply(_normalize_excel_text)
+        if 'student_name' in df.columns:
+            df['student_name'] = df['student_name'].apply(_normalize_excel_text)
+
+        if 'student_id' not in df.columns:
+            raise ValueError("'Student ID' column not found in header row.")
+        if 'student_name' not in df.columns:
+            raise ValueError("'Student Name' column not found in header row.")
+
+        # Columns after student_id and student_name are marking period labels.
+        # Skip average/summary columns (sem avg, yearly avg) — they are read-only in the template.
+        mp_columns = [
+            col for col in df.columns
+            if col not in ['student_id', 'student_name']
+            and 'avg' not in str(col).strip().lower()
+            and 'average' not in str(col).strip().lower()
+        ]
+        if not mp_columns:
+            raise ValueError("No marking period columns found after Student Name.")
+
+        # =====================================================================
+        # STEP 3: Resolve subject
+        # =====================================================================
+        subject_identifier = metadata['subject']
+        subject_lookup = Q(name=subject_identifier)
+        if subject_has_code:
+            subject_lookup |= Q(code=subject_identifier)
+
+        subject_candidates = Subject.objects.filter(
+            subject_lookup,
+            gradebooks__section=section,
+            gradebooks__academic_year=academic_year,
+        ).distinct()
+
+        subject_count = subject_candidates.count()
+        if subject_count == 0:
+            raise ValueError(
+                f"Subject '{subject_identifier}' was not found for section '{section.name}' "
+                f"in academic year '{academic_year.name}'."
+            )
+        if subject_count > 1:
+            raise ValueError(
+                f"Subject '{subject_identifier}' is ambiguous. Multiple gradebooks matched."
+            )
+        subject = subject_candidates.first()
+
+        # =====================================================================
+        # STEP 4: Resolve marking periods and their single-entry assessments
+        # =====================================================================
+        # Build map: mp_label (short_name or name) -> MarkingPeriod  (case-insensitive keys)
+        all_mps = MarkingPeriod.objects.filter(
+            semester__academic_year=academic_year
+        ).select_related('semester')
+        mp_by_label = {}
+        for mp in all_mps:
+            mp_by_label[mp.short_name.strip().lower()] = mp
+            mp_by_label[mp.name.strip().lower()] = mp
+
+        # For each MP column header, resolve the MarkingPeriod and its single-entry assessment
+        mp_assessment_map = {}  # label -> (MarkingPeriod, Assessment | None)
+        unresolved_mp_columns = []
+        for col_label in mp_columns:
+            col_str = str(col_label).strip()
+            mp = mp_by_label.get(col_str.lower())
+            if not mp:
+                unresolved_mp_columns.append(col_str)
+                continue
+            # Find the single-entry assessment for this marking period in the gradebook
+            assessment_qs = Assessment.objects.filter(
+                gradebook__section=section,
+                gradebook__academic_year=academic_year,
+                gradebook__section_subject__subject=subject,
+                marking_period=mp,
+                assessment_type__is_single_entry=True,
+                active=True,
+            ).select_related('assessment_type', 'marking_period', 'gradebook')
+            assessment = assessment_qs.first()
+            mp_assessment_map[col_label] = (mp, assessment)
+
+        if unresolved_mp_columns:
+            raise ValueError(
+                f"These marking period columns could not be matched by short name or name: "
+                f"{', '.join(unresolved_mp_columns)}. "
+                f"Ensure column headers exactly match marking period short names or names."
+            )
+
+        # =====================================================================
+        # STEP 5: Pre-fetch students, enrollments, existing grades
+        # =====================================================================
+        from students.models import Enrollment
+
+        student_ids_raw = df['student_id'].dropna().astype(str).str.strip().unique()
+        students_map = {}
+        for sid in student_ids_raw:
+            try:
+                student = get_object_by_uuid_or_fields(
+                    Student, sid, fields=['id_number', 'prev_id_number'],
+                )
+            except Student.DoesNotExist:
+                continue
+            for key in [str(sid), str(student.id_number), str(student.id)]:
+                students_map[key] = student
+            if getattr(student, 'prev_id_number', None):
+                students_map[str(student.prev_id_number)] = student
+
+        # All assessments for this subject/section/year across all marking periods
+        all_assessments = list(
+            Assessment.objects.filter(
+                gradebook__section=section,
+                gradebook__academic_year=academic_year,
+                gradebook__section_subject__subject=subject,
+                assessment_type__is_single_entry=True,
+                active=True,
+            ).select_related('marking_period')
+        )
+        assessment_ids = [a.id for a in all_assessments]
+
+        enrollments_cache = {}
+        for enr in Enrollment.objects.filter(
+            academic_year=academic_year,
+            section=section,
+            student__in=students_map.values(),
+        ).select_related('student'):
+            enrollments_cache[enr.student.id] = enr.id
+
+        existing_grades_cache = {}
+        for grade in Grade.objects.filter(
+            section=section,
+            academic_year=academic_year,
+            subject=subject,
+            student__in=students_map.values(),
+            assessment__id__in=assessment_ids,
+        ).select_related('assessment', 'student'):
+            existing_grades_cache[(grade.assessment.id, grade.student.id)] = grade
+
+        # =====================================================================
+        # STEP 6: Process rows
+        # =====================================================================
+        stats = {
+            'total_rows': len(df),
+            'students_processed': 0,
+            'grades_created': 0,
+            'grades_updated': 0,
+            'grades_skipped': 0,
+            'grades_locked': 0,
+            'errors': [],
+            'warnings': [],
+        }
+
+        grades_to_create = []
+        grades_to_update = []
+        processed_students = set()
+
+        for index, row in df.iterrows():
+            row_number = header_row_index + index + 2
+            try:
+                student_id = str(row['student_id']).strip()
+                if pd.isna(student_id) or not student_id:
+                    stats['errors'].append({'row': row_number, 'error': 'Student ID is missing'})
+                    continue
+
+                student = students_map.get(student_id)
+                if not student:
+                    stats['errors'].append({
+                        'row': row_number, 'student_id': student_id,
+                        'error': f'Student not found with ID: {student_id}',
+                    })
+                    continue
+
+                # Optional name warning
+                student_name_in_file = _normalize_excel_text(row.get('student_name', ''))
+                if student_name_in_file and student.get_full_name().lower() != student_name_in_file.lower():
+                    stats['warnings'].append({
+                        'row': row_number, 'student_id': student_id,
+                        'warning': f"Name mismatch. Expected: '{student.get_full_name()}', Found: '{student_name_in_file}'",
+                    })
+
+                enrollment_id = enrollments_cache.get(student.id)
+                if not enrollment_id:
+                    stats['errors'].append({
+                        'row': row_number, 'student_id': student_id,
+                        'error': f'Student is not enrolled in {section.name} for {academic_year.name}',
+                    })
+                    continue
+
+                student_processed = False
+
+                for col_label, (mp, assessment) in mp_assessment_map.items():
+                    score_value = row[col_label]
+
+                    # Skip blank cells
+                    try:
+                        is_blank = pd.isna(score_value) or str(score_value).strip() == ''
+                    except Exception:
+                        is_blank = not str(score_value).strip()
+                    if is_blank:
+                        continue
+
+                    if assessment is None:
+                        stats['errors'].append({
+                            'row': row_number, 'student_id': student_id,
+                            'error': f"No single-entry assessment found for marking period '{col_label}'. "
+                                     f"Ensure a single-entry assessment exists for this subject and period.",
+                        })
+                        continue
+
+                    # Parse score
+                    try:
+                        score = Decimal(str(score_value).strip())
+                        if score < 0:
+                            stats['errors'].append({
+                                'row': row_number, 'student_id': student_id,
+                                'error': f'[{col_label}] Score cannot be negative: {score}',
+                            })
+                            continue
+                        if assessment.max_score and score > assessment.max_score:
+                            stats['errors'].append({
+                                'row': row_number, 'student_id': student_id,
+                                'error': f'[{col_label}] Score {score} exceeds maximum of {assessment.max_score}',
+                            })
+                            continue
+                        if score.as_tuple().exponent < -2:
+                            stats['errors'].append({
+                                'row': row_number, 'student_id': student_id,
+                                'error': f'[{col_label}] Score {score} has too many decimal places (max 2).',
+                            })
+                            continue
+                    except (InvalidOperation, ValueError):
+                        stats['errors'].append({
+                            'row': row_number, 'student_id': student_id,
+                            'error': f'[{col_label}] Invalid score value: {score_value}',
+                        })
+                        continue
+
+                    grade_key = (assessment.id, student.id)
+                    existing_grade = existing_grades_cache.get(grade_key)
+
+                    if existing_grade:
+                        # Skip if score is identical (no change needed)
+                        existing_score = existing_grade.score
+                        try:
+                            if existing_score is not None and Decimal(str(existing_score)) == score:
+                                stats['grades_skipped'] += 1
+                                student_processed = True
+                                continue
+                        except Exception:
+                            pass
+
+                        can_update = override_grades or existing_grade.status in [Grade.Status.DRAFT, None]
+                        if can_update:
+                            existing_grade.score = score
+                            existing_grade.status = grade_status
+                            existing_grade.updated_by = user
+                            grades_to_update.append(existing_grade)
+                            stats['grades_updated'] += 1
+                        else:
+                            stats['grades_locked'] += 1
+                            stats['warnings'].append({
+                                'row': row_number, 'student_id': student_id,
+                                'warning': f'[{col_label}] Grade is {existing_grade.get_status_display()}. Use override_grades=true to update.',
+                            })
+                    else:
+                        new_grade = Grade(
+                            assessment=assessment,
+                            student=student,
+                            score=score,
+                            status=grade_status,
+                            enrollment_id=enrollment_id,
+                            academic_year=academic_year,
+                            section=section,
+                            subject=subject,
+                            created_by=user,
+                            updated_by=user,
+                        )
+                        grades_to_create.append(new_grade)
+                        existing_grades_cache[grade_key] = new_grade
+                        stats['grades_created'] += 1
+
+                    student_processed = True
+
+                if student_processed:
+                    processed_students.add(student.id)
+
+            except Exception as e:
+                stats['errors'].append({'row': row_number, 'error': f'Unexpected error: {str(e)}'})
+                continue
+
+        # =====================================================================
+        # STEP 7: Bulk write
+        # =====================================================================
+        if grades_to_create:
+            Grade.objects.bulk_create(grades_to_create, batch_size=500)
+        if grades_to_update:
+            Grade.objects.bulk_update(
+                grades_to_update,
+                ['score', 'status', 'updated_by', 'updated_at'],
+                batch_size=500,
+            )
+
+        stats['students_processed'] = len(processed_students)
+
+        message = (
+            f"Marking period upload processed {stats['students_processed']} students for "
+            f"{metadata['subject']} across {len(mp_columns)} marking period(s). "
+            f"Created {stats['grades_created']}, updated {stats['grades_updated']}, "
+            f"skipped {stats['grades_skipped']} unchanged."
+        )
+        if stats['grades_locked'] > 0:
+            message += f" {stats['grades_locked']} locked (use override_grades=true to update)."
+        if stats['warnings']:
+            message += f" {len(stats['warnings'])} warnings."
+        if stats['errors']:
+            message += f" {len(stats['errors'])} errors."
+
+        return {
+            'detail': message,
+            'metadata': {**metadata, 'template_type': 'marking_period_columns'},
+            'statistics': {
+                'total_rows': stats['total_rows'],
+                'students_processed': stats['students_processed'],
+                'grades_created': stats['grades_created'],
+                'grades_updated': stats['grades_updated'],
+                'grades_skipped': stats['grades_skipped'],
+                'grades_locked': stats['grades_locked'],
+                'warning_count': len(stats['warnings']),
+                'error_count': len(stats['errors']),
+            },
+            'warnings': stats['warnings'][:50],
+            'errors': stats['errors'][:50],
         }
