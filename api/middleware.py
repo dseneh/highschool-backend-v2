@@ -269,6 +269,7 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                     or path.startswith('/api/v1/auth')
                     or path.startswith('/api/v1/tenants')
                     or path.startswith('/api/v1/search')
+                    or path.startswith('/api/v1/signup-requests')
                     or path in ('/', '/health', '/health/')
                 )
 

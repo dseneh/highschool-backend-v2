@@ -215,3 +215,57 @@ class Domain(DomainMixin):
         db_table = 'domain'
         verbose_name = "Domain"
         verbose_name_plural = "Domains"
+
+
+class SignupRequest(models.Model):
+    """
+    Pre-tenant signup request submitted via the public marketing form.
+    Stored in the public schema. Used by the admin team to track
+    prospective school customers before workspace provisioning.
+    """
+    STATUS_PENDING   = "pending"
+    STATUS_CONTACTED = "contacted"
+    STATUS_ONBOARDED = "onboarded"
+    STATUS_DECLINED  = "declined"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING,   "Pending"),
+        (STATUS_CONTACTED, "Contacted"),
+        (STATUS_ONBOARDED, "Onboarded"),
+        (STATUS_DECLINED,  "Declined"),
+    ]
+
+    # Contact info
+    first_name     = models.CharField(max_length=100)
+    last_name      = models.CharField(max_length=100)
+    email          = models.EmailField()
+    phone          = models.CharField(max_length=30, blank=True)
+
+    # School info
+    school_name    = models.CharField(max_length=255)
+    role_title     = models.CharField(max_length=100)
+    country        = models.CharField(max_length=100)
+    students_count = models.CharField(max_length=50)
+
+    # Preferences (optional)
+    workspace_slug = models.CharField(max_length=30, blank=True)
+    plan           = models.CharField(max_length=50, blank=True)
+    notes          = models.TextField(blank=True)
+
+    # CRM status
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'signup_request'
+        verbose_name = "Signup Request"
+        verbose_name_plural = "Signup Requests"
+        ordering = ["-submitted_at"]
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} – {self.school_name} ({self.status})"

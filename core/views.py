@@ -770,3 +770,71 @@ def invalidate_cache(request):
         {"status": "success", "message": message, "data_type": data_type},
         status=status.HTTP_200_OK,
     )
+
+
+# ---------------------------------------------------------------------------
+# Public signup request (no auth required – marketing form)
+# ---------------------------------------------------------------------------
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def create_signup_request(request):
+    """
+    Public endpoint for the marketing site signup form.
+    Creates a SignupRequest record in the public schema and sends an
+    email notification to the admin team.
+    No authentication or tenant header required.
+    """
+    from core.models import SignupRequest
+    from core.serializers import SignupRequestSerializer
+    from django.core.mail import send_mail
+    from django.conf import settings
+
+    serializer = SignupRequestSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    instance = serializer.save()
+
+    # Notify admin team
+    try:
+        admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")
+        from_name   = getattr(settings, "EMAIL_FROM_NAME", "EzySchool")
+        from_email  = getattr(settings, "DEFAULT_FROM_EMAIL", f"{from_name} <noreply@ezyschool.net>")
+
+        body = (
+            f"A new school signup request has been submitted on EzySchool.\n\n"
+            f"{'─' * 40}\n"
+            f"CONTACT\n"
+            f"  Name:     {instance.first_name} {instance.last_name}\n"
+            f"  Email:    {instance.email}\n"
+            f"  Phone:    {instance.phone or '—'}\n"
+            f"\nSCHOOL\n"
+            f"  School:   {instance.school_name}\n"
+            f"  Role:     {instance.role_title}\n"
+            f"  Country:  {instance.country}\n"
+            f"  Students: {instance.students_count}\n"
+            f"\nPREFERENCES\n"
+            f"  Workspace: {instance.workspace_slug or '—'}\n"
+            f"  Plan:      {instance.plan or '—'}\n"
+            f"  Notes:     {instance.notes or '—'}\n"
+            f"{'─' * 40}\n"
+            f"Submitted at: {instance.submitted_at.strftime('%Y-%m-%d %H:%M UTC')}\n"
+        )
+
+        send_mail(
+            subject=f"[EzySchool] New Signup Request — {instance.school_name}",
+            message=body,
+            from_email=from_email,
+            recipient_list=[admin_email],
+            fail_silently=True,
+        )
+    except Exception:
+        pass  # Email failure must not block a successful submission
+
+    return Response(
+        {"detail": "Request submitted successfully.", "id": instance.pk},
+        status=status.HTTP_201_CREATED,
+    )
+

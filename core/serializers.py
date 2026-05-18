@@ -2,7 +2,7 @@
 Serializers for core models (Tenant)
 """
 from rest_framework import serializers
-from core.models import Tenant, Domain
+from core.models import Tenant, Domain, SignupRequest
 from django_tenants.utils import schema_context
 
 
@@ -528,4 +528,18 @@ class TenantInfoSearchResultSerializer(serializers.Serializer):
     user_type = serializers.CharField(help_text="Type of user: user, student, or staff")
     tenant = serializers.DictField(allow_null=True, help_text="Tenant information (null for users in public schema)")
     data = serializers.DictField(help_text="User/Student/Staff data")
+
+
+class SignupRequestSerializer(serializers.ModelSerializer):
+    """
+    Serializer for public marketing signup requests.
+    Write-only fields (read_only_fields excluded from creation).
+    """
+    class Meta:
+        model = SignupRequest
+        fields = [
+            "first_name", "last_name", "email", "phone",
+            "school_name", "role_title", "country", "students_count",
+            "workspace_slug", "plan", "notes",
+        ]
 

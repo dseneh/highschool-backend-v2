@@ -4,7 +4,7 @@ Admin configuration for core models
 
 from django.contrib import admin
 from django_tenants.admin import TenantAdminMixin
-from .models import Tenant, Domain
+from .models import Tenant, Domain, SignupRequest
 
 
 
@@ -20,3 +20,13 @@ class DomainAdmin(admin.ModelAdmin):
     list_display = ("domain", "tenant", "is_primary")
     list_filter = ("is_primary",)
     search_fields = ("domain", "tenant__name")
+
+
+@admin.register(SignupRequest)
+class SignupRequestAdmin(admin.ModelAdmin):
+    list_display  = ("first_name", "last_name", "email", "school_name", "country", "plan", "status", "submitted_at")
+    list_filter   = ("status", "country", "submitted_at")
+    search_fields = ("first_name", "last_name", "email", "school_name")
+    list_editable = ("status",)
+    readonly_fields = ("submitted_at",)
+    ordering = ("-submitted_at",)
