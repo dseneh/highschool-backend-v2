@@ -344,7 +344,16 @@ class AttendanceListView(APIView):
             .first()
         )
 
-    def get_academic_year(self, student):
+    def get_academic_year(self, student, request=None):
+        if request is not None:
+            ay_param = request.query_params.get("academic_year") or request.query_params.get(
+                "academic_year_id"
+            )
+            if ay_param:
+                academic_year = AcademicYear.objects.filter(id=ay_param).first()
+                if academic_year:
+                    return academic_year
+
         enrollment = self.get_current_enrollment(student)
         if enrollment and enrollment.academic_year:
             return enrollment.academic_year
@@ -352,7 +361,7 @@ class AttendanceListView(APIView):
 
     def get(self, request, student_id):
         student = self.get_student(student_id)
-        academic_year = self.get_academic_year(student)
+        academic_year = self.get_academic_year(student, request)
 
         attendance_filter = {"enrollment__student": student}
         if academic_year:
