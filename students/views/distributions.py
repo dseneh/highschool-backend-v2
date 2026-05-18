@@ -654,3 +654,173 @@ def get_honor_distribution(request):
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_attention_items(request):
+    """
+    Return counts of items that require administrative attention.
+
+    Response:
+    {
+        "pending_grade_reviews": 12,
+        "grades_waiting_approval": 7,
+        "students_missing_guardian": 24,
+        "students_with_unpaid_invoices": 18,
+        "pending_leave_requests": 5,
+        "overdue_bills_amount": 48000.00
+    }
+    """
+    try:
+        current_academic_year = _resolve_academic_year(request)
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_attention_items{_year_cache_suffix(current_academic_year)}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        result = {
+            "pending_grade_reviews": 0,
+            "grades_waiting_approval": 0,
+            "students_missing_guardian": 0,
+            "students_with_unpaid_invoices": 0,
+            "pending_leave_requests": 0,
+            "overdue_bills_amount": 0.0,
+        }
+
+        # Grades submitted for review / reviewed but not yet approved
+        try:
+            from grading.models import Grade
+            year_filter = {"academic_year": current_academic_year} if current_academic_year else {}
+            result["pending_grade_reviews"] = Grade.objects.filter(
+                status="submitted", **year_filter
+            ).count()
+            result["grades_waiting_approval"] = Grade.objects.filter(
+                status="reviewed", **year_filter
+            ).count()
+        except Exception as inner_exc:
+            logger.warning(f"attention_items: grade query failed: {inner_exc}")
+
+        # Outstanding bills / overdue
+        try:
+            from accounting.models import AccountingStudentBill
+            from django.db.models import Sum
+            today = timezone.now().date()
+            unpaid_qs = AccountingStudentBill.objects.filter(
+                outstanding_amount__gt=0,
+            ).exclude(status__in=[
+                AccountingStudentBill.BillStatus.CANCELLED,
+                AccountingStudentBill.BillStatus.PAID,
+            ])
+            if current_academic_year:
+                unpaid_qs = unpaid_qs.filter(academic_year=current_academic_year)
+            result["students_with_unpaid_invoices"] = (
+                unpaid_qs.values("student").distinct().count()
+            )
+            result["overdue_bills_amount"] = float(
+                unpaid_qs.filter(due_date__lt=today).aggregate(
+                    total=Sum("outstanding_amount")
+                )["total"] or 0
+            )
+        except Exception as inner_exc:
+            logger.warning(f"attention_items: billing query failed: {inner_exc}")
+
+        # Students with no recorded guardian
+        try:
+            from students.models import StudentGuardian
+            result["students_missing_guardian"] = (
+                Student.objects.filter(guardians__isnull=True).count()
+            )
+        except Exception as inner_exc:
+            logger.warning(f"attention_items: guardian query failed: {inner_exc}")
+
+        # Pending leave requests
+        try:
+            from hr.models import LeaveRequest
+            result["pending_leave_requests"] = LeaveRequest.objects.filter(
+                status="pending"
+            ).count()
+        except Exception as inner_exc:
+            logger.warning(f"attention_items: leave query failed: {inner_exc}")
+
+        cache.set(cache_key, result, 900)  # 15 minutes
+        return Response(result, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in get_attention_items: {str(e)}")
+        return Response(
+            {
+                "pending_grade_reviews": 0,
+                "grades_waiting_approval": 0,
+                "students_missing_guardian": 0,
+                "students_with_unpaid_invoices": 0,
+                "pending_leave_requests": 0,
+                "overdue_bills_amount": 0.0,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_enrollment_trend(request):
+    """
+    Return cumulative monthly enrollment counts within the current academic year.
+
+    Response:
+    [
+        {"month": "2024-09", "count": 820, "new": 820},
+        {"month": "2024-10", "count": 847, "new": 27},
+        ...
+    ]
+    """
+    try:
+        current_academic_year = _resolve_academic_year(request)
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_enrollment_trend{_year_cache_suffix(current_academic_year)}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        from django.db.models.functions import TruncMonth
+        from django.db.models import Sum
+
+        qs = Enrollment.objects.all()
+        if current_academic_year:
+            qs = qs.filter(academic_year=current_academic_year)
+
+        monthly_data = (
+            qs.annotate(month=TruncMonth("date_enrolled"))
+            .values("month")
+            .annotate(new_count=Count("student", distinct=True))
+            .order_by("month")
+        )
+
+        result = []
+        cumulative = 0
+        for row in monthly_data:
+            if row["month"] is None:
+                continue
+            cumulative += row["new_count"]
+            result.append({
+                "month": row["month"].strftime("%Y-%m"),
+                "count": cumulative,
+                "new": row["new_count"],
+            })
+
+        if not result:
+            total = qs.values("student").distinct().count()
+            if total:
+                result = [{"month": timezone.now().strftime("%Y-%m"), "count": total, "new": total}]
+
+        cache.set(cache_key, result, DASHBOARD_CACHE_TTL)
+        return Response(result, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in get_enrollment_trend: {str(e)}")
+        return Response([], status=status.HTTP_200_OK)

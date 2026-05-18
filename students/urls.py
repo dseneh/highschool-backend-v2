@@ -15,6 +15,8 @@ from students.views.distributions import (
     get_payment_summary,
     get_top_students_by_grade,
     get_honor_distribution,
+    get_attention_items,
+    get_enrollment_trend,
 )
 
 from .views import AttendanceDetailView  # StudentEnrollmentBillDetailView,
@@ -280,5 +282,15 @@ urlpatterns = [
         "students/distributions/honors/",
         get_honor_distribution,
         name="honor_distribution",
+    ),
+    path(
+        "students/distributions/attention-items/",
+        get_attention_items,
+        name="attention_items",
+    ),
+    path(
+        "students/distributions/enrollment-trend/",
+        get_enrollment_trend,
+        name="enrollment_trend",
     ),
 ]
