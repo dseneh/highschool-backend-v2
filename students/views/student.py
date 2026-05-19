@@ -86,6 +86,7 @@ class StudentListView(APIView):
         show_grade_average = _to_bool(request.query_params.get("show_grade_average"), default=False)
         show_balance = _to_bool(request.query_params.get("show_balance"), default=False)
         show_paid = _to_bool(request.query_params.get("show_paid"), default=False)
+        include_stats = _to_bool(request.query_params.get("include_stats"), default=False)
 
         students = Student.objects.select_related(
             "grade_level"
@@ -276,6 +277,21 @@ class StudentListView(APIView):
             if paid_max_value is not None:
                 students = students.filter(**{f"{paid_filter_field}__lte": paid_max_value})
             
+        # Compute enrollment status stats before applying status filter so counts
+        # reflect the full filtered set regardless of which status tab is active.
+        stats_data: dict = {}
+        if include_stats:
+            status_rows = students.values("status").annotate(count=Count("id")).order_by()
+            for row in status_rows:
+                stats_data[row["status"]] = row["count"]
+            stats_data["enrolled_this_year"] = (
+                students.filter(enrollments__academic_year__current=True).distinct().count()
+            )
+            stats_data["not_enrolled_this_year"] = (
+                students.exclude(enrollments__academic_year__current=True).distinct().count()
+            )
+            stats_data["total"] = students.distinct().count()
+
         # Apply status filtering with OR semantics between student-status and enrollment-status buckets.
         if enrollment_statuses or other_statuses:
             status_qs = None
@@ -418,7 +434,10 @@ class StudentListView(APIView):
                 "ranking_lookup": ranking_lookup,
             },
         )
-        return paginator.get_paginated_response(serializer.data)
+        response = paginator.get_paginated_response(serializer.data)
+        if include_stats:
+            response.data["stats"] = stats_data
+        return response
 
     def post(self, request):
         req_data: dict = request.data

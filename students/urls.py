@@ -48,6 +48,7 @@ from .views import (
     # StudentGradesView,  # Removed - use grading app
     StudentListView,
 )
+from .views import DashboardUpcomingView
 
 urlpatterns = [
     path(
@@ -59,6 +60,11 @@ urlpatterns = [
         "students/summary/",
         StudentSummaryView.as_view(),
         name="student_summary",
+    ),
+    path(
+        "students/upcoming/",
+        DashboardUpcomingView.as_view(),
+        name="dashboard_upcoming",
     ),
     path(
         "students/payment-status/",

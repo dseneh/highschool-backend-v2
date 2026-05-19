@@ -10,3 +10,4 @@ from .guardian import *
 # Old grade_book views removed - use grading app views instead
 from .student import *
 from .student_bill import *
+from .upcoming import DashboardUpcomingView

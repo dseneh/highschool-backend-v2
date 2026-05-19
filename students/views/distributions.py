@@ -319,6 +319,7 @@ def get_section_distribution(request):
         ).values(
             'section__id',
             'section__name',
+            'section__grade_level__name',
             'section__grade_level__max_class_capacity'
         ).annotate(
             count=Count('id')
@@ -332,6 +333,7 @@ def get_section_distribution(request):
             
             result.append({
                 'section': dist['section__name'],
+                'grade_level': dist['section__grade_level__name'] or '',
                 'section_id': str(dist['section__id']),
                 'count': count,
                 'capacity': capacity,
