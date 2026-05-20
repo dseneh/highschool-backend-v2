@@ -1,0 +1,16 @@
+We received your EzySchool signup request
+
+Hi {{ user_name }},
+
+Thank you for requesting a workspace for {{ school_name }}. Our onboarding team has received your details and will reach out within one business day.
+
+What happens next:
+- We review your school profile and preferences
+- We confirm your workspace setup plan
+- We help you launch with your team
+
+If you have urgent questions, contact us at {{ support_email }}.
+
+--
+EzySchool
+Powered by {{ dev_name|default:"DewX IT Solutions" }}

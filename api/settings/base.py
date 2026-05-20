@@ -167,28 +167,41 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Email configuration
 # -------------------
-# In development, set EMAIL_BACKEND to console to see emails in terminal.
-# In production, either:
-#   Option A (recommended): set RESEND_API_KEY to use Resend's REST API.
-#   Option B: set EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD for SMTP.
-email_backend_default = (
-    "django.core.mail.backends.console.EmailBackend"
-    if DEBUG
-    else "django.core.mail.backends.smtp.EmailBackend"
-)
+# Local (DEBUG): use Gmail SMTP when EMAIL_HOST_USER + EMAIL_HOST_PASSWORD are set.
+#   Leave RESEND_API_KEY empty locally so mail goes through SMTP, not Resend.
+# Production: RESEND_API_KEY (recommended) or SMTP credentials.
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+_local_smtp_configured = bool(EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
+
+if DEBUG and _local_smtp_configured:
+    email_backend_default = "django.core.mail.backends.smtp.EmailBackend"
+elif DEBUG:
+    email_backend_default = "django.core.mail.backends.console.EmailBackend"
+else:
+    email_backend_default = "django.core.mail.backends.smtp.EmailBackend"
+
 EMAIL_BACKEND = config("EMAIL_BACKEND", default=email_backend_default)
 if not DEBUG and EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = config("EMAIL_HOST", default="smtp.resend.com")
+
+_email_host_default = (
+    "smtp.gmail.com"
+    if DEBUG and _local_smtp_configured
+    else "smtp.resend.com"
+)
+EMAIL_HOST = config("EMAIL_HOST", default=_email_host_default)
 EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
-EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
-EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
-DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@ezyschool.net")
+DEFAULT_FROM_EMAIL = config(
+    "DEFAULT_FROM_EMAIL",
+    default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else "noreply@ezyschool.app",
+)
 EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool")
+ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default="admin@dewx.tech")
+SUPPORT_EMAIL = config("SUPPORT_EMAIL", default="support@ezyschool.app")
 
-# Resend API key (takes priority over SMTP when set)
-# Get yours at https://resend.com/
+# Resend API key (production). Ignored in DEBUG when local SMTP is configured.
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
 
 # Frontend integration

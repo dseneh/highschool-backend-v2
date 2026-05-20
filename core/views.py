@@ -3,6 +3,7 @@ Views for core models (Tenant management)
 """
 
 from django.db import connection
+from django.db.models import Q
 from django.core.cache import cache
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.viewsets import ModelViewSet
@@ -14,7 +15,7 @@ from rest_framework.decorators import (
     action,
 )
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_tenants.utils import schema_context
 from django.contrib.auth import get_user_model
@@ -22,7 +23,7 @@ from django.core.files.base import ContentFile
 from PIL import Image
 from io import BytesIO
 
-from core.models import Tenant
+from core.models import Tenant, SignupRequest
 from core.serializers import (
     TenantSerializer,
     CreateTenantSerializer,
@@ -773,68 +774,78 @@ def invalidate_cache(request):
 
 
 # ---------------------------------------------------------------------------
-# Public signup request (no auth required – marketing form)
+# Signup requests (public create + superadmin management)
 # ---------------------------------------------------------------------------
 
-@api_view(["POST"])
-@permission_classes([AllowAny])
-@authentication_classes([])
-def create_signup_request(request):
+class SignupRequestViewSet(viewsets.ModelViewSet):
     """
-    Public endpoint for the marketing site signup form.
-    Creates a SignupRequest record in the public schema and sends an
-    email notification to the admin team.
-    No authentication or tenant header required.
+    POST /api/v1/signup-requests/ — public marketing form (no auth)
+    GET/PATCH /api/v1/signup-requests/{id}/ — superadmin CRM
+    GET /api/v1/signup-requests/pending-count/ — pending badge count
     """
-    from core.models import SignupRequest
-    from core.serializers import SignupRequestSerializer
-    from django.core.mail import send_mail
-    from django.conf import settings
 
-    serializer = SignupRequestSerializer(data=request.data)
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    queryset = SignupRequest.objects.all().order_by("-submitted_at")
+    lookup_field = "pk"
+    http_method_names = ["get", "post", "patch", "head", "options"]
 
-    instance = serializer.save()
+    def get_queryset(self):
+        validate_tenant_is_in_public_schema()
+        qs = super().get_queryset()
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(school_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+            )
+        return qs
 
-    # Notify admin team
-    try:
-        admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")
-        from_name   = getattr(settings, "EMAIL_FROM_NAME", "EzySchool")
-        from_email  = getattr(settings, "DEFAULT_FROM_EMAIL", f"{from_name} <noreply@ezyschool.net>")
+    def get_serializer_class(self):
+        from core.serializers import SignupRequestAdminSerializer, SignupRequestCreateSerializer
 
-        body = (
-            f"A new school signup request has been submitted on EzySchool.\n\n"
-            f"{'─' * 40}\n"
-            f"CONTACT\n"
-            f"  Name:     {instance.first_name} {instance.last_name}\n"
-            f"  Email:    {instance.email}\n"
-            f"  Phone:    {instance.phone or '—'}\n"
-            f"\nSCHOOL\n"
-            f"  School:   {instance.school_name}\n"
-            f"  Role:     {instance.role_title}\n"
-            f"  Country:  {instance.country}\n"
-            f"  Students: {instance.students_count}\n"
-            f"\nPREFERENCES\n"
-            f"  Workspace: {instance.workspace_slug or '—'}\n"
-            f"  Plan:      {instance.plan or '—'}\n"
-            f"  Notes:     {instance.notes or '—'}\n"
-            f"{'─' * 40}\n"
-            f"Submitted at: {instance.submitted_at.strftime('%Y-%m-%d %H:%M UTC')}\n"
+        if self.action in ("list", "retrieve", "partial_update"):
+            return SignupRequestAdminSerializer
+        return SignupRequestCreateSerializer
+
+    def get_permissions(self):
+        if self.action == "create":
+            return [AllowAny()]
+        return [IsAuthenticated(), IsSuperAdmin()]
+
+    def get_authenticators(self):
+        if getattr(self, "action", None) == "create":
+            return []
+        return super().get_authenticators()
+
+    def create(self, request, *args, **kwargs):
+        from core.serializers import SignupRequestCreateSerializer
+        from common.email_service import (
+            send_signup_request_admin_notification_email,
+            send_signup_request_confirmation_email,
         )
 
-        send_mail(
-            subject=f"[EzySchool] New Signup Request — {instance.school_name}",
-            message=body,
-            from_email=from_email,
-            recipient_list=[admin_email],
-            fail_silently=True,
-        )
-    except Exception:
-        pass  # Email failure must not block a successful submission
+        serializer = SignupRequestCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
 
-    return Response(
-        {"detail": "Request submitted successfully.", "id": instance.pk},
-        status=status.HTTP_201_CREATED,
-    )
+        try:
+            send_signup_request_confirmation_email(instance)
+            send_signup_request_admin_notification_email(instance)
+        except Exception:
+            pass
+
+        return Response(
+            {"detail": "Request submitted successfully.", "id": instance.pk},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["get"], url_path="pending-count")
+    def pending_count(self, request):
+        validate_tenant_is_in_public_schema()
+        count = SignupRequest.objects.filter(status=SignupRequest.STATUS_PENDING).count()
+        return Response({"count": count})
 

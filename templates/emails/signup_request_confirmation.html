@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Signup request received - EzySchool</title>
+  <style>
+    body { margin: 0; padding: 24px 12px; background: #eef2f8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1f2f46; }
+    .card { max-width: 620px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; }
+    .top { padding: 28px; border-bottom: 1px solid #eef1f4; text-align: center; background: linear-gradient(180deg, #f7f9fd 0%, #fff 100%); }
+    .title { margin: 0; font-size: 22px; color: #0b2545; }
+    .content { padding: 26px 28px; }
+    p { margin: 0 0 16px; font-size: 15px; line-height: 1.6; color: #2a3f5f; }
+    .meta { background: #f5f8fd; border: 1px solid #d8e0ef; border-radius: 10px; padding: 14px 16px; margin: 18px 0; }
+    .meta p { margin: 0; font-size: 14px; }
+    .footer { padding: 16px 28px 24px; border-top: 1px solid #eef1f4; text-align: center; }
+    .footer p { margin: 0; font-size: 12px; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      {% if logo_url %}<img src="{{ logo_url }}" alt="EzySchool" style="max-height:44px;margin-bottom:12px;" />{% endif %}
+      <h1 class="title">Request received</h1>
+    </div>
+    <div class="content">
+      <p>Hi {{ user_name }},</p>
+      <p>Thank you for requesting a workspace for <strong>{{ school_name }}</strong>. Our onboarding team has your details and will reach out within <strong>one business day</strong>.</p>
+      <div class="meta">
+        <p><strong>What happens next</strong></p>
+        <p style="margin-top:8px;">We review your school profile, confirm workspace setup, and guide your team through launch.</p>
+      </div>
+      <p>Questions? Email <a href="mailto:{{ support_email }}">{{ support_email }}</a>.</p>
+    </div>
+    <div class="footer">
+      <p>EzySchool · Powered by {{ dev_name|default:"DewX IT Solutions" }}</p>
+    </div>
+  </div>
+</body>
+</html>

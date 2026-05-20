@@ -48,7 +48,7 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
         "product_name": "EzySchool System",
         "dev_name": "DewX IT Solutions",
         "dev_website": "https://www.dewx.tech",
-        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.net"),
+        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app"),
         "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
     }
 
@@ -77,7 +77,7 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
     if parsed_domain and parsed_domain.netloc:
         context["school_website"] = f"{parsed_domain.scheme}://{parsed_domain.netloc}"
     else:
-        context["school_website"] = "https://www.ezyschool.net"
+        context["school_website"] = "https://www.ezyschool.app"
 
     return context
 
@@ -104,7 +104,7 @@ class ResendEmailService:
 
     def __init__(self):
         self.resend_api_key: str = getattr(settings, "RESEND_API_KEY", "").strip()
-        self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@ezyschool.net")
+        self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@ezyschool.app")
         self.from_name: str = getattr(settings, "EMAIL_FROM_NAME", "EzySchool")
         self.email_backend: str = getattr(settings, "EMAIL_BACKEND", "")
         self.email_host: str = getattr(settings, "EMAIL_HOST", "")
@@ -119,6 +119,10 @@ class ResendEmailService:
     def _smtp_is_configured(self) -> bool:
         return bool(self.email_host_user and self.email_host_password)
 
+    def _prefer_local_smtp(self) -> bool:
+        """In DEBUG, send through Django SMTP (e.g. Gmail) when credentials are set."""
+        return bool(getattr(settings, "DEBUG", False) and self._smtp_is_configured)
+
     def send(
         self,
         to: list[str],
@@ -132,6 +136,14 @@ class ResendEmailService:
 
         Returns True on success, False on failure (errors are logged, not raised).
         """
+        if self._prefer_local_smtp():
+            logger.debug(
+                "Using local SMTP (%s) for email to %s",
+                self.email_host or "django backend",
+                to,
+            )
+            return self._send_via_django(to, subject, html_body, text_body, reply_to=reply_to)
+
         if self.resend_api_key:
             return self._send_via_resend(
                 to=to,
@@ -148,7 +160,7 @@ class ResendEmailService:
             )
             return False
 
-        return self._send_via_django(to, subject, html_body, text_body)
+        return self._send_via_django(to, subject, html_body, text_body, reply_to=reply_to)
 
     def _send_via_resend(
         self,
@@ -210,6 +222,7 @@ class ResendEmailService:
         subject: str,
         html_body: str,
         text_body: str,
+        reply_to: Optional[str] = None,
     ) -> bool:
         try:
             msg = EmailMultiAlternatives(
@@ -218,13 +231,15 @@ class ResendEmailService:
                 from_email=self._from_address,
                 to=to,
             )
+            if reply_to:
+                msg.reply_to = [reply_to]
             if html_body:
                 msg.attach_alternative(html_body, "text/html")
             msg.send()
-            logger.debug("Django email backend: sent to %s", to)
+            logger.info("SMTP (%s): sent to %s", self.email_backend, to)
             return True
         except Exception as exc:
-            logger.error("Django email backend: failed to send to %s - %s", to, exc)
+            logger.error("SMTP (%s): failed to send to %s - %s", self.email_backend, to, exc)
             return False
 
 
@@ -293,6 +308,101 @@ def send_password_reset_success_email(user, login_url: str = "", school=None) ->
         subject=f"Password Changed Successfully - {context['school_name']}",
         html_body=html_body,
         text_body=text_body,
+    )
+
+
+def _build_signup_request_email_context(signup_request) -> dict[str, object]:
+    from datetime import datetime
+
+    context: dict[str, object] = {
+        "user_name": signup_request.first_name,
+        "school_name": signup_request.school_name,
+        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app"),
+        "current_year": datetime.now().year,
+        "product_name": "EzySchool",
+        "dev_name": "DewX IT Solutions",
+        "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
+    }
+
+    if not context["logo_url"]:
+        frontend_domain = getattr(settings, "FRONTEND_DOMAIN", "")
+        if frontend_domain:
+            parsed_frontend = urlparse(frontend_domain)
+            if (
+                parsed_frontend.scheme
+                and parsed_frontend.netloc
+                and _is_public_email_asset_host(parsed_frontend.hostname or "")
+            ):
+                context["logo_url"] = f"{parsed_frontend.scheme}://{parsed_frontend.netloc}/img/logo-dark-full.png"
+
+    return context
+
+
+def _format_signup_request_admin_text(signup_request) -> str:
+    frontend = getattr(settings, "FRONTEND_DOMAIN", "").rstrip("/")
+    review_path = f"/admin/signup-requests/{signup_request.pk}"
+    review_url = f"{frontend}{review_path}" if frontend else review_path
+
+    return (
+        f"A new school signup request has been submitted on EzySchool.\n\n"
+        f"{'─' * 40}\n"
+        f"CONTACT\n"
+        f"  Name:     {signup_request.first_name} {signup_request.last_name}\n"
+        f"  Email:    {signup_request.email}\n"
+        f"  Phone:    {signup_request.phone or '—'}\n"
+        f"\nSCHOOL\n"
+        f"  School:   {signup_request.school_name}\n"
+        f"  Role:     {signup_request.role_title}\n"
+        f"  Country:  {signup_request.country}\n"
+        f"  Students: {signup_request.students_count}\n"
+        f"\nPREFERENCES\n"
+        f"  Workspace: {signup_request.workspace_slug or '—'}\n"
+        f"  Plan:      {signup_request.plan or '—'}\n"
+        f"  Notes:     {signup_request.notes or '—'}\n"
+        f"{'─' * 40}\n"
+        f"Submitted at: {signup_request.submitted_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+        f"Review in admin portal:\n{review_url}\n"
+    )
+
+
+def send_signup_request_confirmation_email(signup_request) -> bool:
+    """Send a receipt email to the person who submitted the marketing signup form."""
+    if not signup_request.email:
+        logger.warning("send_signup_request_confirmation_email: missing submitter email")
+        return False
+
+    context = _build_signup_request_email_context(signup_request)
+
+    try:
+        html_body = render_to_string("emails/signup_request_confirmation.html", context)
+        text_body = render_to_string("emails/signup_request_confirmation.txt", context)
+    except Exception as exc:
+        logger.error("send_signup_request_confirmation_email: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[signup_request.email],
+        subject="We received your EzySchool signup request",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
+def send_signup_request_admin_notification_email(signup_request) -> bool:
+    """Notify the platform admin team about a new marketing signup request."""
+    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")
+    if not admin_email:
+        logger.warning("send_signup_request_admin_notification_email: ADMIN_NOTIFICATION_EMAIL is not set")
+        return False
+
+    text_body = _format_signup_request_admin_text(signup_request)
+    service = ResendEmailService()
+    return service.send(
+        to=[admin_email],
+        subject=f"[EzySchool] New Signup Request — {signup_request.school_name}",
+        text_body=text_body,
+        reply_to=signup_request.email,
     )
 
 

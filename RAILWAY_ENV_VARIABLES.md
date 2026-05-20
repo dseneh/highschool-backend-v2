@@ -145,7 +145,25 @@ AUTH_DEBUG_LOGGING=False  # Set to False in production
 # SENTRY_DSN=<your-sentry-dsn>
 ```
 
-### Email Delivery
+### Local development (Gmail SMTP)
+
+```bash
+DEBUG=True
+# Do not set RESEND_API_KEY locally — SMTP is used when credentials are present.
+RESEND_API_KEY=
+
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=you@gmail.com
+EMAIL_HOST_PASSWORD=<google-app-password>
+DEFAULT_FROM_EMAIL=you@gmail.com
+ADMIN_NOTIFICATION_EMAIL=you@gmail.com
+```
+
+Use a [Google App Password](https://myaccount.google.com/apppasswords), not your normal Gmail password.
+
+### Email Delivery (production)
 
 ```bash
 # Recommended: Resend REST API

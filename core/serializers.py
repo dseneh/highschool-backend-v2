@@ -530,11 +530,9 @@ class TenantInfoSearchResultSerializer(serializers.Serializer):
     data = serializers.DictField(help_text="User/Student/Staff data")
 
 
-class SignupRequestSerializer(serializers.ModelSerializer):
-    """
-    Serializer for public marketing signup requests.
-    Write-only fields (read_only_fields excluded from creation).
-    """
+class SignupRequestCreateSerializer(serializers.ModelSerializer):
+    """Public marketing signup form (write-only)."""
+
     class Meta:
         model = SignupRequest
         fields = [
@@ -542,4 +540,23 @@ class SignupRequestSerializer(serializers.ModelSerializer):
             "school_name", "role_title", "country", "students_count",
             "workspace_slug", "plan", "notes",
         ]
+
+
+class SignupRequestAdminSerializer(serializers.ModelSerializer):
+    """Admin list/detail/update for signup requests."""
+
+    class Meta:
+        model = SignupRequest
+        fields = [
+            "id",
+            "first_name", "last_name", "email", "phone",
+            "school_name", "role_title", "country", "students_count",
+            "workspace_slug", "plan", "notes",
+            "status", "submitted_at",
+        ]
+        read_only_fields = ["id", "submitted_at"]
+
+
+# Backwards-compatible alias
+SignupRequestSerializer = SignupRequestCreateSerializer
 

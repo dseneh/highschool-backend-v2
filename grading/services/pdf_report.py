@@ -775,7 +775,7 @@ class StudentReportCardPDF:
         now_local = datetime.now(user_tz)
 
         footer_text = (
-            f"EzySchool • Easy School Management System • www.ezyschool.net<br/>"
+            f"EzySchool • Easy School Management System • www.ezyschool.app<br/>"
             f"Generated: {now_local.strftime('%b %d, %Y %I:%M %p')}"
         )
         footer = Paragraph(footer_text, self.footer_style)
