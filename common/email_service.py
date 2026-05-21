@@ -389,6 +389,50 @@ def send_signup_request_confirmation_email(signup_request) -> bool:
     )
 
 
+def send_contact_inquiry_emails(*, name: str, email: str, school_name: str, topic: str, message: str) -> bool:
+    """Notify admin and send receipt for a marketing contact form submission."""
+    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")
+    support_email = getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app")
+    topic_labels = {
+        "general": "General question",
+        "sales": "Sales & pricing",
+        "support": "Existing customer support",
+        "migration": "Data migration",
+    }
+    topic_label = topic_labels.get(topic, topic)
+    school_line = school_name.strip() or "—"
+
+    admin_text = (
+        f"New EzySchool contact form message\n\n"
+        f"Name:   {name}\n"
+        f"Email:  {email}\n"
+        f"School: {school_line}\n"
+        f"Topic:  {topic_label}\n\n"
+        f"Message:\n{message}\n"
+    )
+    receipt_text = (
+        f"Hi {name},\n\n"
+        f"Thanks for contacting EzySchool. We received your message about "
+        f"{topic_label.lower()} and will reply within one business day.\n\n"
+        f"Your message:\n{message}\n\n"
+        f"If you need urgent help, email {support_email}.\n"
+    )
+
+    service = ResendEmailService()
+    admin_ok = service.send(
+        to=[admin_email],
+        subject=f"[EzySchool] Contact — {topic_label}",
+        text_body=admin_text,
+        reply_to=email,
+    )
+    receipt_ok = service.send(
+        to=[email],
+        subject="We received your message — EzySchool",
+        text_body=receipt_text,
+    )
+    return admin_ok and receipt_ok
+
+
 def send_signup_request_admin_notification_email(signup_request) -> bool:
     """Notify the platform admin team about a new marketing signup request."""
     admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")

@@ -16,6 +16,7 @@ from rest_framework.decorators import (
 )
 from rest_framework.response import Response
 from rest_framework import status, viewsets
+from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_tenants.utils import schema_context
 from django.contrib.auth import get_user_model
@@ -848,4 +849,36 @@ class SignupRequestViewSet(viewsets.ModelViewSet):
         validate_tenant_is_in_public_schema()
         count = SignupRequest.objects.filter(status=SignupRequest.STATUS_PENDING).count()
         return Response({"count": count})
+
+
+class ContactInquiryView(APIView):
+    """
+    POST /api/v1/contact-inquiries/ — public marketing contact form (no auth).
+    Sends notification + receipt emails; does not persist to the database.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        from core.serializers import ContactInquirySerializer
+        from common.email_service import send_contact_inquiry_emails
+
+        validate_tenant_is_in_public_schema()
+        serializer = ContactInquirySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            send_contact_inquiry_emails(
+                name=data["name"],
+                email=data["email"],
+                school_name=data.get("school_name") or "",
+                topic=data["topic"],
+                message=data["message"],
+            )
+        except Exception:
+            pass
+
+        return Response({"detail": "Message sent successfully."}, status=status.HTTP_201_CREATED)
 

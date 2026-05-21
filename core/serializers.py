@@ -560,3 +560,20 @@ class SignupRequestAdminSerializer(serializers.ModelSerializer):
 # Backwards-compatible alias
 SignupRequestSerializer = SignupRequestCreateSerializer
 
+
+class ContactInquirySerializer(serializers.Serializer):
+    """Public marketing contact form (email only — not persisted)."""
+
+    TOPIC_CHOICES = [
+        ("general", "General question"),
+        ("sales", "Sales & pricing"),
+        ("support", "Existing customer support"),
+        ("migration", "Data migration"),
+    ]
+
+    name = serializers.CharField(max_length=120)
+    email = serializers.EmailField()
+    school_name = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    topic = serializers.ChoiceField(choices=TOPIC_CHOICES)
+    message = serializers.CharField(max_length=5000)
+
