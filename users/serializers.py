@@ -61,35 +61,58 @@ class UserSerializer(serializers.ModelSerializer):
         except Exception:
             return []
     
+    def _tenant_list_payload(self, tenant, *, schema_name=None, workspace=None):
+        """Build a tenant dict for login/workspace picker responses."""
+        schema = schema_name or tenant.schema_name
+        ws = workspace or tenant.schema_name
+        return {
+            'id': str(tenant.id),
+            'id_number': getattr(tenant, 'id_number', None),
+            'schema_name': schema,
+            'workspace': ws,
+            'name': tenant.name,
+            'short_name': getattr(tenant, 'short_name', None),
+            'logo': tenant.logo.url if tenant.logo else None,
+            'status': getattr(tenant, 'status', None),
+            'active': getattr(tenant, 'active', None),
+            'phone': getattr(tenant, 'phone', None),
+            'email': getattr(tenant, 'email', None),
+            'website': getattr(tenant, 'website', None),
+            'address': getattr(tenant, 'address', None),
+            'city': getattr(tenant, 'city', None),
+            'state': getattr(tenant, 'state', None),
+            'country': getattr(tenant, 'country', None),
+            'postal_code': getattr(tenant, 'postal_code', None),
+        }
+
     def get_tenants(self, obj):
         """
         Get list of tenants (schools) this user belongs to.
         Useful for parents who may have children in multiple schools,
         and for workspace/school selection in the frontend.
-        
-        Returns list of tenants where the user has UserTenantPermissions.
+
+        Superadmins receive every active tenant. Other users only receive
+        tenants where they have UserTenantPermissions (capped at 20).
         """
         try:
             from core.models import Tenant
             from tenant_users.permissions.models import UserTenantPermissions
             from django_tenants.utils import get_public_schema_name, schema_context
-            from django.db import connection
-            
-            # Get all tenants (excluding public)
+
             public_schema = get_public_schema_name()
             all_tenants = Tenant.objects.exclude(schema_name=public_schema).exclude(status='deleted')
-            
+            is_global_superadmin = (
+                obj.role == Roles.SUPERADMIN or bool(getattr(obj, 'is_superuser', False))
+            )
+
             result = []
-            
+
             # Check if user should have access to public/admin schema
-            # Include for superusers or users with explicit public schema permissions
+            # Include for superadmins, superusers, or explicit public schema permissions
             try:
-                include_admin_schema = False
-                
-                # Check if user is superuser
-                if obj.is_superuser:
-                    include_admin_schema = True
-                else:
+                include_admin_schema = is_global_superadmin
+
+                if not include_admin_schema:
                     # Check if user has explicit permissions in public schema
                     with schema_context(public_schema):
                         include_admin_schema = UserTenantPermissions.objects.filter(
@@ -100,25 +123,13 @@ class UserSerializer(serializers.ModelSerializer):
                 if include_admin_schema:
                     try:
                         public_tenant = Tenant.objects.get(schema_name=public_schema)
-                        result.append({
-                            'id': str(public_tenant.id),
-                            'id_number': getattr(public_tenant, 'id_number', None),
-                            'schema_name': 'admin',  # Display as "admin" instead of "public"
-                            'workspace': 'admin',
-                            'name': public_tenant.name or 'Admin',
-                            'short_name': getattr(public_tenant, 'short_name', None),
-                            'logo': public_tenant.logo.url if public_tenant.logo else None,
-                            'phone': getattr(public_tenant, 'phone', None),
-                            'email': getattr(public_tenant, 'email', None),
-                            'website': getattr(public_tenant, 'website', None),
-                            'address': getattr(public_tenant, 'address', None),
-                            'city': getattr(public_tenant, 'city', None),
-                            'state': getattr(public_tenant, 'state', None),
-                            'country': getattr(public_tenant, 'country', None),
-                            'postal_code': getattr(public_tenant, 'postal_code', None),
-                            'status': getattr(public_tenant, 'status', None),
-                            'active': getattr(public_tenant, 'active', None),
-                        })
+                        admin_payload = self._tenant_list_payload(
+                            public_tenant,
+                            schema_name='admin',
+                            workspace='admin',
+                        )
+                        admin_payload['name'] = public_tenant.name or 'Admin'
+                        result.append(admin_payload)
                     except Tenant.DoesNotExist:
                         # If public tenant doesn't exist, create a placeholder entry
                         result.append({
@@ -144,43 +155,26 @@ class UserSerializer(serializers.ModelSerializer):
                 # If there's an error checking admin access, skip it
                 pass
             
-            # Check each tenant to see if user has access
+            tenant_payload_limit = 20
+
             for tenant in all_tenants:
                 try:
-                    # Switch to tenant schema to check UserTenantPermissions
-                    with schema_context(tenant.schema_name):
-                        # Check if user has permission entry in this tenant
-                        has_access = UserTenantPermissions.objects.filter(
-                            profile_id=obj.id
-                        ).exists()
-                        
-                        if has_access:
-                            result.append({
-                                'id': str(tenant.id),
-                                'id_number': getattr(tenant, 'id_number', None),
-                                'schema_name': tenant.schema_name,
-                                'workspace': tenant.schema_name,
-                                'name': tenant.name,
-                                'short_name': getattr(tenant, 'short_name', None),
-                                'logo': tenant.logo.url if tenant.logo else None,
-                                'status': getattr(tenant, 'status', None),
-                                'active': getattr(tenant, 'active', None),
-                                'phone': getattr(tenant, 'phone', None),
-                                'email': getattr(tenant, 'email', None),
-                                'website': getattr(tenant, 'website', None),
-                                'address': getattr(tenant, 'address', None),
-                                'city': getattr(tenant, 'city', None),
-                                'state': getattr(tenant, 'state', None),
-                                'country': getattr(tenant, 'country', None),
-                                'postal_code': getattr(tenant, 'postal_code', None),
-                            })
-                except Exception as tenant_error:
-                    # Skip this tenant if there's an error
+                    if is_global_superadmin:
+                        has_access = True
+                    else:
+                        with schema_context(tenant.schema_name):
+                            has_access = UserTenantPermissions.objects.filter(
+                                profile_id=obj.id
+                            ).exists()
+
+                    if has_access:
+                        result.append(self._tenant_list_payload(tenant))
+                except Exception:
                     continue
-                
-                if len(result) >= 20:  # Limit to 20 to avoid huge payloads
+
+                if not is_global_superadmin and len(result) >= tenant_payload_limit:
                     break
-            
+
             return result
         except Exception as e:
             # If there's any error, return empty list
