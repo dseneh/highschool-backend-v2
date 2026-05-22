@@ -22,6 +22,13 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
             "effect": "allow",
             "condition": "is_role_in:superadmin",
         },
+        # Any signed-in user can read their own profile from GET /auth/users/current/
+        {
+            "action": ["get"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_current_user_endpoint",
+        },
         # ADMIN: Can list, retrieve, create, update, delete, and recreate users in their tenant
         {
             "action": ["list", "retrieve", "create", "update", "partial_update", "delete", "current", "password_change", "change_status", "password_reset_default", "password_reset_request", "password_reset_confirm", "recreate", "privileges_catalog", "special_privileges", "get", "post", "put", "patch"],
@@ -52,6 +59,10 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
         },
     ]
 
+    def is_current_user_endpoint(self, request, view, action) -> bool:
+        """True for the stateless current-user API (no id in the URL path)."""
+        return view.__class__.__name__ == "CurrentUserView"
+
     def is_own_profile(self, request, view, action) -> bool:
         """Check if user is accessing their own profile"""
         user = self._get_user(request)
@@ -60,9 +71,10 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
         
         # Check if the id_number in the URL matches the current user
         id_number = view.kwargs.get('id_number') or view.kwargs.get('pk')
-        
+
+        # GET /auth/users/current/ has no URL user id — always the authenticated user.
         if not id_number:
-            return False
+            return view.__class__.__name__ == 'CurrentUserView'
         
         # Direct match with 'current', user ID, id_number, or username
         # Convert to string for comparison to handle different types

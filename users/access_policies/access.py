@@ -8,6 +8,7 @@ from rest_framework.permissions import SAFE_METHODS
 
 from common.status import Roles  # your role enum
 from users.models import User
+from users.tenant_access import is_global_superadmin
 
 
 class BaseSchoolAccessPolicy(AccessPolicy):
@@ -73,7 +74,7 @@ class BaseSchoolAccessPolicy(AccessPolicy):
 
         user_role = self._normalize_role(getattr(user, "role", ""))
 
-        if user_role == self._normalize_role(Roles.SUPERADMIN) or user.is_superuser:
+        if is_global_superadmin(user) or user.is_superuser:
             return True
 
         allowed: List[str] = [self._normalize_role(r) for r in roles.split(",") if r.strip()]

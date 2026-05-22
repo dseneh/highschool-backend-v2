@@ -168,6 +168,28 @@ PRIVILEGES: Dict[str, PrivilegeDef] = {
         label="Cancel transactions",
         description="Can cancel finance transactions.",
     ),
+
+    # NOTIFICATIONS
+    "NOTIFICATION_VIEW": PrivilegeDef(
+        code="NOTIFICATION_VIEW",
+        label="View notifications",
+        description="Can view in-app notification inbox.",
+    ),
+    "NOTIFICATION_SEND": PrivilegeDef(
+        code="NOTIFICATION_SEND",
+        label="Send notifications",
+        description="Can send school-wide or role-targeted announcements.",
+    ),
+    "NOTIFICATION_SEND_CLASS": PrivilegeDef(
+        code="NOTIFICATION_SEND_CLASS",
+        label="Send class notifications",
+        description="Can send notifications to assigned class sections only.",
+    ),
+    "NOTIFICATION_MANAGE": PrivilegeDef(
+        code="NOTIFICATION_MANAGE",
+        label="Manage notification rules",
+        description="Can configure automated notification rules and tenant settings.",
+    ),
 }
 
 

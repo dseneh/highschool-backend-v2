@@ -95,11 +95,14 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
         if not tenant:
             return None
 
+        from users.tenant_access import is_global_superadmin
+
         user_role = str(getattr(user, 'role', '') or '').lower()
-        is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or user_role in {
-            Roles.ADMIN,
-            Roles.SUPERADMIN,
-        }
+        is_tenant_admin = (
+            is_global_superadmin(user)
+            or bool(getattr(user, 'is_superuser', False))
+            or user_role in {Roles.ADMIN, Roles.SUPERADMIN}
+        )
 
         # Maintenance mode: only tenant admins may log in.
         if getattr(tenant, 'maintenance_mode', False):

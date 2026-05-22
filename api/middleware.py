@@ -6,7 +6,8 @@ from django_tenants.middleware.main import TenantMainMiddleware
 from django_tenants.utils import get_public_schema_name
 from django.http import Http404
 from core.models import Tenant
-from rest_framework_simplejwt.authentication import JWTAuthentication
+from api.authentication import TenantAwareJWTAuthentication
+from users.tenant_access import is_global_superadmin
 
 
 class HeaderBasedTenantMiddleware(TenantMainMiddleware):
@@ -83,19 +84,10 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         return False
 
     def _resolve_api_user(self, request):
-        from django_tenants.utils import schema_context
         try:
-            auth_result = JWTAuthentication().authenticate(request)
+            auth_result = TenantAwareJWTAuthentication().authenticate(request)
         except Exception:
             auth_result = None
-
-        if not auth_result:
-            # Users may live in the public schema; retry there if current schema is a tenant schema
-            try:
-                with schema_context(get_public_schema_name()):
-                    auth_result = JWTAuthentication().authenticate(request)
-            except Exception:
-                return None
 
         if not auth_result:
             return None
@@ -114,7 +106,11 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             return False
 
         role = str(getattr(user, 'role', '') or '').lower()
-        is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or role in {'admin', 'superadmin'}
+        is_tenant_admin = (
+            is_global_superadmin(user)
+            or bool(getattr(user, 'is_superuser', False))
+            or role in {'admin', 'superadmin'}
+        )
         allow_tenant_admins = bool(getattr(tenant, 'disabled_access_allow_tenant_admins', True))
 
         allowed_users = {
@@ -133,6 +129,23 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
 
         is_selected_user = bool(allowed_users.intersection(candidates))
         return (allow_tenant_admins and is_tenant_admin) or is_selected_user
+
+    def _ensure_superadmin_tenant_access(self, request):
+        """Link global superadmins to the active tenant so tenant-scoped APIs succeed."""
+        if not request.path.startswith('/api/'):
+            return
+
+        tenant = getattr(request, 'tenant', None)
+        if not tenant or getattr(tenant, 'schema_name', None) == get_public_schema_name():
+            return
+
+        user = self._resolve_api_user(request)
+        if not user:
+            return
+
+        from users.tenant_access import ensure_global_superadmin_tenant_membership
+
+        ensure_global_superadmin_tenant_membership(user, tenant)
 
     def _enforce_tenant_runtime_controls(self, request):
         path = request.path
@@ -173,7 +186,11 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             user = self._resolve_api_user(request)
             if user:
                 role = str(getattr(user, 'role', '') or '').lower()
-                is_tenant_admin = bool(getattr(user, 'is_superuser', False)) or role in {'admin', 'superadmin'}
+                is_tenant_admin = (
+                    is_global_superadmin(user)
+                    or bool(getattr(user, 'is_superuser', False))
+                    or role in {'admin', 'superadmin'}
+                )
                 if is_tenant_admin:
                     return None
 
@@ -207,6 +224,7 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             if response is not None:
                 return response
 
+            self._ensure_superadmin_tenant_access(request)
             return self._enforce_tenant_runtime_controls(request)
         except Exception as exc:
             # If it's an API endpoint and we have a DRF or Http404 exception, handle it

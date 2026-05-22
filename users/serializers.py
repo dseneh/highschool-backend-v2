@@ -101,9 +101,9 @@ class UserSerializer(serializers.ModelSerializer):
 
             public_schema = get_public_schema_name()
             all_tenants = Tenant.objects.exclude(schema_name=public_schema).exclude(status='deleted')
-            is_global_superadmin = (
-                obj.role == Roles.SUPERADMIN or bool(getattr(obj, 'is_superuser', False))
-            )
+            from users.tenant_access import is_global_superadmin as _is_global_superadmin
+
+            is_global_superadmin = _is_global_superadmin(obj)
 
             result = []
 
@@ -336,8 +336,9 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['first_name'] = user.first_name or ''
         token['last_name'] = user.last_name or ''
         token['is_active'] = user.is_active
-        token['is_superuser'] = user.is_superuser
-        token['is_staff'] = user.is_staff
+        # Global superadmin role must not depend on tenant-scoped UserTenantPermissions.
+        token['is_superuser'] = user.role == Roles.SUPERADMIN or bool(user.is_superuser)
+        token['is_staff'] = user.role == Roles.SUPERADMIN or bool(user.is_staff)
         return token
     
     def __init__(self, *args, **kwargs):
