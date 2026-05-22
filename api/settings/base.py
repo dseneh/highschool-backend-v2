@@ -90,6 +90,7 @@ TENANT_APPS = [
     "settings",  # Tenant-specific settings (grading settings)
     "reports",  # Reports (transaction reporting, exports, placeholders)
     "defaults",  # Default data creation for new tenants
+    "notifications",  # In-app notifications, announcements, email delivery
 ]
 
 # INSTALLED_APPS: Automatically constructed from SHARED_APPS and TENANT_APPS

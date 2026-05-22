@@ -70,3 +70,41 @@ def log_grade_history(sender, instance, created, **kwargs):
                 changed_by=instance.updated_by,
                 change_type=change_type
             )
+
+        _maybe_notify_grade_published(instance, old_status)
+
+
+def _maybe_notify_grade_published(grade, old_status):
+    from grading.models import Grade as GradeModel
+
+    if grade.status != GradeModel.Status.APPROVED:
+        return
+    if old_status == GradeModel.Status.APPROVED:
+        return
+
+    try:
+        from notifications.services.dispatch import dispatch_from_rule
+        from notifications.models import NotificationRule
+        from students.models import Student
+
+        student = getattr(grade, "student", None)
+        if not student:
+            student = Student.objects.filter(id=grade.student_id).first()
+        if not student:
+            return
+        student_name = student.get_full_name() if hasattr(student, "get_full_name") else str(student)
+        dispatch_from_rule(
+            NotificationRule.EventType.GRADE_PUBLISHED,
+            {
+                "student_name": student_name,
+                "created_by": grade.updated_by,
+                "audience": {
+                    "scope": "student_and_parents",
+                    "student_ids": [str(student.id)],
+                },
+            },
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("grade_published notification failed")

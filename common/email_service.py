@@ -450,6 +450,45 @@ def send_signup_request_admin_notification_email(signup_request) -> bool:
     )
 
 
+def send_notification_email(
+    user,
+    subject: str,
+    body: str,
+    category: str = "announcement",
+    school=None,
+    action_url: str = "",
+) -> bool:
+    """Send a school notification/announcement email to a user."""
+    if not user.email or str(user.email).endswith("@local.user"):
+        logger.info(
+            "send_notification_email: skipping user %s due to missing/placeholder email",
+            getattr(user, "username", user.pk),
+        )
+        return False
+
+    context = _build_branding_context(user, school)
+    context["subject"] = subject
+    context["body"] = body
+    context["category"] = category
+    context["action_url"] = action_url or context.get("school_website", "")
+
+    try:
+        html_body = render_to_string("emails/notifications/announcement.html", context)
+        text_body = render_to_string("emails/notifications/announcement.txt", context)
+    except Exception as exc:
+        logger.error("send_notification_email: template render error - %s", exc)
+        text_body = f"{subject}\n\n{body}\n"
+        html_body = None
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 def send_account_created_email(
     user,
     temporary_password: str,

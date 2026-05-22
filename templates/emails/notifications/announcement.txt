@@ -1,0 +1,15 @@
+{{ subject }}
+
+Hi {{ user_name }},
+
+{{ body }}
+
+{% if action_url %}View details: {{ action_url }}
+
+{% endif %}You are receiving this message from {{ school_name|default:"your school" }} via EzySchool.
+
+Need help? Contact: {{ support_email }}
+
+--
+{{ school_name|default:"EzySchool" }}
+Powered by {{ dev_name|default:"DewX IT Solutions" }}
