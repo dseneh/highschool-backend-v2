@@ -504,46 +504,71 @@ def search_tenant_info(request):
                 "is_active",
             )
 
+            from users.tenant_access import is_global_superadmin
+
             for user in users:
                 tenant_infos = []
+                is_platform_superadmin = is_global_superadmin(user)
 
-                # Include admin workspace for superusers.
-                if user.is_superuser:
+                # Platform superadmins and public-schema superusers get admin workspace.
+                if is_platform_superadmin or user.is_superuser:
                     tenant_infos.append(public_tenant_info)
 
-                # Include tenant workspaces where this user has tenant permissions.
-                try:
-                    from tenant_users.permissions.models import UserTenantPermissions
-
+                if is_platform_superadmin:
                     for tenant in tenants:
-                        with schema_context(tenant.schema_name):
-                            if UserTenantPermissions.objects.filter(
-                                profile_id=user.id
-                            ).exists():
-                                tenant_infos.append(
-                                    {
-                                        "id": str(tenant.id),
-                                        "schema_name": tenant.schema_name,
-                                        "name": tenant.name,
-                                        "short_name": tenant.short_name,
-                                        "id_number": getattr(tenant, "id_number", None),
-                                        "phone": getattr(tenant, "phone", None),
-                                        "email": getattr(tenant, "email", None),
-                                        "website": getattr(tenant, "website", None),
-                                        "address": getattr(tenant, "address", None),
-                                        "city": getattr(tenant, "city", None),
-                                        "state": getattr(tenant, "state", None),
-                                        "country": getattr(tenant, "country", None),
-                                        "postal_code": getattr(tenant, "postal_code", None),
-                                        "status": getattr(tenant, "status", None),
-                                        "active": getattr(tenant, "active", None),
-                                        "logo": tenant.logo.url if getattr(tenant, "logo", None) else None,
-                                    }
-                                )
-                except Exception:
-                    # Fallback to admin/public tenant when permission lookup fails.
-                    if not tenant_infos:
-                        tenant_infos.append(public_tenant_info)
+                        tenant_infos.append(
+                            {
+                                "id": str(tenant.id),
+                                "schema_name": tenant.schema_name,
+                                "name": tenant.name,
+                                "short_name": tenant.short_name,
+                                "id_number": getattr(tenant, "id_number", None),
+                                "phone": getattr(tenant, "phone", None),
+                                "email": getattr(tenant, "email", None),
+                                "website": getattr(tenant, "website", None),
+                                "address": getattr(tenant, "address", None),
+                                "city": getattr(tenant, "city", None),
+                                "state": getattr(tenant, "state", None),
+                                "country": getattr(tenant, "country", None),
+                                "postal_code": getattr(tenant, "postal_code", None),
+                                "status": getattr(tenant, "status", None),
+                                "active": getattr(tenant, "active", None),
+                                "logo": tenant.logo.url if getattr(tenant, "logo", None) else None,
+                            }
+                        )
+                else:
+                    # Include tenant workspaces where this user has tenant permissions.
+                    try:
+                        from tenant_users.permissions.models import UserTenantPermissions
+
+                        for tenant in tenants:
+                            with schema_context(tenant.schema_name):
+                                if UserTenantPermissions.objects.filter(
+                                    profile_id=user.id
+                                ).exists():
+                                    tenant_infos.append(
+                                        {
+                                            "id": str(tenant.id),
+                                            "schema_name": tenant.schema_name,
+                                            "name": tenant.name,
+                                            "short_name": tenant.short_name,
+                                            "id_number": getattr(tenant, "id_number", None),
+                                            "phone": getattr(tenant, "phone", None),
+                                            "email": getattr(tenant, "email", None),
+                                            "website": getattr(tenant, "website", None),
+                                            "address": getattr(tenant, "address", None),
+                                            "city": getattr(tenant, "city", None),
+                                            "state": getattr(tenant, "state", None),
+                                            "country": getattr(tenant, "country", None),
+                                            "postal_code": getattr(tenant, "postal_code", None),
+                                            "status": getattr(tenant, "status", None),
+                                            "active": getattr(tenant, "active", None),
+                                            "logo": tenant.logo.url if getattr(tenant, "logo", None) else None,
+                                        }
+                                    )
+                    except Exception:
+                        if not tenant_infos:
+                            tenant_infos.append(public_tenant_info)
 
                 if not tenant_infos:
                     tenant_infos.append(public_tenant_info)

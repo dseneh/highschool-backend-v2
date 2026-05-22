@@ -7,8 +7,7 @@ Replaces the stock ``auditlog.middleware.AuditlogMiddleware`` in MIDDLEWARE.
 
 from django.contrib.auth import get_user_model
 from auditlog.middleware import AuditlogMiddleware
-from rest_framework_simplejwt.authentication import JWTAuthentication
-from django_tenants.utils import get_public_schema_name, schema_context
+from api.authentication import TenantAwareJWTAuthentication
 
 from common.audit_utils import extract_device_metadata, get_client_ip
 from common.geoip import resolve_location
@@ -28,17 +27,9 @@ class AuditlogDeviceMiddleware(AuditlogMiddleware):
         so the correct actor is stored in the audit log.
         """
         try:
-            auth_result = JWTAuthentication().authenticate(request)
+            auth_result = TenantAwareJWTAuthentication().authenticate(request)
         except Exception:
             auth_result = None
-
-        if not auth_result:
-            # Users may exist in the public schema; retry there if needed.
-            try:
-                with schema_context(get_public_schema_name()):
-                    auth_result = JWTAuthentication().authenticate(request)
-            except Exception:
-                return None
 
         if not auth_result:
             return None

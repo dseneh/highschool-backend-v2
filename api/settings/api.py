@@ -8,7 +8,7 @@ from decouple import config
 # REST Framework configuration
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "api.authentication.TenantAwareJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": [
@@ -121,6 +121,12 @@ if _DEBUG:
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://*.localhost:3000",
+        # Wildcard dev domains that resolve to 127.0.0.1 — use these for
+        # local cross-subdomain testing (cookie sharing across *.lvh.me).
+        "http://*.lvh.me:3000",
+        "http://lvh.me:3000",
+        "http://*.localtest.me:3000",
+        "http://localtest.me:3000",
         "http://localhost:8081",  # Expo dev
         "http://127.0.0.1:8081",
     ]

@@ -217,6 +217,114 @@ class Domain(DomainMixin):
         verbose_name_plural = "Domains"
 
 
+class PlatformBanner(models.Model):
+    """Cross-tenant banner created by platform superadmins (e.g. system
+    maintenance windows, billing reminders to school admins, etc.).
+
+    Lives in the public schema so a single banner can target users across
+    multiple tenant workspaces. Per-user dismissal state is tracked in
+    :class:`PlatformBannerDismissal` (also in the public schema).
+    """
+
+    VARIANT_INFO = "info"
+    VARIANT_WARNING = "warning"
+    VARIANT_ERROR = "error"
+    VARIANT_SUCCESS = "success"
+    VARIANT_CHOICES = [
+        (VARIANT_INFO, "Info"),
+        (VARIANT_WARNING, "Warning"),
+        (VARIANT_ERROR, "Error"),
+        (VARIANT_SUCCESS, "Success"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True, default="")
+    action_url = models.CharField(max_length=500, blank=True, default="")
+
+    variant = models.CharField(
+        max_length=16, choices=VARIANT_CHOICES, default=VARIANT_INFO
+    )
+    dismissible = models.BooleanField(default=True)
+    starts_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the banner becomes visible. Null = visible immediately.",
+    )
+    ends_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="When the banner stops showing. Null = no auto-expiration.",
+    )
+
+    # ---- Targeting ----
+    # Empty target_tenants = ALL tenants. Otherwise restrict to listed schemas.
+    target_tenants = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of tenant schema_names to target. Empty = all tenants.",
+    )
+    # Empty target_roles = ALL roles. Otherwise restrict to e.g. ["admin"].
+    target_roles = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='List of role names to target, e.g. ["admin"]. Empty = all roles.',
+    )
+
+    active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_platform_banners",
+    )
+
+    class Meta:
+        db_table = "platform_banner"
+        verbose_name = "Platform Banner"
+        verbose_name_plural = "Platform Banners"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["active", "ends_at"]),
+        ]
+
+    def __str__(self):
+        return self.title
+
+
+class PlatformBannerDismissal(models.Model):
+    """Per-user dismissal record for a :class:`PlatformBanner`."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    banner = models.ForeignKey(
+        PlatformBanner,
+        on_delete=models.CASCADE,
+        related_name="dismissals",
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="platform_banner_dismissals",
+    )
+    dismissed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "platform_banner_dismissal"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["banner", "user"],
+                name="uniq_platform_banner_dismissal",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["user", "banner"]),
+        ]
+
+
 class SignupRequest(models.Model):
     """
     Pre-tenant signup request submitted via the public marketing form.
