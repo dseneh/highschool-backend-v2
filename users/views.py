@@ -1,7 +1,7 @@
 """
 Views for authentication and user management
 """
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -693,52 +693,123 @@ class TenantUsersView(APIView):
 class GlobalUserCreateView(APIView):
     """
     Create a user in the public schema only (no tenant membership).
-    
-    This endpoint creates a user that exists globally but is not assigned to any tenant.
-    Use the TenantUserCreateView to create a user and add them to a tenant.
 
-    Username defaults to id_number if not provided. Users can change their username later.
-    Password defaults to id_number with is_default_password=True flag.
-    
+    This endpoint creates a user that exists globally but is not assigned to any
+    per-tenant person record. The admin workspace uses it to provision platform
+    accounts (global admins, viewers, and superadmins).
+
+    Username defaults to id_number if not provided. Password defaults to
+    id_number (with is_default_password=True) unless one is explicitly provided.
+
+    When ``role == "superadmin"``, the user is provisioned via
+    ``User.objects.create_superuser`` so they receive ``is_staff=True`` and
+    ``is_superuser=True`` on the public tenant's UserTenantPermissions. The
+    auth middleware will then auto-link them into other tenants on demand.
+
     POST /api/v1/auth/users/global/
     {
-        "id_number": "123456",
-        "email": "student@example.com",
-        "first_name": "John",
+        "id_number": "admin002",
+        "email": "admin@example.com",
+        "first_name": "Jane",
         "last_name": "Doe",
-        "gender": "M",
-        "account_type": "STUDENT",
-        "role": "STUDENT",
-        "username": "student01"  # Optional - defaults to id_number
-    }
-    
-    Response:
-    HTTP 201 Created
-    {
-        "id": 1,
-        "username": "123456",  # Auto-generated from id_number if not provided
-        "id_number": "123456",
-        "email": "student@example.com",
-        ...
-        "is_default_password": true
+        "gender": "female",
+        "account_type": "global",
+        "role": "admin" | "superadmin" | "viewer",
+        "username": "jane.doe",     # Optional, defaults to id_number
+        "password": "...",           # Optional, defaults to id_number
+        "notify_user": true          # (reserved for future email notification)
     }
     """
     permission_classes = [UserAccessPolicy]
-    
+
     def post(self, request):
         """Create a global user (public schema only)."""
         with schema_context('public'):
-            # Default username to id_number if not provided
             data = request.data.copy()
-            if not data.get('username') and data.get('id_number'):
-                data['username'] = build_unique_username(str(data['id_number']))
-            
-            serializer = UserCreateSerializer(data=data)
-            if serializer.is_valid():
-                user = serializer.save()
-                response_serializer = UserSerializer(user, context={'request': request})
-                return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            id_number = (data.get('id_number') or '').strip()
+            if not id_number:
+                return Response(
+                    {"id_number": ["ID number is required."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not data.get('username'):
+                data['username'] = build_unique_username(str(id_number))
+
+            # Normalize account_type / role to lowercase since the enums on
+            # the backend are lowercase. The UI sometimes sends them in mixed
+            # case (legacy STUDENT/STAFF etc.); we accept both.
+            account_type = str(data.get('account_type') or '').strip().lower()
+            if not account_type:
+                account_type = UserAccountType.GLOBAL
+            data['account_type'] = account_type
+
+            role = str(data.get('role') or '').strip().lower()
+            if not role:
+                role = Roles.VIEWER
+            data['role'] = role
+
+            raw_password = data.pop('password', None)
+            password = raw_password or id_number
+            mark_default_password = not raw_password
+
+            try:
+                if role == Roles.SUPERADMIN:
+                    user = self._create_superadmin(data, password)
+                else:
+                    user = self._create_global_user(data, password)
+            except DjangoValidationError as exc:
+                return Response(
+                    {"detail": exc.message if hasattr(exc, 'message') else str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except serializers.ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as exc:
+                return Response(
+                    {"detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if mark_default_password:
+                user.is_default_password = True
+                user.last_password_updated = None
+                user.save(update_fields=['is_default_password', 'last_password_updated'])
+
+            response_serializer = UserSerializer(user, context={'request': request})
+            return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _create_global_user(data, password):
+        """Standard path: create the user via UserCreateSerializer then set the password."""
+        serializer = UserCreateSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        user.set_password(password)
+        user.save(update_fields=['password'])
+        return user
+
+    @staticmethod
+    def _create_superadmin(data, password):
+        """Provision a real superadmin: grants UserTenantPermissions in public."""
+        # Validate basic fields the same way UserCreateSerializer does so we
+        # surface friendly errors instead of letting raw exceptions bubble up.
+        serializer = UserCreateSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+
+        return User.objects.create_superuser(
+            email=validated['email'],
+            password=password,
+            username=validated.get('username') or validated['id_number'],
+            first_name=validated.get('first_name', ''),
+            last_name=validated.get('last_name', ''),
+            id_number=validated['id_number'],
+            gender=validated.get('gender', 'male'),
+            account_type=UserAccountType.GLOBAL,
+            role=Roles.SUPERADMIN,
+        )
 
 
 

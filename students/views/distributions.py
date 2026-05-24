@@ -8,11 +8,13 @@ Provides:
 - Section distribution (students per class)
 """
 
+from decimal import Decimal
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import Count, Q, F, Case, When, Value as V, CharField, Avg, FloatField, ExpressionWrapper
+from django.db.models import Count, Q, F, Case, When, Value as V, CharField, Avg, FloatField, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
 from django.core.cache import cache
 from django.utils import timezone
@@ -400,19 +402,24 @@ def get_payment_summary(request):
             academic_year=current_academic_year
         ).count()
 
+        # Django requires an explicit output_field when Coalesce mixes a
+        # DecimalField Sum with a literal int (0). Wrap the default in a
+        # typed Decimal so the aggregate plan stays consistent.
+        decimal_zero = V(Decimal('0'), output_field=DecimalField(max_digits=20, decimal_places=2))
+
         bill_totals = AccountingStudentBill.objects.filter(
             academic_year=current_academic_year
         ).exclude(
             status=AccountingStudentBill.BillStatus.CANCELLED
         ).aggregate(
-            total_expected=Coalesce(Sum('net_amount'), 0),
-            total_paid=Coalesce(Sum('paid_amount'), 0),
+            total_expected=Coalesce(Sum('net_amount'), decimal_zero),
+            total_paid=Coalesce(Sum('paid_amount'), decimal_zero),
             # Use the explicitly-maintained outstanding_amount field for accuracy
-            total_outstanding=Coalesce(Sum('outstanding_amount'), 0),
+            total_outstanding=Coalesce(Sum('outstanding_amount'), decimal_zero),
             overdue_amount=Coalesce(
                 Sum('outstanding_amount',
                     filter=Q(status=AccountingStudentBill.BillStatus.OVERDUE)),
-                0,
+                decimal_zero,
             ),
             overdue_count=Count(
                 'id',
