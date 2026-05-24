@@ -3,11 +3,21 @@ Payment Allocation Service - Handles dual-write logic for finance transactions t
 
 This service bridges finance transaction creation/updates to accounting cash transactions
 and payment allocations, ensuring both systems stay in sync during the transition period.
+
+Design note (May 2026):
+    ``AccountingCashTransaction`` is the single source of truth for "what the
+    student paid." ``AccountingStudentBill.paid_amount`` is a denormalized
+    cache derived from cash transactions, rebuilt by
+    :func:`recompute_student_year_payments`. No ingestion path writes to
+    ``paid_amount`` directly; the helper is invoked automatically through a
+    ``post_save`` signal on ``AccountingCashTransaction``.
 """
+import logging
 from decimal import Decimal
 from typing import Optional, Tuple
 
 from django.db import transaction as db_transaction
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from accounting.models import (
@@ -15,10 +25,11 @@ from accounting.models import (
     AccountingCurrency,
     AccountingPaymentMethod,
     AccountingStudentBill,
-    AccountingStudentBillLine,
-    AccountingStudentPaymentAllocation,
     AccountingTransactionType,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def sync_finance_transaction_to_accounting(
@@ -61,9 +72,17 @@ def sync_finance_transaction_to_accounting(
             accounting_tx, _ = _create_or_update_cash_transaction(finance_transaction)
 
             if accounting_tx:
-                # If it's an income (payment), allocate to student bills
-                if finance_transaction.type.type == "income" and finance_transaction.status == "approved":
-                    _allocate_payment_to_bills(accounting_tx, student, academic_year)
+                # If it's an income (payment), refresh the student's bill
+                # paid_amount cache for this academic year. The signal on
+                # AccountingCashTransaction also covers this path, but call
+                # it explicitly here so callers don't depend on signals being
+                # connected (and so the recompute is in the same DB
+                # transaction as the cash-transaction write).
+                if (
+                    finance_transaction.type.type == "income"
+                    and finance_transaction.status == "approved"
+                ):
+                    recompute_student_year_payments(student, academic_year)
 
         return accounting_tx, error_msg
 
@@ -177,76 +196,137 @@ def _get_or_create_transaction_type(finance_tx_type: "TransactionType") -> Accou
     return accounting_type
 
 
-def _allocate_payment_to_bills(
-    accounting_tx: AccountingCashTransaction,
-    student,  # type: ignore
-    academic_year,  # type: ignore
-) -> None:
-    """Allocate a payment transaction to student bill lines."""
-    try:
-        # Find all student bills for this enrollment in this academic year
-        bills = AccountingStudentBill.objects.filter(
-            enrollment__student=student,
-            academic_year=academic_year,
-        ).select_related("enrollment").prefetch_related("lines")
+def _build_student_match_q(student) -> Q:
+    """OR-clause that finds cash transactions belonging to a student.
 
-        if not bills.exists():
-            return  # No bills to allocate against
+    Primary match is the direct ``student`` FK (set on every transaction
+    created after the FK landed). The other clauses are backward-compat
+    fallbacks for legacy rows where the student was only discoverable via
+    ``source_reference`` or the ``bill_allocations`` chain.
+    """
+    student_refs = [str(student.id)]
+    if getattr(student, "id_number", None):
+        student_refs.append(student.id_number)
+    if getattr(student, "prev_id_number", None):
+        student_refs.append(student.prev_id_number)
 
-        remaining_amount = accounting_tx.amount
-        currency = accounting_tx.currency
+    return (
+        Q(student=student)
+        | Q(source_reference__in=student_refs)
+        | Q(bill_allocations__student_bill__student=student)
+    )
 
-        # Allocate against bill lines in order: overdue first, then upcoming
-        for bill in bills:
-            bill_lines = bill.lines.filter(
-                outstanding_amount__gt=0
-            ).order_by("-due_date", "sequence")  # Oldest/overdue first
 
-            for line in bill_lines:
-                if remaining_amount <= 0:
-                    break
+def get_total_paid_for_student_year(student, academic_year) -> Decimal:
+    """Sum of approved cash transactions a student paid in an academic year.
 
-                allocate_amount = min(remaining_amount, line.outstanding_amount)
+    Uses the direct ``student`` FK as the canonical match path with legacy
+    fallbacks for rows that pre-date the FK.
+    """
+    if not student or not academic_year:
+        return Decimal("0")
 
-                # Create allocation record
-                AccountingStudentPaymentAllocation.objects.get_or_create(
-                    cash_transaction=accounting_tx,
-                    installment_line=line,
-                    defaults={
-                        "student_bill": bill,
-                        "allocated_amount": allocate_amount,
-                        "currency": currency,
-                        "allocation_date": accounting_tx.transaction_date,
-                    }
-                )
-
-                # Update line outstanding amount
-                line.outstanding_amount -= allocate_amount
-                line.paid_amount += allocate_amount
-                line.save()
-
-                remaining_amount -= allocate_amount
-
-            if remaining_amount <= 0:
-                break
-
-        # Update bill outstanding amounts
-        for bill in bills:
-            bill_lines = bill.lines.all()
-            if bill_lines.exists():
-                total_outstanding = sum(
-                    line.outstanding_amount for line in bill_lines
-                )
-                bill.outstanding_amount = max(Decimal("0"), total_outstanding)
-                bill.save()
-
-    except Exception as e:
-        # Log but don't fail: allocation failures shouldn't break the payment
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(
-            f"Failed to allocate payment {accounting_tx.id} to student bills: {str(e)}"
+    # Two-step aggregation: find matching IDs first, then sum amounts on
+    # the deduped set. Doing ``.distinct().aggregate(Sum(...))`` directly
+    # is unsafe because the ``bill_allocations`` join can multiply rows.
+    matched_ids = list(
+        AccountingCashTransaction.objects.filter(
+            _build_student_match_q(student),
+            status="approved",
+            transaction_date__gte=academic_year.start_date,
+            transaction_date__lte=academic_year.end_date,
         )
+        .values_list("id", flat=True)
+        .distinct()
+    )
+    if not matched_ids:
+        return Decimal("0")
+
+    total = (
+        AccountingCashTransaction.objects.filter(id__in=matched_ids)
+        .aggregate(total=Sum("amount"))["total"]
+    )
+    return Decimal(str(total or 0))
+
+
+def recompute_student_year_payments(student, academic_year) -> Decimal:
+    """Rebuild ``AccountingStudentBill.paid_amount`` for one student/year.
+
+    Sums approved cash transactions then distributes the total across the
+    student's bills oldest-first (by ``bill_date`` then ``due_date``).
+    Each bill's ``outstanding_amount`` and ``status`` are updated to stay
+    consistent with ``paid_amount``.
+
+    Idempotent: same inputs always yield the same per-bill state, so this
+    is safe to call from signals, ingestion paths, or batch backfills.
+    Returns the total approved amount applied across the bills.
+    """
+    if not student or not academic_year:
+        return Decimal("0")
+
+    try:
+        with db_transaction.atomic():
+            bills = list(
+                AccountingStudentBill.objects.select_for_update()
+                .filter(student=student, academic_year=academic_year)
+                .order_by("bill_date", "due_date", "id")
+            )
+            if not bills:
+                return Decimal("0")
+
+            total_paid = get_total_paid_for_student_year(student, academic_year)
+            remaining = total_paid
+            today = timezone.now().date()
+
+            for bill in bills:
+                net = Decimal(str(bill.net_amount or 0))
+                if remaining > 0 and net > 0:
+                    apply = min(net, remaining)
+                else:
+                    apply = Decimal("0")
+
+                new_outstanding = max(Decimal("0"), net - apply)
+
+                # Preserve terminal states; otherwise reflect current paid
+                # vs. due-date position.
+                if bill.status == AccountingStudentBill.BillStatus.CANCELLED:
+                    new_status = bill.status
+                elif net > 0 and apply >= net:
+                    new_status = AccountingStudentBill.BillStatus.PAID
+                elif (
+                    bill.due_date
+                    and bill.due_date < today
+                    and new_outstanding > 0
+                ):
+                    new_status = AccountingStudentBill.BillStatus.OVERDUE
+                else:
+                    new_status = AccountingStudentBill.BillStatus.ISSUED
+
+                changed_fields = []
+                if Decimal(str(bill.paid_amount or 0)) != apply:
+                    bill.paid_amount = apply
+                    changed_fields.append("paid_amount")
+                if Decimal(str(bill.outstanding_amount or 0)) != new_outstanding:
+                    bill.outstanding_amount = new_outstanding
+                    changed_fields.append("outstanding_amount")
+                if bill.status != new_status:
+                    bill.status = new_status
+                    changed_fields.append("status")
+                if changed_fields:
+                    bill.save(update_fields=changed_fields)
+
+                remaining -= apply
+
+            return total_paid
+    except Exception as exc:
+        logger.warning(
+            "Failed to recompute student bill paid_amount for "
+            "student=%s academic_year=%s: %s",
+            getattr(student, "id", None),
+            getattr(academic_year, "id", None),
+            exc,
+        )
+        return Decimal("0")
 
 
 def create_cash_transaction_from_finance_data(
@@ -308,8 +388,11 @@ def create_cash_transaction_from_finance_data(
             student=student,
         )
 
-        # Allocate to bills
-        _allocate_payment_to_bills(cash_tx, student, academic_year)
+        # Refresh the bill paid_amount cache for this student/year so
+        # downstream summaries pick up the new payment immediately. The
+        # post_save signal also covers this, but call it explicitly here
+        # to keep the recompute in the same DB transaction.
+        recompute_student_year_payments(student, academic_year)
 
         return cash_tx, None
 

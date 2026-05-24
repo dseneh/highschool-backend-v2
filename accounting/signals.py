@@ -4,6 +4,7 @@ Signal handlers for the accounting app.
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from django.core.exceptions import ValidationError
@@ -11,8 +12,11 @@ from django.db import transaction as db_transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from accounting.models import AccountingTransactionType
+from accounting.models import AccountingCashTransaction, AccountingTransactionType
 from accounting.services.transaction_type_sync import sync_ledger_account_for_type
+
+
+logger = logging.getLogger(__name__)
 
 
 # Thread-local guard to avoid recursion when the sync service writes back to
@@ -46,5 +50,60 @@ def auto_sync_managed_ledger_account(sender, instance, created, update_fields, *
             pass
         finally:
             _sync_guard.active_pk = None
+
+    db_transaction.on_commit(_run)
+
+
+# Recursion guard: ``recompute_student_year_payments`` only writes to
+# ``AccountingStudentBill``, so it never re-fires this signal — but keep
+# a thread-local in case someone later calls it from inside a bill save.
+_recompute_guard = threading.local()
+
+
+@receiver(post_save, sender=AccountingCashTransaction)
+def refresh_student_bill_paid_amount(sender, instance, **kwargs):
+    """Keep ``AccountingStudentBill.paid_amount`` in sync with the cash ledger.
+
+    Whenever a cash transaction tied to a student is created or updated
+    (status change, amount edit, void, etc.), recompute the student's bill
+    paid_amount cache for the academic year that covers the transaction
+    date. Runs after commit so the recompute observes the persisted state.
+    """
+    student = getattr(instance, "student", None)
+    transaction_date = getattr(instance, "transaction_date", None)
+    if not student or not transaction_date:
+        return
+
+    if getattr(_recompute_guard, "active", False):
+        return
+
+    def _run():
+        # Imported lazily to avoid circular imports at app startup.
+        from academics.models import AcademicYear
+        from accounting.services.payment_allocation import (
+            recompute_student_year_payments,
+        )
+
+        academic_year = AcademicYear.objects.filter(
+            start_date__lte=transaction_date,
+            end_date__gte=transaction_date,
+        ).first()
+        if not academic_year:
+            return
+
+        _recompute_guard.active = True
+        try:
+            recompute_student_year_payments(student, academic_year)
+        except Exception as exc:
+            # Surface in logs; don't propagate, signals shouldn't break
+            # the originating write.
+            logger.warning(
+                "post_save recompute failed for cash_tx=%s student=%s: %s",
+                instance.pk,
+                getattr(student, "id", None),
+                exc,
+            )
+        finally:
+            _recompute_guard.active = False
 
     db_transaction.on_commit(_run)

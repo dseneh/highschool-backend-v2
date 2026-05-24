@@ -561,56 +561,26 @@ def _get_net_total_bills_for_enrollment(enrollment):
 
 
 def _get_effective_paid_for_enrollment(enrollment, academic_year):
-    """Return paid amount from accounting bills/allocations only."""
+    """Return paid amount for an enrollment in an academic year.
+
+    Sources approved cash transactions directly via the canonical
+    ``AccountingCashTransaction`` ledger (using the student FK with legacy
+    fallbacks). The per-bill ``paid_amount`` cache is kept in sync by a
+    post_save signal but isn't trusted as the read path — the cash ledger
+    is.
+    """
     from decimal import Decimal
-    from django.db.models import Sum
 
     try:
-        from accounting.models import (
-            AccountingCashTransaction,
-            AccountingStudentBill,
-            AccountingStudentPaymentAllocation,
+        from accounting.services.payment_allocation import (
+            get_total_paid_for_student_year,
         )
 
-        bills_qs = AccountingStudentBill.objects.filter(
-            enrollment=enrollment,
-            academic_year=academic_year,
+        return get_total_paid_for_student_year(
+            enrollment.student, academic_year
         )
-        if bills_qs.exists():
-            paid_total = bills_qs.aggregate(total=Sum("paid_amount"))["total"]
-            if paid_total is not None and Decimal(str(paid_total or 0)) > 0:
-                return Decimal(str(paid_total or 0))
-
-            allocated_total = AccountingStudentPaymentAllocation.objects.filter(
-                student_bill__in=bills_qs,
-                cash_transaction__status="approved",
-            ).aggregate(total=Sum("allocated_amount"))["total"]
-            if allocated_total is not None:
-                allocated_total = Decimal(str(allocated_total or 0))
-                if allocated_total > 0:
-                    return allocated_total
-
-        # Fallback for direct cash transactions that are not allocated yet.
-        student_refs = [str(enrollment.student.id)]
-        if enrollment.student.id_number:
-            student_refs.append(enrollment.student.id_number)
-        if getattr(enrollment.student, "prev_id_number", None):
-            student_refs.append(enrollment.student.prev_id_number)
-
-        direct_cash_total = AccountingCashTransaction.objects.filter(
-            status="approved",
-            source_reference__in=student_refs,
-            transaction_date__gte=academic_year.start_date,
-            transaction_date__lte=academic_year.end_date,
-        ).aggregate(total=Sum("amount"))["total"]
-        if direct_cash_total is not None:
-            direct_cash_total = Decimal(str(direct_cash_total or 0))
-            if direct_cash_total > 0:
-                return direct_cash_total
     except Exception:
         return Decimal("0")
-
-    return Decimal("0")
 
 
 def _get_installments_for_academic_year(academic_year):

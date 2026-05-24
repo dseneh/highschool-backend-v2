@@ -238,12 +238,16 @@ class StudentBillingPDFView(APIView):
             # Get payment plan from billing summary
             payment_plan_data = billing_summary.get('payment_plan', []) if billing_summary else []
             
-            # Get approved student payments from accounting cash transactions
+            # Get approved student payments from accounting cash
+            # transactions. Direct ``student`` FK is the primary match;
+            # the other clauses are legacy fallbacks for rows created
+            # before the FK existed.
             transactions = AccountingCashTransaction.objects.filter(
                 Q(status="approved"),
                 Q(transaction_date__gte=enrollment.academic_year.start_date),
                 Q(transaction_date__lte=enrollment.academic_year.end_date),
-                Q(source_reference=str(student.id))
+                Q(student=student)
+                | Q(source_reference=str(student.id))
                 | Q(source_reference=student.id_number)
                 | Q(source_reference=student.prev_id_number)
                 | Q(bill_allocations__student_bill__student=student),
