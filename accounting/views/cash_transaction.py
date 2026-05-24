@@ -168,6 +168,18 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         "currency",
         "ledger_account",
         "journal_entry",
+        # Resolve the direct student FK + grade level in one round-trip so
+        # the serializer can build the "student_payment" snapshot without
+        # hitting the DB per row.
+        "student",
+        "student__grade_level",
+    ).prefetch_related(
+        # Bill allocations are only used as a fallback (legacy rows without
+        # the direct FK) and to enrich the snapshot with the bills this
+        # payment was applied against. Prefetching keeps the list endpoint
+        # at a constant query count.
+        "bill_allocations__student_bill__academic_year",
+        "bill_allocations__student_bill__student__grade_level",
     ).order_by("-transaction_date", "-created_at")
     serializer_class = AccountingCashTransactionSerializer
     permission_classes = [AccountingTransactionAccessPolicy]

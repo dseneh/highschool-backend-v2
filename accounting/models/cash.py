@@ -196,6 +196,20 @@ class AccountingCashTransaction(BaseModel):
         related_name="cash_transactions",
         help_text="Posted journal entry — deleting the journal entry also deletes this transaction",
     )
+    # Direct link to a student when this transaction represents a student
+    # payment. The bulk-upload tuition flow and any other code path that
+    # knows the student up-front stamps this FK so we don't have to walk
+    # the bill_allocations chain to identify student payments. Older rows
+    # without this set are backfilled from existing allocations via the
+    # accompanying migration.
+    student = models.ForeignKey(
+        "students.Student",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accounting_cash_transactions",
+        help_text="Student paid for, when this transaction is a student payment.",
+    )
 
     class Meta:
         db_table = "accounting_cash_transaction"
@@ -206,6 +220,7 @@ class AccountingCashTransaction(BaseModel):
             models.Index(fields=["transaction_date", "status"]),
             models.Index(fields=["bank_account", "status"]),
             models.Index(fields=["transaction_type", "status"]),
+            models.Index(fields=["student", "transaction_date"]),
         ]
 
     def __str__(self):

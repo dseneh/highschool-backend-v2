@@ -126,17 +126,29 @@ def _create_or_update_cash_transaction(
                 "approved_at": timezone.now() if accounting_status == "approved" else None,
                 "rejection_reason": None,
                 "active": True,
+                "student": getattr(finance_transaction, "student", None),
             }
         )
 
         if not created:
+            update_fields = []
             # Update existing if status changed
             if cash_tx.status != accounting_status:
                 cash_tx.status = accounting_status
+                update_fields.append("status")
                 if accounting_status == "approved":
                     cash_tx.approved_at = timezone.now()
                     cash_tx.approved_by = finance_transaction.updated_by
-                cash_tx.save()
+                    update_fields += ["approved_at", "approved_by"]
+            # Backfill the student FK if a finance-side student is available
+            # but the accounting row never got linked (legacy or out-of-band
+            # creation paths).
+            finance_student = getattr(finance_transaction, "student", None)
+            if finance_student and cash_tx.student_id is None:
+                cash_tx.student = finance_student
+                update_fields.append("student")
+            if update_fields:
+                cash_tx.save(update_fields=update_fields)
 
         return cash_tx, created
 
@@ -293,6 +305,7 @@ def create_cash_transaction_from_finance_data(
             description=description or f"Payment from {student.first_name} {student.last_name}",
             status="pending",
             active=True,
+            student=student,
         )
 
         # Allocate to bills

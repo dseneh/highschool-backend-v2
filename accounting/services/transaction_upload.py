@@ -362,7 +362,21 @@ def upload_transactions(
         if not row_gl_account and tx_type:
             row_gl_account = tx_type.default_ledger_account
 
-        # Prepare transaction data
+        # Resolve the student object up-front for tuition rows so we can
+        # stamp the direct FK on the cash transaction. Validation above
+        # already guarantees existence, so this lookup is cheap and safe.
+        student_obj = None
+        if template_type == TEMPLATE_TUITION:
+            student_id_number = _cell(row, "student_id_number")
+            if student_id_number:
+                student_obj = Student.objects.filter(
+                    id_number=student_id_number
+                ).first()
+
+        # Prepare transaction data. The ``student`` reference is the
+        # only "identity" carrier we need downstream — earlier versions
+        # of this code captured a free-form ``id_number`` value which
+        # was never read by the create/update paths below.
         parsed = {
             "transaction_date": transaction_date,
             "transaction_type": tx_type,
@@ -373,11 +387,7 @@ def upload_transactions(
             "ledger_account": row_gl_account,
             "bank_account": override_bank_account,
             "template_type": template_type,
-            "id_number": (
-                _cell(row, "student_id_number")
-                if template_type == TEMPLATE_TUITION
-                else _cell(row, "staff_id_number") if template_type == TEMPLATE_SALARY else None
-            ),
+            "student": student_obj,
         }
 
         transactions_to_create.append(parsed)
@@ -426,6 +436,7 @@ def upload_transactions(
                             "description": tx_data["description"],
                             "status": status_to_use,
                             "source_reference": f"{tx_data['template_type'].upper()}-UPLOAD",
+                            "student": tx_data.get("student"),
                         }
                     )
                     if created:
@@ -449,6 +460,7 @@ def upload_transactions(
                         description=tx_data["description"],
                         status=status_to_use,
                         source_reference=f"{tx_data['template_type'].upper()}-UPLOAD",
+                        student=tx_data.get("student"),
                     )
                     created_count += 1
             except Exception as e:

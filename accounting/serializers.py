@@ -1,6 +1,7 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from datetime import datetime
+import uuid
 
 from django.db.models import Q, Sum, Max
 from django.db.models.functions import TruncMonth
@@ -34,6 +35,7 @@ from accounting.models import (
     AccountingTransactionType,
 )
 from accounting.services.posting import _resolve_academic_year
+from students.models import Student
 
 
 class AccountingCurrencySerializer(serializers.ModelSerializer):
@@ -799,6 +801,18 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         allow_null=True,
         write_only=True,
     )
+    # Optional direct link to the student this transaction is for. Callers
+    # that know the student up-front (tuition payment dialog, journal
+    # student-payment form, bulk tuition upload, finance→accounting sync)
+    # should send this so we can light up the student panel in the UI and
+    # support per-student payment history queries.
+    student_id = serializers.PrimaryKeyRelatedField(
+        source="student",
+        queryset=Student.objects.all(),
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
 
     # Nested serializers for FK fields (output only, resolved objects)
     bank_account = serializers.SerializerMethodField()
@@ -807,6 +821,12 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
     currency = serializers.SerializerMethodField()
     ledger_account = serializers.SerializerMethodField()
     journal_entry = serializers.SerializerMethodField()
+    # When the transaction is a student payment (i.e. has one or more
+    # AccountingStudentPaymentAllocation records), surface a compact
+    # snapshot of the student and the bills it was applied against so
+    # the UI can deep-link into the student's billing page. Null when
+    # the transaction is not linked to any student bill.
+    student_payment = serializers.SerializerMethodField()
 
     class Meta:
         model = AccountingCashTransaction
@@ -835,10 +855,17 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             "rejection_reason",
             "source_reference",
             "journal_entry",
+            "student_id",
+            "student_payment",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["journal_entry", "created_at", "updated_at"]
+        read_only_fields = [
+            "journal_entry",
+            "student_payment",
+            "created_at",
+            "updated_at",
+        ]
 
     def create(self, validated_data):
         transaction_date = validated_data.get("transaction_date")
@@ -885,6 +912,101 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             "status": obj.journal_entry.status,
         }
 
+    def get_student_payment(self, obj):
+        """Return student + bill snapshot when this cash transaction is
+        linked to a student.
+
+        Resolution order:
+
+        1. ``obj.student`` (the direct FK, populated by the bulk upload
+           tuition flow and the finance→accounting sync path).
+        2. Fallback: any ``AccountingStudentPaymentAllocation`` records
+           that hang off this transaction. Older rows that were created
+           before the direct FK existed still light up via this path.
+
+        Returns ``None`` when no student can be resolved.
+        """
+        if obj.pk is None:
+            return None
+
+        allocations = list(obj.bill_allocations.all())
+
+        student = getattr(obj, "student", None)
+        if student is None:
+            # Fallback: look up the student via the first allocation's bill.
+            for alloc in allocations:
+                bill = getattr(alloc, "student_bill", None)
+                candidate = getattr(bill, "student", None) if bill else None
+                if candidate is not None:
+                    student = candidate
+                    break
+
+        if student is None:
+            return None
+
+        # Build a deduped list of bills this transaction touched. A single
+        # cash transaction can be allocated across multiple installment
+        # lines of the same bill, so we accumulate per bill_id.
+        bills_seen: dict = {}
+        total_allocated = Decimal("0")
+        for alloc in allocations:
+            alloc_bill = getattr(alloc, "student_bill", None)
+            if not alloc_bill:
+                continue
+            entry = bills_seen.setdefault(
+                alloc_bill.pk,
+                {
+                    "id": str(alloc_bill.pk),
+                    "academic_year": getattr(
+                        getattr(alloc_bill, "academic_year", None), "name", None
+                    ),
+                    "status": getattr(alloc_bill, "status", None),
+                    "outstanding_amount": str(
+                        getattr(alloc_bill, "outstanding_amount", "0") or "0"
+                    ),
+                    "net_amount": str(
+                        getattr(alloc_bill, "net_amount", "0") or "0"
+                    ),
+                    "allocated_amount": Decimal("0"),
+                },
+            )
+            try:
+                allocated = Decimal(alloc.allocated_amount or 0)
+            except (InvalidOperation, TypeError):
+                allocated = Decimal("0")
+            entry["allocated_amount"] = entry["allocated_amount"] + allocated
+            total_allocated = total_allocated + allocated
+
+        for entry in bills_seen.values():
+            entry["allocated_amount"] = str(entry["allocated_amount"])
+
+        photo = getattr(student, "photo", None)
+        photo_url = None
+        if photo:
+            try:
+                photo_url = photo.url
+            except Exception:
+                photo_url = None
+
+        return {
+            "student": {
+                "id": str(student.pk),
+                "id_number": getattr(student, "id_number", None),
+                "first_name": getattr(student, "first_name", None),
+                "last_name": getattr(student, "last_name", None),
+                "full_name": student.get_full_name()
+                if hasattr(student, "get_full_name")
+                else None,
+                "gender": getattr(student, "gender", None),
+                "photo": photo_url,
+                "grade_level": (
+                    getattr(getattr(student, "grade_level", None), "name", None)
+                ),
+            },
+            "bills": list(bills_seen.values()),
+            "total_allocated": str(total_allocated),
+        }
+
     def to_internal_value(self, data):
         """Accept FK IDs in input, convert them to use the standard FK field names."""
         payload = data.copy() if hasattr(data, "copy") else dict(data)
@@ -923,6 +1045,72 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             payload["ledger_account"] = ledger_account_value.get("id")
         if payload.get("ledger_account") is not None and payload.get("ledger_account_id") is None:
             payload["ledger_account_id"] = payload.get("ledger_account")
+
+        # Handle student. We accept any of:
+        #   * ``student_id`` — explicit Student UUID (preferred).
+        #   * ``student``    — Student UUID, ``id_number``, or nested
+        #     ``{"id": ...}``.
+        #   * ``student_id_number`` — Student.id_number lookup (handy
+        #     for the journal student-payment form which only has the
+        #     display id_number on hand).
+        #   * ``source_reference`` containing a Student UUID — legacy
+        #     backward-compat with the old tuition dialog and journal
+        #     student-payment form, which smuggled the student id in
+        #     this field before the dedicated FK existed.
+        #
+        # Whatever the source, we normalize to ``student_id`` (UUID
+        # string) so the ``PrimaryKeyRelatedField`` happily validates.
+        def _resolve_student_uuid(value):
+            if value is None:
+                return None
+            if isinstance(value, dict):
+                value = value.get("id")
+            if value is None:
+                return None
+            candidate = str(value).strip()
+            if not candidate:
+                return None
+            # First: treat as UUID.
+            try:
+                parsed = uuid.UUID(candidate)
+            except (ValueError, AttributeError, TypeError):
+                parsed = None
+            if parsed is not None:
+                if Student.objects.filter(pk=parsed).exists():
+                    return str(parsed)
+                return None
+            # Fallback: treat as id_number.
+            student = Student.objects.filter(id_number=candidate).first()
+            if student is not None:
+                return str(student.pk)
+            return None
+
+        # If the client sent ``student_id`` directly, sanity-check it
+        # parses as a UUID. Anything else gets re-routed through the
+        # resolver below so we don't bubble a confusing PK validation
+        # error.
+        direct_student_id = payload.get("student_id")
+        if direct_student_id is not None:
+            try:
+                uuid.UUID(str(direct_student_id))
+            except (ValueError, AttributeError, TypeError):
+                # Route the bad value through the resolver instead of
+                # letting PrimaryKeyRelatedField raise.
+                payload["student"] = payload.get("student") or direct_student_id
+                payload["student_id"] = None
+
+        if payload.get("student_id") is None:
+            resolved = _resolve_student_uuid(payload.get("student"))
+            if resolved is None:
+                resolved = _resolve_student_uuid(payload.get("student_id_number"))
+            if resolved is None:
+                resolved = _resolve_student_uuid(payload.get("source_reference"))
+            if resolved is not None:
+                payload["student_id"] = resolved
+            else:
+                # Make sure we don't leave a bogus key around that the PK
+                # field will try to validate.
+                payload.pop("student_id", None)
 
         return super().to_internal_value(payload)
 
