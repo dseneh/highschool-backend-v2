@@ -71,6 +71,47 @@ urlpatterns = [
         StudentPaymentStatusListView.as_view(),
         name="student-payment-status-list",
     ),
+    # Dashboard distribution endpoints
+    # NOTE: these must be registered BEFORE the `students/<str:id>/...`
+    # catch-alls below — otherwise URLs like
+    # `students/distributions/attendance/` get matched as
+    # `students/<student_id=distributions>/attendance/` and the detail
+    # view explodes when it tries to parse "distributions" as a UUID.
+    path(
+        "students/distributions/grade-level/",
+        get_grade_level_distribution,
+        name="grade_level_distribution",
+    ),
+    path(
+        "students/distributions/payment-status/",
+        get_payment_status_distribution,
+        name="payment_status_distribution",
+    ),
+    path(
+        "students/distributions/attendance/",
+        get_attendance_distribution,
+        name="attendance_distribution",
+    ),
+    path(
+        "students/distributions/sections/",
+        get_section_distribution,
+        name="section_distribution",
+    ),
+    path(
+        "students/distributions/payment-summary/",
+        get_payment_summary,
+        name="payment_summary",
+    ),
+    path(
+        "students/distributions/top-students/",
+        get_top_students_by_grade,
+        name="top_students_by_grade",
+    ),
+    path(
+        "students/distributions/honors/",
+        get_honor_distribution,
+        name="honor_distribution",
+    ),
     path("students/<str:id>/", StudentDetailView.as_view(), name="student_detail"),
     path(
         "students/<str:id>/withdraw/",
@@ -251,40 +292,4 @@ urlpatterns = [
     #     name="student_grade_table",
     # ),
     
-    # Dashboard distribution endpoints
-    path(
-        "students/distributions/grade-level/",
-        get_grade_level_distribution,
-        name="grade_level_distribution",
-    ),
-    path(
-        "students/distributions/payment-status/",
-        get_payment_status_distribution,
-        name="payment_status_distribution",
-    ),
-    path(
-        "students/distributions/attendance/",
-        get_attendance_distribution,
-        name="attendance_distribution",
-    ),
-    path(
-        "students/distributions/sections/",
-        get_section_distribution,
-        name="section_distribution",
-    ),
-    path(
-        "students/distributions/payment-summary/",
-        get_payment_summary,
-        name="payment_summary",
-    ),
-    path(
-        "students/distributions/top-students/",
-        get_top_students_by_grade,
-        name="top_students_by_grade",
-    ),
-    path(
-        "students/distributions/honors/",
-        get_honor_distribution,
-        name="honor_distribution",
-    ),
 ]

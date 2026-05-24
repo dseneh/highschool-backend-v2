@@ -72,7 +72,7 @@ class UserSerializer(serializers.ModelSerializer):
             'workspace': ws,
             'name': tenant.name,
             'short_name': getattr(tenant, 'short_name', None),
-            'logo': tenant.logo.url if tenant.logo else None,
+            'logo': self._build_logo_url(tenant),
             'status': getattr(tenant, 'status', None),
             'active': getattr(tenant, 'active', None),
             'phone': getattr(tenant, 'phone', None),
@@ -84,6 +84,21 @@ class UserSerializer(serializers.ModelSerializer):
             'country': getattr(tenant, 'country', None),
             'postal_code': getattr(tenant, 'postal_code', None),
         }
+
+    def _build_logo_url(self, tenant):
+        """Return an absolute logo URL so the frontend doesn't try to
+        load it from its own origin (e.g. the Next.js dev server)."""
+        logo = getattr(tenant, 'logo', None)
+        if not logo:
+            return None
+        try:
+            relative = logo.url
+        except Exception:
+            return None
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        if request is not None:
+            return request.build_absolute_uri(relative)
+        return relative
 
     def get_tenants(self, obj):
         """
@@ -483,6 +498,23 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 class PasswordForgotSerializer(serializers.Serializer):
     user_identifier = serializers.CharField(required=True)
+
+
+class AdminPasswordResetSerializer(serializers.Serializer):
+    """Admin-initiated password reset.
+
+    Does NOT require the target user's current password — the actor must
+    be a superadmin/admin (enforced at the view level via UserAccessPolicy).
+    """
+
+    new_password = serializers.CharField(write_only=True, required=True, min_length=6)
+    confirm_password = serializers.CharField(write_only=True, required=True)
+    mark_as_default = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        return attrs
 
 
 class UserRecreateSerializer(serializers.Serializer):

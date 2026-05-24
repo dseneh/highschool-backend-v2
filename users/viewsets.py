@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.db import connection
 from django_tenants.utils import schema_context
 from django.utils import timezone
@@ -24,6 +24,7 @@ from users.serializers import (
     PasswordChangeSerializer,
     PasswordForgotSerializer,
     UserRecreateSerializer,
+    AdminPasswordResetSerializer,
 )
 from users.access_policies import UserAccessPolicy
 from users.access_policies.permissions import PRIVILEGES
@@ -130,36 +131,89 @@ class UserViewSet(viewsets.ModelViewSet):
             return queryset.order_by(ordering)
         return queryset.order_by('-id')
     
+    def _tenant_users_queryset(self, schema_name: str):
+        """Build queryset of users belonging to the given tenant schema.
+
+        A user is considered to belong to a tenant when they either:
+        1. Have UserTenantPermissions in that tenant schema, OR
+        2. Have a Student/Staff/Parent record in that schema whose
+           `user_account_id_number` matches their `id_number`.
+
+        Returns an unfiltered (no filter helpers applied) queryset.
+        Caller should pass the result through `_apply_user_filters`.
+        """
+        from tenant_users.permissions.models import UserTenantPermissions
+
+        with schema_context(schema_name):
+            permission_user_ids = set(
+                UserTenantPermissions.objects.values_list('profile_id', flat=True).distinct()
+            )
+            linked_user_id_numbers = self._get_linked_user_id_numbers()
+
+        with schema_context('public'):
+            return User.objects.filter(
+                Q(id__in=list(permission_user_ids)) |
+                Q(id_number__in=list(linked_user_id_numbers))
+            ).distinct()
+
     def get_queryset(self):
-        """Get users based on context (tenant or global)."""
-        # For 'current' action, return empty queryset (handled in action)
+        """Get users based on context (tenant or global).
+
+        Scoping rules:
+        - In a tenant schema (request carries x-tenant): list users of that
+          tenant. No `scope`/`tenant` overrides are honored here.
+        - In the public schema with `scope=global` (or `scope=admin`):
+          list users not assigned to any tenant by default. If the caller
+          also passes `tenant=<schema_name>`, list users of that tenant
+          instead. This is used by the admin workspace UI.
+        """
         if self.action == 'current':
             return User.objects.none()
-        
-        # For tenant context, get users with permissions in current tenant
+
         if connection.schema_name != 'public':
             try:
-                from tenant_users.permissions.models import UserTenantPermissions
-                permission_user_ids = set(
-                    UserTenantPermissions.objects.values_list('profile_id', flat=True).distinct()
+                return self._apply_user_filters(
+                    self._tenant_users_queryset(connection.schema_name)
                 )
-                linked_user_id_numbers = self._get_linked_user_id_numbers()
-                
-                with schema_context('public'):
-                    queryset = User.objects.filter(
-                        Q(id__in=list(permission_user_ids)) |
-                        Q(id_number__in=list(linked_user_id_numbers))
-                    ).distinct()
-                    return self._apply_user_filters(queryset)
             except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)
                 logger.error(f"Error getting tenant users: {e}")
                 return User.objects.none()
-        
-        # For global context, return all users
+
+        tenant_filter = (self.request.query_params.get('tenant') or '').strip()
+        if tenant_filter:
+            from core.models import Tenant
+            tenant_exists = Tenant.objects.filter(schema_name=tenant_filter).exists()
+            if not tenant_exists:
+                return User.objects.none()
+            try:
+                return self._apply_user_filters(
+                    self._tenant_users_queryset(tenant_filter)
+                )
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error getting users for tenant {tenant_filter}: {e}")
+                return User.objects.none()
+
+        # scope=global / scope=admin: list "platform" users — i.e. accounts
+        # that aren't a per-tenant person record. That covers two cases:
+        #   1. Users with no tenant membership at all, AND
+        #   2. Users that are inherently global regardless of tenant access:
+        #      account_type=GLOBAL or role=superadmin. Superadmins are
+        #      auto-linked into tenants for access, so without this they
+        #      would be incorrectly hidden from the admin list.
         with schema_context('public'):
-            return self._apply_user_filters(User.objects.all())
+            tenant_member_ids = list(
+                User.tenants.through.objects.values_list("user_id", flat=True).distinct()
+            )
+            queryset = User.objects.filter(
+                ~Q(pk__in=tenant_member_ids)
+                | Q(account_type__iexact=UserAccountType.GLOBAL)
+                | Q(role__iexact=Roles.SUPERADMIN)
+            ).distinct()
+            return self._apply_user_filters(queryset)
     
     def get_serializer_class(self):
         """Return appropriate serializer based on action."""
@@ -175,33 +229,87 @@ class UserViewSet(viewsets.ModelViewSet):
         Soft delete by default (?hard=false): uses User.objects.delete_user()
         which unlinks tenants and sets is_active=False (django-tenant-users contract).
 
-        Hard delete (?hard=true): unlinks the user from every tenant, then calls
-        delete(force_drop=True) — the documented escape hatch in tenant_users.
+        Hard delete (?hard=true): unlinks the user from every tenant, clears
+        any tenant-scoped FK references (SpecialPrivilege etc.), then deletes
+        the row in public. We can't rely on Django's collector here because
+        tenant-scoped tables don't exist in the public schema.
         """
         user = self.get_object()
         hard_delete = request.query_params.get('hard', 'false').lower() == 'true'
 
+        import logging
+        logger = logging.getLogger(__name__)
+
         with schema_context('public'):
             if hard_delete:
                 from core.models import Tenant
-                from tenant_users.permissions.models import UserTenantPermissions
-
-                tenant_permissions = UserTenantPermissions.objects.filter(profile=user)
-                for perm in tenant_permissions:
-                    try:
-                        tenant = Tenant.objects.get(schema_name=perm.tenant.schema_name)
-                        tenant.remove_user(user)
-                    except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            f"Failed to remove user from tenant {perm.tenant.schema_name}: {e}"
-                        )
 
                 username = user.username
-                # Use a raw delete in public schema to avoid Django relation collection
-                # across tenant-scoped models (e.g., academic_year) that do not exist
-                # in public schema.
-                User.objects.filter(pk=user.pk)._raw_delete(User.objects.db)
+                user_pk = user.pk
+
+                # 1. Collect every tenant the user is linked to via the
+                #    User.tenants M2M (the only cross-schema mapping that
+                #    lives in public). UserTenantPermissions itself is a
+                #    tenant-scoped table and has no `tenant` column.
+                tenants_qs = user.tenants.exclude(schema_name='public')
+                schemas: list[str] = list(
+                    tenants_qs.values_list('schema_name', flat=True)
+                )
+
+                # 2. Per tenant: clear tenant-scoped FKs that would block the
+                #    delete, then call tenant.remove_user to wipe UserTenantPermissions.
+                for schema_name in schemas:
+                    try:
+                        with schema_context(schema_name):
+                            self._purge_tenant_scoped_user_references(user_pk)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to clear tenant-scoped refs in {schema_name}: {e}"
+                        )
+
+                    try:
+                        tenant = Tenant.objects.get(schema_name=schema_name)
+                        tenant.remove_user(user)
+                    except Tenant.DoesNotExist:
+                        continue
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to remove user from tenant {schema_name}: {e}"
+                        )
+
+                # 3. Clear the public M2M through table just to be safe — at
+                #    this point the user should already be unlinked.
+                try:
+                    user.tenants.clear()
+                except Exception as e:
+                    logger.warning(f"Failed to clear user.tenants M2M: {e}")
+
+                # 4. Repeat the FK purge in the public schema for any
+                #    shared-app models that reference User (auditlog
+                #    entries, etc.). Without this, raw_delete would be
+                #    blocked by those FK constraints just like the
+                #    tenant-scoped ones.
+                try:
+                    self._purge_tenant_scoped_user_references(user_pk)
+                except Exception as e:
+                    logger.warning(f"Failed to purge public-schema user refs: {e}")
+
+                # 5. Bulletproof fallback — query pg_constraint directly to
+                #    find every FK pointing at public.user across every
+                #    schema, then clear referencing rows by NULL-ing the
+                #    column (or DELETE-ing the row when not nullable).
+                #    This catches anything the Django introspection walker
+                #    missed (swapped models, weirdly-registered apps, etc.).
+                try:
+                    self._purge_user_refs_via_pg_constraint(user_pk)
+                except Exception as e:
+                    logger.warning(f"pg_constraint purge failed: {e}")
+
+                # 6. Drop the user row. Use _raw_delete to avoid Django's
+                #    collector walking tenant-scoped models (which do not
+                #    exist in the public schema).
+                User.objects.filter(pk=user_pk)._raw_delete(User.objects.db)
+
                 return Response(
                     {"detail": f"User {username} permanently deleted"},
                     status=status.HTTP_204_NO_CONTENT,
@@ -212,6 +320,122 @@ class UserViewSet(viewsets.ModelViewSet):
                 {"detail": f"User {user.username} deactivated"},
                 status=status.HTTP_200_OK,
             )
+
+    @staticmethod
+    def _purge_tenant_scoped_user_references(user_pk) -> None:
+        """Clear every row in the current schema that holds an FK to the user.
+
+        Django enforces `on_delete` behavior in Python via the Collector, so
+        the underlying Postgres FK constraints have no cascade rule. That
+        means a low-level `_raw_delete` of the user row is blocked by any
+        table still holding a reference (SpecialPrivilege, auditlog
+        LogEntry.actor, created_by/updated_by audit columns, etc.).
+
+        Walk every registered model, find FKs to `users.User`, and apply the
+        model's declared `on_delete` behavior manually. Each operation runs
+        inside its own savepoint so that querying a model whose table
+        doesn't exist in the current schema (e.g. a tenant-scoped table
+        while we are in public) rolls back cleanly without aborting the
+        outer transaction.
+        """
+        import logging
+        from django.apps import apps
+        from django.db import models as djmodels, transaction
+
+        logger = logging.getLogger(__name__)
+
+        user_label = User._meta.label  # "users.User"
+
+        for model in apps.get_models():
+            if model._meta.label == user_label:
+                continue
+
+            for field in model._meta.get_fields():
+                if not isinstance(field, djmodels.ForeignKey):
+                    continue
+                related = field.related_model
+                if related is None or related._meta.label != user_label:
+                    continue
+
+                on_delete = field.remote_field.on_delete
+                attname = field.attname  # e.g. "user_id"
+                try:
+                    with transaction.atomic():
+                        qs = model._base_manager.filter(**{attname: user_pk})
+                        if on_delete is djmodels.CASCADE:
+                            qs.delete()
+                        elif on_delete is djmodels.SET_NULL:
+                            qs.update(**{attname: None})
+                        elif on_delete is djmodels.SET_DEFAULT:
+                            qs.update(**{attname: field.get_default()})
+                        # PROTECT / RESTRICT / DO_NOTHING: leave alone; the
+                        # subsequent raw_delete will surface a clear error.
+                except Exception as e:
+                    # Most likely: relation does not exist in current schema.
+                    logger.debug(
+                        f"Skipping {model._meta.label}.{attname} in current schema: {e}"
+                    )
+
+    @staticmethod
+    def _purge_user_refs_via_pg_constraint(user_pk) -> None:
+        """SQL-level safety net: query `pg_constraint` for every FK pointing
+        at `public.user` from any schema, then clear referencing rows.
+
+        For each referencing column we first try `UPDATE ... SET col = NULL`.
+        If the column is NOT NULL we fall back to `DELETE` for that row so
+        that the subsequent raw delete of the user row can proceed.
+        """
+        import logging
+        from django.db import connection, transaction
+
+        logger = logging.getLogger(__name__)
+
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ns.nspname  AS source_schema,
+                    src.relname AS source_table,
+                    src_att.attname AS source_column,
+                    src_att.attnotnull AS not_null
+                FROM pg_constraint con
+                JOIN pg_class src ON con.conrelid = src.oid
+                JOIN pg_namespace ns ON src.relnamespace = ns.oid
+                JOIN pg_attribute src_att
+                  ON src_att.attrelid = src.oid
+                 AND src_att.attnum = con.conkey[1]
+                JOIN pg_class tgt ON con.confrelid = tgt.oid
+                JOIN pg_namespace tgt_ns ON tgt.relnamespace = tgt_ns.oid
+                WHERE con.contype = 'f'
+                  AND tgt.relname = %s
+                  AND tgt_ns.nspname = 'public'
+                  AND array_length(con.conkey, 1) = 1
+                """,
+                [User._meta.db_table],
+            )
+            refs = cur.fetchall()
+
+        for source_schema, source_table, source_column, not_null in refs:
+            qualified = f'"{source_schema}"."{source_table}"'
+            col = f'"{source_column}"'
+            try:
+                with transaction.atomic():
+                    with connection.cursor() as cur:
+                        if not_null:
+                            # Column can't be NULL — remove the offending row.
+                            cur.execute(
+                                f"DELETE FROM {qualified} WHERE {col} = %s",
+                                [user_pk],
+                            )
+                        else:
+                            cur.execute(
+                                f"UPDATE {qualified} SET {col} = NULL WHERE {col} = %s",
+                                [user_pk],
+                            )
+            except Exception as e:
+                logger.warning(
+                    f"pg_constraint purge failed for {qualified}.{col}: {e}"
+                )
 
     def get_object(self):
         """Get user by id_number."""
@@ -226,9 +450,21 @@ class UserViewSet(viewsets.ModelViewSet):
                 raise NotFound(f"User with id_number '{lookup_value}' not found")
     
     def list(self, request, *args, **kwargs):
-        """List users in current tenant."""
+        """List users in current tenant or, when called from the admin
+        workspace, in the public/global pool or a specific tenant.
+
+        From the public schema we require one of:
+        - `scope=global` (or legacy `scope=admin`) — list users not in any
+          tenant, optionally narrowed by `tenant=<schema>`.
+        - `tenant=<schema>` — list users in that tenant.
+        """
         scope = str(request.query_params.get('scope') or '').strip().lower()
-        if connection.schema_name == 'public' and scope not in {'global', 'admin'}:
+        tenant_filter = (request.query_params.get('tenant') or '').strip()
+        if (
+            connection.schema_name == 'public'
+            and scope not in {'global', 'admin'}
+            and not tenant_filter
+        ):
             return Response(
                 {"detail": "This endpoint must be accessed from a tenant context (with x-tenant header)"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -646,6 +882,324 @@ class UserViewSet(viewsets.ModelViewSet):
                 "is_default_password": False
             },
             status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'],
+            permission_classes=[UserAccessPolicy], url_path='password/admin-set')
+    def password_admin_set(self, request, id_number=None):
+        """Allow an admin/superadmin to set a user's password directly.
+
+        Unlike `password/change`, this action does NOT require the target
+        user's current password — it is intended for administrative
+        password resets. The acting user must be admin or superadmin
+        (enforced via UserAccessPolicy).
+
+        POST /users/{id_number}/password/admin-set/
+        {
+            "new_password": "new_password",
+            "confirm_password": "new_password",
+            "mark_as_default": false  // optional; if true, sets is_default_password
+        }
+        """
+        actor = request.user
+        actor_role = str(getattr(actor, 'role', '') or '').lower()
+        is_actor_admin = bool(
+            getattr(actor, 'is_superuser', False)
+            or actor_role in {'admin', 'superadmin'}
+        )
+        if not is_actor_admin:
+            return Response(
+                {"detail": "Only admins can set another user's password."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        target = self.get_object()
+
+        if target.pk == actor.pk:
+            return Response(
+                {"detail": "Use the regular password change endpoint to update your own password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        target_role = str(getattr(target, 'role', '') or '').lower()
+        if target_role == 'superadmin' and actor_role != 'superadmin' and not getattr(actor, 'is_superuser', False):
+            return Response(
+                {"detail": "Only a superadmin can reset another superadmin's password."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = AdminPasswordResetSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        new_password = serializer.validated_data['new_password']
+        mark_as_default = serializer.validated_data.get('mark_as_default', False)
+
+        with schema_context('public'):
+            target.set_password(new_password)
+            target.is_default_password = bool(mark_as_default)
+            target.last_password_updated = timezone.now()
+            target.save(update_fields=["password", "is_default_password", "last_password_updated"])
+
+        from common.audit_utils import log_auth_event
+        log_auth_event(request, target, "password_admin_reset")
+
+        return Response(
+            {
+                "detail": f"Password updated for {target.username}",
+                "user_id_number": target.id_number,
+                "is_default_password": target.is_default_password,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ------------------------------------------------------------------
+    # Tenant assignments
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _serialize_tenant(tenant):
+        logo = getattr(tenant, 'logo', None)
+        try:
+            logo_url = logo.url if logo else None
+        except Exception:
+            logo_url = None
+        return {
+            "id": str(getattr(tenant, "id", "") or ""),
+            "schema_name": tenant.schema_name,
+            "name": getattr(tenant, "name", None),
+            "short_name": getattr(tenant, "short_name", None),
+            "status": getattr(tenant, "status", None),
+            "active": getattr(tenant, "active", None),
+            "logo": logo_url,
+        }
+
+    def _is_target_superadmin(self, target) -> bool:
+        role = str(getattr(target, "role", "") or "").lower()
+        return role == "superadmin" or bool(getattr(target, "is_superuser", False))
+
+    def _require_admin_actor(self, request):
+        """Return (actor, error_response_or_None)."""
+        actor = request.user
+        actor_role = str(getattr(actor, "role", "") or "").lower()
+        is_admin = bool(
+            getattr(actor, "is_superuser", False)
+            or actor_role in {"admin", "superadmin"}
+        )
+        if not is_admin:
+            return actor, Response(
+                {"detail": "Only admins can manage tenant assignments."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return actor, None
+
+    @action(detail=True, methods=['get', 'post'],
+            permission_classes=[UserAccessPolicy], url_path='tenants')
+    def tenants(self, request, id_number=None):
+        """List or assign tenants for a user.
+
+        GET  /users/{id_number}/tenants/      → list tenants the user belongs to
+        POST /users/{id_number}/tenants/      → add user to one or more tenants
+
+        Body for POST:
+            {
+                "schema_names": ["ldtc", "westhill"],  // required (non-empty)
+                "is_staff": false                         // optional, default false
+            }
+
+        Superadmin targets are read-only — POST returns 403.
+        """
+        from core.models import Tenant
+        from tenant_users.permissions.models import UserTenantPermissions
+
+        target = self.get_object()
+
+        if request.method.lower() == 'get':
+            with schema_context('public'):
+                assigned_schemas = list(
+                    target.tenants.exclude(schema_name='public')
+                    .values_list('schema_name', flat=True)
+                )
+                tenants = list(Tenant.objects.filter(schema_name__in=assigned_schemas))
+            return Response(
+                {
+                    "results": [self._serialize_tenant(t) for t in tenants],
+                    "is_superadmin": self._is_target_superadmin(target),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # POST — add to tenants
+        actor, error = self._require_admin_actor(request)
+        if error is not None:
+            return error
+
+        if self._is_target_superadmin(target):
+            return Response(
+                {"detail": "Superadmin tenant assignments cannot be modified here."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        schema_names = request.data.get('schema_names')
+        if isinstance(schema_names, str):
+            schema_names = [schema_names]
+        if not isinstance(schema_names, list) or not schema_names:
+            return Response(
+                {"detail": "`schema_names` must be a non-empty list of tenant schemas."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        normalized = [str(s).strip() for s in schema_names if str(s).strip()]
+        if not normalized:
+            return Response(
+                {"detail": "`schema_names` must contain at least one non-empty value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if 'public' in normalized:
+            return Response(
+                {"detail": "The public schema cannot be assigned here."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        is_staff_flag = bool(request.data.get('is_staff', False))
+
+        with schema_context('public'):
+            found_tenants = list(Tenant.objects.filter(schema_name__in=normalized))
+            found_schema_names = {t.schema_name for t in found_tenants}
+            missing = [s for s in normalized if s not in found_schema_names]
+
+        if missing:
+            return Response(
+                {
+                    "detail": "One or more tenants do not exist.",
+                    "missing_schemas": missing,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        added: list[str] = []
+        already_present: list[str] = []
+        failures: list[dict] = []
+
+        for tenant in found_tenants:
+            try:
+                with schema_context(tenant.schema_name):
+                    has_perms = UserTenantPermissions.objects.filter(
+                        profile_id=target.pk
+                    ).exists()
+
+                if has_perms:
+                    already_present.append(tenant.schema_name)
+                    continue
+
+                tenant.add_user(target, is_staff=is_staff_flag, is_superuser=False)
+                added.append(tenant.schema_name)
+            except Exception as e:
+                failures.append({"schema_name": tenant.schema_name, "error": str(e)})
+
+        from common.audit_utils import log_auth_event
+        try:
+            log_auth_event(
+                request,
+                target,
+                "tenants_assigned",
+                details={
+                    "added": added,
+                    "already_present": already_present,
+                    "failures": failures,
+                },
+            )
+        except Exception:
+            pass
+
+        with schema_context('public'):
+            assigned_schemas = list(
+                target.tenants.exclude(schema_name='public')
+                .values_list('schema_name', flat=True)
+            )
+            tenants = list(Tenant.objects.filter(schema_name__in=assigned_schemas))
+
+        status_code = (
+            status.HTTP_207_MULTI_STATUS if failures else status.HTTP_200_OK
+        )
+        return Response(
+            {
+                "added": added,
+                "already_present": already_present,
+                "failures": failures,
+                "results": [self._serialize_tenant(t) for t in tenants],
+            },
+            status=status_code,
+        )
+
+    @action(detail=True, methods=['delete'],
+            permission_classes=[UserAccessPolicy],
+            url_path=r'tenants/(?P<schema_name>[^/.]+)')
+    def remove_tenant(self, request, id_number=None, schema_name=None):
+        """Remove a user from a tenant.
+
+        DELETE /users/{id_number}/tenants/{schema_name}/
+        """
+        from core.models import Tenant
+
+        target = self.get_object()
+
+        actor, error = self._require_admin_actor(request)
+        if error is not None:
+            return error
+
+        if self._is_target_superadmin(target):
+            return Response(
+                {"detail": "Superadmin tenant assignments cannot be modified here."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if target.pk == request.user.pk:
+            return Response(
+                {"detail": "You cannot remove yourself from a tenant from this endpoint."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        schema = (schema_name or '').strip()
+        if not schema or schema == 'public':
+            return Response(
+                {"detail": "Invalid tenant schema."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with schema_context('public'):
+            try:
+                tenant = Tenant.objects.get(schema_name=schema)
+            except Tenant.DoesNotExist:
+                return Response(
+                    {"detail": f"Tenant '{schema}' does not exist."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        try:
+            tenant.remove_user(target)
+        except Exception as e:
+            return Response(
+                {"detail": f"Failed to remove user from tenant: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        from common.audit_utils import log_auth_event
+        try:
+            log_auth_event(
+                request,
+                target,
+                "tenant_unassigned",
+                details={"schema_name": schema},
+            )
+        except Exception:
+            pass
+
+        return Response(
+            {
+                "detail": f"Removed {target.username} from {schema}",
+                "schema_name": schema,
+            },
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=True, methods=['post'],

@@ -365,6 +365,141 @@ class TenantViewSet(ModelViewSet):
         serializer = TenantSerializer(instance, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="academic-years",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def academic_years(self, request, *args, **kwargs):
+        """List academic years for the tenant, ordered most-recent first.
+
+        Endpoint:
+        - GET /api/v1/tenants/{schema_name}/academic-years/
+
+        Returns a list of `{ id, name, start_date, end_date, current, status }`
+        suitable for populating an academic year selector in the admin UI.
+        """
+        validate_tenant_is_in_public_schema()
+        tenant = self.get_object()
+
+        from academics.models import AcademicYear
+
+        with schema_context(tenant.schema_name):
+            rows = list(
+                AcademicYear.objects.all().values(
+                    "id",
+                    "name",
+                    "start_date",
+                    "end_date",
+                    "current",
+                    "status",
+                )
+            )
+
+        return Response({"results": rows}, status=status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="stats",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def stats(self, request, *args, **kwargs):
+        """Return aggregate stats for a tenant for the admin tenant detail page.
+
+        Endpoint:
+        - GET /api/v1/tenants/{schema_name}/stats/?academic_year=<id>
+
+        If `academic_year` is omitted, the tenant's current academic year is
+        used (falling back to the most recent by start_date). Enrollment
+        figures are scoped to the chosen academic year; user/staff counts
+        are tenant-wide.
+        """
+        validate_tenant_is_in_public_schema()
+        tenant = self.get_object()
+
+        from tenant_users.permissions.models import UserTenantPermissions
+
+        with schema_context(tenant.schema_name):
+            from academics.models import AcademicYear
+            from staff.models import Staff
+            from students.models import Student
+            from students.models.enrollment import Enrollment
+            from students.models.guardian import StudentGuardian
+
+            academic_year_param = (request.query_params.get("academic_year") or "").strip()
+            academic_year = None
+            if academic_year_param:
+                ay_qs = AcademicYear.objects.all()
+                if academic_year_param.isdigit():
+                    academic_year = ay_qs.filter(pk=int(academic_year_param)).first()
+                if academic_year is None:
+                    academic_year = ay_qs.filter(name__iexact=academic_year_param).first()
+
+            if academic_year is None:
+                academic_year = AcademicYear.get_current_academic_year() or (
+                    AcademicYear.objects.order_by("-start_date").first()
+                )
+
+            enrollment_qs = Enrollment.objects.all()
+            if academic_year is not None:
+                enrollment_qs = enrollment_qs.filter(academic_year=academic_year)
+
+            enrolled_students_count = enrollment_qs.values("student_id").distinct().count()
+
+            total_students = Student.objects.count()
+            total_staff = Staff.objects.count()
+            total_guardians = StudentGuardian.objects.count()
+
+            # `is_staff` / `is_superuser` are per-tenant flags that live on
+            # UserTenantPermissions (inside this tenant schema), not on the
+            # public User model — filtering User by them would raise a
+            # FieldError because they're properties, not real columns.
+            permissions_qs = UserTenantPermissions.objects.all()
+            permission_user_ids = list(
+                permissions_qs.values_list("profile_id", flat=True).distinct()
+            )
+            staff_users = permissions_qs.filter(is_staff=True).count()
+            superuser_users = permissions_qs.filter(is_superuser=True).count()
+
+        with schema_context("public"):
+            User = get_user_model()
+            users_qs = User.objects.filter(pk__in=permission_user_ids)
+            total_users = users_qs.count()
+            active_users = users_qs.filter(is_active=True).count()
+
+        return Response(
+            {
+                "tenant": {
+                    "schema_name": tenant.schema_name,
+                    "name": tenant.name,
+                    "status": tenant.status,
+                    "active": tenant.active,
+                },
+                "academic_year": {
+                    "id": getattr(academic_year, "id", None),
+                    "name": getattr(academic_year, "name", None),
+                    "start_date": getattr(academic_year, "start_date", None),
+                    "end_date": getattr(academic_year, "end_date", None),
+                    "current": getattr(academic_year, "current", None),
+                } if academic_year is not None else None,
+                "students": {
+                    "enrolled": enrolled_students_count,
+                    "total": total_students,
+                },
+                "staff": {"total": total_staff},
+                "guardians": {"total": total_guardians},
+                "users": {
+                    "total": total_users,
+                    "active": active_users,
+                    "staff": staff_users,
+                    "superuser": superuser_users,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 @api_view(["GET"])
 @authentication_classes([])  # Disable authentication - this is a public endpoint

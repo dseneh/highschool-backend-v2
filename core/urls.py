@@ -28,11 +28,12 @@ router.register(
 )
 
 urlpatterns = [
-    path('', include(router.urls)),
-    path('contact-inquiries/', ContactInquiryView.as_view(), name='contact-inquiry'),
-    path('current/', current_tenant, name='current-tenant'),
-    path('search/', search_tenant_info, name='search-tenant-info'),
-    path('cache/invalidate/', invalidate_cache, name='invalidate-cache'),
+    # IMPORTANT: explicit paths that overlap with the router's detail URLs
+    # (e.g. /tenants/{schema_name}/, /platform-banners/{pk}/) MUST be
+    # registered BEFORE `include(router.urls)`. Otherwise the router
+    # captures them as detail lookups and returns 404 (or worse, tries to
+    # parse "me"/"current" as a UUID/schema name).
+    path('tenants/current/', current_tenant, name='current-tenant'),
     path(
         "platform-banners/me/",
         MyPlatformBannersView.as_view(),
@@ -48,5 +49,9 @@ urlpatterns = [
         PlatformBannerTargetingMetaView.as_view(),
         name="platform-banner-targeting-meta",
     ),
+    path('', include(router.urls)),
+    path('contact-inquiries/', ContactInquiryView.as_view(), name='contact-inquiry'),
+    path('search/', search_tenant_info, name='search-tenant-info'),
+    path('cache/invalidate/', invalidate_cache, name='invalidate-cache'),
 ]
 
