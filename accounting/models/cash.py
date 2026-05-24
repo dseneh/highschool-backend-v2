@@ -220,7 +220,10 @@ class AccountingCashTransaction(BaseModel):
             models.Index(fields=["transaction_date", "status"]),
             models.Index(fields=["bank_account", "status"]),
             models.Index(fields=["transaction_type", "status"]),
-            models.Index(fields=["student", "transaction_date"]),
+            models.Index(
+                fields=["student", "transaction_date"],
+                name="accct_student_txdate_idx",
+            ),
         ]
 
     def __str__(self):
