@@ -149,8 +149,8 @@ def _validate_student_id(student_id: str) -> tuple[bool, str]:
     Validate that student_id exists in the Student table.
     Returns: (is_valid, error_message)
     """
-    if not student_id or not student_id.isdigit() or len(student_id) != 6:
-        return False, f"Student ID '{student_id}' must be 6 digits"
+    if not student_id or not student_id.isdigit() or len(student_id) < 5:
+        return False, f"Student ID '{student_id}' must be at least 5 digits"
     
     try:
         Student.objects.get(id_number=student_id)
