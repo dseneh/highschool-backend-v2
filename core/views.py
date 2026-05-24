@@ -186,8 +186,12 @@ class TenantViewSet(ModelViewSet):
     def get_queryset(self):
         """
         Ensure we're in the public schema and return appropriate tenants.
-        Excludes public tenant and deleted tenants.
-        For public endpoints (list/retrieve), only show active tenants.
+
+        Excludes public tenant always. Deleted tenants are hidden by default
+        but authenticated superadmins can opt into seeing them via
+        ``?include_deleted=true`` or ``?status=deleted`` so they can manage /
+        reactivate soft-deleted workspaces. Unauthenticated public callers
+        only ever see active tenants.
         """
         from django_tenants.utils import get_public_schema_name
 
@@ -199,13 +203,37 @@ class TenantViewSet(ModelViewSet):
 
         # Exclude public tenant (always)
         queryset = queryset.exclude(schema_name=public_schema)
-        # Exclude deleted tenants (always)
-        queryset = queryset.exclude(status="deleted")
 
-        # For public endpoints, only show active tenants
+        # Decide whether deleted tenants should be visible. We always keep
+        # them out for unauthenticated requests; an authenticated superadmin
+        # explicitly opting in (via ?include_deleted=true, ?show_deleted=true
+        # or ?status=deleted) can see them — useful for the admin tenant
+        # list and reactivate flows.
+        request = getattr(self, "request", None)
+        params = getattr(request, "query_params", {}) if request else {}
+        include_deleted_param = str(
+            params.get("include_deleted")
+            or params.get("show_deleted")
+            or ""
+        ).strip().lower() in {"1", "true", "yes"}
+        status_filter = str(params.get("status") or "").strip().lower()
+        wants_deleted = include_deleted_param or status_filter == "deleted"
+
+        user = getattr(request, "user", None) if request else None
+        is_authed = bool(user and getattr(user, "is_authenticated", False))
+
+        if not (is_authed and wants_deleted):
+            queryset = queryset.exclude(status="deleted")
+
+        # Honor an explicit status filter (e.g. ?status=deleted or
+        # ?status=on_hold) for the admin tenant list page.
+        if status_filter and status_filter != "all":
+            queryset = queryset.filter(status=status_filter)
+
+        # For unauthenticated public endpoints, only show active tenants.
         if (
             self.action in ["list", "retrieve"]
-            and not self.request.user.is_authenticated
+            and not is_authed
         ):
             queryset = queryset.filter(active=True)
 
@@ -293,8 +321,9 @@ class TenantViewSet(ModelViewSet):
         Performs a soft delete: sets status to 'deleted' and active to False.
         The tenant record and schema remain in the database but are marked as deleted.
 
-        To permanently delete a tenant (drop schema and remove record), use a separate
-        hard delete operation (not implemented via API for safety).
+        A future cron / GC job will hard-delete tenants that have been in the
+        deleted state for longer than the retention period. In the meantime
+        the tenant can be brought back via the `reactivate` action.
         """
         from django_tenants.utils import get_public_schema_name
 
@@ -309,6 +338,63 @@ class TenantViewSet(ModelViewSet):
         instance.status = "deleted"
         instance.active = False  # Explicitly set, but save() will sync it anyway
         instance.save(update_fields=["status", "active"])
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="reactivate",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def reactivate(self, request, *args, **kwargs):
+        """Reactivate a soft-deleted (or otherwise non-operational) tenant.
+
+        Endpoint:
+        - POST /api/v1/tenants/{schema_name}/reactivate/
+
+        Resets status -> 'active' and active -> True so the workspace can
+        be used again. Only available to superadmins. The tenant must
+        already exist in the public schema (a hard-deleted tenant cannot
+        be recovered via this endpoint).
+        """
+        from django_tenants.utils import get_public_schema_name
+
+        validate_tenant_is_in_public_schema()
+
+        # We need to be able to fetch deleted tenants too — so query the
+        # raw Tenant manager rather than the filtered get_queryset() to
+        # locate the instance for reactivation.
+        schema_name = kwargs.get(self.lookup_field) or kwargs.get("pk")
+        try:
+            instance = Tenant.objects.get(**{self.lookup_field: schema_name})
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "Tenant not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if instance.schema_name == get_public_schema_name():
+            return Response(
+                {"detail": "Public tenant cannot be reactivated."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        before_state = self._capture_control_state(instance)
+
+        instance.status = "active"
+        instance.active = True
+        instance.save(update_fields=["status", "active"])
+
+        after_state = self._capture_control_state(instance)
+        try:
+            log_tenant_control_change(
+                request, request.user, instance, before_state, after_state
+            )
+        except Exception:
+            # Audit logging must never block the action itself.
+            pass
+
+        serializer = TenantSerializer(instance, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(
         detail=True,

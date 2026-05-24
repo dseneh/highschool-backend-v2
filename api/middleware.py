@@ -164,7 +164,18 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             return None
 
         is_disabled = not getattr(tenant, 'active', True)
-        is_non_operational = getattr(tenant, 'status', 'active') != 'active'
+        tenant_status = str(getattr(tenant, 'status', 'active') or 'active').lower()
+        is_non_operational = tenant_status != 'active'
+        is_deleted = tenant_status == 'deleted'
+
+        # Soft-deleted tenants are a terminal state: no overrides, no admin
+        # escape hatch, no allow-list. Block every API call against them.
+        if is_deleted:
+            return self._blocked_tenant_response(
+                'This workspace has been deleted. Tenant operations are no longer available.',
+                'TENANT_DELETED',
+                status_code=410,
+            )
 
         if is_disabled or is_non_operational:
             if self._is_disabled_override_allowed(request, tenant):
