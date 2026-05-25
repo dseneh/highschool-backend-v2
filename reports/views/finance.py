@@ -6,8 +6,9 @@ Fees Payment SITREP report sourced from the accounting module.
 
 import io
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.response import Response
@@ -15,11 +16,104 @@ from rest_framework.views import APIView
 
 from ..access_policies import ReportsAccessPolicy
 
+PAYMENT_STATUS_LABELS = {
+    "fully_paid": "Fully Paid",
+    "payment_current": "Payment Current",
+    "delinquent": "Delinquent",
+    "overpaid": "Overpaid",
+    "credit": "Overpaid",
+}
+
 
 class FinanceReportView(APIView):
     """Fees Payment SITREP - sourced from the accounting module."""
 
     permission_classes = [ReportsAccessPolicy]
+
+    @staticmethod
+    def _parse_decimal_param(value: str | None) -> Decimal | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        try:
+            return Decimal(normalized)
+        except (InvalidOperation, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_payment_status_filters(raw_values: list[str]) -> set[str]:
+        labels: set[str] = set()
+        for raw in raw_values:
+            key = raw.strip().lower().replace(" ", "_")
+            if not key or key == "all":
+                continue
+            label = PAYMENT_STATUS_LABELS.get(key)
+            if label:
+                labels.add(label)
+            elif raw.strip():
+                labels.add(raw.strip())
+        return labels
+
+    @staticmethod
+    def _derive_payment_status_label(balance: float, bill, amt_due_todate: float, total_paid: float) -> str:
+        if balance < 0:
+            return "Overpaid"
+        if balance == 0:
+            return "Fully Paid"
+        if bill.status == bill.BillStatus.OVERDUE:
+            return "Delinquent"
+        if amt_due_todate > 0 and total_paid < amt_due_todate:
+            return "Delinquent"
+        return "Payment Current"
+
+    @staticmethod
+    def _passes_amount_filters(
+        row: dict,
+        *,
+        balance_min: Decimal | None,
+        balance_max: Decimal | None,
+        total_paid_min: Decimal | None,
+        total_paid_max: Decimal | None,
+        net_bill_min: Decimal | None,
+        net_bill_max: Decimal | None,
+    ) -> bool:
+        checks = [
+            (balance_min, row["balance"], lambda value, bound: value >= bound),
+            (balance_max, row["balance"], lambda value, bound: value <= bound),
+            (total_paid_min, row["total_paid"], lambda value, bound: value >= bound),
+            (total_paid_max, row["total_paid"], lambda value, bound: value <= bound),
+            (net_bill_min, row["net_bill"], lambda value, bound: value >= bound),
+            (net_bill_max, row["net_bill"], lambda value, bound: value <= bound),
+        ]
+        for bound, value, comparator in checks:
+            if bound is None:
+                continue
+            if not comparator(float(value), float(bound)):
+                return False
+        return True
+
+    @staticmethod
+    def _build_student_balance_map(student_ids, academic_year) -> dict[str, dict[str, float]]:
+        if not student_ids:
+            return {}
+
+        from students.models import Student
+        from students.services.balance import annotate_student_balance_totals
+
+        balance_rows = annotate_student_balance_totals(
+            Student.objects.filter(id__in=student_ids),
+            academic_year=academic_year,
+        )
+        return {
+            str(student.id): {
+                "paid_total": float(student.paid_total or 0),
+                "billed_total": float(student.billed_total or 0),
+                "balance_total": float(student.balance_total or 0),
+            }
+            for student in balance_rows
+        }
 
     @staticmethod
     def _read_multi_query_values(request, key: str) -> list[str]:
@@ -56,7 +150,16 @@ class FinanceReportView(APIView):
         academic_year_id = request.query_params.get("academic_year_id")
         grade_level_ids = self._read_multi_query_values(request, "grade_level_id")
         section_ids = self._read_multi_query_values(request, "section_id")
-        payment_statuses = self._read_multi_query_values(request, "payment_status")
+        payment_statuses = self._normalize_payment_status_filters(
+            self._read_multi_query_values(request, "payment_status")
+        )
+        student_query = (request.query_params.get("student") or "").strip()
+        balance_min = self._parse_decimal_param(request.query_params.get("balance_min"))
+        balance_max = self._parse_decimal_param(request.query_params.get("balance_max"))
+        total_paid_min = self._parse_decimal_param(request.query_params.get("total_paid_min"))
+        total_paid_max = self._parse_decimal_param(request.query_params.get("total_paid_max"))
+        net_bill_min = self._parse_decimal_param(request.query_params.get("net_bill_min"))
+        net_bill_max = self._parse_decimal_param(request.query_params.get("net_bill_max"))
         # NOTE: DRF reserves `format` for renderer negotiation.
         # Use `export=xlsx` to avoid 404/negotiation issues, but keep `format` as fallback.
         fmt = request.query_params.get("export") or request.query_params.get("format")
@@ -124,15 +227,21 @@ class FinanceReportView(APIView):
             bills = bills.filter(grade_level_id__in=grade_level_ids)
         if section_ids:
             bills = bills.filter(enrollment__section_id__in=section_ids)
-        if payment_statuses:
-            normalized_payment_statuses = {
-                status_value.strip().lower() for status_value in payment_statuses if status_value.strip()
-            }
-            if "all" not in normalized_payment_statuses:
-                bills = bills.filter(status__in=payment_statuses)
+        if student_query:
+            bills = bills.filter(
+                Q(student__id_number__icontains=student_query)
+                | Q(student__first_name__icontains=student_query)
+                | Q(student__last_name__icontains=student_query)
+            )
+
+        bills_list = list(bills)
+        student_balance_map = self._build_student_balance_map(
+            {bill.student_id for bill in bills_list},
+            academic_year,
+        )
 
         results = []
-        for bill in bills:
+        for bill in bills_list:
             tuition = sum(
                 float(line.line_amount)
                 for line in bill.lines.all()
@@ -145,19 +254,24 @@ class FinanceReportView(APIView):
             )
 
             net_bill = float(bill.net_amount)
-            paid = float(bill.paid_amount)
-            balance = float(bill.outstanding_amount)
+            balance_info = student_balance_map.get(str(bill.student_id), {})
+            paid = balance_info.get("paid_total", float(bill.paid_amount))
+            balance = balance_info.get(
+                "balance_total",
+                round(net_bill - paid, 2),
+            )
+            credit_amount = round(abs(min(0.0, balance)), 2)
 
             amt_due_todate = round(net_bill * cumulative_pct, 2) if cumulative_pct > 0 else 0
             pct_paid_due = round((paid / amt_due_todate * 100), 1) if amt_due_todate > 0 else 0
             pct_paid_net = round((paid / net_bill * 100), 1) if net_bill > 0 else 0
 
-            if balance <= 0:
-                status_label = "Fully Paid"
-            elif bill.status == AccountingStudentBill.BillStatus.OVERDUE:
-                status_label = "Delinquent"
-            else:
-                status_label = "Payment Current"
+            status_label = self._derive_payment_status_label(
+                balance,
+                bill,
+                amt_due_todate,
+                paid,
+            )
 
             enrolled_as = ""
             enrolled_as_display = ""
@@ -197,12 +311,39 @@ class FinanceReportView(APIView):
                     "amt_due_todate": amt_due_todate,
                     "total_paid": paid,
                     "balance": balance,
+                    "credit_amount": credit_amount,
                     "pct_paid_due": pct_paid_due,
                     "pct_paid_net": pct_paid_net,
                     "status": status_label,
                     "currency": bill.currency.symbol if bill.currency else "$",
                 }
             )
+
+        if payment_statuses:
+            results = [row for row in results if row["status"] in payment_statuses]
+
+        results = [
+            row
+            for row in results
+            if self._passes_amount_filters(
+                row,
+                balance_min=balance_min,
+                balance_max=balance_max,
+                total_paid_min=total_paid_min,
+                total_paid_max=total_paid_max,
+                net_bill_min=net_bill_min,
+                net_bill_max=net_bill_max,
+            )
+        ]
+
+        status_counts = {
+            "Fully Paid": 0,
+            "Payment Current": 0,
+            "Delinquent": 0,
+            "Overpaid": 0,
+        }
+        for row in results:
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
 
         totals = {
             "student_count": len(results),
@@ -214,6 +355,10 @@ class FinanceReportView(APIView):
             "amt_due_todate": sum(r["amt_due_todate"] for r in results),
             "total_paid": sum(r["total_paid"] for r in results),
             "balance": sum(r["balance"] for r in results),
+            "outstanding_balance": sum(max(0.0, r["balance"]) for r in results),
+            "credit_total": sum(r["credit_amount"] for r in results),
+            "overpaid_count": status_counts.get("Overpaid", 0),
+            "status_counts": status_counts,
         }
         total_net = totals["net_bill"]
         total_paid_sum = totals["total_paid"]
@@ -303,6 +448,7 @@ class FinanceReportView(APIView):
             "Fully Paid": "C6EFCE",
             "Payment Current": "DDEBF7",
             "Delinquent": "FFCCCC",
+            "Overpaid": "D9E1F2",
         }
 
         # Data rows

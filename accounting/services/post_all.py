@@ -148,12 +148,12 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
             queryset = queryset.filter(amount=Decimal(amount))
         except (InvalidOperation, TypeError):
             pass
-    if amount_min:
+    if amount_min not in (None, ""):
         try:
             queryset = queryset.filter(amount__gte=Decimal(amount_min))
         except (InvalidOperation, TypeError):
             pass
-    if amount_max:
+    if amount_max not in (None, ""):
         try:
             queryset = queryset.filter(amount__lte=Decimal(amount_max))
         except (InvalidOperation, TypeError):

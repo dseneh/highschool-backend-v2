@@ -674,7 +674,13 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         extractors = [self._EXPORT_COLUMNS[k][1] for k in col_keys]
 
         data = []
-        for txn in queryset.iterator():
+        # Django 5+ requires chunk_size when iterating a prefetch_related queryset.
+        iterator_kwargs = (
+            {"chunk_size": 2000}
+            if getattr(queryset, "_prefetch_related_lookups", None)
+            else {}
+        )
+        for txn in queryset.iterator(**iterator_kwargs):
             row = {}
             for key, header, extractor in zip(col_keys, headers, extractors):
                 # FileGenerator looks up by snake-cased header

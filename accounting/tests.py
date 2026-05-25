@@ -3,6 +3,7 @@ from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 from django.core.exceptions import ValidationError
+from django.http import HttpResponse
 from django.test import SimpleTestCase, TestCase
 from rest_framework.response import Response
 from types import SimpleNamespace
@@ -337,3 +338,27 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
 
         mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
+
+
+class AccountingCashTransactionExportTests(SimpleTestCase):
+    @patch("common.file_generators.FileGenerator.generate_file")
+    def test_export_uses_chunked_iterator_for_prefetched_queryset(self, mock_generate):
+        mock_generate.return_value = HttpResponse(b"csv")
+
+        viewset = AccountingCashTransactionViewSet()
+        request = SimpleNamespace(
+            query_params={"file_format": "csv"},
+        )
+        viewset.request = request
+        viewset.format_kwarg = None
+
+        mock_queryset = MagicMock()
+        mock_queryset._prefetch_related_lookups = ["bill_allocations__student_bill"]
+        mock_queryset.iterator.return_value = iter([])
+
+        with patch.object(viewset, "get_queryset", return_value=mock_queryset):
+            response = viewset.export_transactions(request)
+
+        mock_queryset.iterator.assert_called_once_with(chunk_size=2000)
+        self.assertIsInstance(response, HttpResponse)
+        mock_generate.assert_called_once()
