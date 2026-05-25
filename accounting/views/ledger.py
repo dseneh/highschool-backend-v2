@@ -17,6 +17,7 @@ from accounting.models import (
     AccountingTransactionType,
 )
 from accounting.services import sync_transaction_type_for_ledger_account
+from accounting.services.journal_summary import build_journal_entry_list_summary
 from accounting.serializers import (
     AccountingCurrencySerializer,
     AccountingExchangeRateSerializer,
@@ -173,6 +174,12 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
         if self.action == "retrieve":
             return AccountingJournalEntryDetailSerializer
         return AccountingJournalEntrySerializer
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        summary = build_journal_entry_list_summary(queryset)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({"results": serializer.data, "count": queryset.count(), "summary": summary})
 
     def get_queryset(self):
         queryset = super().get_queryset()
