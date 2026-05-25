@@ -17,6 +17,7 @@ from .views.transactions import (
 )
 from .views.students import StudentReportView, StudentIndividualReportView
 from .views.finance import FinanceReportView
+from .views.accounting_summary import AccountingSummaryReportView
 
 app_name = 'reports'
 
@@ -30,6 +31,7 @@ urlpatterns = [
     
     # Finance Reports
     path('finance/', FinanceReportView.as_view(), name='finance-reports'),
+    path('accounting-summary/', AccountingSummaryReportView.as_view(), name='accounting-summary-reports'),
     
     # Export Status Management
     path('export-status/<str:task_id>/', TransactionExportStatusView.as_view(), name='export-status'),

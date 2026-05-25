@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from academics.models import AcademicYear
-from accounting.models import AccountingStudentBill
+from students.services.balance import annotate_student_balance_totals
 from business.students.services import student_service
 from common.filter import get_student_queryparams
 from common.utils import get_enrollment_bill_summary
@@ -382,16 +382,6 @@ def _build_students_queryset(query_params, academic_year=None):
         "enrollments__student_bills",
     )
 
-    selected_year_filter = {"enrollment__academic_year": academic_year} if academic_year else {
-        "enrollment__academic_year__current": True
-    }
-    selected_year_bill_filter = {"academic_year": academic_year} if academic_year else {
-        "academic_year__current": True
-    }
-    selected_year_student_filter = {"academic_year": academic_year} if academic_year else {
-        "academic_year__current": True
-    }
-
     filter_fields = [
         "first_name",
         "last_name",
@@ -412,63 +402,9 @@ def _build_students_queryset(query_params, academic_year=None):
     if query:
         students = students.filter(query)
 
-    accounting_billed_subquery = (
-        AccountingStudentBill.objects.filter(
-            student=OuterRef("pk"),
-            **selected_year_bill_filter,
-        )
-        .values("student")
-        .annotate(total=Sum("net_amount"))
-        .values("total")[:1]
-    )
-    accounting_paid_subquery = (
-        AccountingStudentBill.objects.filter(
-            student=OuterRef("pk"),
-            **selected_year_bill_filter,
-        )
-        .values("student")
-        .annotate(total=Sum("paid_amount"))
-        .values("total")[:1]
-    )
-    legacy_billed_subquery = (
-        StudentEnrollmentBill.objects.filter(
-            enrollment__student=OuterRef("pk"),
-            **selected_year_filter,
-        )
-        .values("enrollment__student")
-        .annotate(total=Sum("amount"))
-        .values("total")[:1]
-    )
-    legacy_paid_subquery = (
-        Transaction.objects.filter(
-            student=OuterRef("pk"),
-            status="approved",
-            type__type="income",
-            **selected_year_student_filter,
-        )
-        .values("student")
-        .annotate(total=Sum("amount"))
-        .values("total")[:1]
-    )
-
-    students = students.annotate(
-        billed_total=Coalesce(
-            Subquery(accounting_billed_subquery),
-            Subquery(legacy_billed_subquery),
-            Value(0),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        ),
-        paid_total=Coalesce(
-            Subquery(accounting_paid_subquery),
-            Subquery(legacy_paid_subquery),
-            Value(0),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        ),
-    ).annotate(
-        balance_total=ExpressionWrapper(
-            F("billed_total") - F("paid_total"),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        )
+    students = annotate_student_balance_totals(
+        students,
+        academic_year=academic_year,
     )
 
     balance_owed = str(query_params.get("balance_owed", "")).strip().lower()
@@ -478,6 +414,8 @@ def _build_students_queryset(query_params, academic_year=None):
 
     if balance_owed == "owed":
         students = students.filter(balance_total__gt=0)
+    elif balance_owed == "credit":
+        students = students.filter(balance_total__lt=0)
     elif balance_owed == "clear":
         students = students.filter(balance_total__lte=0)
 

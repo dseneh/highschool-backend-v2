@@ -8,7 +8,8 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Case, Count, DecimalField, F, Q, Sum, When
+from django.db.models.functions import Abs
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
 from accounting.services import (
@@ -22,6 +23,7 @@ FILTER_PARAM_KEYS = (
     "bank_account",
     "transaction_type",
     "transaction_type_code",
+    "student_payments",
     "start_date",
     "end_date",
     "amount",
@@ -29,6 +31,15 @@ FILTER_PARAM_KEYS = (
     "amount_max",
     "reference",
 )
+
+
+def build_student_payment_list_filter() -> Q:
+    """Match cash transactions that represent student tuition/fee payments."""
+    return (
+        Q(student__isnull=False)
+        | Q(transaction_type__code__iexact="TUITION")
+        | Q(bill_allocations__isnull=False)
+    )
 
 
 def extract_filter_params(query_params) -> dict[str, str]:
@@ -108,6 +119,7 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
     amount_max = params.get("amount_max")
     reference = params.get("reference")
     transaction_type_code = params.get("transaction_type_code")
+    student_payments = params.get("student_payments")
     search = params.get("search")
 
     if search:
@@ -124,7 +136,9 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
     if transaction_type:
         queryset = queryset.filter(transaction_type_id=transaction_type)
     if transaction_type_code:
-        queryset = queryset.filter(transaction_type__code=transaction_type_code)
+        queryset = queryset.filter(transaction_type__code__iexact=transaction_type_code)
+    if student_payments in {"1", "true", "yes", "on"}:
+        queryset = queryset.filter(build_student_payment_list_filter()).distinct()
     if start_date:
         queryset = queryset.filter(transaction_date__gte=start_date)
     if end_date:
@@ -241,4 +255,68 @@ def execute_post_all(
         "skipped_count": len(errors),
         "journal_entry_ids": posted_journal_ids,
         "errors": errors,
+    }
+
+
+def _approved_signed_amount_expression():
+    """Mirror frontend getSignedAmount() for approved-net aggregation."""
+    return Case(
+        When(
+            transaction_type__code__iexact="TRANSFER_OUT",
+            then=-Abs(F("amount")),
+        ),
+        When(
+            transaction_type__code__iexact="TRANSFER_IN",
+            then=Abs(F("amount")),
+        ),
+        When(
+            transaction_type__transaction_category="expense",
+            then=-Abs(F("amount")),
+        ),
+        When(
+            transaction_type__transaction_category="income",
+            then=Abs(F("amount")),
+        ),
+        default=F("amount"),
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+
+
+def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
+    """Aggregate list stats across the full filtered queryset (before pagination)."""
+    approved_status = AccountingCashTransaction.TransactionStatus.APPROVED
+    signed_amount = _approved_signed_amount_expression()
+
+    agg = queryset.aggregate(
+        pending_count=Count("id", filter=Q(status=AccountingCashTransaction.TransactionStatus.PENDING)),
+        approved_count=Count("id", filter=Q(status=approved_status)),
+        rejected_count=Count("id", filter=Q(status=AccountingCashTransaction.TransactionStatus.REJECTED)),
+        posted_count=Count("id", filter=Q(journal_entry__isnull=False)),
+        not_posted_count=Count("id", filter=Q(journal_entry__isnull=True)),
+        approved_unposted_count=Count(
+            "id",
+            filter=Q(status=approved_status, journal_entry__isnull=True),
+        ),
+        approved_net_total=Sum(
+            signed_amount,
+            filter=Q(status=approved_status),
+        ),
+        approved_expense_total=Sum(
+            Abs(F("amount")),
+            filter=Q(
+                status=approved_status,
+                transaction_type__transaction_category="expense",
+            ),
+        ),
+    )
+
+    return {
+        "pending_count": agg["pending_count"] or 0,
+        "approved_count": agg["approved_count"] or 0,
+        "rejected_count": agg["rejected_count"] or 0,
+        "posted_count": agg["posted_count"] or 0,
+        "not_posted_count": agg["not_posted_count"] or 0,
+        "approved_unposted_count": agg["approved_unposted_count"] or 0,
+        "approved_net_total": str(agg["approved_net_total"] or Decimal("0")),
+        "approved_expense_total": str(agg["approved_expense_total"] or Decimal("0")),
     }

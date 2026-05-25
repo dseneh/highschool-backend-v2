@@ -210,7 +210,10 @@ class Student(BasePersonModel):
 
         accounting_totals = self._get_accounting_bill_totals(academic_year)
         if accounting_totals is not None:
-            return accounting_totals["net_total"] - accounting_totals["paid_total"]
+            from students.services.balance import get_effective_paid_for_student
+
+            effective_paid = get_effective_paid_for_student(self, academic_year)
+            return accounting_totals["net_total"] - effective_paid
 
         enrollment = self.enrollments.filter(academic_year=academic_year).first()
         if not enrollment:
@@ -254,9 +257,10 @@ class Student(BasePersonModel):
 
         accounting_totals = self._get_accounting_bill_totals(academic_year)
         if accounting_totals is not None:
-            approved_balance = (
-                accounting_totals["net_total"] - accounting_totals["paid_total"]
-            )
+            from students.services.balance import get_effective_paid_for_student
+
+            effective_paid = get_effective_paid_for_student(self, academic_year)
+            approved_balance = accounting_totals["net_total"] - effective_paid
             return approved_balance - pending_payments
 
         enrollment = self.enrollments.filter(academic_year=academic_year).first()
@@ -329,10 +333,10 @@ class Student(BasePersonModel):
 
         accounting_totals = self._get_accounting_bill_totals(academic_year)
         if accounting_totals is not None:
-            approved_payments = accounting_totals["paid_total"]
-            approved_balance = (
-                accounting_totals["net_total"] - accounting_totals["paid_total"]
-            )
+            from students.services.balance import get_effective_paid_for_student
+
+            approved_payments = get_effective_paid_for_student(self, academic_year)
+            approved_balance = accounting_totals["net_total"] - approved_payments
             projected_balance = approved_balance - pending_payments
 
             return {

@@ -29,6 +29,7 @@ from common.utils import (
 )
 from academics.models import AcademicYear, GradeLevel
 from accounting.models import AccountingStudentBill
+from students.services.balance import annotate_student_balance_totals
 from students.models import Student, Enrollment, StudentEnrollmentBill, Attendance
 from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.utils import create_enrollment_for_student
@@ -124,67 +125,7 @@ class StudentListView(APIView):
         if query:
             students = students.filter(query)
 
-        # Apply balance filters against the current academic year using the
-        # new accounting student bill table as the source of truth, with legacy
-        # fallback for records that have not yet been migrated.
-        accounting_billed_subquery = (
-            AccountingStudentBill.objects.filter(
-                student=OuterRef("pk"),
-                academic_year__current=True,
-            )
-            .values("student")
-            .annotate(total=Sum("net_amount"))
-            .values("total")[:1]
-        )
-        accounting_paid_subquery = (
-            AccountingStudentBill.objects.filter(
-                student=OuterRef("pk"),
-                academic_year__current=True,
-            )
-            .values("student")
-            .annotate(total=Sum("paid_amount"))
-            .values("total")[:1]
-        )
-        legacy_billed_subquery = (
-            StudentEnrollmentBill.objects.filter(
-                enrollment__student=OuterRef("pk"),
-                enrollment__academic_year__current=True,
-            )
-            .values("enrollment__student")
-            .annotate(total=Sum("amount"))
-            .values("total")[:1]
-        )
-        legacy_paid_subquery = (
-            Transaction.objects.filter(
-                student=OuterRef("pk"),
-                academic_year__current=True,
-                status="approved",
-                type__type="income",
-            )
-            .values("student")
-            .annotate(total=Sum("amount"))
-            .values("total")[:1]
-        )
-
-        students = students.annotate(
-            billed_total=Coalesce(
-                Subquery(accounting_billed_subquery),
-                Subquery(legacy_billed_subquery),
-                Value(0),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
-            ),
-            paid_total=Coalesce(
-                Subquery(accounting_paid_subquery),
-                Subquery(legacy_paid_subquery),
-                Value(0),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
-            ),
-        ).annotate(
-            balance_total=ExpressionWrapper(
-                F("billed_total") - F("paid_total"),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
-            )
-        )
+        students = annotate_student_balance_totals(students)
 
         balance_owed = str(query_params.get("balance_owed", "")).strip().lower()
         balance_condition = str(query_params.get("balance_condition", "")).strip().lower()
@@ -196,6 +137,8 @@ class StudentListView(APIView):
 
         if balance_owed == "owed":
             students = students.filter(balance_total__gt=0)
+        elif balance_owed == "credit":
+            students = students.filter(balance_total__lt=0)
         elif balance_owed == "clear":
             students = students.filter(balance_total__lte=0)
 

@@ -29,7 +29,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
 
         # 2) REGISTRAR: Can view student reports
         {
-            "action": ["list", "retrieve", "export", "download"],
+            "action": ["list", "retrieve", "get", "export", "download"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:registrar",
@@ -37,7 +37,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
 
         # 3) ACCOUNTANT: Can view finance/transaction reports
         {
-            "action": ["list", "retrieve", "export", "download"],
+            "action": ["list", "retrieve", "get", "export", "download"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:accountant",
@@ -45,7 +45,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
 
         # 4) TEACHER: Can view student reports for their sections
         {
-            "action": ["list", "retrieve"],
+            "action": ["list", "retrieve", "get"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:teacher",
@@ -53,7 +53,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
 
         # 5) Special privilege: STUDENTS_VIEW -> can view student reports
         {
-            "action": ["list", "retrieve", "export", "download"],
+            "action": ["list", "retrieve", "get", "export", "download"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_privilege:STUDENTS_VIEW",
@@ -61,7 +61,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
 
         # 6) Special privilege: FINANCE_VIEW -> can view finance reports
         {
-            "action": ["list", "retrieve", "export", "download"],
+            "action": ["list", "retrieve", "get", "export", "download"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_privilege:FINANCE_VIEW",
@@ -69,7 +69,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
 
         # 7) VIEWER: Read-only access (list and retrieve)
         {
-            "action": ["list", "retrieve"],
+            "action": ["list", "retrieve", "get"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:viewer",

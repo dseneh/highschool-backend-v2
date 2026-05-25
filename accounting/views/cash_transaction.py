@@ -2,7 +2,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Q
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -37,6 +37,7 @@ from accounting.services import (
 )
 from accounting.services.post_all import (
     apply_cash_transaction_list_filters,
+    build_cash_transaction_list_summary,
     execute_post_all,
     extract_filter_params,
     get_eligible_post_all_queryset,
@@ -205,37 +206,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         queryset = self.filter_queryset(self.get_queryset())
 
         # Compute summary aggregates on the full filtered queryset (before pagination).
-        agg = queryset.aggregate(
-            pending_count=Count("id", filter=Q(status="pending")),
-            approved_count=Count("id", filter=Q(status="approved")),
-            rejected_count=Count("id", filter=Q(status="rejected")),
-            posted_count=Count("id", filter=Q(journal_entry__isnull=False)),
-            not_posted_count=Count("id", filter=Q(journal_entry__isnull=True)),
-            # Approved transactions that haven't been journalised yet —
-            # this is the "posting backlog" surfaced in the page banner
-            # and sidebar badge. Only approved rows are postable, so this
-            # is the actionable subset of ``not_posted_count``.
-            approved_unposted_count=Count(
-                "id",
-                filter=Q(status="approved", journal_entry__isnull=True),
-            ),
-            approved_net_total=Sum("amount", filter=Q(status="approved")),
-            approved_expense_total=Sum(
-                "amount",
-                filter=Q(status="approved", transaction_type__transaction_category="expense"),
-            ),
-        )
-
-        summary = {
-            "pending_count": agg["pending_count"] or 0,
-            "approved_count": agg["approved_count"] or 0,
-            "rejected_count": agg["rejected_count"] or 0,
-            "posted_count": agg["posted_count"] or 0,
-            "not_posted_count": agg["not_posted_count"] or 0,
-            "approved_unposted_count": agg["approved_unposted_count"] or 0,
-            "approved_net_total": str(agg["approved_net_total"] or Decimal("0")),
-            "approved_expense_total": str(agg["approved_expense_total"] or Decimal("0")),
-        }
+        summary = build_cash_transaction_list_summary(queryset)
 
         page = self.paginate_queryset(queryset)
         if page is not None:

@@ -7,6 +7,7 @@ Import all report views for easy access
 from .transactions import TransactionReportView, TransactionExportStatusView
 from .students import StudentReportView, StudentIndividualReportView
 from .finance import FinanceReportView
+from .accounting_summary import AccountingSummaryReportView
 
 __all__ = [
     'TransactionReportView',
@@ -14,4 +15,5 @@ __all__ = [
     'StudentReportView',
     'StudentIndividualReportView',
     'FinanceReportView',
+    'AccountingSummaryReportView',
 ]

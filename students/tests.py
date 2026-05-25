@@ -9,6 +9,7 @@ from students.models import Student
 
 class StudentAccountingBalanceTests(SimpleTestCase):
     @patch("finance.models._get_effective_paid_for_enrollment", return_value=Decimal("120.00"))
+    @patch("students.services.balance.get_effective_paid_for_student", return_value=Decimal("120.00"))
     @patch("students.models.student.get_current_academic_year")
     @patch("accounting.models.AccountingConcession.objects.filter")
     @patch("accounting.models.AccountingStudentBill.objects.filter")
@@ -19,7 +20,8 @@ class StudentAccountingBalanceTests(SimpleTestCase):
         mock_bill_filter,
         mock_concession_filter,
         mock_current_year,
-        _mock_effective_paid,
+        _mock_effective_paid_student,
+        _mock_effective_paid_enrollment,
     ):
         academic_year = MagicMock(id="ay-1")
         mock_current_year.return_value = academic_year
@@ -194,6 +196,47 @@ class StudentAccountingBalanceTests(SimpleTestCase):
             academic_year=academic_year,
             is_active=True,
         )
+
+    @patch("finance.models._get_effective_paid_for_enrollment", return_value=Decimal("350.00"))
+    @patch("students.models.student.get_current_academic_year")
+    @patch("accounting.models.AccountingConcession.objects.filter")
+    @patch("accounting.models.AccountingStudentBill.objects.filter")
+    @patch("accounting.models.AccountingStudentBillLine.objects.filter")
+    def test_get_approved_balance_allows_negative_when_overpaid(
+        self,
+        mock_line_filter,
+        mock_bill_filter,
+        mock_concession_filter,
+        mock_current_year,
+        _mock_effective_paid,
+    ):
+        academic_year = MagicMock(id="ay-1")
+        mock_current_year.return_value = academic_year
+
+        accounting_bill_qs = MagicMock()
+        accounting_bill_qs.aggregate.return_value = {
+            "gross_total": Decimal("350.00"),
+            "concession_total": Decimal("50.00"),
+            "net_total": Decimal("300.00"),
+            "paid_total": Decimal("300.00"),
+            "outstanding_total": Decimal("0.00"),
+        }
+        mock_bill_filter.return_value = accounting_bill_qs
+        mock_concession_filter.return_value.order_by.return_value = []
+
+        student = Student(
+            first_name="Ada",
+            last_name="Lovelace",
+            gender="female",
+            entry_as="new",
+            school_code=1,
+        )
+
+        with patch(
+            "students.services.balance.get_effective_paid_for_student",
+            return_value=Decimal("350.00"),
+        ):
+            self.assertEqual(student.get_approved_balance("ay-1"), Decimal("-50.00"))
 
     @patch("finance.models._get_effective_paid_for_enrollment", return_value=Decimal("350.00"))
     @patch("accounting.models.AccountingConcession.objects.filter")
