@@ -44,14 +44,14 @@ class TransactionReportView(APIView):
     Enhanced transaction reports with automatic background processing and caching
     """
 
-    def get(self, request, school_id):
-        # Build base query
-        f = (
-            Q(account__school__id=school_id)
-            | Q(account__school__id_number=school_id)
-            | Q(account__school__workspace=school_id)
-        )
-        transactions = Transaction.objects.filter(f).select_related(
+    def get(self, request):
+        """
+        Legacy finance transaction report.
+
+        Deprecated: use GET /api/v1/accounting/cash-transactions/export/ instead.
+        """
+        # Build base query (tenant-scoped via database routing)
+        transactions = Transaction.objects.all().select_related(
             "student",
             "academic_year",
             "account",
@@ -69,7 +69,7 @@ class TransactionReportView(APIView):
             transactions = transactions.filter(query)
 
         # Check cache first
-        cache_key = self._generate_cache_key(school_id, request.query_params)
+        cache_key = self._generate_cache_key("legacy", request.query_params)
         cached_result = TaskManager.get_cached_result(cache_key)
         
         if cached_result and not request.query_params.get('force_refresh'):

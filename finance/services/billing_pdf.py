@@ -28,7 +28,7 @@ from reportlab.platypus import (
 
 from students.models import Student
 from django.utils import timezone
-from common.services.pdf_components import build_pdf_header
+from common.services.pdf_components import append_pdf_document_header
 
 
 class StudentBillingPDF:
@@ -154,13 +154,13 @@ class StudentBillingPDF:
     def _build_header(self, story: List) -> None:
         """Build document header with school info and logo using shared component"""
         statement_date_text = f"Statement Date: {timezone.now().strftime('%m/%d/%Y')}"
-        
-        build_pdf_header(
-            story=story,
-            school=self.school,
+
+        append_pdf_document_header(
+            story,
+            self.school,
+            "STUDENT FINANCIAL STATEMENT",
             school_name_style=self.school_name_style,
             contact_style=self.contact_style,
-            title_text="STUDENT FINANCIAL STATEMENT",
             title_style=self.title_style,
             show_statement_date=True,
             statement_date_text=statement_date_text,

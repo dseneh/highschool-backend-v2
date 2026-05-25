@@ -68,7 +68,7 @@ class StudentPaymentDetailReportView(APIView):
             except AcademicYear.DoesNotExist:
                 return Response({"detail": "Academic year not found."}, status=status.HTTP_404_NOT_FOUND)
         else:
-            academic_year = AcademicYear.objects.filter(is_current=True).first()
+            academic_year = AcademicYear.objects.filter(current=True).first()
             if not academic_year:
                 return Response({"detail": "No current academic year found."}, status=status.HTTP_400_BAD_REQUEST)
 

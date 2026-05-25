@@ -38,7 +38,7 @@ from grading.utils import (
     calculate_student_overall_average,
     get_letter_grade,
 )
-from common.services.pdf_components import build_pdf_header
+from common.services.pdf_components import append_pdf_document_header
 
 
 class StudentReportCardPDF:
@@ -383,14 +383,13 @@ class StudentReportCardPDF:
         """Build the header section with logo and school info using shared component"""
         title_text = f"Student Report Card for {self.academic_year.name}"
         
-        build_pdf_header(
-            story=story,
-            school=self.school,
+        append_pdf_document_header(
+            story,
+            self.school,
+            title_text,
             school_name_style=self.school_name_style,
             contact_style=self.contact_style,
-            title_text=title_text,
             title_style=self.title_style,
-            show_statement_date=False,
         )
 
     def _build_student_info(

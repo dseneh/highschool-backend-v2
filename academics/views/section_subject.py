@@ -238,7 +238,7 @@ class SectionSubjectListView(APIView):
             
             # Get current academic year
             try:
-                current_academic_year = AcademicYear.objects.filter(is_current=True).first()
+                current_academic_year = AcademicYear.objects.filter(current=True).first()
                 if current_academic_year:
                     for section_subject in section_subjects:
                         try:

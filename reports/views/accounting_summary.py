@@ -239,6 +239,8 @@ class AccountingSummaryReportView(APIView):
 
         if fmt == "xlsx":
             return self._export_xlsx(payload)
+        if fmt == "pdf":
+            return self._export_pdf(request, payload)
 
         return Response(payload)
 
@@ -347,3 +349,28 @@ class AccountingSummaryReportView(APIView):
         )
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+    def _export_pdf(self, request, payload: dict) -> HttpResponse:
+        from ..utils.export_helpers import build_pdf_response
+
+        headers = ["Reference", "Date", "Category", "Type", "Description", "Amount", "Status"]
+        rows = [
+            [
+                row["reference_number"],
+                row["transaction_date"],
+                row["category"],
+                row.get("transaction_type_name") or row.get("transaction_type_code") or "",
+                row["description"],
+                float(row["amount"]),
+                row["status"],
+            ]
+            for row in payload["results"]
+        ]
+        return build_pdf_response(
+            request=request,
+            filename=f"income-expense-summary-{payload['start_date']}-to-{payload['end_date']}.pdf",
+            title="Income & Expense Summary",
+            subtitle=f"Period: {payload['start_date']} to {payload['end_date']} | Income: {payload['summary']['income_total']} | Expense: {payload['summary']['expense_total']}",
+            headers=headers,
+            rows=rows,
+        )

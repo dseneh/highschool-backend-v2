@@ -171,7 +171,7 @@ class FinanceReportView(APIView):
             except AcademicYear.DoesNotExist:
                 return Response({"detail": "Academic year not found."}, status=status.HTTP_404_NOT_FOUND)
         else:
-            academic_year = AcademicYear.objects.filter(is_current=True).first()
+            academic_year = AcademicYear.objects.filter(current=True).first()
             if not academic_year:
                 return Response({"detail": "No current academic year found."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -366,6 +366,8 @@ class FinanceReportView(APIView):
 
         if fmt == "xlsx":
             return self._export_xlsx(results, totals, academic_year)
+        if fmt == "pdf":
+            return self._export_pdf(request, results, totals, academic_year)
 
         return Response(
             {
@@ -550,3 +552,39 @@ class FinanceReportView(APIView):
         )
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+    def _export_pdf(self, request, results, totals, academic_year):
+        from ..utils.export_helpers import build_pdf_response
+
+        headers = [
+            "Student ID",
+            "Student Name",
+            "Grade",
+            "Section",
+            "Net Bill",
+            "Total Paid",
+            "Balance",
+            "Status",
+        ]
+        rows = [
+            [
+                row["student_id"],
+                row["student_name"],
+                row["grade_level"],
+                row["section"],
+                row["net_bill"],
+                row["total_paid"],
+                row["balance"],
+                row["status"],
+            ]
+            for row in results
+        ]
+        safe_year = academic_year.name.replace(" ", "-").replace("/", "-").lower()
+        return build_pdf_response(
+            request=request,
+            filename=f"student-payment-summary-{safe_year}.pdf",
+            title="Student Payment Summary",
+            subtitle=f"Academic Year {academic_year.name} — {totals['student_count']} students",
+            headers=headers,
+            rows=rows,
+        )

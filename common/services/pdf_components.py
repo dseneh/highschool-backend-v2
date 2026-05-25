@@ -24,6 +24,144 @@ from reportlab.platypus import (
 logger = logging.getLogger(__name__)
 
 
+def format_tenant_address(school) -> str:
+    """Build a single-line mailing address from tenant address fields."""
+    if not school:
+        return ""
+
+    line1 = (getattr(school, "address", None) or "").strip()
+    locality_parts: List[str] = []
+    for field in ("city", "state", "postal_code"):
+        value = (getattr(school, field, None) or "").strip()
+        if value:
+            locality_parts.append(value)
+    line2 = ", ".join(locality_parts)
+    country = (getattr(school, "country", None) or "").strip()
+
+    parts: List[str] = []
+    if line1:
+        parts.append(line1)
+    if line2:
+        parts.append(line2)
+    if country and country.lower() not in line2.lower():
+        parts.append(country)
+    return ", ".join(parts)
+
+
+def resolve_tenant_school(school=None):
+    """
+    Return the public-schema Tenant record for the current request schema.
+    Pass ``school`` when the caller already resolved it.
+    """
+    if school is not None:
+        return school
+
+    try:
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name, schema_context
+        from core.models import Tenant
+    except Exception:
+        return None
+
+    schema_name = getattr(connection, "schema_name", None)
+    if not schema_name or schema_name == get_public_schema_name():
+        return None
+
+    with schema_context(get_public_schema_name()):
+        return Tenant.objects.filter(schema_name=schema_name).first()
+
+
+def get_pdf_header_styles():
+    """
+    Standard paragraph styles for ``build_pdf_header`` (billing, grading, reports).
+    Matches the styles used by ``StudentBillingPDF``.
+    """
+    from reportlab.lib.styles import getSampleStyleSheet
+
+    styles = getSampleStyleSheet()
+
+    school_name_style = ParagraphStyle(
+        "SchoolName",
+        parent=styles["Heading1"],
+        fontSize=15,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#1976d2"),
+        alignment=TA_LEFT,
+        spaceAfter=1,
+        leftIndent=0,
+    )
+
+    contact_style = ParagraphStyle(
+        "Contact",
+        parent=styles["Normal"],
+        fontSize=8,
+        fontName="Helvetica",
+        textColor=colors.HexColor("#424242"),
+        alignment=TA_LEFT,
+        leading=9,
+        spaceAfter=0,
+        leftIndent=0,
+    )
+
+    title_style = ParagraphStyle(
+        "Title",
+        parent=styles["Heading1"],
+        fontSize=13,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#1976d2"),
+        alignment=TA_CENTER,
+        spaceAfter=1,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "Subtitle",
+        parent=styles["Normal"],
+        fontSize=8,
+        fontName="Helvetica",
+        textColor=colors.HexColor("#424242"),
+        alignment=TA_CENTER,
+        leading=10,
+        spaceAfter=4,
+    )
+
+    return school_name_style, contact_style, title_style, subtitle_style
+
+
+def append_pdf_document_header(
+    story: List,
+    school,
+    title_text: str,
+    *,
+    school_name_style: Optional[ParagraphStyle] = None,
+    contact_style: Optional[ParagraphStyle] = None,
+    title_style: Optional[ParagraphStyle] = None,
+    show_statement_date: bool = False,
+    statement_date_text: str = "",
+    bottom_spacer_inches: float = 0.08,
+    header_width_inches: float = 7.2,
+) -> None:
+    """Append the shared school logo / contact / title header to a PDF story."""
+    default_school, default_contact, default_title, _ = get_pdf_header_styles()
+    build_pdf_header(
+        story=story,
+        school=school,
+        school_name_style=school_name_style or default_school,
+        contact_style=contact_style or default_contact,
+        title_text=title_text,
+        title_style=title_style or default_title,
+        show_statement_date=show_statement_date,
+        statement_date_text=statement_date_text,
+        bottom_spacer_inches=bottom_spacer_inches,
+        header_width_inches=header_width_inches,
+    )
+
+
+def append_pdf_subtitle(story: List, text: str) -> None:
+    """Centered subtitle line below the standard document header."""
+    _, _, _, subtitle_style = get_pdf_header_styles()
+    story.append(Paragraph(text, subtitle_style))
+
+
 def get_school_logo(school, width: float = 1.0, height: float = 1.0) -> Optional[RLImage]:
     """
     Get school logo as ReportLab Image with multiple loading strategies.
@@ -131,6 +269,7 @@ def build_pdf_header(
     show_statement_date: bool = False,
     statement_date_text: str = "",
     bottom_spacer_inches: float = 0.08,
+    header_width_inches: float = 7.2,
 ) -> None:
     """
     Build a standardized PDF header with school logo, information, and title.
@@ -157,10 +296,8 @@ def build_pdf_header(
     # School name (large, bold, blue)
     school_name = Paragraph(school.name, school_name_style)
 
-    # Address
-    address_text = ""
-    if school.address:
-        address_text = school.address
+    # Address (street + city/state/postal + country when available)
+    address_text = format_tenant_address(school) if school else ""
     address_para = (
         Paragraph(address_text, contact_style) if address_text else None
     )
@@ -211,10 +348,10 @@ def build_pdf_header(
     # Create header table: [Logo, School Info]
     header_data = [[logo if logo else "", school_info_elements]]
 
-    # Create header table with same dimensions as report card
+    info_width = max(4.0, float(header_width_inches) - 1.0)
     header_table = Table(
         header_data,
-        colWidths=[1.0 * inch, 6.2 * inch],
+        colWidths=[1.0 * inch, info_width * inch],
         hAlign="LEFT",
     )
     header_table.setStyle(

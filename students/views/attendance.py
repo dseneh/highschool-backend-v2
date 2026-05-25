@@ -16,91 +16,15 @@ from common.utils import (
     validate_required_fields,
 )
 from academics.models import MarkingPeriod, Section
-from academics.models import AcademicYear, SchoolCalendarEvent, SchoolCalendarEventOccurrence, SchoolCalendarSettings
+from academics.models import AcademicYear
 
 from ..models import Attendance, Enrollment, Student
+from ..services.attendance_stats import build_student_attendance_summary, count_school_days
 from ..serializers import (
     AttendanceBulkUpsertSerializer,
     AttendanceSectionRosterSerializer,
     AttendanceSerializer,
 )
-
-
-def _count_school_days(academic_year):
-    if not academic_year:
-        return 0
-
-    today = date.today()
-    period_start = academic_year.start_date
-    period_end = min(academic_year.end_date, today)
-
-    if period_start > period_end:
-        return 0
-
-    settings = SchoolCalendarSettings.get_solo()
-    operating_days = set(settings.operating_days or [1, 2, 3, 4, 5])
-
-    blocked_days = set(
-        SchoolCalendarEventOccurrence.objects.filter(
-            occurrence_date__gte=period_start,
-            occurrence_date__lte=period_end,
-            event__event_type__in=[
-                SchoolCalendarEvent.EventType.HOLIDAY,
-                SchoolCalendarEvent.EventType.NON_SCHOOL_DAY,
-            ],
-        )
-        .values_list("occurrence_date", flat=True)
-        .distinct()
-    )
-
-    total = 0
-    current = period_start
-    while current <= period_end:
-        if current.isoweekday() in operating_days and current not in blocked_days:
-            total += 1
-        current = current.fromordinal(current.toordinal() + 1)
-
-    return total
-
-
-def _build_student_attendance_summary(attendance_rows, school_days_elapsed):
-    status_counts = {
-        AttendanceStatus.ABSENT: 0,
-        AttendanceStatus.LATE: 0,
-        AttendanceStatus.EXCUSED: 0,
-        AttendanceStatus.SICK: 0,
-        AttendanceStatus.ON_LEAVE: 0,
-        AttendanceStatus.HOLIDAY: 0,
-        AttendanceStatus.PRESENT: 0,
-    }
-
-    recorded_absence_statuses = {
-        AttendanceStatus.ABSENT,
-        AttendanceStatus.LATE,
-        AttendanceStatus.EXCUSED,
-        AttendanceStatus.SICK,
-        AttendanceStatus.ON_LEAVE,
-        AttendanceStatus.HOLIDAY,
-    }
-
-    recorded_absences = 0
-    for row in attendance_rows:
-        status_key = row.status
-        if status_key in status_counts:
-            status_counts[status_key] += 1
-        if status_key in recorded_absence_statuses:
-            recorded_absences += 1
-
-    implied_present_days = max(school_days_elapsed - recorded_absences, 0)
-    attendance_rate = round((implied_present_days / school_days_elapsed) * 100, 2) if school_days_elapsed else 0
-
-    return {
-        "school_days_elapsed": school_days_elapsed,
-        "recorded_absences": recorded_absences,
-        "present_days": implied_present_days,
-        "attendance_rate": attendance_rate,
-        "status_counts": status_counts,
-    }
 
 
 def _build_attendance_summary(entries):
@@ -374,8 +298,8 @@ class AttendanceListView(APIView):
         )
         serializer = AttendanceSerializer(attendance, many=True)
 
-        school_days_elapsed = _count_school_days(academic_year)
-        summary = _build_student_attendance_summary(attendance, school_days_elapsed)
+        school_days_elapsed = count_school_days(academic_year)
+        summary = build_student_attendance_summary(attendance, school_days_elapsed)
 
         payload = {
             "student": {
