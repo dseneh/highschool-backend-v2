@@ -755,7 +755,15 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     @action(detail=False, methods=["post"], url_path="upload", parser_classes=[MultiPartParser, FormParser])
     def upload(self, request):
         """Upload transactions using template-based schema."""
-        from accounting.services.transaction_upload import upload_transactions
+        from accounting.services.transaction_upload import (
+            _read_file_to_dataframe,
+            _validate_file,
+            execute_transaction_upload,
+        )
+        from accounting.services.transaction_upload_tasks import (
+            TransactionUploadBackgroundProcessor,
+            TransactionUploadTaskManager,
+        )
 
         uploaded_file = request.FILES.get("file")
         if not uploaded_file:
@@ -771,19 +779,88 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         replace_by_ref_number = request.data.get("replace_by_ref_number") == "true"
 
         try:
-            result = upload_transactions(
-                uploaded_file,
+            _validate_file(uploaded_file)
+            df = _read_file_to_dataframe(uploaded_file)
+            row_count = len(df)
+
+            if TransactionUploadTaskManager.should_use_background(row_count):
+                user_id = getattr(request.user, "id", None)
+                task_id = TransactionUploadTaskManager.create_task(
+                    template_type=template_type,
+                    row_count=row_count,
+                    user_id=user_id,
+                    file_name=getattr(uploaded_file, "name", "upload"),
+                )
+                TransactionUploadBackgroundProcessor.start(
+                    task_id,
+                    df,
+                    template_type=template_type,
+                    bank_account_id=bank_account_id,
+                    gl_account_override=gl_account_override,
+                    status_override=status_override,
+                    replace_by_ref_number=replace_by_ref_number,
+                )
+                return Response(
+                    {
+                        "task_id": task_id,
+                        "status": "pending",
+                        "processing_mode": "background",
+                        "row_count": row_count,
+                        "message": (
+                            f"Processing {row_count:,} rows in the background. "
+                            "You can close this dialog and check progress here."
+                        ),
+                        "check_status_url": (
+                            f"/api/v1/accounting/cash-transactions/upload-status/{task_id}/"
+                        ),
+                    },
+                    status=status.HTTP_202_ACCEPTED,
+                )
+
+            result = execute_transaction_upload(
+                df,
                 template_type=template_type,
                 bank_account_id=bank_account_id,
                 gl_account_override=gl_account_override,
                 status_override=status_override,
                 replace_by_ref_number=replace_by_ref_number,
             )
-            return Response(result, status=status.HTTP_200_OK)
+            return Response(
+                {**result, "processing_mode": "synchronous"},
+                status=status.HTTP_200_OK,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=["get"], url_path=r"upload-status/(?P<task_id>[^/.]+)")
+    def upload_status(self, request, task_id=None):
+        """Poll background template upload progress."""
+        from accounting.services.transaction_upload_tasks import TransactionUploadTaskManager
+
+        task_data = TransactionUploadTaskManager.get_task(task_id)
+        if not task_data:
+            return Response({"detail": "Upload task not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payload = {
+            "task_id": task_id,
+            "status": task_data.get("status"),
+            "progress": task_data.get("progress", 0),
+            "created_at": task_data.get("created_at"),
+            "updated_at": task_data.get("updated_at"),
+            "template_type": task_data.get("template_type"),
+            "file_name": task_data.get("file_name"),
+            "estimated_count": task_data.get("estimated_count", 0),
+            "total_processed": task_data.get("total_processed", 0),
+            "created": task_data.get("created", 0),
+            "updated": task_data.get("updated", 0),
+            "total_errors": task_data.get("total_errors", 0),
+            "errors": task_data.get("errors") or [],
+            "result": task_data.get("result"),
+            "error": task_data.get("error"),
+        }
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):

@@ -12,6 +12,7 @@ User can override GL account on preview screen.
 
 import io
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -32,6 +33,7 @@ from students.models import Student
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xls")
+BULK_CHUNK_SIZE = 500
 
 # Template types
 TEMPLATE_TUITION = "tuition"
@@ -166,12 +168,44 @@ def _validate_staff_id(staff_id: str) -> tuple[bool, str]:
     """
     if not staff_id:
         return False, "Staff ID is required"
-    
+
     try:
         Staff.objects.get(id_number=staff_id)
         return True, ""
     except Staff.DoesNotExist:
         return False, f"Staff member with ID '{staff_id}' not found"
+
+
+def _prefetch_students_by_id_number(df: pd.DataFrame) -> dict[str, Student]:
+    if "student_id_number" not in df.columns:
+        return {}
+    id_numbers = {
+        str(value).strip()
+        for value in df["student_id_number"].tolist()
+        if str(value).strip()
+    }
+    if not id_numbers:
+        return {}
+    return {
+        student.id_number: student
+        for student in Student.objects.filter(id_number__in=id_numbers)
+    }
+
+
+def _prefetch_staff_by_id_number(df: pd.DataFrame) -> dict[str, Staff]:
+    if "staff_id_number" not in df.columns:
+        return {}
+    id_numbers = {
+        str(value).strip()
+        for value in df["staff_id_number"].tolist()
+        if str(value).strip()
+    }
+    if not id_numbers:
+        return {}
+    return {
+        staff.id_number: staff
+        for staff in Staff.objects.filter(id_number__in=id_numbers)
+    }
 
 
 def upload_transactions(
@@ -181,17 +215,36 @@ def upload_transactions(
     gl_account_override: str | None = None,
     status_override: str | None = None,
     replace_by_ref_number: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict:
+    """Parse an uploaded file and persist cash transactions."""
+    _validate_file(uploaded_file)
+    df = _read_file_to_dataframe(uploaded_file)
+    return execute_transaction_upload(
+        df,
+        template_type=template_type,
+        bank_account_id=bank_account_id,
+        gl_account_override=gl_account_override,
+        status_override=status_override,
+        replace_by_ref_number=replace_by_ref_number,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
+
+
+def execute_transaction_upload(
+    df: pd.DataFrame,
+    template_type: str,
+    bank_account_id: str | None = None,
+    gl_account_override: str | None = None,
+    status_override: str | None = None,
+    replace_by_ref_number: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
     """
-    Parse and create/update cash transactions from CSV/Excel using template schema.
-
-    Args:
-        uploaded_file: Uploaded file object
-        template_type: One of "tuition", "salary", or "general"
-        bank_account_id: Optional override bank account ID
-        gl_account_override: Optional override GL account code (applies to all rows)
-        status_override: Optional override transaction status (pending, approved, rejected)
-        replace_by_ref_number: If True, update existing transactions with matching reference numbers
+    Parse and create/update cash transactions from a prepared DataFrame.
 
     Returns:
         {
@@ -202,12 +255,8 @@ def upload_transactions(
             "warnings": [...],
         }
     """
-    _validate_file(uploaded_file)
-
     if template_type not in VALID_TEMPLATES:
         raise ValueError(f"Invalid template type. Must be one of: {', '.join(sorted(VALID_TEMPLATES))}")
-
-    df = _read_file_to_dataframe(uploaded_file)
 
     if df.empty:
         raise ValueError("File is empty.")
@@ -221,6 +270,8 @@ def upload_transactions(
     errors: list[dict] = []
     transactions_to_create: list[dict] = []
     warnings: list[str] = []
+    students_by_id_number = _prefetch_students_by_id_number(df)
+    staff_by_id_number = _prefetch_staff_by_id_number(df)
 
     # Pre-fetch lookups
     bank_accounts = {
@@ -334,21 +385,26 @@ def upload_transactions(
             student_id_number = _cell(row, "student_id_number")
             if not student_id_number:
                 row_errors.append("student_id_number is required for tuition template")
-            else:
-                # Client-side validation already checked format, now validate existence
-                is_valid, error_msg = _validate_student_id(student_id_number)
-                if not is_valid:
-                    row_errors.append(f"Student validation failed: {error_msg}")
+            elif (
+                not student_id_number.isdigit()
+                or len(student_id_number) < 5
+            ):
+                row_errors.append(
+                    f"Student ID '{student_id_number}' must be at least 5 digits"
+                )
+            elif student_id_number not in students_by_id_number:
+                row_errors.append(
+                    f"Student validation failed: Student with ID '{student_id_number}' not found"
+                )
 
         elif template_type == TEMPLATE_SALARY:
             staff_id_number = _cell(row, "staff_id_number")
             if not staff_id_number:
                 row_errors.append("staff_id_number is required for salary template")
-            else:
-                # Validate staff member exists
-                is_valid, error_msg = _validate_staff_id(staff_id_number)
-                if not is_valid:
-                    row_errors.append(f"Staff validation failed: {error_msg}")
+            elif staff_id_number not in staff_by_id_number:
+                row_errors.append(
+                    f"Staff validation failed: Staff member with ID '{staff_id_number}' not found"
+                )
 
         # Collect errors
         if row_errors:
@@ -369,9 +425,7 @@ def upload_transactions(
         if template_type == TEMPLATE_TUITION:
             student_id_number = _cell(row, "student_id_number")
             if student_id_number:
-                student_obj = Student.objects.filter(
-                    id_number=student_id_number
-                ).first()
+                student_obj = students_by_id_number.get(student_id_number)
 
         # Prepare transaction data. The ``student`` reference is the
         # only "identity" carrier we need downstream — earlier versions
@@ -404,74 +458,22 @@ def upload_transactions(
         elif status_lower == "pending":
             status_to_use = AccountingCashTransaction.TransactionStatus.PENDING
 
-    # One savepoint per row — a single failure must not poison the whole batch.
     default_bank_account = override_bank_account or _get_default_bank_account()
     if not default_bank_account:
         raise ValueError("No active bank account found. Create or activate a bank account first.")
 
-    created_count = 0
-    updated_count = 0
-    recompute_pairs: list[tuple[Student, object]] = []
-
-    from accounting.signals import suppress_cash_tx_recompute
-
-    with suppress_cash_tx_recompute():
-        for tx_data in transactions_to_create:
-            row_num = tx_data.get("_row", 0)
-            bank_account = tx_data["bank_account"] or default_bank_account
-
-            try:
-                with transaction.atomic():
-                    common_fields = {
-                        "bank_account": bank_account,
-                        "transaction_date": tx_data["transaction_date"],
-                        "transaction_type": tx_data["transaction_type"],
-                        "payment_method": default_payment_method,
-                        "ledger_account": tx_data["ledger_account"],
-                        "amount": tx_data["amount"],
-                        "currency": default_currency,
-                        "exchange_rate": Decimal("1"),
-                        "base_amount": tx_data["amount"],
-                        "payer_payee": tx_data["payer_payee"],
-                        "description": tx_data["description"],
-                        "status": status_to_use,
-                        "source_reference": f"{tx_data['template_type'].upper()}-UPLOAD",
-                        "student": tx_data.get("student"),
-                    }
-
-                    if replace_by_ref_number:
-                        _obj, created = AccountingCashTransaction.objects.update_or_create(
-                            reference_number=tx_data["reference_number"],
-                            defaults=common_fields,
-                        )
-                        if created:
-                            created_count += 1
-                        else:
-                            updated_count += 1
-                    else:
-                        AccountingCashTransaction.objects.create(
-                            reference_number=tx_data["reference_number"],
-                            **common_fields,
-                        )
-                        created_count += 1
-
-                    student = tx_data.get("student")
-                    if (
-                        template_type == TEMPLATE_TUITION
-                        and student
-                        and status_to_use
-                        == AccountingCashTransaction.TransactionStatus.APPROVED
-                    ):
-                        recompute_pairs.append(
-                            (student, tx_data["transaction_date"])
-                        )
-            except Exception as exc:
-                errors.append(
-                    {
-                        "row": row_num,
-                        "errors": [f"Failed to save transaction: {exc}"],
-                    }
-                )
+    created_count, updated_count, recompute_pairs = _persist_transactions(
+        transactions_to_create,
+        template_type=template_type,
+        default_bank_account=default_bank_account,
+        default_payment_method=default_payment_method,
+        default_currency=default_currency,
+        status_to_use=status_to_use,
+        replace_by_ref_number=replace_by_ref_number,
+        errors=errors,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
 
     if recompute_pairs:
         _recompute_tuition_payments(recompute_pairs)
@@ -483,6 +485,180 @@ def upload_transactions(
         "total_rows": len(df),
         "warnings": warnings,
     }
+
+
+def _persist_transactions(
+    transactions_to_create: list[dict],
+    *,
+    template_type: str,
+    default_bank_account,
+    default_payment_method,
+    default_currency,
+    status_to_use: str,
+    replace_by_ref_number: bool,
+    errors: list[dict],
+    progress_callback: Callable[[int, int], None] | None,
+    cancel_check: Callable[[], bool] | None,
+) -> tuple[int, int, list[tuple[Student, object]]]:
+    created_count = 0
+    updated_count = 0
+    recompute_pairs: list[tuple[Student, object]] = []
+    total = len(transactions_to_create)
+
+    from accounting.signals import suppress_cash_tx_recompute
+
+    with suppress_cash_tx_recompute():
+        if replace_by_ref_number:
+            for index, tx_data in enumerate(transactions_to_create, start=1):
+                if cancel_check and cancel_check():
+                    break
+                row_num = tx_data.get("_row", 0)
+                bank_account = tx_data["bank_account"] or default_bank_account
+                try:
+                    with transaction.atomic():
+                        common_fields = _build_tx_fields(
+                            tx_data,
+                            bank_account=bank_account,
+                            default_payment_method=default_payment_method,
+                            default_currency=default_currency,
+                            status_to_use=status_to_use,
+                        )
+                        _obj, created = AccountingCashTransaction.objects.update_or_create(
+                            reference_number=tx_data["reference_number"],
+                            defaults=common_fields,
+                        )
+                        if created:
+                            created_count += 1
+                        else:
+                            updated_count += 1
+                        recompute_pairs.extend(
+                            _tuition_recompute_pair(
+                                template_type,
+                                tx_data,
+                                status_to_use,
+                            )
+                        )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "row": row_num,
+                            "errors": [f"Failed to save transaction: {exc}"],
+                        }
+                    )
+                if progress_callback:
+                    progress_callback(index, total)
+        else:
+            pending_objects: list[AccountingCashTransaction] = []
+            processed = 0
+
+            for tx_data in transactions_to_create:
+                if cancel_check and cancel_check():
+                    break
+                bank_account = tx_data["bank_account"] or default_bank_account
+                common_fields = _build_tx_fields(
+                    tx_data,
+                    bank_account=bank_account,
+                    default_payment_method=default_payment_method,
+                    default_currency=default_currency,
+                    status_to_use=status_to_use,
+                )
+                pending_objects.append(
+                    AccountingCashTransaction(
+                        reference_number=tx_data["reference_number"],
+                        **common_fields,
+                    )
+                )
+                recompute_pairs.extend(
+                    _tuition_recompute_pair(template_type, tx_data, status_to_use)
+                )
+
+                if len(pending_objects) >= BULK_CHUNK_SIZE:
+                    created_count += _bulk_insert_chunk(
+                        pending_objects,
+                        errors,
+                        processed + 1,
+                    )
+                    processed += len(pending_objects)
+                    pending_objects = []
+                    if progress_callback:
+                        progress_callback(processed, total)
+
+            if pending_objects and not (cancel_check and cancel_check()):
+                created_count += _bulk_insert_chunk(
+                    pending_objects,
+                    errors,
+                    processed + 1,
+                )
+                processed += len(pending_objects)
+                if progress_callback:
+                    progress_callback(processed, total)
+
+    return created_count, updated_count, recompute_pairs
+
+
+def _build_tx_fields(
+    tx_data: dict,
+    *,
+    bank_account,
+    default_payment_method,
+    default_currency,
+    status_to_use: str,
+) -> dict:
+    return {
+        "bank_account": bank_account,
+        "transaction_date": tx_data["transaction_date"],
+        "transaction_type": tx_data["transaction_type"],
+        "payment_method": default_payment_method,
+        "ledger_account": tx_data["ledger_account"],
+        "amount": tx_data["amount"],
+        "currency": default_currency,
+        "exchange_rate": Decimal("1"),
+        "base_amount": tx_data["amount"],
+        "payer_payee": tx_data["payer_payee"],
+        "description": tx_data["description"],
+        "status": status_to_use,
+        "source_reference": f"{tx_data['template_type'].upper()}-UPLOAD",
+        "student": tx_data.get("student"),
+    }
+
+
+def _tuition_recompute_pair(
+    template_type: str,
+    tx_data: dict,
+    status_to_use: str,
+) -> list[tuple[Student, object]]:
+    student = tx_data.get("student")
+    if (
+        template_type == TEMPLATE_TUITION
+        and student
+        and status_to_use == AccountingCashTransaction.TransactionStatus.APPROVED
+    ):
+        return [(student, tx_data["transaction_date"])]
+    return []
+
+
+def _bulk_insert_chunk(
+    pending_objects: list[AccountingCashTransaction],
+    errors: list[dict],
+    start_row: int,
+) -> int:
+    try:
+        with transaction.atomic():
+            AccountingCashTransaction.objects.bulk_create(
+                pending_objects,
+                batch_size=BULK_CHUNK_SIZE,
+            )
+        return len(pending_objects)
+    except Exception as exc:
+        errors.append(
+            {
+                "row": start_row,
+                "errors": [
+                    f"Failed to save transaction batch starting at row {start_row}: {exc}"
+                ],
+            }
+        )
+        return 0
 
 
 def _recompute_tuition_payments(pairs: list[tuple[Student, object]]) -> None:
