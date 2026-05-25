@@ -59,6 +59,22 @@ def auto_sync_managed_ledger_account(sender, instance, created, update_fields, *
 # a thread-local in case someone later calls it from inside a bill save.
 _recompute_guard = threading.local()
 
+# Bulk upload sets this so we don't queue one on_commit recompute per row;
+# the upload service batches recompute once per (student, year) afterward.
+_bulk_upload_guard = threading.local()
+
+
+class suppress_cash_tx_recompute:
+    """Skip per-row bill recompute during bulk cash-transaction ingestion."""
+
+    def __enter__(self):
+        _bulk_upload_guard.active = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _bulk_upload_guard.active = False
+        return False
+
 
 @receiver(post_save, sender=AccountingCashTransaction)
 def refresh_student_bill_paid_amount(sender, instance, **kwargs):
@@ -69,6 +85,9 @@ def refresh_student_bill_paid_amount(sender, instance, **kwargs):
     paid_amount cache for the academic year that covers the transaction
     date. Runs after commit so the recompute observes the persisted state.
     """
+    if getattr(_bulk_upload_guard, "active", False):
+        return
+
     student = getattr(instance, "student", None)
     transaction_date = getattr(instance, "transaction_date", None)
     if not student or not transaction_date:

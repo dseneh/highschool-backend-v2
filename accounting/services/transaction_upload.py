@@ -388,6 +388,7 @@ def upload_transactions(
             "bank_account": override_bank_account,
             "template_type": template_type,
             "student": student_obj,
+            "_row": row_num,
         }
 
         transactions_to_create.append(parsed)
@@ -403,68 +404,77 @@ def upload_transactions(
         elif status_lower == "pending":
             status_to_use = AccountingCashTransaction.TransactionStatus.PENDING
 
-    # Create transactions atomically
-    with transaction.atomic():
-        created_count = 0
-        updated_count = 0
+    # One savepoint per row — a single failure must not poison the whole batch.
+    default_bank_account = override_bank_account or _get_default_bank_account()
+    if not default_bank_account:
+        raise ValueError("No active bank account found. Create or activate a bank account first.")
 
+    created_count = 0
+    updated_count = 0
+    recompute_pairs: list[tuple[Student, object]] = []
+
+    from accounting.signals import suppress_cash_tx_recompute
+
+    with suppress_cash_tx_recompute():
         for tx_data in transactions_to_create:
-            bank_account = tx_data["bank_account"] or _get_default_bank_account()
-            if not bank_account:
-                errors.append({
-                    "row": 0,
-                    "errors": ["No active bank account found. Create or activate a bank account first."],
-                })
-                continue
+            row_num = tx_data.get("_row", 0)
+            bank_account = tx_data["bank_account"] or default_bank_account
 
             try:
-                if replace_by_ref_number:
-                    # Update or create based on reference number
-                    obj, created = AccountingCashTransaction.objects.update_or_create(
-                        reference_number=tx_data["reference_number"],
-                        defaults={
-                            "bank_account": bank_account,
-                            "transaction_date": tx_data["transaction_date"],
-                            "transaction_type": tx_data["transaction_type"],
-                            "payment_method": default_payment_method,
-                            "ledger_account": tx_data["ledger_account"],
-                            "amount": tx_data["amount"],
-                            "currency": default_currency,
-                            "exchange_rate": Decimal("1"),
-                            "base_amount": tx_data["amount"],
-                            "payer_payee": tx_data["payer_payee"],
-                            "description": tx_data["description"],
-                            "status": status_to_use,
-                            "source_reference": f"{tx_data['template_type'].upper()}-UPLOAD",
-                            "student": tx_data.get("student"),
-                        }
-                    )
-                    if created:
-                        created_count += 1
+                with transaction.atomic():
+                    common_fields = {
+                        "bank_account": bank_account,
+                        "transaction_date": tx_data["transaction_date"],
+                        "transaction_type": tx_data["transaction_type"],
+                        "payment_method": default_payment_method,
+                        "ledger_account": tx_data["ledger_account"],
+                        "amount": tx_data["amount"],
+                        "currency": default_currency,
+                        "exchange_rate": Decimal("1"),
+                        "base_amount": tx_data["amount"],
+                        "payer_payee": tx_data["payer_payee"],
+                        "description": tx_data["description"],
+                        "status": status_to_use,
+                        "source_reference": f"{tx_data['template_type'].upper()}-UPLOAD",
+                        "student": tx_data.get("student"),
+                    }
+
+                    if replace_by_ref_number:
+                        _obj, created = AccountingCashTransaction.objects.update_or_create(
+                            reference_number=tx_data["reference_number"],
+                            defaults=common_fields,
+                        )
+                        if created:
+                            created_count += 1
+                        else:
+                            updated_count += 1
                     else:
-                        updated_count += 1
-                else:
-                    # Create only
-                    AccountingCashTransaction.objects.create(
-                        bank_account=bank_account,
-                        transaction_date=tx_data["transaction_date"],
-                        reference_number=tx_data["reference_number"],
-                        transaction_type=tx_data["transaction_type"],
-                        payment_method=default_payment_method,
-                        ledger_account=tx_data["ledger_account"],
-                        amount=tx_data["amount"],
-                        currency=default_currency,
-                        exchange_rate=Decimal("1"),
-                        base_amount=tx_data["amount"],
-                        payer_payee=tx_data["payer_payee"],
-                        description=tx_data["description"],
-                        status=status_to_use,
-                        source_reference=f"{tx_data['template_type'].upper()}-UPLOAD",
-                        student=tx_data.get("student"),
-                    )
-                    created_count += 1
-            except Exception as e:
-                errors.append({"row": 0, "errors": [f"Failed to create transaction: {str(e)}"]})
+                        AccountingCashTransaction.objects.create(
+                            reference_number=tx_data["reference_number"],
+                            **common_fields,
+                        )
+                        created_count += 1
+
+                    student = tx_data.get("student")
+                    if (
+                        template_type == TEMPLATE_TUITION
+                        and student
+                        and status_to_use
+                        == AccountingCashTransaction.TransactionStatus.APPROVED
+                    ):
+                        recompute_pairs.append(
+                            (student, tx_data["transaction_date"])
+                        )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "row": row_num,
+                        "errors": [f"Failed to save transaction: {exc}"],
+                    }
+                )
+
+    if recompute_pairs:
+        _recompute_tuition_payments(recompute_pairs)
 
     return {
         "created": created_count,
@@ -473,6 +483,26 @@ def upload_transactions(
         "total_rows": len(df),
         "warnings": warnings,
     }
+
+
+def _recompute_tuition_payments(pairs: list[tuple[Student, object]]) -> None:
+    """Refresh student bill paid_amount once per (student, academic year)."""
+    from academics.models import AcademicYear
+    from accounting.services.payment_allocation import recompute_student_year_payments
+
+    seen: set[tuple] = set()
+    for student, tx_date in pairs:
+        academic_year = AcademicYear.objects.filter(
+            start_date__lte=tx_date,
+            end_date__gte=tx_date,
+        ).first()
+        if not academic_year:
+            continue
+        key = (student.pk, academic_year.pk)
+        if key in seen:
+            continue
+        seen.add(key)
+        recompute_student_year_payments(student, academic_year)
 
 
 def _get_default_bank_account() -> AccountingBankAccount | None:
