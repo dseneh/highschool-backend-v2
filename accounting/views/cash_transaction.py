@@ -310,8 +310,8 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     def perform_create(self, serializer):
         """Validate student balance before creating an income transaction linked to a student."""
         from academics.models import AcademicYear
+        from accounting.services.student_resolution import resolve_student_from_identifier
         from finance.validators import get_student_net_remaining_balance
-        from students.models.student import Student
 
         data = serializer.validated_data
         transaction_type = data.get("transaction_type")
@@ -321,14 +321,12 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if (
             transaction_type
             and transaction_type.transaction_category == "income"
-            and source_reference
             and amount is not None
         ):
-            student = Student.objects.filter(
-                Q(id=source_reference)
-                | Q(id_number=source_reference)
-                | Q(prev_id_number=source_reference)
-            ).first()
+            student = data.get("student")
+            if student is None and source_reference:
+                student = resolve_student_from_identifier(source_reference)
+
             if student:
                 tx_date = data.get("transaction_date")
                 academic_year = (

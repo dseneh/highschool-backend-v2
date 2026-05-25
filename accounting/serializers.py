@@ -1009,6 +1009,8 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
 
     def to_internal_value(self, data):
         """Accept FK IDs in input, convert them to use the standard FK field names."""
+        from accounting.services.student_resolution import resolve_student_pk_from_identifier
+
         payload = data.copy() if hasattr(data, "copy") else dict(data)
 
         # Handle bank_account
@@ -1061,29 +1063,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         # Whatever the source, we normalize to ``student_id`` (UUID
         # string) so the ``PrimaryKeyRelatedField`` happily validates.
         def _resolve_student_uuid(value):
-            if value is None:
-                return None
-            if isinstance(value, dict):
-                value = value.get("id")
-            if value is None:
-                return None
-            candidate = str(value).strip()
-            if not candidate:
-                return None
-            # First: treat as UUID.
-            try:
-                parsed = uuid.UUID(candidate)
-            except (ValueError, AttributeError, TypeError):
-                parsed = None
-            if parsed is not None:
-                if Student.objects.filter(pk=parsed).exists():
-                    return str(parsed)
-                return None
-            # Fallback: treat as id_number.
-            student = Student.objects.filter(id_number=candidate).first()
-            if student is not None:
-                return str(student.pk)
-            return None
+            return resolve_student_pk_from_identifier(value)
 
         # If the client sent ``student_id`` directly, sanity-check it
         # parses as a UUID. Anything else gets re-routed through the
