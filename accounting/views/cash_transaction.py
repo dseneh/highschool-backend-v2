@@ -34,6 +34,12 @@ from accounting.services import (
     reverse_cash_transaction_journal_entry,
     sync_ledger_account_for_type,
 )
+from accounting.services.post_all import (
+    apply_cash_transaction_list_filters,
+    execute_post_all,
+    extract_filter_params,
+    get_eligible_post_all_queryset,
+)
 from accounting.views.base import AccountingErrorFormattingMixin
 
 
@@ -242,54 +248,9 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        category = self.request.query_params.get("category")
-        status_param = self.request.query_params.get("status")
-        bank_account = self.request.query_params.get("bank_account")
-        transaction_type = self.request.query_params.get("transaction_type")
-        start_date = self.request.query_params.get("start_date")
-        end_date = self.request.query_params.get("end_date")
-        amount = self.request.query_params.get("amount")
-        amount_min = self.request.query_params.get("amount_min")
-        amount_max = self.request.query_params.get("amount_max")
-        # ``reference`` is a free-text contains-match used by the bulk
-        # post dialog so users can narrow by a partial reference number
-        # (e.g. all rows uploaded under a "TUITION-202509" prefix).
-        reference = self.request.query_params.get("reference")
-
-        if category:
-            queryset = queryset.filter(transaction_type__transaction_category=category)
-        if status_param:
-            queryset = queryset.filter(status=status_param)
-        if bank_account:
-            queryset = queryset.filter(bank_account_id=bank_account)
-        if transaction_type:
-            queryset = queryset.filter(transaction_type_id=transaction_type)
-        transaction_type_code = self.request.query_params.get("transaction_type_code")
-        if transaction_type_code:
-            queryset = queryset.filter(transaction_type__code=transaction_type_code)
-        if start_date:
-            queryset = queryset.filter(transaction_date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(transaction_date__lte=end_date)
-        if amount:
-            try:
-                queryset = queryset.filter(amount=Decimal(amount))
-            except (InvalidOperation, TypeError):
-                pass
-        if amount_min:
-            try:
-                queryset = queryset.filter(amount__gte=Decimal(amount_min))
-            except (InvalidOperation, TypeError):
-                pass
-        if amount_max:
-            try:
-                queryset = queryset.filter(amount__lte=Decimal(amount_max))
-            except (InvalidOperation, TypeError):
-                pass
-        if reference:
-            queryset = queryset.filter(reference_number__icontains=reference)
-
-        return queryset
+        return apply_cash_transaction_list_filters(
+            queryset, self.request.query_params
+        )
 
     def _update_status(
         self,
@@ -542,6 +503,9 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         ignore the request filters and post every approved unposted
         transaction in the tenant.
 
+        Large batches (>50 eligible rows) are processed in the background;
+        poll ``post-all-status/{task_id}/`` for progress.
+
         Response payload:
             {
                 "posted_count": N,
@@ -551,86 +515,80 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 "journal_entry_ids": ["<uuid>", ...]
             }
         """
-        # By default scope to the filters the page is already showing.
-        # Callers can opt out by passing apply_current_filters=false.
+        from accounting.services.post_all_tasks import (
+            PostAllBackgroundProcessor,
+            PostAllTaskManager,
+        )
+
         apply_filters = self._to_bool(
             request.data.get("apply_current_filters", True)
         )
+        filter_params = extract_filter_params(request.query_params)
+        eligible_count = get_eligible_post_all_queryset(
+            apply_filters=apply_filters,
+            filter_params=filter_params,
+        ).count()
 
-        if apply_filters:
-            queryset = self.filter_queryset(self.get_queryset())
-        else:
-            queryset = AccountingCashTransaction.objects.all()
+        if PostAllTaskManager.should_use_background(eligible_count):
+            user_id = getattr(request.user, "id", None)
+            task_id = PostAllTaskManager.create_task(
+                estimated_count=eligible_count,
+                user_id=user_id,
+                apply_filters=apply_filters,
+                filter_params=filter_params,
+            )
+            PostAllBackgroundProcessor.start(task_id)
+            return Response(
+                {
+                    "task_id": task_id,
+                    "status": "pending",
+                    "processing_mode": "background",
+                    "estimated_count": eligible_count,
+                    "message": (
+                        f"Posting {eligible_count:,} transactions in the background. "
+                        "You can keep this dialog open to track progress."
+                    ),
+                    "check_status_url": (
+                        f"/api/v1/accounting/cash-transactions/post-all-status/{task_id}/"
+                    ),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
 
-        # Only approved + unposted rows are eligible. We re-resolve the
-        # queryset from scratch (without the list endpoint's prefetches)
-        # because ``.iterator()`` requires an explicit ``chunk_size``
-        # when prefetches are attached, and we don't need the
-        # bill_allocations / student snapshot data for posting anyway.
-        eligible_ids = list(
-            queryset.filter(
-                status=AccountingCashTransaction.TransactionStatus.APPROVED,
-                journal_entry__isnull=True,
-            ).values_list("id", flat=True)
+        result = execute_post_all(
+            user_id=getattr(request.user, "id", None),
+            apply_filters=apply_filters,
+            filter_params=filter_params,
         )
-
-        eligible = (
-            AccountingCashTransaction.objects.filter(id__in=eligible_ids)
-            .select_related("bank_account", "transaction_type")
-        )
-
-        posted_journal_ids: list[str] = []
-        errors: list[dict] = []
-        affected_bank_account_ids: set = set()
-
-        for cash_tx in eligible.iterator(chunk_size=200):
-            try:
-                with transaction.atomic():
-                    journal_entry = post_cash_transaction_to_ledger(
-                        cash_tx, actor=request.user
-                    )
-                posted_journal_ids.append(str(journal_entry.id))
-                if cash_tx.bank_account_id:
-                    affected_bank_account_ids.add(cash_tx.bank_account_id)
-            except ValidationError as exc:
-                message = (
-                    exc.messages[0]
-                    if hasattr(exc, "messages") and exc.messages
-                    else str(exc)
-                )
-                errors.append(
-                    {
-                        "id": str(cash_tx.id),
-                        "reference_number": cash_tx.reference_number or "",
-                        "detail": message,
-                    }
-                )
-            except Exception as exc:
-                errors.append(
-                    {
-                        "id": str(cash_tx.id),
-                        "reference_number": cash_tx.reference_number or "",
-                        "detail": str(exc),
-                    }
-                )
-
-        # Recalculate balances once per affected bank account rather than
-        # per transaction; cheaper and keeps the bank account row from
-        # bouncing through intermediate states.
-        for bank_account in AccountingBankAccount.objects.filter(
-            id__in=affected_bank_account_ids
-        ):
-            recalculate_bank_account_current_balance(bank_account)
-
         return Response(
-            {
-                "posted_count": len(posted_journal_ids),
-                "skipped_count": len(errors),
-                "journal_entry_ids": posted_journal_ids,
-                "errors": errors,
-            },
+            {**result, "processing_mode": "synchronous"},
             status=status.HTTP_200_OK,
         )
+
+    @action(detail=False, methods=["get"], url_path=r"post-all-status/(?P<task_id>[^/.]+)")
+    def post_all_status(self, request, task_id=None):
+        """Poll background bulk-post progress."""
+        from accounting.services.post_all_tasks import PostAllTaskManager
+
+        task_data = PostAllTaskManager.get_task(task_id)
+        if not task_data:
+            return Response({"detail": "Post-all task not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payload = {
+            "task_id": task_id,
+            "status": task_data.get("status"),
+            "progress": task_data.get("progress", 0),
+            "created_at": task_data.get("created_at"),
+            "updated_at": task_data.get("updated_at"),
+            "estimated_count": task_data.get("estimated_count", 0),
+            "total_processed": task_data.get("total_processed", 0),
+            "posted_count": task_data.get("posted_count", 0),
+            "skipped_count": task_data.get("skipped_count", 0),
+            "errors": task_data.get("errors") or [],
+            "result": task_data.get("result"),
+            "error": task_data.get("error"),
+        }
+        return Response(payload, status=status.HTTP_200_OK)
 
     # ------------------------------------------------------------------
     #  Export

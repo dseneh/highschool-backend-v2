@@ -27,7 +27,7 @@ class AccountingTransactionAccessPolicy(BaseSchoolAccessPolicy):
         {
             # ``post_all`` is the bulk variant of ``post_transaction`` and
             # is gated by the same admin/accountant condition.
-            "action": ["post_transaction", "post_all"],
+            "action": ["post_transaction", "post_all", "post_all_status"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:admin,accountant",
