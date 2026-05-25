@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -88,6 +89,128 @@ def get_export_format(request) -> str | None:
     return None
 
 
+_CURRENCY_HEADER_PATTERN = re.compile(
+    r"amount|balance|total|paid|billed|expense|income|net|gross|deduction|variance|"
+    r"outstanding|collected|due|debit|credit|waived|tuition|fee|bill|revenue|cost|price|"
+    r"salary|wage|installment|expected|paid_to",
+    re.I,
+)
+_NON_CURRENCY_HEADER_PATTERN = re.compile(
+    r"count|students?|employees?|transactions?$|installments?$|_id$|^id$|days$|school_days|"
+    r"days_overdue|overdue|grade_count|^rank$|^present$|^absent$|^late$|^excused$|account\s*no",
+    re.I,
+)
+_PERCENTAGE_HEADER_PATTERN = re.compile(r"pct|percentage|attendance|%\s|percent|rate", re.I)
+_AR_AGING_BUCKET_PATTERN = re.compile(r"^(current|1_30|31_60|61_90|90_plus)$", re.I)
+_AR_AGING_LABEL_PATTERN = re.compile(
+    r"^(current|total outstanding|\d+[-–]\d+\s*days?|90\+\s*days?)$",
+    re.I,
+)
+
+
+def resolve_export_currency(request=None) -> str:
+    """Tenant default currency symbol for report exports."""
+    try:
+        from finance.models import Currency
+
+        currency = Currency.objects.first()
+        if currency and currency.symbol:
+            return str(currency.symbol).strip()
+    except Exception:
+        pass
+    return "$"
+
+
+def is_monetary_column_header(header: str) -> bool:
+    normalized = str(header or "").strip().lower()
+    if not normalized:
+        return False
+    if _AR_AGING_BUCKET_PATTERN.match(normalized) or _AR_AGING_LABEL_PATTERN.match(normalized):
+        return True
+    if _NON_CURRENCY_HEADER_PATTERN.search(normalized) and not re.search(
+        r"amount|balance|paid|bill|net|gross", normalized
+    ):
+        return False
+    if _PERCENTAGE_HEADER_PATTERN.search(normalized) and not re.search(
+        r"amount|balance", normalized
+    ):
+        return False
+    return bool(_CURRENCY_HEADER_PATTERN.search(normalized))
+
+
+def is_percentage_column_header(header: str) -> bool:
+    normalized = str(header or "").strip().lower()
+    if not normalized:
+        return False
+    if re.search(r"amount|balance", normalized):
+        return False
+    return bool(_PERCENTAGE_HEADER_PATTERN.search(normalized))
+
+
+def format_currency_display(amount, currency_symbol: str = "$") -> str:
+    if amount is None or amount == "":
+        return ""
+    try:
+        numeric = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+
+    symbol = (currency_symbol or "$").strip() or "$"
+    sign = "-" if numeric < 0 else ""
+    body = f"{abs(numeric):,.2f}"
+    return f"{sign}{symbol}{body}"
+
+
+def format_percentage_display(value) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(numeric) <= 1 and abs(numeric) != 0:
+        numeric *= 100
+    text = f"{numeric:.1f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+def format_export_cell_display(header: str, value, currency_symbol: str = "$") -> str:
+    if value is None:
+        return ""
+    if is_percentage_column_header(header):
+        return format_percentage_display(value)
+    if is_monetary_column_header(header):
+        return format_currency_display(value, currency_symbol)
+    return str(value)
+
+
+def excel_currency_number_format(currency_symbol: str) -> str:
+    symbol = (currency_symbol or "$").replace('"', '""')
+    return f'"{symbol}"#,##0.00;-"{symbol}"#,##0.00'
+
+
+def prepare_xlsx_numeric_value(header: str, value):
+    if not isinstance(value, (int, float, Decimal)):
+        return value
+    if is_percentage_column_header(header):
+        numeric = float(value)
+        if abs(numeric) > 1 and abs(numeric) <= 100:
+            return numeric / 100
+    return value
+
+
+def apply_xlsx_cell_style(cell, header: str, value, currency_symbol: str = "$") -> None:
+    from openpyxl.styles import Alignment
+
+    if isinstance(value, (int, float, Decimal)):
+        if is_monetary_column_header(header):
+            cell.number_format = excel_currency_number_format(currency_symbol)
+            cell.alignment = Alignment(horizontal="right")
+        elif is_percentage_column_header(header):
+            cell.number_format = "0.0%"
+            cell.alignment = Alignment(horizontal="right")
+
+
 def build_pdf_response(
     *,
     request=None,
@@ -98,6 +221,7 @@ def build_pdf_response(
     headers: list[str],
     rows: list[list[object]],
     show_generated_date: bool = True,
+    currency_symbol: str | None = None,
 ) -> HttpResponse:
     from django.utils import timezone
     from reportlab.lib import colors
@@ -113,6 +237,7 @@ def build_pdf_response(
     )
 
     school = resolve_tenant_school(school)
+    currency = currency_symbol or resolve_export_currency(request)
 
     buf = io.BytesIO()
     page_size = landscape(letter)
@@ -150,7 +275,15 @@ def build_pdf_response(
         append_pdf_subtitle(story, subtitle)
     story.append(Spacer(1, 8))
 
-    table_data = [headers] + [[str(cell) if cell is not None else "" for cell in row] for row in rows]
+    table_data = [headers] + [
+        [
+            format_export_cell_display(headers[col_idx], cell, currency)
+            if col_idx < len(headers)
+            else (str(cell) if cell is not None else "")
+            for col_idx, cell in enumerate(row)
+        ]
+        for row in rows
+    ]
     table = Table(table_data, repeatRows=1)
     table.setStyle(
         TableStyle(
@@ -181,7 +314,10 @@ def build_xlsx_response(
     headers: list[str],
     rows: list[list[object]],
     column_widths: list[int] | None = None,
+    currency_symbol: str | None = None,
+    request=None,
 ) -> HttpResponse:
+    currency = currency_symbol or resolve_export_currency(request)
     wb = Workbook()
     ws = wb.active
     ws.title = "Report"
@@ -197,7 +333,9 @@ def build_xlsx_response(
         row_idx += 1
         for label, value in summary_rows:
             ws[f"A{row_idx}"] = label
-            ws[f"B{row_idx}"] = value
+            summary_cell = ws[f"B{row_idx}"]
+            summary_cell.value = prepare_xlsx_numeric_value(label, value)
+            apply_xlsx_cell_style(summary_cell, label, summary_cell.value, currency)
             row_idx += 1
         row_idx += 1
 
@@ -215,11 +353,12 @@ def build_xlsx_response(
 
     for offset, row in enumerate(rows, header_row + 1):
         for col_idx, value in enumerate(row, 1):
-            cell = ws.cell(row=offset, column=col_idx, value=value)
+            header = headers[col_idx - 1] if col_idx <= len(headers) else ""
+            prepared = prepare_xlsx_numeric_value(header, value)
+            cell = ws.cell(row=offset, column=col_idx, value=prepared)
             cell.border = thin_border
             cell.font = Font(size=9)
-            if isinstance(value, (int, float, Decimal)):
-                cell.number_format = "#,##0.00"
+            apply_xlsx_cell_style(cell, header, prepared, currency)
 
     widths = column_widths or [max(len(str(h)), 12) for h in headers]
     for col_idx, width in enumerate(widths, 1):
@@ -247,6 +386,7 @@ def export_tabular_report(
     rows: list[list[object]],
     column_widths: list[int] | None = None,
 ):
+    currency_symbol = resolve_export_currency(request)
     export_format = get_export_format(request)
     if export_format == "pdf":
         return build_pdf_response(
@@ -256,6 +396,7 @@ def export_tabular_report(
             subtitle=subtitle,
             headers=headers,
             rows=rows,
+            currency_symbol=currency_symbol,
         )
     if export_format == "xlsx":
         return build_xlsx_response(
@@ -266,5 +407,7 @@ def export_tabular_report(
             headers=headers,
             rows=rows,
             column_widths=column_widths,
+            currency_symbol=currency_symbol,
+            request=request,
         )
     return None

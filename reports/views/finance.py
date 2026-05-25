@@ -388,6 +388,11 @@ class FinanceReportView(APIView):
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
+        from ..utils.export_helpers import excel_currency_number_format, resolve_export_currency
+
+        currency = resolve_export_currency()
+        money_fmt = excel_currency_number_format(currency)
+
         today = date.today()
 
         wb = Workbook()
@@ -483,7 +488,7 @@ class FinanceReportView(APIView):
                 cell.border = thin_border
                 cell.font = Font(size=9)
                 if col_idx in currency_cols:
-                    cell.number_format = "#,##0.00"
+                    cell.number_format = money_fmt
                     cell.alignment = Alignment(horizontal="right")
                 elif col_idx in pct_cols:
                     cell.number_format = "0.0%"
@@ -529,7 +534,7 @@ class FinanceReportView(APIView):
                 cell.value = total_values[col_idx]
                 cell.alignment = Alignment(horizontal="right")
                 if col_idx in currency_cols:
-                    cell.number_format = "#,##0.00"
+                    cell.number_format = money_fmt
                 elif col_idx in pct_cols:
                     cell.number_format = "0.0%"
 

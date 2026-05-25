@@ -249,6 +249,10 @@ class AccountingSummaryReportView(APIView):
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
+        from ..utils.export_helpers import apply_xlsx_cell_style
+
+        currency = payload.get("summary", {}).get("currency_symbol") or "$"
+
         wb = Workbook()
         ws_overview = wb.active
         ws_overview.title = "Overview"
@@ -256,12 +260,16 @@ class AccountingSummaryReportView(APIView):
         ws_overview["A1"].font = Font(bold=True, size=14)
         ws_overview["A2"] = f"Period: {payload['start_date']} to {payload['end_date']}"
         ws_overview["A3"] = f"Status: {payload['status']}"
-        ws_overview["A5"] = "Total Income"
-        ws_overview["B5"] = payload["summary"]["income_total"]
-        ws_overview["A6"] = "Total Expense"
-        ws_overview["B6"] = payload["summary"]["expense_total"]
-        ws_overview["A7"] = "Balance"
-        ws_overview["B7"] = payload["summary"]["balance_total"]
+        overview_rows = [
+            ("Total Income", payload["summary"]["income_total"]),
+            ("Total Expense", payload["summary"]["expense_total"]),
+            ("Balance", payload["summary"]["balance_total"]),
+        ]
+        for row_offset, (label, value) in enumerate(overview_rows, 5):
+            ws_overview[f"A{row_offset}"] = label
+            cell = ws_overview[f"B{row_offset}"]
+            cell.value = value
+            apply_xlsx_cell_style(cell, label, value, currency)
 
         grouped_sections = payload.get("groups_by") or {
             payload.get("group_by", "bank_account"): payload.get("groups", [])
@@ -285,9 +293,16 @@ class AccountingSummaryReportView(APIView):
                 ws.cell(row=row_offset, column=1, value=row["group_label"])
                 ws.cell(row=row_offset, column=2, value=row["group_sub_label"])
                 ws.cell(row=row_offset, column=3, value=row.get("bank_account_number") or "")
-                ws.cell(row=row_offset, column=4, value=row["income"])
-                ws.cell(row=row_offset, column=5, value=row["expense"])
-                ws.cell(row=row_offset, column=6, value=row.get("balance", row["net"]))
+                for col_idx, header in enumerate(headers[3:6], 4):
+                    value = (
+                        row["income"]
+                        if col_idx == 4
+                        else row["expense"]
+                        if col_idx == 5
+                        else row.get("balance", row["net"])
+                    )
+                    cell = ws.cell(row=row_offset, column=col_idx, value=value)
+                    apply_xlsx_cell_style(cell, header, value, currency)
                 ws.cell(row=row_offset, column=7, value=row["transaction_count"])
 
         ws_detail = wb.create_sheet("Transactions")
@@ -332,7 +347,7 @@ class AccountingSummaryReportView(APIView):
                 cell.border = thin_border
                 cell.font = Font(size=9)
                 if col_idx == 9:
-                    cell.number_format = "#,##0.00"
+                    apply_xlsx_cell_style(cell, "Amount", value, currency)
 
         col_widths = [16, 12, 10, 18, 36, 20, 14, 16, 12, 12]
         for col_idx, width in enumerate(col_widths, 1):
@@ -351,7 +366,11 @@ class AccountingSummaryReportView(APIView):
         return response
 
     def _export_pdf(self, request, payload: dict) -> HttpResponse:
-        from ..utils.export_helpers import build_pdf_response
+        from ..utils.export_helpers import build_pdf_response, format_currency_display
+
+        currency = payload.get("summary", {}).get("currency_symbol") or "$"
+        income_total = format_currency_display(payload["summary"]["income_total"], currency)
+        expense_total = format_currency_display(payload["summary"]["expense_total"], currency)
 
         headers = ["Reference", "Date", "Category", "Type", "Description", "Amount", "Status"]
         rows = [
@@ -370,7 +389,11 @@ class AccountingSummaryReportView(APIView):
             request=request,
             filename=f"income-expense-summary-{payload['start_date']}-to-{payload['end_date']}.pdf",
             title="Income & Expense Summary",
-            subtitle=f"Period: {payload['start_date']} to {payload['end_date']} | Income: {payload['summary']['income_total']} | Expense: {payload['summary']['expense_total']}",
+            subtitle=(
+                f"Period: {payload['start_date']} to {payload['end_date']} | "
+                f"Income: {income_total} | Expense: {expense_total}"
+            ),
             headers=headers,
             rows=rows,
+            currency_symbol=currency,
         )

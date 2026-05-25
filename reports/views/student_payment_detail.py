@@ -208,6 +208,10 @@ class StudentPaymentDetailReportView(APIView):
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
+        from ..utils.export_helpers import apply_xlsx_cell_style, resolve_export_currency
+
+        currency = resolve_export_currency()
+
         today = date.today()
         wb = Workbook()
         ws = wb.active
@@ -277,8 +281,7 @@ class StudentPaymentDetailReportView(APIView):
                 cell.border = thin_border
                 cell.font = Font(size=9)
                 if col_idx == currency_col:
-                    cell.number_format = "#,##0.00"
-                    cell.alignment = Alignment(horizontal="right")
+                    apply_xlsx_cell_style(cell, "Amount", value, currency)
 
         total_row = data_start + len(results)
         label_cell = ws.cell(
@@ -298,8 +301,7 @@ class StudentPaymentDetailReportView(APIView):
             cell.border = thin_border
 
         amount_cell = ws.cell(row=total_row, column=currency_col, value=totals["total_amount"])
-        amount_cell.number_format = "#,##0.00"
-        amount_cell.alignment = Alignment(horizontal="right")
+        apply_xlsx_cell_style(amount_cell, "Amount", totals["total_amount"], currency)
 
         col_widths = [16, 12, 12, 28, 14, 14, 12, 16, 18, 16, 12, 28]
         for col_idx, width in enumerate(col_widths, 1):
