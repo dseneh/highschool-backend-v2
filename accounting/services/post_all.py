@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
 from accounting.services import (
@@ -38,6 +39,63 @@ def extract_filter_params(query_params) -> dict[str, str]:
     }
 
 
+def build_cash_transaction_search_filter(search: str) -> Q:
+    """Match a free-text query against the main cash-transaction list columns."""
+    term = (search or "").strip()
+    if not term:
+        return Q()
+
+    query = (
+        Q(reference_number__icontains=term)
+        | Q(description__icontains=term)
+        | Q(payer_payee__icontains=term)
+        | Q(source_reference__icontains=term)
+        | Q(rejection_reason__icontains=term)
+        | Q(approved_by__icontains=term)
+        | Q(bank_account__account_name__icontains=term)
+        | Q(bank_account__account_number__icontains=term)
+        | Q(bank_account__bank_name__icontains=term)
+        | Q(transaction_type__name__icontains=term)
+        | Q(transaction_type__code__icontains=term)
+        | Q(payment_method__name__icontains=term)
+        | Q(payment_method__code__icontains=term)
+        | Q(currency__code__icontains=term)
+        | Q(currency__name__icontains=term)
+        | Q(currency__symbol__icontains=term)
+        | Q(ledger_account__name__icontains=term)
+        | Q(ledger_account__code__icontains=term)
+        | Q(journal_entry__reference_number__icontains=term)
+        | Q(journal_entry__source_reference__icontains=term)
+        | Q(journal_entry__description__icontains=term)
+        | Q(student__id_number__icontains=term)
+        | Q(student__first_name__icontains=term)
+        | Q(student__last_name__icontains=term)
+        | Q(student__middle_name__icontains=term)
+        | Q(student__prev_id_number__icontains=term)
+    )
+
+    status_term = term.lower()
+    if status_term in {
+        AccountingCashTransaction.TransactionStatus.PENDING,
+        AccountingCashTransaction.TransactionStatus.APPROVED,
+        AccountingCashTransaction.TransactionStatus.REJECTED,
+    }:
+        query |= Q(status=status_term)
+
+    normalized_digits = term.replace("-", "").replace("/", "").replace(",", "")
+    if normalized_digits.replace(".", "").isdigit():
+        query |= Q(transaction_date__icontains=term)
+        try:
+            amount = Decimal(normalized_digits)
+            query |= Q(amount=amount) | Q(base_amount=amount)
+        except (InvalidOperation, ValueError):
+            pass
+        if term.isdigit():
+            query |= Q(student__id_number__startswith=term)
+
+    return query
+
+
 def apply_cash_transaction_list_filters(queryset, params) -> object:
     category = params.get("category")
     status_param = params.get("status")
@@ -50,6 +108,12 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
     amount_max = params.get("amount_max")
     reference = params.get("reference")
     transaction_type_code = params.get("transaction_type_code")
+    search = params.get("search")
+
+    if search:
+        search_term = str(search).strip()
+        if search_term:
+            queryset = queryset.filter(build_cash_transaction_search_filter(search_term))
 
     if category:
         queryset = queryset.filter(transaction_type__transaction_category=category)
