@@ -9,6 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
+from api.authentication import TenantAwareJWTAuthentication
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q, Count
 from django.db import connection
@@ -826,7 +827,7 @@ class UserViewSet(viewsets.ModelViewSet):
         )
     
     @action(detail=False, methods=['get'], 
-            authentication_classes=[JWTStatelessUserAuthentication],
+            authentication_classes=[TenantAwareJWTAuthentication],
             permission_classes=[UserAccessPolicy])
     def current(self, request):
         """

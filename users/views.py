@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
+from api.authentication import TenantAwareJWTAuthentication
 from rest_framework.pagination import PageNumberPagination
 from django.conf import settings
 from django.db.models import Q
@@ -200,7 +201,7 @@ class CurrentUserView(APIView):
         "workspace": "school1"
     }
     """
-    authentication_classes = [JWTStatelessUserAuthentication]
+    authentication_classes = [TenantAwareJWTAuthentication]
     permission_classes = [UserAccessPolicy]
     
     def get(self, request):

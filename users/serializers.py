@@ -108,94 +108,111 @@ class UserSerializer(serializers.ModelSerializer):
 
         Superadmins receive every active tenant. Other users only receive
         tenants where they have UserTenantPermissions (capped at 20).
+
+        Tenant membership lives in the public schema and per-tenant permission
+        tables. This method always resolves the canonical User row from public
+        so it still works when the request arrived with an X-Tenant header
+        (connection on a school schema) or a JWT stateless user stub.
         """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         try:
             from core.models import Tenant
             from tenant_users.permissions.models import UserTenantPermissions
             from django_tenants.utils import get_public_schema_name, schema_context
-
-            public_schema = get_public_schema_name()
-            all_tenants = Tenant.objects.exclude(schema_name=public_schema).exclude(status='deleted')
             from users.tenant_access import is_global_superadmin as _is_global_superadmin
 
-            is_global_superadmin = _is_global_superadmin(obj)
+            user_id = getattr(obj, "id", None)
+            if not user_id:
+                return []
 
-            result = []
+            public_schema = get_public_schema_name()
 
-            # Check if user should have access to public/admin schema
-            # Include for superadmins, superusers, or explicit public schema permissions
-            try:
-                include_admin_schema = is_global_superadmin
-
-                if not include_admin_schema:
-                    # Check if user has explicit permissions in public schema
-                    with schema_context(public_schema):
-                        include_admin_schema = UserTenantPermissions.objects.filter(
-                            profile_id=obj.id
-                        ).exists()
-                
-                # Add admin/public schema to the beginning of results if eligible
-                if include_admin_schema:
-                    try:
-                        public_tenant = Tenant.objects.get(schema_name=public_schema)
-                        admin_payload = self._tenant_list_payload(
-                            public_tenant,
-                            schema_name='admin',
-                            workspace='admin',
-                        )
-                        admin_payload['name'] = public_tenant.name or 'Admin'
-                        result.append(admin_payload)
-                    except Tenant.DoesNotExist:
-                        # If public tenant doesn't exist, create a placeholder entry
-                        result.append({
-                            'id': 'admin',
-                            'id_number': None,
-                            'schema_name': 'admin',
-                            'workspace': 'admin',
-                            'name': 'Admin',
-                            'short_name': None,
-                            'logo': None,
-                            'phone': None,
-                            'email': None,
-                            'website': None,
-                            'address': None,
-                            'city': None,
-                            'state': None,
-                            'country': None,
-                            'postal_code': None,
-                            'status': 'active',
-                            'active': True,
-                        })
-            except Exception as admin_check_error:
-                # If there's an error checking admin access, skip it
-                pass
-            
-            tenant_payload_limit = 20
-
-            for tenant in all_tenants:
+            with schema_context(public_schema):
                 try:
-                    if is_global_superadmin:
-                        has_access = True
-                    else:
-                        with schema_context(tenant.schema_name):
-                            has_access = UserTenantPermissions.objects.filter(
-                                profile_id=obj.id
-                            ).exists()
+                    db_user = User.objects.get(pk=user_id)
+                except User.DoesNotExist:
+                    db_user = obj
 
-                    if has_access:
-                        result.append(self._tenant_list_payload(tenant))
+                is_global_superadmin = _is_global_superadmin(db_user)
+                result = []
+
+                # Check if user should have access to public/admin schema
+                try:
+                    include_admin_schema = is_global_superadmin
+
+                    if not include_admin_schema:
+                        include_admin_schema = UserTenantPermissions.objects.filter(
+                            profile_id=db_user.id
+                        ).exists()
+
+                    if include_admin_schema:
+                        try:
+                            public_tenant = Tenant.objects.get(schema_name=public_schema)
+                            admin_payload = self._tenant_list_payload(
+                                public_tenant,
+                                schema_name="admin",
+                                workspace="admin",
+                            )
+                            admin_payload["name"] = public_tenant.name or "Admin"
+                            result.append(admin_payload)
+                        except Tenant.DoesNotExist:
+                            result.append(
+                                {
+                                    "id": "admin",
+                                    "id_number": None,
+                                    "schema_name": "admin",
+                                    "workspace": "admin",
+                                    "name": "Admin",
+                                    "short_name": None,
+                                    "logo": None,
+                                    "phone": None,
+                                    "email": None,
+                                    "website": None,
+                                    "address": None,
+                                    "city": None,
+                                    "state": None,
+                                    "country": None,
+                                    "postal_code": None,
+                                    "status": "active",
+                                    "active": True,
+                                }
+                            )
                 except Exception:
-                    continue
+                    pass
 
-                if not is_global_superadmin and len(result) >= tenant_payload_limit:
-                    break
+                tenant_payload_limit = 20
+                all_tenants = Tenant.objects.exclude(
+                    schema_name=public_schema
+                ).exclude(status="deleted")
 
-            return result
-        except Exception as e:
-            # If there's any error, return empty list
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Error getting tenants for user {obj.email}: {e}")
+                for tenant in all_tenants:
+                    try:
+                        if is_global_superadmin:
+                            has_access = True
+                        else:
+                            with schema_context(tenant.schema_name):
+                                has_access = UserTenantPermissions.objects.filter(
+                                    profile_id=db_user.id
+                                ).exists()
+
+                        if has_access:
+                            result.append(self._tenant_list_payload(tenant))
+                    except Exception:
+                        continue
+
+                    if not is_global_superadmin and len(result) >= tenant_payload_limit:
+                        break
+
+                return result
+        except Exception as exc:
+            logger.warning(
+                "Error getting tenants for user %s: %s",
+                getattr(obj, "email", None),
+                exc,
+            )
             return []
     
     def get_is_current_user(self, obj):
