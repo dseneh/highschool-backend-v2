@@ -27,7 +27,13 @@ class TransactionUploadTaskManager:
         row_count: int,
         user_id: int | None,
         file_name: str,
+        schema_name: str | None = None,
     ) -> str:
+        if schema_name is None:
+            from django.db import connection
+
+            schema_name = connection.schema_name
+
         task_id = str(uuid.uuid4())
         task_data = {
             "id": task_id,
@@ -37,6 +43,7 @@ class TransactionUploadTaskManager:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "user_id": user_id,
+            "schema_name": schema_name,
             "template_type": template_type,
             "file_name": file_name,
             "estimated_count": row_count,
@@ -86,54 +93,72 @@ class TransactionUploadBackgroundProcessor:
         from accounting.services.transaction_upload import execute_transaction_upload
 
         def background_work() -> None:
-            try:
-                TransactionUploadTaskManager.update_task(
-                    task_id, status="processing", progress=5
-                )
+            from django.db import close_old_connections
+            from django_tenants.utils import schema_context
 
-                def on_progress(processed: int, total: int) -> None:
-                    if TransactionUploadTaskManager.is_cancelled(task_id):
-                        return
-                    progress = 5 + int((processed / max(total, 1)) * 90)
+            close_old_connections()
+            task_data = TransactionUploadTaskManager.get_task(task_id)
+            if not task_data:
+                return
+
+            schema_name = task_data.get("schema_name")
+            if not schema_name:
+                TransactionUploadTaskManager.update_task(
+                    task_id,
+                    status="failed",
+                    error="Upload task is missing tenant schema context.",
+                )
+                return
+
+            try:
+                with schema_context(schema_name):
                     TransactionUploadTaskManager.update_task(
-                        task_id,
-                        progress=min(progress, 95),
-                        total_processed=processed,
+                        task_id, status="processing", progress=5
                     )
 
-                result = execute_transaction_upload(
-                    df,
-                    template_type=template_type,
-                    bank_account_id=bank_account_id,
-                    gl_account_override=gl_account_override,
-                    status_override=status_override,
-                    replace_by_ref_number=replace_by_ref_number,
-                    progress_callback=on_progress,
-                    cancel_check=lambda: TransactionUploadTaskManager.is_cancelled(
-                        task_id
-                    ),
-                )
+                    def on_progress(processed: int, total: int) -> None:
+                        if TransactionUploadTaskManager.is_cancelled(task_id):
+                            return
+                        progress = 5 + int((processed / max(total, 1)) * 90)
+                        TransactionUploadTaskManager.update_task(
+                            task_id,
+                            progress=min(progress, 95),
+                            total_processed=processed,
+                        )
 
-                if TransactionUploadTaskManager.is_cancelled(task_id):
+                    result = execute_transaction_upload(
+                        df,
+                        template_type=template_type,
+                        bank_account_id=bank_account_id,
+                        gl_account_override=gl_account_override,
+                        status_override=status_override,
+                        replace_by_ref_number=replace_by_ref_number,
+                        progress_callback=on_progress,
+                        cancel_check=lambda: TransactionUploadTaskManager.is_cancelled(
+                            task_id
+                        ),
+                    )
+
+                    if TransactionUploadTaskManager.is_cancelled(task_id):
+                        TransactionUploadTaskManager.update_task(
+                            task_id,
+                            result=result,
+                            total_errors=len(result.get("errors") or []),
+                            errors=(result.get("errors") or [])[:20],
+                        )
+                        return
+
                     TransactionUploadTaskManager.update_task(
                         task_id,
+                        status="completed",
+                        progress=100,
                         result=result,
+                        total_processed=result.get("total_rows") or len(df),
+                        created=result.get("created") or 0,
+                        updated=result.get("updated") or 0,
                         total_errors=len(result.get("errors") or []),
                         errors=(result.get("errors") or [])[:20],
                     )
-                    return
-
-                TransactionUploadTaskManager.update_task(
-                    task_id,
-                    status="completed",
-                    progress=100,
-                    result=result,
-                    total_processed=result.get("total_rows") or len(df),
-                    created=result.get("created") or 0,
-                    updated=result.get("updated") or 0,
-                    total_errors=len(result.get("errors") or []),
-                    errors=(result.get("errors") or [])[:20],
-                )
             except Exception as exc:
                 TransactionUploadTaskManager.update_task(
                     task_id,
