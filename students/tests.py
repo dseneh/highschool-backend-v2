@@ -194,3 +194,42 @@ class StudentAccountingBalanceTests(SimpleTestCase):
             academic_year=academic_year,
             is_active=True,
         )
+
+    @patch("finance.models._get_effective_paid_for_enrollment", return_value=Decimal("350.00"))
+    @patch("accounting.models.AccountingConcession.objects.filter")
+    @patch("accounting.models.AccountingStudentBill.objects.filter")
+    @patch("accounting.models.AccountingStudentBillLine.objects.filter")
+    def test_enrollment_bill_summary_allows_negative_balance_when_overpaid(
+        self,
+        mock_line_filter,
+        mock_bill_filter,
+        mock_concession_filter,
+        _mock_effective_paid,
+    ):
+        accounting_bill_qs = MagicMock()
+        accounting_bill_qs.aggregate.return_value = {
+            "gross_total": Decimal("350.00"),
+            "concession_total": Decimal("50.00"),
+            "net_total": Decimal("300.00"),
+            "paid_total": Decimal("350.00"),
+            "outstanding_total": Decimal("0.00"),
+        }
+        mock_bill_filter.return_value = accounting_bill_qs
+
+        accounting_lines = MagicMock()
+        accounting_lines.exists.return_value = True
+        accounting_lines.exclude.return_value.aggregate.return_value = {"total": Decimal("100.00")}
+        accounting_lines.filter.return_value.aggregate.return_value = {"total": Decimal("250.00")}
+        mock_line_filter.return_value = accounting_lines
+        mock_concession_filter.return_value.order_by.return_value = []
+
+        enrollment = MagicMock(
+            id="enr-1",
+            student=MagicMock(),
+            academic_year=MagicMock(id="ay-1"),
+        )
+
+        summary = get_enrollment_bill_summary(enrollment)
+
+        self.assertEqual(summary["paid"], 350.0)
+        self.assertEqual(summary["balance"], -50.0)

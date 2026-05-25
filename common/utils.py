@@ -665,11 +665,9 @@ def get_enrollment_bill_summary(
             amount_paid = accounting_bill_totals["paid_total"]
 
         balance = net_total_bill - amount_paid
-        if balance < 0:
-            balance = Decimal("0")
     else:
         amount_paid = Decimal("0")
-        balance = max(Decimal("0"), net_total_bill)
+        balance = net_total_bill - amount_paid
 
     return {
         "total_fees": float(total_fees),

@@ -210,7 +210,7 @@ class Student(BasePersonModel):
 
         accounting_totals = self._get_accounting_bill_totals(academic_year)
         if accounting_totals is not None:
-            return max(Decimal("0"), accounting_totals["outstanding_total"])
+            return accounting_totals["net_total"] - accounting_totals["paid_total"]
 
         enrollment = self.enrollments.filter(academic_year=academic_year).first()
         if not enrollment:
@@ -230,7 +230,7 @@ class Student(BasePersonModel):
             )
         )
 
-        return max(Decimal("0"), total_bills - approved_payments)
+        return total_bills - approved_payments
 
     def get_projected_balance(self, academic_year_id=None):
         """
@@ -254,10 +254,10 @@ class Student(BasePersonModel):
 
         accounting_totals = self._get_accounting_bill_totals(academic_year)
         if accounting_totals is not None:
-            return max(
-                Decimal("0"),
-                accounting_totals["outstanding_total"] - pending_payments,
+            approved_balance = (
+                accounting_totals["net_total"] - accounting_totals["paid_total"]
             )
+            return approved_balance - pending_payments
 
         enrollment = self.enrollments.filter(academic_year=academic_year).first()
         if not enrollment:
@@ -276,7 +276,7 @@ class Student(BasePersonModel):
                 or 0
             )
         )
-        return max(Decimal("0"), total_bills - approved_payments - pending_payments)
+        return total_bills - approved_payments - pending_payments
 
     def get_balance_summary(self, academic_year_id=None):
         """
@@ -330,8 +330,10 @@ class Student(BasePersonModel):
         accounting_totals = self._get_accounting_bill_totals(academic_year)
         if accounting_totals is not None:
             approved_payments = accounting_totals["paid_total"]
-            approved_balance = max(Decimal("0"), accounting_totals["outstanding_total"])
-            projected_balance = max(Decimal("0"), approved_balance - pending_payments)
+            approved_balance = (
+                accounting_totals["net_total"] - accounting_totals["paid_total"]
+            )
+            projected_balance = approved_balance - pending_payments
 
             return {
                 "gross_bills": float(accounting_totals["gross_total"]),
@@ -363,8 +365,8 @@ class Student(BasePersonModel):
             str(enrollment.student_bills.aggregate(total=Sum("amount"))["total"] or 0)
         )
         approved_payments = Decimal(str(payment_summary["approved"] or 0))
-        approved_balance = max(Decimal("0"), total_bills - approved_payments)
-        projected_balance = max(Decimal("0"), approved_balance - pending_payments)
+        approved_balance = total_bills - approved_payments
+        projected_balance = approved_balance - pending_payments
 
         return {
             "gross_bills": float(total_bills),
