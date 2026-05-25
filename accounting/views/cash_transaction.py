@@ -204,6 +204,14 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             rejected_count=Count("id", filter=Q(status="rejected")),
             posted_count=Count("id", filter=Q(journal_entry__isnull=False)),
             not_posted_count=Count("id", filter=Q(journal_entry__isnull=True)),
+            # Approved transactions that haven't been journalised yet —
+            # this is the "posting backlog" surfaced in the page banner
+            # and sidebar badge. Only approved rows are postable, so this
+            # is the actionable subset of ``not_posted_count``.
+            approved_unposted_count=Count(
+                "id",
+                filter=Q(status="approved", journal_entry__isnull=True),
+            ),
             approved_net_total=Sum("amount", filter=Q(status="approved")),
             approved_expense_total=Sum(
                 "amount",
@@ -217,6 +225,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             "rejected_count": agg["rejected_count"] or 0,
             "posted_count": agg["posted_count"] or 0,
             "not_posted_count": agg["not_posted_count"] or 0,
+            "approved_unposted_count": agg["approved_unposted_count"] or 0,
             "approved_net_total": str(agg["approved_net_total"] or Decimal("0")),
             "approved_expense_total": str(agg["approved_expense_total"] or Decimal("0")),
         }
@@ -242,6 +251,10 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         amount = self.request.query_params.get("amount")
         amount_min = self.request.query_params.get("amount_min")
         amount_max = self.request.query_params.get("amount_max")
+        # ``reference`` is a free-text contains-match used by the bulk
+        # post dialog so users can narrow by a partial reference number
+        # (e.g. all rows uploaded under a "TUITION-202509" prefix).
+        reference = self.request.query_params.get("reference")
 
         if category:
             queryset = queryset.filter(transaction_type__transaction_category=category)
@@ -273,6 +286,8 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 queryset = queryset.filter(amount__lte=Decimal(amount_max))
             except (InvalidOperation, TypeError):
                 pass
+        if reference:
+            queryset = queryset.filter(reference_number__icontains=reference)
 
         return queryset
 
@@ -498,6 +513,121 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 "detail": "Transaction posted successfully",
                 "journal_entry_id": str(journal_entry.id),
                 "transaction": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["get"], url_path="unposted-count")
+    def unposted_count(self, request):
+        """Lightweight count of approved transactions awaiting journal posting.
+
+        Used by the sidebar badge and the warning banner on the cash
+        transactions page. Returns the actionable backlog only (approved
+        but not yet posted) — pending/rejected rows aren't counted since
+        they can't be posted regardless.
+        """
+        count = AccountingCashTransaction.objects.filter(
+            status=AccountingCashTransaction.TransactionStatus.APPROVED,
+            journal_entry__isnull=True,
+        ).count()
+        return Response({"count": count}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="post-all")
+    def post_all(self, request):
+        """Post every approved + unposted transaction matching the filter.
+
+        Accepts the same filter query params as ``list`` so callers can
+        scope the bulk-post operation to a date range / bank account /
+        transaction type / etc. Pass ``apply_current_filters=false`` to
+        ignore the request filters and post every approved unposted
+        transaction in the tenant.
+
+        Response payload:
+            {
+                "posted_count": N,
+                "skipped_count": M,
+                "errors": [{ "id": "<uuid>", "reference_number": "...",
+                             "detail": "..." }],
+                "journal_entry_ids": ["<uuid>", ...]
+            }
+        """
+        # By default scope to the filters the page is already showing.
+        # Callers can opt out by passing apply_current_filters=false.
+        apply_filters = self._to_bool(
+            request.data.get("apply_current_filters", True)
+        )
+
+        if apply_filters:
+            queryset = self.filter_queryset(self.get_queryset())
+        else:
+            queryset = AccountingCashTransaction.objects.all()
+
+        # Only approved + unposted rows are eligible. We re-resolve the
+        # queryset from scratch (without the list endpoint's prefetches)
+        # because ``.iterator()`` requires an explicit ``chunk_size``
+        # when prefetches are attached, and we don't need the
+        # bill_allocations / student snapshot data for posting anyway.
+        eligible_ids = list(
+            queryset.filter(
+                status=AccountingCashTransaction.TransactionStatus.APPROVED,
+                journal_entry__isnull=True,
+            ).values_list("id", flat=True)
+        )
+
+        eligible = (
+            AccountingCashTransaction.objects.filter(id__in=eligible_ids)
+            .select_related("bank_account", "transaction_type")
+        )
+
+        posted_journal_ids: list[str] = []
+        errors: list[dict] = []
+        affected_bank_account_ids: set = set()
+
+        for cash_tx in eligible.iterator(chunk_size=200):
+            try:
+                with transaction.atomic():
+                    journal_entry = post_cash_transaction_to_ledger(
+                        cash_tx, actor=request.user
+                    )
+                posted_journal_ids.append(str(journal_entry.id))
+                if cash_tx.bank_account_id:
+                    affected_bank_account_ids.add(cash_tx.bank_account_id)
+            except ValidationError as exc:
+                message = (
+                    exc.messages[0]
+                    if hasattr(exc, "messages") and exc.messages
+                    else str(exc)
+                )
+                errors.append(
+                    {
+                        "id": str(cash_tx.id),
+                        "reference_number": cash_tx.reference_number or "",
+                        "detail": message,
+                    }
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "id": str(cash_tx.id),
+                        "reference_number": cash_tx.reference_number or "",
+                        "detail": str(exc),
+                    }
+                )
+
+        # Recalculate balances once per affected bank account rather than
+        # per transaction; cheaper and keeps the bank account row from
+        # bouncing through intermediate states.
+        for bank_account in AccountingBankAccount.objects.filter(
+            id__in=affected_bank_account_ids
+        ):
+            recalculate_bank_account_current_balance(bank_account)
+
+        return Response(
+            {
+                "posted_count": len(posted_journal_ids),
+                "skipped_count": len(errors),
+                "journal_entry_ids": posted_journal_ids,
+                "errors": errors,
             },
             status=status.HTTP_200_OK,
         )

@@ -751,8 +751,8 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
     def _generate_reference_number(self, transaction_date):
         """Generate a unique reference number for cash transaction."""
         # Format: TXN-YYYYMMDD-XXXXX
-        date_str = transaction_date.strftime("%Y%m%d")
-        prefix = f"TXN-{date_str}-"
+        date_str = transaction_date.strftime("%y%m%d")
+        prefix = f"{date_str}"
         
         # Find the last reference number for this date
         last_entry = AccountingCashTransaction.objects.filter(
@@ -766,7 +766,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         else:
             next_counter = 1
         
-        return f"{prefix}{next_counter:05d}"
+        return f"{prefix}{next_counter:02d}"
 
     # Allow blank reference_number so it can be auto-generated in create()
     reference_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
