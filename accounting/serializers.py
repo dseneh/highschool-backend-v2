@@ -285,9 +285,9 @@ class AccountingJournalEntrySerializer(serializers.ModelSerializer):
 
     def _generate_reference_number(self, posting_date):
         """Generate a unique reference number for journal entry."""
-        # Format: JE-YYYYMMDD-XXXXX
-        date_str = posting_date.strftime("%Y%m%d")
-        prefix = f"JE-{date_str}-"
+        # Format: YYMMDDXX
+        date_str = posting_date.strftime("%y%m%d")
+        prefix = date_str
         
         # Find the last reference number for this date
         last_entry = AccountingJournalEntry.objects.filter(
@@ -301,7 +301,7 @@ class AccountingJournalEntrySerializer(serializers.ModelSerializer):
         else:
             next_counter = 1
         
-        return f"{prefix}{next_counter:05d}"
+        return f"{prefix}{next_counter:02d}"
 
     def create(self, validated_data):
         posting_date = validated_data.get("posting_date")

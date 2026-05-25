@@ -103,7 +103,7 @@ def post_cash_transaction_to_ledger(cash_transaction: AccountingCashTransaction,
     with db_transaction.atomic():
         journal_entry = AccountingJournalEntry.objects.create(
             posting_date=cash_transaction.transaction_date,
-            reference_number=f"JE-{cash_transaction.reference_number}",
+            reference_number=f"{cash_transaction.reference_number}",
             source="manual",
             description=cash_transaction.description,
             status=AccountingJournalEntry.EntryStatus.POSTED,
@@ -150,6 +150,86 @@ def post_cash_transaction_to_ledger(cash_transaction: AccountingCashTransaction,
 
         cash_transaction.journal_entry = journal_entry
         cash_transaction.save(update_fields=["journal_entry", "updated_at"])
+
+    return journal_entry
+
+
+def sync_cash_transaction_journal_entry(
+    cash_transaction: AccountingCashTransaction,
+    actor=None,
+) -> AccountingJournalEntry | None:
+    """Update a linked journal entry to reflect edits on the cash transaction."""
+    journal_entry = cash_transaction.journal_entry
+    if journal_entry is None:
+        return None
+
+    if journal_entry.status == AccountingJournalEntry.EntryStatus.REVERSED:
+        raise ValidationError(
+            "Cannot update a transaction whose journal entry has been reversed"
+        )
+
+    if cash_transaction.status != AccountingCashTransaction.TransactionStatus.APPROVED:
+        raise ValidationError("Only approved transactions with journal entries can be synced")
+
+    bank_ledger, counter_ledger = _resolve_posting_accounts(cash_transaction)
+    academic_year = _resolve_academic_year(cash_transaction.transaction_date)
+    base_amount = _compute_base_amount(cash_transaction)
+
+    tx_category = cash_transaction.transaction_type.transaction_category
+    if tx_category not in {"income", "expense"}:
+        raise ValidationError("Only income and expense transaction categories can be synced")
+
+    if tx_category == "income":
+        debit_account = bank_ledger
+        credit_account = counter_ledger
+    else:
+        debit_account = counter_ledger
+        credit_account = bank_ledger
+
+    with db_transaction.atomic():
+        journal_entry.posting_date = cash_transaction.transaction_date
+        journal_entry.reference_number = f"JE-{cash_transaction.reference_number}"
+        journal_entry.description = cash_transaction.description
+        journal_entry.academic_year = academic_year
+        journal_entry.source_reference = cash_transaction.reference_number
+        journal_entry.save(
+            update_fields=[
+                "posting_date",
+                "reference_number",
+                "description",
+                "academic_year",
+                "source_reference",
+                "updated_at",
+            ]
+        )
+
+        lines = list(
+            journal_entry.lines.all().order_by("line_sequence", "created_at")
+        )
+        if len(lines) < 2:
+            raise ValidationError("Journal entry is missing expected debit/credit lines")
+
+        debit_line, credit_line = lines[0], lines[1]
+
+        debit_line.ledger_account = debit_account
+        debit_line.currency = cash_transaction.currency
+        debit_line.amount = cash_transaction.amount
+        debit_line.debit_amount = cash_transaction.amount
+        debit_line.credit_amount = Decimal("0")
+        debit_line.exchange_rate = cash_transaction.exchange_rate
+        debit_line.base_amount = base_amount
+        debit_line.description = f"Debit for {cash_transaction.reference_number}"
+        debit_line.save()
+
+        credit_line.ledger_account = credit_account
+        credit_line.currency = cash_transaction.currency
+        credit_line.amount = cash_transaction.amount
+        credit_line.debit_amount = Decimal("0")
+        credit_line.credit_amount = cash_transaction.amount
+        credit_line.exchange_rate = cash_transaction.exchange_rate
+        credit_line.base_amount = base_amount
+        credit_line.description = f"Credit for {cash_transaction.reference_number}"
+        credit_line.save()
 
     return journal_entry
 

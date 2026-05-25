@@ -32,6 +32,7 @@ from accounting.services import (
     post_cash_transaction_to_ledger,
     recalculate_bank_account_current_balance,
     reverse_cash_transaction_journal_entry,
+    sync_cash_transaction_journal_entry,
     sync_ledger_account_for_type,
 )
 from accounting.services.post_all import (
@@ -357,24 +358,77 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             recalculate_bank_account_current_balance(cash_transaction.bank_account)
 
     def _validate_editable(self, cash_transaction):
-        if cash_transaction.journal_entry_id:
+        if cash_transaction.status == AccountingCashTransaction.TransactionStatus.REJECTED:
             return Response(
                 {
                     "detail": (
-                        "Posted transactions are immutable because they are already journalized. "
-                        "Create a reversing entry and re-enter the corrected transaction."
+                        "Rejected transactions cannot be edited. "
+                        "Create a new transaction if corrections are needed."
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if cash_transaction.status == AccountingCashTransaction.TransactionStatus.APPROVED:
+        if cash_transaction.source_reference:
+            if AccountingAccountTransfer.objects.filter(
+                reference_number=cash_transaction.source_reference
+            ).exists():
+                return Response(
+                    {"detail": "Transfer-linked transactions cannot be edited."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        journal_entry = cash_transaction.journal_entry
+        if (
+            journal_entry is not None
+            and journal_entry.status == AccountingJournalEntry.EntryStatus.REVERSED
+        ):
             return Response(
-                {"detail": "Approved transactions cannot be edited. Move to pending/rejected first if needed."},
+                {
+                    "detail": (
+                        "This transaction's journal entry was reversed and "
+                        "cannot be edited in place."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         return None
+
+    def perform_update(self, serializer):
+        cash_transaction = self.get_object()
+        previous_bank_account_id = cash_transaction.bank_account_id
+
+        with transaction.atomic():
+            cash_transaction = serializer.save()
+
+            if cash_transaction.journal_entry_id:
+                try:
+                    sync_cash_transaction_journal_entry(
+                        cash_transaction, actor=self.request.user
+                    )
+                except ValidationError as exc:
+                    message = (
+                        exc.messages[0]
+                        if hasattr(exc, "messages") and exc.messages
+                        else str(exc)
+                    )
+                    raise serializers.ValidationError({"detail": message}) from exc
+
+        bank_account_ids = {
+            account_id
+            for account_id in (previous_bank_account_id, cash_transaction.bank_account_id)
+            if account_id
+        }
+        if (
+            cash_transaction.status
+            == AccountingCashTransaction.TransactionStatus.APPROVED
+            and bank_account_ids
+        ):
+            for bank_account in AccountingBankAccount.objects.filter(
+                id__in=bank_account_ids
+            ):
+                recalculate_bank_account_current_balance(bank_account)
 
     def update(self, request, *args, **kwargs):
         cash_transaction = self.get_object()
