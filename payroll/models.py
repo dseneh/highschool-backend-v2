@@ -141,7 +141,7 @@ class Payslip(BaseModel):
     )
     employee = models.ForeignKey(
         "hr.Employee",
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name="payslips",
     )
     currency = models.ForeignKey(

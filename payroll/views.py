@@ -143,7 +143,14 @@ class PayrollRunViewSet(_BaseAuditedViewSet):
         schedule_id = self.request.query_params.get("schedule")
         if schedule_id:
             qs = qs.filter(period__schedule_id=schedule_id)
-        return qs
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(period__name__icontains=search)
+                | Q(period__schedule__name__icontains=search)
+                | Q(notes__icontains=search)
+            )
+        return qs.order_by("-period__end_date", "-created_at")
 
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
@@ -228,7 +235,20 @@ class PayslipViewSet(_BaseAuditedViewSet):
                 | Q(employee__last_name__icontains=search)
                 | Q(employee__employee_number__icontains=search)
             )
-        return qs
+        amount_filter = self.request.query_params.get("amount_filter")
+        if amount_filter and amount_filter != "all":
+            amount_q = {
+                "with_tax": Q(tax__gt=0),
+                "no_tax": Q(tax=0),
+                "with_allowances": Q(allowances__gt=0),
+                "with_deductions": Q(deductions__gt=0),
+                "with_overtime": Q(overtime_pay__gt=0) | Q(overtime_hours__gt=0),
+                "zero_net": Q(net_pay=0),
+                "positive_net": Q(net_pay__gt=0),
+            }.get(amount_filter)
+            if amount_q is not None:
+                qs = qs.filter(amount_q)
+        return qs.order_by("employee__last_name", "employee__first_name", "employee__employee_number")
 
     def update(self, request, *args, **kwargs):
         # Only allow updating overtime_hours and unpaid_leave_days on DRAFT runs.
