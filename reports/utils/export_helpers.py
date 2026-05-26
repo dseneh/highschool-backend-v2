@@ -184,9 +184,10 @@ def format_export_cell_display(header: str, value, currency_symbol: str = "$") -
     return str(value)
 
 
-def excel_currency_number_format(currency_symbol: str) -> str:
-    symbol = (currency_symbol or "$").replace('"', '""')
-    return f'"{symbol}"#,##0.00;-"{symbol}"#,##0.00'
+def excel_currency_number_format(currency_symbol: str = "$") -> str:
+    """Plain numeric Excel format for amount columns (no currency symbol in cells)."""
+    _ = currency_symbol  # Kept for call-site compatibility; currency belongs in headers/metadata.
+    return "#,##0.00"
 
 
 def prepare_xlsx_numeric_value(header: str, value):
