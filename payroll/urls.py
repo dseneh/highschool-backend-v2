@@ -1,3 +1,4 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
@@ -5,6 +6,7 @@ from .views import (
     PayrollItemViewSet,
     PayrollPeriodViewSet,
     PayrollRunViewSet,
+    PayrollSettingsView,
     PayScheduleViewSet,
     PayslipViewSet,
     TaxRuleViewSet,
@@ -25,4 +27,6 @@ router.register(
     basename="employee-tax-rule-override",
 )
 
-urlpatterns = router.urls
+urlpatterns = [
+    path("payroll/settings/", PayrollSettingsView.as_view(), name="payroll-settings"),
+] + router.urls

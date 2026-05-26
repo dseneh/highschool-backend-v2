@@ -29,7 +29,7 @@ class StaffDirectoryReportView(APIView):
         for employee in employees:
             results.append(
                 {
-                    "employee_id": employee.employee_number or employee.id_number or str(employee.id),
+                    "employee_id": employee.id_number or str(employee.id),
                     "full_name": employee.get_full_name(),
                     "email": employee.email or "",
                     "phone": employee.phone_number or "",

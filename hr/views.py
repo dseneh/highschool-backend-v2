@@ -262,7 +262,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__employee_number__icontains=search)
+                | Q(employee__id_number__icontains=search)
                 | Q(leave_type__name__icontains=search)
             )
 
@@ -334,7 +334,7 @@ class EmployeeAttendanceViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__employee_number__icontains=search)
+                | Q(employee__id_number__icontains=search)
                 | Q(notes__icontains=search)
             )
 
@@ -371,7 +371,7 @@ class EmployeePerformanceReviewViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__employee_number__icontains=search)
+                | Q(employee__id_number__icontains=search)
                 | Q(review_title__icontains=search)
                 | Q(review_period__icontains=search)
             )
@@ -421,7 +421,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 | Q(last_name__icontains=search)
                 | Q(middle_name__icontains=search)
                 | Q(email__icontains=search)
-                | Q(employee_number__icontains=search)
+                | Q(id_number__icontains=search)
                 | Q(job_title__icontains=search)
             )
 
@@ -540,7 +540,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path=r"number/(?P<employee_number>[^/.]+)")
     def by_number(self, request, employee_number=None):
-        employee = self.get_queryset().filter(employee_number=employee_number).first()
+        employee = self.get_queryset().filter(id_number=employee_number).first()
         if not employee:
             return Response({"detail": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(self.get_serializer(employee).data)

@@ -19,6 +19,7 @@ from reportlab.platypus import (
     Spacer,
     HRFlowable,
     Image as RLImage,
+    Flowable,
 )
 
 logger = logging.getLogger(__name__)
@@ -401,3 +402,147 @@ def build_pdf_header(
         story.append(date_para)
 
     story.append(Spacer(1, max(0.0, bottom_spacer_inches) * inch))
+
+
+def resolve_currency_symbol(currency=None, *, fallback: str = "$") -> str:
+    """Return the display symbol for a currency record (never the ISO code)."""
+    if currency is None:
+        return fallback
+    symbol = getattr(currency, "symbol", None)
+    if symbol and str(symbol).strip():
+        return str(symbol).strip()
+    return fallback
+
+
+def format_pdf_currency(amount, currency_symbol: str = "$") -> str:
+    """Format a monetary amount for PDF display using the currency symbol."""
+    if amount is None or amount == "":
+        return ""
+    try:
+        numeric = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+
+    symbol = (currency_symbol or "$").strip() or "$"
+    sign = "-" if numeric < 0 else ""
+    body = f"{abs(numeric):,.2f}"
+    return f"{sign}{symbol}{body}"
+
+
+# ── Shared PDF theme (aligned with Ezyschool UI / document headers) ──
+
+PDF_PRIMARY = colors.HexColor("#1976d2")
+PDF_PRIMARY_LIGHT = colors.HexColor("#E3F2FD")
+PDF_BORDER = colors.HexColor("#CFD8DC")
+PDF_BORDER_ACCENT = colors.HexColor("#90caf9")
+PDF_TEXT = colors.HexColor("#424242")
+PDF_TEXT_MUTED = colors.HexColor("#616161")
+PDF_ROW_ALT = colors.HexColor("#F5F7FA")
+PDF_NET_HIGHLIGHT = colors.HexColor("#E8F5E9")
+
+PDF_CHART_GROSS = colors.HexColor("#1976d2")
+PDF_CHART_DEDUCTIONS = colors.HexColor("#F59E0B")
+PDF_CHART_TAX = colors.HexColor("#9333EA")
+PDF_CHART_NET = colors.HexColor("#2E7D32")
+
+
+def pdf_base_table_style() -> list:
+    """Padding, grid, and vertical alignment shared by PDF data tables."""
+    return [
+        ("GRID", (0, 0), (-1, -1), 0.5, PDF_BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+
+
+def pdf_primary_header_row_style(row_index: int = 0, *, font_size: int = 8) -> list:
+    """Primary-blue header row with white text."""
+    return [
+        ("BACKGROUND", (0, row_index), (-1, row_index), PDF_PRIMARY),
+        ("TEXTCOLOR", (0, row_index), (-1, row_index), colors.white),
+        ("FONTNAME", (0, row_index), (-1, row_index), "Helvetica-Bold"),
+        ("FONTSIZE", (0, row_index), (-1, row_index), font_size),
+    ]
+
+
+def pdf_subheader_row_style(row_index: int, *, font_size: int = 7) -> list:
+    """Light-blue sub-header row for grouped label rows."""
+    return [
+        ("BACKGROUND", (0, row_index), (-1, row_index), PDF_PRIMARY_LIGHT),
+        ("TEXTCOLOR", (0, row_index), (-1, row_index), PDF_PRIMARY),
+        ("FONTNAME", (0, row_index), (-1, row_index), "Helvetica-Bold"),
+        ("FONTSIZE", (0, row_index), (-1, row_index), font_size),
+    ]
+
+
+def pdf_alternating_row_style(first_data_row: int = 1) -> list:
+    return [
+        (
+            "ROWBACKGROUNDS",
+            (0, first_data_row),
+            (-1, -1),
+            [colors.white, PDF_ROW_ALT],
+        ),
+    ]
+
+
+class PdfDonutChartFlowable(Flowable):
+    """Canvas-drawn donut chart for reliable rendering inside Platypus documents."""
+
+    def __init__(
+        self,
+        slices: list[tuple[object, object, colors.Color]],
+        width: float,
+        height: float,
+        *,
+        inner_radius_ratio: float = 0.55,
+    ):
+        super().__init__()
+        self.slices = slices
+        self.width = width
+        self.height = height
+        self.inner_radius_ratio = inner_radius_ratio
+
+    def wrap(self, availWidth, availHeight):
+        return min(self.width, availWidth), self.height
+
+    def draw(self) -> None:
+        positive_slices = [
+            (label, float(value), color)
+            for label, value, color in self.slices
+            if float(value) > 0
+        ]
+        if not positive_slices:
+            return
+
+        canvas = self.canv
+        center_x = self.width / 2
+        center_y = self.height / 2
+        outer_radius = min(self.width, self.height) * 0.38
+        inner_radius = outer_radius * self.inner_radius_ratio
+        total = sum(value for _, value, _ in positive_slices)
+
+        start_angle = 90
+        for _, value, color in positive_slices:
+            extent = 360 * value / total
+            canvas.setFillColor(color)
+            canvas.setStrokeColor(colors.white)
+            canvas.setLineWidth(0.75)
+            canvas.wedge(
+                center_x - outer_radius,
+                center_y - outer_radius,
+                center_x + outer_radius,
+                center_y + outer_radius,
+                start_angle,
+                -extent,
+                fill=1,
+                stroke=1,
+            )
+            start_angle -= extent
+
+        canvas.setFillColor(colors.white)
+        canvas.setStrokeColor(colors.white)
+        canvas.circle(center_x, center_y, inner_radius, fill=1, stroke=0)

@@ -16,18 +16,34 @@ from ..access_policies import ReportsAccessPolicy
 from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param
 
 
+def _apply_payroll_run_filters(queryset, request):
+    """Filter payroll runs by optional date range overlap and pay schedule."""
+    start_date = parse_date_param(request.query_params.get("start_date"))
+    end_date = parse_date_param(request.query_params.get("end_date"))
+    pay_schedule_id = (
+        request.query_params.get("pay_schedule_id")
+        or request.query_params.get("schedule_id")
+        or request.query_params.get("schedule")
+    )
+
+    if start_date:
+        queryset = queryset.filter(period__end_date__gte=start_date)
+    if end_date:
+        queryset = queryset.filter(period__start_date__lte=end_date)
+    if pay_schedule_id:
+        queryset = queryset.filter(period__schedule_id=pay_schedule_id)
+    return queryset
+
+
 class PayrollRunSummaryReportView(APIView):
     permission_classes = [ReportsAccessPolicy]
 
     def get(self, request):
-        start_date = parse_date_param(request.query_params.get("start_date"))
-        end_date = parse_date_param(request.query_params.get("end_date"))
-
-        runs = PayrollRun.objects.select_related("period", "period__schedule").order_by("-created_at")
-        if start_date:
-            runs = runs.filter(period__start_date__gte=start_date)
-        if end_date:
-            runs = runs.filter(period__end_date__lte=end_date)
+        runs = PayrollRun.objects.select_related("period", "period__schedule").order_by(
+            "-period__end_date",
+            "-created_at",
+        )
+        runs = _apply_payroll_run_filters(runs, request)
 
         results = []
         for run in runs:
@@ -35,9 +51,11 @@ class PayrollRunSummaryReportView(APIView):
             gross = payslips.aggregate(total=Coalesce(Sum("gross_pay"), Decimal("0")))["total"] or 0
             net = payslips.aggregate(total=Coalesce(Sum("net_pay"), Decimal("0")))["total"] or 0
             deductions = payslips.aggregate(total=Coalesce(Sum("deductions"), Decimal("0")))["total"] or 0
+            tax = payslips.aggregate(total=Coalesce(Sum("tax"), Decimal("0")))["total"] or 0
             results.append(
                 {
                     "run_id": str(run.id),
+                    "schedule_name": run.period.schedule.name if run.period and run.period.schedule else "",
                     "period_name": run.period.name if run.period else "",
                     "start_date": run.period.start_date.isoformat() if run.period else "",
                     "end_date": run.period.end_date.isoformat() if run.period else "",
@@ -45,14 +63,24 @@ class PayrollRunSummaryReportView(APIView):
                     "employee_count": payslips.count(),
                     "gross_total": float(gross),
                     "deductions_total": float(deductions),
+                    "tax_total": float(tax),
                     "net_total": float(net),
                 }
             )
 
-        payload = {"results": results}
+        summary = {
+            "run_count": len(results),
+            "employee_count": sum(row["employee_count"] for row in results),
+            "gross_total": sum(row["gross_total"] for row in results),
+            "deductions_total": sum(row["deductions_total"] for row in results),
+            "tax_total": sum(row["tax_total"] for row in results),
+            "net_total": sum(row["net_total"] for row in results),
+        }
+        payload = {"results": results, "summary": summary}
         if get_export_format(request):
             rows = [
                 [
+                    r["schedule_name"],
                     r["period_name"],
                     r["start_date"],
                     r["end_date"],
@@ -60,6 +88,7 @@ class PayrollRunSummaryReportView(APIView):
                     r["employee_count"],
                     r["gross_total"],
                     r["deductions_total"],
+                    r["tax_total"],
                     r["net_total"],
                 ]
                 for r in results
@@ -69,8 +98,24 @@ class PayrollRunSummaryReportView(APIView):
                 filename_base="payroll-run-summary",
                 title="Payroll Run Summary",
                 subtitle=None,
-                summary_rows=None,
-                headers=["Period", "Start", "End", "Status", "Employees", "Gross", "Deductions", "Net"],
+                summary_rows=[
+                    ("Runs", summary["run_count"]),
+                    ("Employees", summary["employee_count"]),
+                    ("Gross Total", summary["gross_total"]),
+                    ("Net Total", summary["net_total"]),
+                ],
+                headers=[
+                    "Schedule",
+                    "Period",
+                    "Start",
+                    "End",
+                    "Status",
+                    "Employees",
+                    "Gross",
+                    "Deductions",
+                    "Tax",
+                    "Net",
+                ],
                 rows=rows,
             )
             if export_response:
@@ -83,37 +128,62 @@ class PayrollRegisterReportView(APIView):
 
     def get(self, request):
         payroll_run_id = request.query_params.get("payroll_run_id")
-        payslips = Payslip.objects.select_related("employee", "payroll_run", "payroll_run__period").order_by(
+        pay_schedule_id = (
+            request.query_params.get("pay_schedule_id")
+            or request.query_params.get("schedule_id")
+            or request.query_params.get("schedule")
+        )
+        payslips = Payslip.objects.select_related(
+            "employee",
+            "payroll_run",
+            "payroll_run__period",
+            "payroll_run__period__schedule",
+        ).order_by(
             "employee__last_name",
             "employee__first_name",
         )
         if payroll_run_id:
             payslips = payslips.filter(payroll_run_id=payroll_run_id)
+        if pay_schedule_id:
+            payslips = payslips.filter(payroll_run__period__schedule_id=pay_schedule_id)
 
         results = []
         for slip in payslips:
+            period = slip.payroll_run.period if slip.payroll_run else None
+            schedule = period.schedule if period else None
             results.append(
                 {
-                    "employee_id": slip.employee.employee_number or slip.employee.id_number or str(slip.employee_id),
+                    "employee_id": slip.employee.id_number or str(slip.employee_id),
                     "employee_name": slip.employee.get_full_name(),
-                    "period_name": slip.payroll_run.period.name if slip.payroll_run and slip.payroll_run.period else "",
+                    "schedule_name": schedule.name if schedule else "",
+                    "period_name": period.name if period else "",
                     "run_status": slip.payroll_run.status if slip.payroll_run else "",
                     "gross_pay": float(slip.gross_pay or 0),
                     "total_deductions": float(slip.deductions or 0),
+                    "tax": float(slip.tax or 0),
                     "net_pay": float(slip.net_pay or 0),
                 }
             )
 
-        payload = {"results": results}
+        summary = {
+            "employee_count": len(results),
+            "gross_total": sum(row["gross_pay"] for row in results),
+            "deductions_total": sum(row["total_deductions"] for row in results),
+            "tax_total": sum(row["tax"] for row in results),
+            "net_total": sum(row["net_pay"] for row in results),
+        }
+        payload = {"results": results, "summary": summary}
         if get_export_format(request):
             rows = [
                 [
                     r["employee_id"],
                     r["employee_name"],
+                    r["schedule_name"],
                     r["period_name"],
                     r["run_status"],
                     r["gross_pay"],
                     r["total_deductions"],
+                    r["tax"],
                     r["net_pay"],
                 ]
                 for r in results
@@ -121,13 +191,25 @@ class PayrollRegisterReportView(APIView):
             export_response = export_tabular_report(
                 request,
                 filename_base="payroll-register",
-                
                 title="Payroll Register",
                 subtitle=None,
-                summary_rows=[("Employee Count", len(results))],
-                headers=["Employee ID", "Employee Name", "Period", "Run Status", "Gross", "Deductions", "Net"],
+                summary_rows=[
+                    ("Employee Count", summary["employee_count"]),
+                    ("Gross Total", summary["gross_total"]),
+                    ("Net Total", summary["net_total"]),
+                ],
+                headers=[
+                    "Employee ID",
+                    "Employee Name",
+                    "Schedule",
+                    "Period",
+                    "Run Status",
+                    "Gross",
+                    "Deductions",
+                    "Tax",
+                    "Net",
+                ],
                 rows=rows,
-            
             )
             if export_response:
                 return export_response
@@ -170,7 +252,12 @@ class PayrollPostingJournalReportView(APIView):
                     }
                 )
 
-        payload = {"results": results}
+        summary = {
+            "line_count": len(results),
+            "total_debit": sum(r["debit_amount"] for r in results),
+            "total_credit": sum(r["credit_amount"] for r in results),
+        }
+        payload = {"results": results, "summary": summary}
         if get_export_format(request):
             rows = [
                 [

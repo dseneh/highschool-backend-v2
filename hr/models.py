@@ -212,7 +212,7 @@ class Employee(BasePersonModel):
         ]
 
     def __str__(self):
-        return f"{self.employee_number} - {self.get_full_name()}"
+        return f"{self.id_number} - {self.get_full_name()}"
 
     def save(self, *args, **kwargs):
         if not self.id_number:

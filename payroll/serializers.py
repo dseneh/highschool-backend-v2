@@ -7,6 +7,8 @@ from decimal import Decimal
 from django.db import transaction
 from rest_framework import serializers
 
+from accounting.models import AccountingBankAccount, AccountingTransactionType
+
 from .models import (
     AmountCalculationType,
     EmployeeTaxRuleOverride,
@@ -15,6 +17,7 @@ from .models import (
     PayrollItemTypeRule,
     PayrollPeriod,
     PayrollRun,
+    PayrollSettings,
     Payslip,
     PaySchedule,
     TaxAmountRule,
@@ -107,7 +110,7 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
 
 class PayslipSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
-    employee_number = serializers.CharField(source="employee.employee_number", read_only=True)
+    id_number = serializers.CharField(source="employee.id_number", read_only=True)
     payroll_run_status = serializers.CharField(source="payroll_run.status", read_only=True)
     payroll_run_period_name = serializers.CharField(source="payroll_run.period.name", read_only=True)
     currency_code = serializers.CharField(source="currency.code", read_only=True)
@@ -122,7 +125,7 @@ class PayslipSerializer(serializers.ModelSerializer):
             "payroll_run_period_name",
             "employee",
             "employee_name",
-            "employee_number",
+            "id_number",
             "currency",
             "currency_code",
             "currency_symbol",
@@ -148,7 +151,7 @@ class PayslipSerializer(serializers.ModelSerializer):
             "currency_code",
             "currency_symbol",
             "employee_name",
-            "employee_number",
+            "id_number",
             "basic_salary",
             "overtime_pay",
             "allowances",
@@ -180,6 +183,10 @@ class PayrollRunSerializer(serializers.ModelSerializer):
     period_start = serializers.DateField(source="period.start_date", read_only=True)
     period_end = serializers.DateField(source="period.end_date", read_only=True)
     payment_date = serializers.DateField(source="period.payment_date", read_only=True)
+    bank_account_name = serializers.CharField(source="bank_account.account_name", read_only=True)
+    bank_account_number = serializers.CharField(source="bank_account.account_number", read_only=True)
+    journal_reference = serializers.SerializerMethodField()
+    posting_status = serializers.SerializerMethodField()
 
     employee_count = serializers.SerializerMethodField()
     totals = serializers.SerializerMethodField()
@@ -197,6 +204,11 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "period_start",
             "period_end",
             "payment_date",
+            "bank_account",
+            "bank_account_name",
+            "bank_account_number",
+            "journal_reference",
+            "posting_status",
             "status",
             "notes",
             "approved_at",
@@ -211,9 +223,67 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "status",
             "approved_at",
             "paid_at",
+            "bank_account_name",
+            "bank_account_number",
+            "journal_reference",
+            "posting_status",
             "created_at",
             "updated_at",
         ]
+
+    def validate_bank_account(self, value):
+        if value is None:
+            return value
+        if value.status != AccountingBankAccount.AccountStatus.ACTIVE:
+            raise serializers.ValidationError("Bank account must be active.")
+        if value.ledger_account_id is None:
+            raise serializers.ValidationError("Bank account must have a linked ledger account.")
+        return value
+
+    def validate(self, attrs):
+        bank_account = attrs.get("bank_account")
+        if bank_account is None and self.instance is not None:
+            bank_account = self.instance.bank_account
+        instance = self.instance
+        if instance and instance.status == PayrollRun.Status.PAID:
+            if attrs:
+                raise serializers.ValidationError("Paid payroll runs cannot be edited.")
+        if (
+            instance
+            and instance.status != PayrollRun.Status.DRAFT
+            and "bank_account" in attrs
+            and attrs.get("bank_account") != instance.bank_account
+        ):
+            raise serializers.ValidationError(
+                {"bank_account": "Disbursement account can only be changed while the run is in draft."}
+            )
+        schedule_currency = None
+        if instance is not None:
+            schedule_currency = instance.period.schedule.currency
+        elif attrs.get("period") is not None:
+            schedule_currency = attrs["period"].schedule.currency
+        if bank_account and schedule_currency and bank_account.currency_id != schedule_currency.id:
+            raise serializers.ValidationError(
+                {"bank_account": "Bank account currency must match the pay schedule currency."}
+            )
+        return attrs
+
+    def get_journal_reference(self, obj):
+        batch = (
+            obj.accounting_posting_batches.filter(
+                batch_status="posted",
+            )
+            .select_related("journal_entry")
+            .order_by("-created_at")
+            .first()
+        )
+        if batch and batch.journal_entry:
+            return batch.journal_entry.reference_number
+        return None
+
+    def get_posting_status(self, obj):
+        batch = obj.accounting_posting_batches.order_by("-created_at").first()
+        return batch.batch_status if batch else None
 
     def get_employee_count(self, obj):
         return obj.payslips.count()
@@ -557,3 +627,46 @@ class EmployeeTaxRuleOverrideSerializer(serializers.ModelSerializer):
                     {"formula": "Formula is required when calculation type is 'formula'."}
                 )
         return attrs
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+class PayrollSettingsSerializer(serializers.ModelSerializer):
+    transaction_type_name = serializers.CharField(
+        source="transaction_type.name",
+        read_only=True,
+    )
+    transaction_type_code = serializers.CharField(
+        source="transaction_type.code",
+        read_only=True,
+    )
+
+    class Meta:
+        model = PayrollSettings
+        fields = [
+            "id",
+            "transaction_type",
+            "transaction_type_name",
+            "transaction_type_code",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "transaction_type_name",
+            "transaction_type_code",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_transaction_type(self, value):
+        if value is None:
+            return value
+        if not value.is_active:
+            raise serializers.ValidationError("Transaction type must be active.")
+        if value.transaction_category != "expense":
+            raise serializers.ValidationError("Payroll transaction type must be an expense type.")
+        return value

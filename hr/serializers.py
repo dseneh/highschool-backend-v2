@@ -214,13 +214,13 @@ class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "employee_number": instance.employee.employee_number,
+            "id_number": instance.employee.id_number,
             "full_name": instance.employee.get_full_name(),
         }
         if instance.reviewer:
             data["reviewer"] = {
                 "id": str(instance.reviewer.id),
-                "employee_number": instance.reviewer.employee_number,
+                "id_number": instance.reviewer.id_number,
                 "full_name": instance.reviewer.get_full_name(),
             }
         return data
@@ -404,7 +404,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "employee_number": instance.employee.employee_number,
+            "id_number": instance.employee.id_number,
             "full_name": instance.employee.get_full_name(),
         }
         data["leave_type"] = {
@@ -446,7 +446,7 @@ class EmployeeAttendanceSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data["employee"] = {
             "id": str(instance.employee.id),
-            "employee_number": instance.employee.employee_number,
+            "id_number": instance.employee.id_number,
             "full_name": instance.employee.get_full_name(),
         }
         return data
@@ -577,7 +577,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             if suffix.isdigit():
                 next_number = int(suffix) + 1
 
-        return f"EMP-{next_number:04d}"
+        return f"EMP{next_number:04d}"
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -602,7 +602,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if instance.manager:
             data["manager"] = {
                 "id": str(instance.manager.id),
-                "employee_number": instance.manager.employee_number,
+                "id_number": instance.manager.id_number,
                 "full_name": instance.manager.get_full_name(),
             }
 

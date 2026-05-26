@@ -666,12 +666,59 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
 # ---------------------------------------------------------------------------
 
 
+def validate_payroll_settings_configured() -> None:
+    """Ensure payroll accounting settings are configured before workflow actions."""
+    from .models import PayrollSettings
+
+    settings = PayrollSettings.objects.select_related("transaction_type").first()
+    if settings is None or settings.transaction_type_id is None:
+        raise ValueError(
+            "Configure a payroll transaction type in Payroll settings before continuing."
+        )
+
+    tx_type = settings.transaction_type
+    if not tx_type.is_active:
+        raise ValueError("The configured payroll transaction type is inactive.")
+    if tx_type.transaction_category != "expense":
+        raise ValueError("Payroll transaction type must be an expense type.")
+
+
+def validate_payroll_disbursement_account(run: PayrollRun) -> None:
+    """Ensure the run has a funded disbursement account before workflow submission."""
+    if not run.bank_account_id:
+        raise ValueError("Select a disbursement bank account before submitting this payroll run.")
+
+    bank_account = run.bank_account
+    if bank_account.ledger_account_id is None:
+        raise ValueError("The disbursement account must be linked to a ledger account.")
+
+    schedule_currency_id = run.period.schedule.currency_id
+    if bank_account.currency_id != schedule_currency_id:
+        raise ValueError("Bank account currency must match the pay schedule currency.")
+
+    from accounting.services.payroll_posting import aggregate_payroll_run_totals
+    from accounting.services.posting import recalculate_bank_account_current_balance
+
+    net = aggregate_payroll_run_totals(run)["net"]
+    if net <= 0:
+        return
+
+    available_balance = recalculate_bank_account_current_balance(bank_account)
+    if net > available_balance:
+        raise ValueError(
+            f"Insufficient balance in {bank_account.account_name}. "
+            f"Available: {available_balance:,.2f}, payroll net pay: {net:,.2f}."
+        )
+
+
 @transaction.atomic
 def submit_for_approval(run: PayrollRun) -> PayrollRun:
     if run.status != PayrollRun.Status.DRAFT:
         raise ValueError("Only DRAFT runs can be submitted for approval.")
     if not run.payslips.exists():
         raise ValueError("Cannot submit a run with no payslips.")
+    validate_payroll_settings_configured()
+    validate_payroll_disbursement_account(run)
     run.status = PayrollRun.Status.PENDING
     run.save(update_fields=["status", "updated_at", "updated_by"])
     return run
@@ -681,6 +728,8 @@ def submit_for_approval(run: PayrollRun) -> PayrollRun:
 def approve_run(run: PayrollRun) -> PayrollRun:
     if run.status not in (PayrollRun.Status.DRAFT, PayrollRun.Status.PENDING):
         raise ValueError("Only DRAFT or PENDING runs can be approved.")
+    validate_payroll_settings_configured()
+    validate_payroll_disbursement_account(run)
     run.status = PayrollRun.Status.APPROVED
     run.approved_at = timezone.now()
     run.save(update_fields=["status", "approved_at", "updated_at", "updated_by"])
@@ -688,9 +737,33 @@ def approve_run(run: PayrollRun) -> PayrollRun:
 
 
 @transaction.atomic
-def mark_paid(run: PayrollRun) -> PayrollRun:
+def mark_paid(
+    run: PayrollRun,
+    *,
+    bank_account=None,
+    actor=None,
+) -> PayrollRun:
     if run.status != PayrollRun.Status.APPROVED:
         raise ValueError("Only APPROVED runs can be marked as paid.")
+
+    validate_payroll_settings_configured()
+
+    if bank_account is not None:
+        run.bank_account = bank_account
+        run.save(update_fields=["bank_account", "updated_at", "updated_by"])
+
+    if run.bank_account_id is None:
+        raise ValueError("Select a bank account before marking this run paid.")
+
+    from accounting.services.payroll_posting import post_payroll_run_to_ledger
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
+    try:
+        post_payroll_run_to_ledger(run, actor=actor)
+    except DjangoValidationError as exc:
+        message = exc.messages[0] if getattr(exc, "messages", None) else str(exc)
+        raise ValueError(message) from exc
+
     run.status = PayrollRun.Status.PAID
     run.paid_at = timezone.now()
     run.period.is_closed = True
@@ -700,7 +773,7 @@ def mark_paid(run: PayrollRun) -> PayrollRun:
 
 
 @transaction.atomic
-def revert_to_draft(run: PayrollRun) -> PayrollRun:
+def revert_to_draft(run: PayrollRun, *, actor=None) -> PayrollRun:
     """Force a run back to DRAFT regardless of current status.
 
     Intended for admin-only correction flows. Clears approved_at / paid_at
@@ -708,6 +781,12 @@ def revert_to_draft(run: PayrollRun) -> PayrollRun:
     """
     if run.status == PayrollRun.Status.DRAFT:
         return run
+
+    if run.status == PayrollRun.Status.PAID:
+        from accounting.services.payroll_posting import reverse_payroll_run_posting
+
+        reverse_payroll_run_posting(run, actor=actor)
+
     run.status = PayrollRun.Status.DRAFT
     run.approved_at = None
     run.paid_at = None

@@ -111,11 +111,26 @@ _AR_AGING_LABEL_PATTERN = re.compile(
 def resolve_export_currency(request=None) -> str:
     """Tenant default currency symbol for report exports."""
     try:
+        from accounting.models import AccountingCurrency
+
+        currency = AccountingCurrency.objects.filter(is_active=True).order_by(
+            "-is_base_currency", "code"
+        ).first()
+        if currency:
+            from common.services.pdf_components import resolve_currency_symbol
+
+            return resolve_currency_symbol(currency)
+    except Exception:
+        pass
+
+    try:
         from finance.models import Currency
 
         currency = Currency.objects.first()
-        if currency and currency.symbol:
-            return str(currency.symbol).strip()
+        if currency:
+            from common.services.pdf_components import resolve_currency_symbol
+
+            return resolve_currency_symbol(currency)
     except Exception:
         pass
     return "$"
@@ -148,17 +163,9 @@ def is_percentage_column_header(header: str) -> bool:
 
 
 def format_currency_display(amount, currency_symbol: str = "$") -> str:
-    if amount is None or amount == "":
-        return ""
-    try:
-        numeric = float(amount)
-    except (TypeError, ValueError):
-        return str(amount)
+    from common.services.pdf_components import format_pdf_currency
 
-    symbol = (currency_symbol or "$").strip() or "$"
-    sign = "-" if numeric < 0 else ""
-    body = f"{abs(numeric):,.2f}"
-    return f"{sign}{symbol}{body}"
+    return format_pdf_currency(amount, currency_symbol)
 
 
 def format_percentage_display(value) -> str:

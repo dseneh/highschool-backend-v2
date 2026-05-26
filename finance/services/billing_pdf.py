@@ -28,7 +28,7 @@ from reportlab.platypus import (
 
 from students.models import Student
 from django.utils import timezone
-from common.services.pdf_components import append_pdf_document_header
+from common.services.pdf_components import append_pdf_document_header, format_pdf_currency, resolve_currency_symbol
 
 
 class StudentBillingPDF:
@@ -38,7 +38,24 @@ class StudentBillingPDF:
         self.student = student
         self.school = school
         self.enrollment = enrollment
+        self.currency_symbol = self._resolve_currency_symbol()
         self._setup_custom_styles()
+
+    def _resolve_currency_symbol(self) -> str:
+        from accounting.models import AccountingStudentBill
+
+        bill = (
+            AccountingStudentBill.objects.filter(enrollment=self.enrollment)
+            .select_related("currency")
+            .first()
+        )
+        return resolve_currency_symbol(getattr(bill, "currency", None))
+
+    def _format_currency(self, amount: Optional[Decimal]) -> str:
+        """Format amount as currency using the tenant billing currency symbol."""
+        if amount is None:
+            return format_pdf_currency(0, self.currency_symbol)
+        return format_pdf_currency(amount, self.currency_symbol)
 
     def _setup_custom_styles(self):
         """Setup custom paragraph styles"""
@@ -111,12 +128,6 @@ class StudentBillingPDF:
             textColor=colors.black,
             alignment=TA_LEFT,
         )
-
-    def _format_currency(self, amount: Optional[Decimal]) -> str:
-        """Format amount as currency"""
-        if amount is None:
-            return "$0.00"
-        return f"${amount:,.2f}"
 
     def _get_tenant_footer_url(self) -> str:
         """Return tenant URL in subdomain.maindomain format when possible."""

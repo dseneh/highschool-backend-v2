@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from io import BytesIO
 from decimal import Decimal
 
 from django.db.models import Q
@@ -10,11 +9,9 @@ from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
+from rest_framework.views import APIView
 
+from common.services.pdf_components import resolve_tenant_school
 from hr.models import Employee
 
 from .access_policies import PayrollAccessPolicy
@@ -23,6 +20,7 @@ from .models import (
     PayrollItemType,
     PayrollPeriod,
     PayrollRun,
+    PayrollSettings,
     Payslip,
     PaySchedule,
     TaxRule,
@@ -33,6 +31,7 @@ from .serializers import (
     PayrollItemTypeSerializer,
     PayrollPeriodSerializer,
     PayrollRunSerializer,
+    PayrollSettingsSerializer,
     PayScheduleSerializer,
     PayslipSerializer,
     TaxRuleSerializer,
@@ -50,6 +49,7 @@ from .services import (
     get_formula_guide,
     preview_formula_amount,
 )
+from .payslip_pdf import build_payslip_pdf_bytes
 
 
 class _BaseAuditedViewSet(viewsets.ModelViewSet):
@@ -128,9 +128,13 @@ class PayrollPeriodViewSet(_BaseAuditedViewSet):
 class PayrollRunViewSet(_BaseAuditedViewSet):
     queryset = (
         PayrollRun.objects.select_related(
-            "period", "period__schedule", "period__schedule__currency"
+            "period",
+            "period__schedule",
+            "period__schedule__currency",
+            "bank_account",
+            "bank_account__currency",
         )
-        .prefetch_related("payslips")
+        .prefetch_related("payslips", "accounting_posting_batches__journal_entry")
         .all()
     )
     serializer_class = PayrollRunSerializer
@@ -197,8 +201,13 @@ class PayrollRunViewSet(_BaseAuditedViewSet):
     @action(detail=True, methods=["post"], url_path="mark-paid")
     def mark_paid(self, request, pk=None):
         run = self.get_object()
+        if run.bank_account_id is None:
+            return Response(
+                {"detail": "Select a disbursement bank account before marking this run paid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
-            run = mark_paid_service(run)
+            run = mark_paid_service(run, actor=request.user)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(run).data)
@@ -207,7 +216,7 @@ class PayrollRunViewSet(_BaseAuditedViewSet):
     def revert_to_draft(self, request, pk=None):
         run = self.get_object()
         try:
-            run = revert_to_draft_service(run)
+            run = revert_to_draft_service(run, actor=request.user)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(run).data)
@@ -215,7 +224,12 @@ class PayrollRunViewSet(_BaseAuditedViewSet):
 
 class PayslipViewSet(_BaseAuditedViewSet):
     queryset = Payslip.objects.select_related(
-        "payroll_run", "employee", "currency"
+        "payroll_run__period__schedule",
+        "payroll_run",
+        "employee__department",
+        "employee__position",
+        "employee",
+        "currency",
     ).all()
     serializer_class = PayslipSerializer
     http_method_names = ["get", "patch", "post", "head", "options"]
@@ -233,7 +247,7 @@ class PayslipViewSet(_BaseAuditedViewSet):
             qs = qs.filter(
                 Q(employee__first_name__icontains=search)
                 | Q(employee__last_name__icontains=search)
-                | Q(employee__employee_number__icontains=search)
+                | Q(employee__id_number__icontains=search)
             )
         amount_filter = self.request.query_params.get("amount_filter")
         if amount_filter and amount_filter != "all":
@@ -248,7 +262,7 @@ class PayslipViewSet(_BaseAuditedViewSet):
             }.get(amount_filter)
             if amount_q is not None:
                 qs = qs.filter(amount_q)
-        return qs.order_by("employee__last_name", "employee__first_name", "employee__employee_number")
+        return qs.order_by("employee__last_name", "employee__first_name", "employee__id_number")
 
     def update(self, request, *args, **kwargs):
         # Only allow updating overtime_hours and unpaid_leave_days on DRAFT runs.
@@ -286,94 +300,11 @@ class PayslipViewSet(_BaseAuditedViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        buf = BytesIO()
-        pdf = canvas.Canvas(buf, pagesize=A4)
-        width, height = A4
-        left = 18 * mm
-        right = width - (18 * mm)
-        y = height - (18 * mm)
-
-        employee_name = f"{payslip.employee.first_name} {payslip.employee.last_name}".strip()
+        employee_name = payslip.employee.get_full_name().strip()
         period_name = payslip.payroll_run.period.name
-        currency_code = payslip.currency.code
+        pdf_bytes = build_payslip_pdf_bytes(payslip, school=resolve_tenant_school())
 
-        def money(value: Decimal | int | float | str) -> str:
-            return f"{currency_code} {Decimal(str(value)).quantize(Decimal('0.01'))}"
-
-        def line(label: str, value: str):
-            nonlocal y
-            pdf.setFont("Helvetica", 10)
-            pdf.setFillColor(colors.black)
-            pdf.drawString(left, y, label)
-            pdf.drawRightString(right, y, value)
-            y -= 6 * mm
-
-        pdf.setTitle(f"Payslip {employee_name}")
-        pdf.setFont("Helvetica-Bold", 16)
-        pdf.drawString(left, y, "Payslip")
-        y -= 8 * mm
-
-        pdf.setFont("Helvetica", 10)
-        pdf.setFillColor(colors.grey)
-        pdf.drawString(left, y, f"Employee: {employee_name or payslip.employee.employee_number}")
-        y -= 5 * mm
-        pdf.drawString(left, y, f"Employee No: {payslip.employee.employee_number}")
-        y -= 5 * mm
-        pdf.drawString(left, y, f"Period: {period_name}")
-        y -= 5 * mm
-        pdf.drawString(left, y, f"Generated: {payslip.generated_at:%Y-%m-%d %H:%M}")
-        y -= 8 * mm
-
-        pdf.setStrokeColor(colors.HexColor("#E5E7EB"))
-        pdf.line(left, y, right, y)
-        y -= 8 * mm
-
-        line("Gross Pay", money(payslip.gross_pay))
-        line("Tax", money(payslip.tax))
-        line("Deductions", money(payslip.deductions))
-        line("Net Pay", money(payslip.net_pay))
-
-        def draw_breakdown(title: str, rows: list[dict], value_key: str = "amount"):
-            nonlocal y
-            if y < 50 * mm:
-                pdf.showPage()
-                y = height - (18 * mm)
-            pdf.setFillColor(colors.black)
-            pdf.setFont("Helvetica-Bold", 11)
-            pdf.drawString(left, y, title)
-            y -= 6 * mm
-            if not rows:
-                pdf.setFillColor(colors.grey)
-                pdf.setFont("Helvetica", 9)
-                pdf.drawString(left, y, "No entries")
-                y -= 6 * mm
-                return
-            for row in rows:
-                if y < 35 * mm:
-                    pdf.showPage()
-                    y = height - (18 * mm)
-                name = str(row.get("name") or row.get("rule") or "-")
-                code = row.get("code")
-                label = f"{name} ({code})" if code else name
-                amount = row.get(value_key)
-                pdf.setFillColor(colors.black)
-                pdf.setFont("Helvetica", 9)
-                pdf.drawString(left, y, label)
-                pdf.drawRightString(right, y, money(amount or 0))
-                y -= 5 * mm
-            y -= 2 * mm
-
-        breakdown = payslip.breakdown or {}
-        draw_breakdown("Allowances", breakdown.get("allowances", []))
-        draw_breakdown("Deductions", breakdown.get("deductions", []))
-        draw_breakdown("Tax Breakdown", breakdown.get("tax", []))
-
-        pdf.showPage()
-        pdf.save()
-        pdf_bytes = buf.getvalue()
-        buf.close()
-
-        safe_employee = (employee_name or payslip.employee.employee_number).replace(" ", "_")
+        safe_employee = (employee_name or payslip.employee.id_number or str(payslip.employee_id)).replace(" ", "_")
         safe_period = period_name.replace(" ", "_")
         filename = f"payslip_{safe_employee}_{safe_period}.pdf"
 
@@ -698,3 +629,32 @@ class EmployeeTaxRuleOverrideViewSet(_BaseAuditedViewSet):
         if rule_id:
             qs = qs.filter(rule_id=rule_id)
         return qs
+
+
+class PayrollSettingsView(APIView):
+    """Tenant payroll accounting configuration."""
+
+    permission_classes = [PayrollAccessPolicy]
+
+    def get(self, request):
+        settings, _ = PayrollSettings.objects.get_or_create(
+            defaults={
+                "created_by": request.user,
+                "updated_by": request.user,
+            },
+        )
+        return Response(PayrollSettingsSerializer(settings).data)
+
+    def patch(self, request):
+        settings, created = PayrollSettings.objects.get_or_create(
+            defaults={
+                "created_by": request.user,
+                "updated_by": request.user,
+            },
+        )
+        serializer = PayrollSettingsSerializer(settings, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        if created:
+            settings.refresh_from_db()
+        return Response(serializer.data)

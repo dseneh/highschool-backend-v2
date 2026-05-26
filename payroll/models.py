@@ -116,6 +116,14 @@ class PayrollRun(BaseModel):
         default=Status.DRAFT,
     )
     notes = models.TextField(blank=True, null=True, default=None)
+    bank_account = models.ForeignKey(
+        "accounting.AccountingBankAccount",
+        on_delete=models.PROTECT,
+        related_name="payroll_runs",
+        null=True,
+        blank=True,
+        help_text="Bank/cash account used to disburse this payroll run.",
+    )
     approved_at = models.DateTimeField(blank=True, null=True, default=None)
     paid_at = models.DateTimeField(blank=True, null=True, default=None)
 
@@ -548,3 +556,24 @@ class EmployeeTaxRuleOverride(BaseModel):
 
     def __str__(self):
         return f"{self.employee_id} -> {self.rule_id} override"
+
+
+class PayrollSettings(BaseModel):
+    """Tenant-level payroll accounting configuration."""
+
+    transaction_type = models.ForeignKey(
+        "accounting.AccountingTransactionType",
+        on_delete=models.PROTECT,
+        related_name="payroll_settings",
+        null=True,
+        blank=True,
+        help_text="Expense transaction type used when posting payroll cash disbursements.",
+    )
+
+    class Meta:
+        db_table = "payroll_settings"
+        verbose_name = "Payroll Settings"
+        verbose_name_plural = "Payroll Settings"
+
+    def __str__(self):
+        return "Payroll Settings"
