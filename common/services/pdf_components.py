@@ -291,10 +291,12 @@ def build_pdf_header(
         logo_width = 1.1
         logo_height = 0.62
 
-    logo = get_school_logo(school, width=logo_width, height=logo_height)
+    logo = get_school_logo(school, width=logo_width, height=logo_height) if school else None
 
     # School name (large, bold, blue)
-    school_name = Paragraph(school.name, school_name_style)
+    school_name = (
+        Paragraph(school.name, school_name_style) if school and school.name else None
+    )
 
     # Address (street + city/state/postal + country when available)
     address_text = format_tenant_address(school) if school else ""
@@ -307,9 +309,9 @@ def build_pdf_header(
 
     # Email and website on same line
     email_website_parts = []
-    if school.email:
+    if school and school.email:
         email_website_parts.append(f"Email: {school.email}")
-    if school.website:
+    if school and school.website:
         email_website_parts.append(f"Website: {school.website}")
 
     if email_website_parts:
@@ -318,7 +320,7 @@ def build_pdf_header(
 
     # Phone and EMIS (if available)
     phone_emis_parts = []
-    if school.phone:
+    if school and school.phone:
         phone_text = f"Phone: {school.phone}"
         emis_text = (
             f"EMIS Number: {school.emis_number}"

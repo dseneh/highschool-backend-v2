@@ -181,26 +181,38 @@ class Payslip(BaseModel):
         return f"Payslip {self.employee_id} / {self.payroll_run_id}"
 
 
+class AmountCalculationType(models.TextChoices):
+    FLAT = "flat", "Flat Amount"
+    PERCENTAGE = "percentage", "Percentage"
+    FORMULA = "formula", "Formula"
+
+
+class TargetSalaryBy(models.TextChoices):
+    ANNUAL = "annual", "Annual"
+    PER_PERIOD = "per_period", "Per Period"
+
+
+class ItemAppliesTo(models.TextChoices):
+    GROSS = "gross", "Gross Pay"
+    BASIC = "basic", "Basic Salary"
+
+
+class TaxAppliesTo(models.TextChoices):
+    GROSS = "gross", "Gross Pay"
+    TAXABLE_GROSS = "taxable_gross", "Taxable Gross"
+    BASIC = "basic", "Basic Salary"
+
+
 class PayrollItemType(BaseModel):
     """Catalog of reusable allowance/deduction types defined per tenant.
 
-    Administrators manage the master list once (e.g. "Transport Allowance",
-    "Loan Repayment", "SSF Contribution"). Each PayrollItem assigned to an
-    employee references one of these catalog entries instead of free-form text.
+    Amounts are resolved at payroll time from ``amount_rules`` based on the
+    employee's salary bracket. If no rule matches, the amount is zero.
     """
 
     class ItemType(models.TextChoices):
         ALLOWANCE = "allowance", "Allowance"
         DEDUCTION = "deduction", "Deduction"
-
-    class CalculationType(models.TextChoices):
-        FLAT = "flat", "Flat Amount"
-        PERCENTAGE = "percentage", "Percentage"
-        FORMULA = "formula", "Formula"
-
-    class AppliesTo(models.TextChoices):
-        GROSS = "gross", "Gross Pay"
-        BASIC = "basic", "Basic Salary"
 
     name = models.CharField(max_length=150)
     code = models.CharField(
@@ -213,38 +225,6 @@ class PayrollItemType(BaseModel):
         max_length=20,
         choices=ItemType.choices,
         default=ItemType.ALLOWANCE,
-    )
-    calculation_type = models.CharField(
-        max_length=20,
-        choices=CalculationType.choices,
-        default=CalculationType.FLAT,
-        help_text="How the amount is computed when assigned to an employee.",
-    )
-    default_value = models.DecimalField(
-        max_digits=14,
-        decimal_places=4,
-        default=Decimal("0.0000"),
-        help_text="Suggested value: amount for FLAT, percent for PERCENTAGE, ignored for FORMULA.",
-    )
-    default_formula = models.TextField(
-        blank=True,
-        default="",
-        help_text=(
-            "Default Python expression for FORMULA. "
-            "Available names: gross, basic, allowances, deductions, taxable_gross, min, max."
-        ),
-    )
-    applies_to = models.CharField(
-        max_length=20,
-        choices=AppliesTo.choices,
-        default=AppliesTo.BASIC,
-        help_text="Base used for PERCENTAGE/FORMULA calculations.",
-    )
-    default_amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        help_text="Suggested fallback amount when assigning. Can be overridden per employee.",
     )
     description = models.TextField(blank=True, null=True, default=None)
     is_active = models.BooleanField(default=True)
@@ -267,21 +247,85 @@ class PayrollItemType(BaseModel):
         return f"{self.get_item_type_display()}: {self.name}"
 
 
+class PayrollItemTypeRule(BaseModel):
+    """Bracket-based amount rule for a payroll item type."""
+
+    item_type = models.ForeignKey(
+        PayrollItemType,
+        on_delete=models.CASCADE,
+        related_name="amount_rules",
+    )
+    calculation_type = models.CharField(
+        max_length=20,
+        choices=AmountCalculationType.choices,
+        default=AmountCalculationType.FLAT,
+    )
+    value = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Flat amount or percentage depending on calculation_type.",
+    )
+    formula = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Python expression when calculation_type=FORMULA. "
+            "Variables: gross, basic, allowances, deductions, taxable_gross."
+        ),
+    )
+    applies_to = models.CharField(
+        max_length=20,
+        choices=ItemAppliesTo.choices,
+        default=ItemAppliesTo.BASIC,
+    )
+    target_salary_min = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Lower salary bound (0 = no lower bound).",
+    )
+    target_salary_max = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Upper salary bound (0 = no upper bound).",
+    )
+    target_salary_by = models.CharField(
+        max_length=20,
+        choices=TargetSalaryBy.choices,
+        default=TargetSalaryBy.PER_PERIOD,
+    )
+    salary_limit = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Optional cap on the computed amount.",
+    )
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = "payroll_item_type_rule"
+        ordering = ["sort_order", "target_salary_min"]
+
+    def __str__(self):
+        return f"{self.item_type.name} rule ({self.calculation_type})"
+
+
 class PayrollItem(BaseModel):
-    """Recurring per-employee allowance or deduction."""
+    """Recurring per-employee allowance or deduction.
+
+    The effective amount is resolved from the linked item type's amount rules
+    at payslip generation time.
+    """
 
     class ItemType(models.TextChoices):
         ALLOWANCE = "allowance", "Allowance"
         DEDUCTION = "deduction", "Deduction"
-
-    class CalculationType(models.TextChoices):
-        FLAT = "flat", "Flat Amount"
-        PERCENTAGE = "percentage", "Percentage"
-        FORMULA = "formula", "Formula"
-
-    class AppliesTo(models.TextChoices):
-        GROSS = "gross", "Gross Pay"
-        BASIC = "basic", "Basic Salary"
 
     employee = models.ForeignKey(
         "hr.Employee",
@@ -301,29 +345,6 @@ class PayrollItem(BaseModel):
         max_length=20,
         choices=ItemType.choices,
         default=ItemType.ALLOWANCE,
-    )
-    calculation_type = models.CharField(
-        max_length=20,
-        choices=CalculationType.choices,
-        default=CalculationType.FLAT,
-    )
-    value = models.DecimalField(
-        max_digits=14,
-        decimal_places=4,
-        default=Decimal("0.0000"),
-        help_text="Amount for FLAT, percent for PERCENTAGE, ignored for FORMULA.",
-    )
-    formula = models.TextField(blank=True, default="")
-    applies_to = models.CharField(
-        max_length=20,
-        choices=AppliesTo.choices,
-        default=AppliesTo.BASIC,
-    )
-    amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        help_text="Cached/legacy resolved amount. Computed from value/formula at payslip time.",
     )
     is_active = models.BooleanField(default=True)
     effective_from = models.DateField(blank=True, null=True, default=None)
@@ -348,45 +369,15 @@ class PayrollItem(BaseModel):
 
 
 class TaxRule(BaseModel):
-    """Tenant-scoped tax configuration applied during payslip generation."""
+    """Tenant-scoped tax configuration applied during payslip generation.
 
-    class CalculationType(models.TextChoices):
-        FLAT = "flat", "Flat Amount"
-        PERCENTAGE = "percentage", "Percentage"
-        FORMULA = "formula", "Formula"
-
-    class AppliesTo(models.TextChoices):
-        GROSS = "gross", "Gross Pay"
-        TAXABLE_GROSS = "taxable_gross", "Taxable Gross"
-        BASIC = "basic", "Basic Salary"
+    Amounts are resolved from ``amount_rules`` based on the employee's salary
+    bracket. If no rule matches, the tax amount is zero for that employee.
+    """
 
     name = models.CharField(max_length=150)
     code = models.CharField(max_length=30, blank=True, default="")
     description = models.TextField(blank=True, null=True, default=None)
-    calculation_type = models.CharField(
-        max_length=20,
-        choices=CalculationType.choices,
-        default=CalculationType.PERCENTAGE,
-    )
-    value = models.DecimalField(
-        max_digits=12,
-        decimal_places=4,
-        default=Decimal("0.0000"),
-        help_text="Fixed amount for FLAT, percent (e.g. 10.5) for PERCENTAGE, ignored for FORMULA.",
-    )
-    formula = models.TextField(
-        blank=True,
-        default="",
-        help_text=(
-            "Python expression evaluated when calculation_type=FORMULA. "
-            "Available names: gross, basic, allowances, deductions, taxable_gross, min, max."
-        ),
-    )
-    applies_to = models.CharField(
-        max_length=20,
-        choices=AppliesTo.choices,
-        default=AppliesTo.GROSS,
-    )
     priority = models.PositiveSmallIntegerField(
         default=100,
         help_text="Lower runs first.",
@@ -421,6 +412,75 @@ class TaxRule(BaseModel):
         if self.effective_to and on_date > self.effective_to:
             return False
         return True
+
+
+class TaxAmountRule(BaseModel):
+    """Bracket-based amount rule for a tax rule."""
+
+    tax_rule = models.ForeignKey(
+        TaxRule,
+        on_delete=models.CASCADE,
+        related_name="amount_rules",
+    )
+    calculation_type = models.CharField(
+        max_length=20,
+        choices=AmountCalculationType.choices,
+        default=AmountCalculationType.PERCENTAGE,
+    )
+    value = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Flat amount or percentage depending on calculation_type.",
+    )
+    formula = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Python expression when calculation_type=FORMULA. "
+            "Variables: gross, basic, allowances, deductions, taxable_gross."
+        ),
+    )
+    applies_to = models.CharField(
+        max_length=20,
+        choices=TaxAppliesTo.choices,
+        default=TaxAppliesTo.GROSS,
+    )
+    target_salary_min = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Lower salary bound (0 = no lower bound).",
+    )
+    target_salary_max = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Upper salary bound (0 = no upper bound).",
+    )
+    target_salary_by = models.CharField(
+        max_length=20,
+        choices=TargetSalaryBy.choices,
+        default=TargetSalaryBy.PER_PERIOD,
+    )
+    salary_limit = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Optional cap on the computed amount.",
+    )
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = "tax_amount_rule"
+        ordering = ["sort_order", "target_salary_min"]
+
+    def __str__(self):
+        return f"{self.tax_rule.name} rule ({self.calculation_type})"
 
 
 class EmployeeTaxRuleOverride(BaseModel):

@@ -646,11 +646,24 @@ class EmployeeSerializer(serializers.ModelSerializer):
                     "id": str(rule.id),
                     "name": rule.name,
                     "code": rule.code,
-                    "calculation_type": rule.calculation_type,
-                    "value": str(rule.value) if rule.value is not None else None,
-                    "applies_to": rule.applies_to,
-                    "formula": rule.formula,
+                    "priority": rule.priority,
                     "is_active": rule.is_active,
+                    "amount_rules": [
+                        {
+                            "id": str(ar.id),
+                            "calculation_type": ar.calculation_type,
+                            "value": str(ar.value) if ar.value is not None else None,
+                            "applies_to": ar.applies_to,
+                            "formula": ar.formula,
+                            "target_salary_min": str(ar.target_salary_min),
+                            "target_salary_max": str(ar.target_salary_max),
+                            "target_salary_by": ar.target_salary_by,
+                            "salary_limit": (
+                                str(ar.salary_limit) if ar.salary_limit is not None else None
+                            ),
+                        }
+                        for ar in rule.amount_rules.all()
+                    ],
                     "override": (
                         {
                             "id": str(override_map[rule.id].id),
@@ -668,7 +681,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
                         else None
                     ),
                 }
-                for rule in instance.tax_rules.all()
+                for rule in instance.tax_rules.prefetch_related("amount_rules").all()
             ]
         else:
             data["tax_rules_detail"] = []

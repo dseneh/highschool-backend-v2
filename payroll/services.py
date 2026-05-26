@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Iterable
 
 from django.db import transaction
 from django.utils import timezone
 
 from .models import (
-    EmployeeTaxRuleOverride,
+    AmountCalculationType,
     PayrollItem,
     PayrollPeriod,
     PayrollRun,
     Payslip,
     PaySchedule,
+    TargetSalaryBy,
     TaxRule,
 )
 
 ZERO = Decimal("0.00")
+
+_CALC_FLAT = AmountCalculationType.FLAT
+_CALC_PERCENTAGE = AmountCalculationType.PERCENTAGE
+_CALC_FORMULA = AmountCalculationType.FORMULA
 
 
 # ---------------------------------------------------------------------------
@@ -89,18 +96,48 @@ def derive_next_period(schedule: PaySchedule) -> DerivedPeriod:
 # ---------------------------------------------------------------------------
 
 
-_FORMULA_BUILTINS = {"min": min, "max": max, "abs": abs, "Decimal": Decimal}
+_FORMULA_BUILTINS = {
+    "min": lambda *args: min(Decimal(str(arg)) for arg in args),
+    "max": lambda *args: max(Decimal(str(arg)) for arg in args),
+    "abs": lambda value: abs(Decimal(str(value))),
+    "Decimal": Decimal,
+}
 
 FORMULA_GUIDE = {
     "variables": ["gross", "basic", "allowances", "deductions", "taxable_gross"],
     "helpers": ["min", "max", "abs", "Decimal"],
     "templates": [
-        {"label": "10% of gross", "formula": "gross * Decimal('0.10')"},
-        {"label": "5% of basic capped at 500", "formula": "min(basic * Decimal('0.05'), Decimal('500'))"},
-        {"label": "Fixed 150", "formula": "Decimal('150')"},
-        {"label": "Taxable gross floor", "formula": "max(taxable_gross, Decimal('0'))"},
+        {"label": "10% of gross", "formula": "gross * 0.10"},
+        {"label": "5% of basic capped at 500", "formula": "min(basic * 0.05, 500)"},
+        {"label": "Fixed 150", "formula": "150"},
+        {"label": "Taxable gross floor", "formula": "max(taxable_gross, 0)"},
     ],
 }
+
+
+class _DecimalLiteralTransformer(ast.NodeTransformer):
+    """Rewrite numeric literals in formulas to Decimal(...) for safe eval."""
+
+    def visit_Constant(self, node: ast.Constant):
+        if isinstance(node.value, bool):
+            return node
+        if isinstance(node.value, (int, float)):
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id="Decimal", ctx=ast.Load()),
+                    args=[ast.Constant(value=str(node.value))],
+                    keywords=[],
+                ),
+                node,
+            )
+        return node
+
+
+def _compile_formula(formula: str):
+    tree = ast.parse(formula.strip(), mode="eval")
+    tree = _DecimalLiteralTransformer().visit(tree)
+    ast.fix_missing_locations(tree)
+    return compile(tree, "<formula>", "eval")
 
 
 def _evaluate_formula(formula: str, ctx: dict) -> Decimal:
@@ -113,13 +150,120 @@ def _evaluate_formula(formula: str, ctx: dict) -> Decimal:
         return ZERO
     safe_globals = {"__builtins__": {}}
     safe_globals.update(_FORMULA_BUILTINS)
-    safe_locals = {k: v for k, v in ctx.items()}
-    result = eval(formula, safe_globals, safe_locals)  # noqa: S307 - intentional sandbox
+    safe_locals = {k: Decimal(str(v)) for k, v in ctx.items()}
+    try:
+        compiled = _compile_formula(formula)
+        result = eval(compiled, safe_globals, safe_locals)  # noqa: S307 - intentional sandbox
+    except SyntaxError as exc:
+        raise SyntaxError(str(exc)) from exc
     return Decimal(str(result))
 
 
 def get_formula_guide() -> dict:
     return FORMULA_GUIDE
+
+
+def _normalize_salary_for_bracket(
+    basic: Decimal,
+    *,
+    target_salary_by: str,
+) -> Decimal:
+    """Convert employee basic salary to the basis used for bracket matching."""
+    if target_salary_by == TargetSalaryBy.ANNUAL:
+        return Decimal(basic or 0) * Decimal("12")
+    return Decimal(basic or 0)
+
+
+def _salary_in_bracket(
+    salary: Decimal,
+    *,
+    target_min: Decimal,
+    target_max: Decimal,
+) -> bool:
+    """Return True when ``salary`` falls within the bracket bounds.
+
+    ``0`` min means no lower bound; ``0`` max means no upper bound.
+    """
+    min_bound = Decimal(target_min or 0)
+    max_bound = Decimal(target_max or 0)
+    if min_bound > 0 and salary < min_bound:
+        return False
+    if max_bound > 0 and salary > max_bound:
+        return False
+    return True
+
+
+def match_amount_rule(rules, *, basic: Decimal):
+    """Pick the first amount rule whose salary bracket contains ``basic``."""
+    for rule in rules:
+        bracket_salary = _normalize_salary_for_bracket(
+            basic,
+            target_salary_by=rule.target_salary_by,
+        )
+        if _salary_in_bracket(
+            bracket_salary,
+            target_min=rule.target_salary_min,
+            target_max=rule.target_salary_max,
+        ):
+            return rule
+    return None
+
+
+def _resolve_calc_base(applies_to: str, ctx: dict) -> Decimal:
+    if applies_to == "basic":
+        return ctx["basic"]
+    if applies_to == "taxable_gross":
+        return ctx["taxable_gross"]
+    return ctx["gross"]
+
+
+def _normalize_calculation_type(calculation_type) -> str:
+    """Return a normalized calculation type string (flat/percentage/formula)."""
+    calc = calculation_type or _CALC_FLAT
+    if hasattr(calc, "value"):
+        calc = calc.value
+    normalized = str(calc).strip().lower()
+    if normalized in (_CALC_FLAT, _CALC_PERCENTAGE, _CALC_FORMULA):
+        return normalized
+    return _CALC_FLAT
+
+
+def _coerce_rule_calc_fields(rule) -> None:
+    """Normalize bracket rule calc fields before amount resolution."""
+    calc = _normalize_calculation_type(getattr(rule, "calculation_type", None))
+    rule.calculation_type = calc
+    if calc != _CALC_FORMULA:
+        rule.formula = ""
+
+
+def build_preview_amount_rule_objects(validated_items: list):
+    """Build lightweight rule objects for preview endpoints."""
+    rules = []
+    for item in validated_items:
+        rule = SimpleNamespace()
+        for key, value in item.items():
+            setattr(rule, key, value)
+        _coerce_rule_calc_fields(rule)
+        rules.append(rule)
+    return rules
+
+
+def resolve_amount_from_rule(rule, *, ctx: dict) -> Decimal:
+    """Compute amount from a bracket rule record."""
+    _coerce_rule_calc_fields(rule)
+    base = _resolve_calc_base(rule.applies_to, ctx)
+    calc = rule.calculation_type
+    if calc == _CALC_FLAT:
+        amount = Decimal(rule.value or 0)
+    elif calc == _CALC_PERCENTAGE:
+        amount = (Decimal(base) * Decimal(rule.value or 0)) / Decimal("100")
+    elif calc == _CALC_FORMULA:
+        amount = _evaluate_formula(getattr(rule, "formula", "") or "", ctx)
+    else:
+        amount = ZERO
+    if rule.salary_limit is not None and Decimal(rule.salary_limit or 0) > 0:
+        amount = min(amount, Decimal(rule.salary_limit))
+    return amount.quantize(Decimal("0.01"))
 
 
 def preview_formula_amount(
@@ -132,6 +276,10 @@ def preview_formula_amount(
     basic: Decimal,
     allowances: Decimal,
     deductions: Decimal,
+    target_salary_min: Decimal | str | int | float | None = None,
+    target_salary_max: Decimal | str | int | float | None = None,
+    target_salary_by: str = TargetSalaryBy.PER_PERIOD,
+    salary_limit: Decimal | str | int | float | None = None,
 ) -> dict:
     taxable_gross = gross
     ctx = {
@@ -142,34 +290,111 @@ def preview_formula_amount(
         "taxable_gross": Decimal(taxable_gross or 0),
     }
 
-    if applies_to == "basic":
-        base = ctx["basic"]
-    elif applies_to == "taxable_gross":
-        base = ctx["taxable_gross"]
-    else:
-        base = ctx["gross"]
+    bracket_salary = _normalize_salary_for_bracket(
+        ctx["basic"],
+        target_salary_by=target_salary_by,
+    )
+    matched = _salary_in_bracket(
+        bracket_salary,
+        target_min=Decimal(str(target_salary_min or 0)),
+        target_max=Decimal(str(target_salary_max or 0)),
+    )
 
-    if calculation_type == "flat":
-        amount = Decimal(value or 0)
-    elif calculation_type == "percentage":
-        amount = (base * Decimal(value or 0)) / Decimal("100")
-    else:
-        amount = _evaluate_formula(formula, ctx)
+    base = _resolve_calc_base(applies_to, ctx)
 
-    amount = amount.quantize(Decimal("0.01"))
+    if not matched:
+        return {
+            "amount": "0.00",
+            "base": str(base.quantize(Decimal("0.01"))),
+            "matched": False,
+            "bracket_salary": str(bracket_salary.quantize(Decimal("0.01"))),
+            "context": {k: str(v.quantize(Decimal("0.01"))) for k, v in ctx.items()},
+        }
+
+    preview_rule = SimpleNamespace(
+        calculation_type=calculation_type,
+        value=value,
+        formula=formula,
+        applies_to=applies_to,
+        salary_limit=salary_limit,
+    )
+    amount = resolve_amount_from_rule(preview_rule, ctx=ctx)
     return {
         "amount": str(amount),
         "base": str(base.quantize(Decimal("0.01"))),
+        "matched": True,
+        "bracket_salary": str(bracket_salary.quantize(Decimal("0.01"))),
         "context": {k: str(v.quantize(Decimal("0.01"))) for k, v in ctx.items()},
     }
 
 
-def _base_for_rule(rule: TaxRule, ctx: dict) -> Decimal:
-    if rule.applies_to == TaxRule.AppliesTo.GROSS:
-        return ctx["gross"]
-    if rule.applies_to == TaxRule.AppliesTo.BASIC:
-        return ctx["basic"]
-    return ctx["taxable_gross"]
+def preview_amount_rules(
+    *,
+    rules: list,
+    gross: Decimal,
+    basic: Decimal,
+    allowances: Decimal,
+    deductions: Decimal,
+) -> dict:
+    """Preview all bracket rules and return per-rule results."""
+    ctx = {
+        "gross": Decimal(gross or 0),
+        "basic": Decimal(basic or 0),
+        "allowances": Decimal(allowances or 0),
+        "deductions": Decimal(deductions or 0),
+        "taxable_gross": Decimal(gross or 0),
+    }
+    matched_rule = match_amount_rule(rules, basic=ctx["basic"])
+    breakdown = []
+    for rule in rules:
+        _coerce_rule_calc_fields(rule)
+        bracket_salary = _normalize_salary_for_bracket(
+            ctx["basic"],
+            target_salary_by=rule.target_salary_by,
+        )
+        in_bracket = _salary_in_bracket(
+            bracket_salary,
+            target_min=rule.target_salary_min,
+            target_max=rule.target_salary_max,
+        )
+        amount = ZERO
+        formula_error = None
+        if in_bracket:
+            try:
+                amount = resolve_amount_from_rule(rule, ctx=ctx)
+            except (SyntaxError, ValueError, TypeError, ArithmeticError) as exc:
+                formula_error = str(exc)
+                amount = ZERO
+        breakdown.append(
+            {
+                "rule_id": str(getattr(rule, "id", "")),
+                "calculation_type": rule.calculation_type,
+                "applies_to": rule.applies_to,
+                "target_salary_min": str(rule.target_salary_min),
+                "target_salary_max": str(rule.target_salary_max),
+                "target_salary_by": rule.target_salary_by,
+                "matched": rule is matched_rule,
+                "in_bracket": in_bracket,
+                "amount": str(amount),
+                **({"formula_error": formula_error} if formula_error else {}),
+            }
+        )
+    effective = ZERO
+    formula_error = None
+    if matched_rule:
+        try:
+            effective = resolve_amount_from_rule(matched_rule, ctx=ctx)
+        except (SyntaxError, ValueError, TypeError, ArithmeticError) as exc:
+            formula_error = str(exc)
+            effective = ZERO
+    result = {
+        "amount": str(effective.quantize(Decimal("0.01"))),
+        "matched": bool(matched_rule),
+        "breakdown": breakdown,
+    }
+    if formula_error:
+        result["formula_error"] = formula_error
+    return result
 
 
 def apply_tax_rules(
@@ -182,13 +407,12 @@ def apply_tax_rules(
     on_date: date,
     overrides: dict | None = None,
 ) -> tuple[Decimal, list[dict]]:
-    """Evaluate the given tax rules and return ``(total, breakdown)``.
+    """Evaluate tax rules using bracket-based amount rules.
 
-    ``overrides`` is an optional ``{rule_id: EmployeeTaxRuleOverride}`` map. When
-    present and active, an override replaces the corresponding rule fields for
-    this evaluation only.
+    Each tax rule resolves to zero when no amount rule matches the employee's
+    salary bracket.
     """
-    taxable_gross = gross  # MVP: every allowance is taxable; can refine later
+    taxable_gross = gross
     ctx = {
         "gross": gross,
         "basic": basic,
@@ -197,42 +421,35 @@ def apply_tax_rules(
         "taxable_gross": taxable_gross,
     }
 
-    overrides = overrides or {}
     total = ZERO
     breakdown: list[dict] = []
     for rule in sorted(rules, key=lambda r: r.priority):
         if not rule.applies_on(on_date):
             continue
-        ov = overrides.get(rule.id)
-        if ov is not None and not ov.is_active:
-            ov = None
-        calc = (ov.calculation_type if ov and ov.calculation_type else rule.calculation_type)
-        applies_to = (ov.applies_to if ov and ov.applies_to else rule.applies_to)
-        value = ov.value if ov and ov.value is not None else rule.value
-        formula = (ov.formula if ov and ov.formula else rule.formula)
-        if applies_to == TaxRule.AppliesTo.GROSS:
-            base = ctx["gross"]
-        elif applies_to == TaxRule.AppliesTo.BASIC:
-            base = ctx["basic"]
-        else:
-            base = ctx["taxable_gross"]
-        if calc == TaxRule.CalculationType.FLAT:
-            amount = Decimal(value or 0)
-        elif calc == TaxRule.CalculationType.PERCENTAGE:
-            amount = (Decimal(base) * Decimal(value or 0)) / Decimal("100")
-        else:  # FORMULA
-            amount = _evaluate_formula(formula, ctx)
-        amount = amount.quantize(Decimal("0.01"))
+        amount_rules = list(rule.amount_rules.all())
+        matched = match_amount_rule(amount_rules, basic=basic)
+        if matched is None:
+            breakdown.append(
+                {
+                    "rule_id": str(rule.id),
+                    "name": rule.name,
+                    "amount": "0.00",
+                    "matched": False,
+                }
+            )
+            continue
+        amount = resolve_amount_from_rule(matched, ctx=ctx)
         total += amount
         breakdown.append(
             {
                 "rule_id": str(rule.id),
                 "name": rule.name,
-                "calculation_type": calc,
-                "applies_to": applies_to,
-                "base": str(base),
+                "amount_rule_id": str(matched.id),
+                "calculation_type": matched.calculation_type,
+                "applies_to": matched.applies_to,
+                "base": str(_resolve_calc_base(matched.applies_to, ctx)),
                 "amount": str(amount),
-                "overridden": bool(ov),
+                "matched": True,
             }
         )
     return total.quantize(Decimal("0.01")), breakdown
@@ -248,21 +465,14 @@ def _quantize(value: Decimal) -> Decimal:
 
 
 def _resolve_item_amount(item: PayrollItem, *, basic: Decimal, gross: Decimal) -> Decimal:
-    """Compute an item's effective amount based on its calculation type.
-
-    For PERCENTAGE/FORMULA, ``basic`` and ``gross`` provide the base context.
-    Falls back to the stored ``amount`` for legacy rows without a calc_type.
-    """
-    calc = getattr(item, "calculation_type", None) or PayrollItem.CalculationType.FLAT
-    if calc == PayrollItem.CalculationType.FLAT:
-        # Prefer explicit value, fallback to legacy amount column
-        if item.value:
-            return _quantize(Decimal(item.value))
-        return _quantize(Decimal(item.amount or 0))
-    base = basic if item.applies_to == PayrollItem.AppliesTo.BASIC else gross
-    if calc == PayrollItem.CalculationType.PERCENTAGE:
-        return _quantize((Decimal(base) * Decimal(item.value or 0)) / Decimal("100"))
-    # FORMULA
+    """Compute an item's effective amount from its catalog type's amount rules."""
+    item_type = item.item_type_ref
+    if item_type is None:
+        return ZERO
+    rules = list(item_type.amount_rules.all())
+    matched = match_amount_rule(rules, basic=basic)
+    if matched is None:
+        return ZERO
     ctx = {
         "gross": Decimal(gross or 0),
         "basic": Decimal(basic or 0),
@@ -270,7 +480,7 @@ def _resolve_item_amount(item: PayrollItem, *, basic: Decimal, gross: Decimal) -
         "deductions": ZERO,
         "taxable_gross": Decimal(gross or 0),
     }
-    return _quantize(_evaluate_formula(item.formula, ctx))
+    return resolve_amount_from_rule(matched, ctx=ctx)
 
 
 def _build_payslip_payload(employee, run: PayrollRun) -> dict:
@@ -307,13 +517,9 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
 
     gross = _quantize(basic + allowance_total + overtime_pay)
 
-    rules = list(employee.tax_rules.all()) or list(TaxRule.objects.filter(is_active=True))
-    overrides = {
-        ov.rule_id: ov
-        for ov in EmployeeTaxRuleOverride.objects.filter(
-            employee=employee, is_active=True
-        )
-    }
+    rules = list(
+        employee.tax_rules.prefetch_related("amount_rules").all()
+    ) or list(TaxRule.objects.filter(is_active=True).prefetch_related("amount_rules"))
     tax, tax_breakdown = apply_tax_rules(
         rules=rules,
         gross=gross,
@@ -321,7 +527,6 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
         allowances=allowance_total,
         deductions=deduction_total,
         on_date=on_date,
-        overrides=overrides,
     )
 
     net = _quantize(gross - tax - deduction_total)
@@ -375,7 +580,7 @@ def generate_payslips(run: PayrollRun, *, regenerate: bool = False) -> list[Pays
 
     employees = (
         Employee.objects.filter(employment_status=Employee.EmploymentStatus.ACTIVE)
-        .prefetch_related("payroll_items", "tax_rules")
+        .prefetch_related("payroll_items__item_type_ref__amount_rules", "tax_rules__amount_rules")
     )
 
     payslips: list[Payslip] = []
@@ -426,13 +631,9 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
     basic = _quantize(Decimal(employee.basic_salary or 0) - leave_deduction)
     gross = _quantize(basic + payload["allowances"] + overtime_pay)
 
-    rules = list(employee.tax_rules.all()) or list(TaxRule.objects.filter(is_active=True))
-    overrides = {
-        ov.rule_id: ov
-        for ov in EmployeeTaxRuleOverride.objects.filter(
-            employee=employee, is_active=True
-        )
-    }
+    rules = list(
+        employee.tax_rules.prefetch_related("amount_rules").all()
+    ) or list(TaxRule.objects.filter(is_active=True).prefetch_related("amount_rules"))
     tax, tax_breakdown = apply_tax_rules(
         rules=rules,
         gross=gross,
@@ -440,7 +641,6 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
         allowances=payload["allowances"],
         deductions=payload["deductions"],
         on_date=payslip.payroll_run.period.end_date,
-        overrides=overrides,
     )
     net = _quantize(gross - tax - payload["deductions"])
 

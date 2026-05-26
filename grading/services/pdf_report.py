@@ -38,7 +38,7 @@ from grading.utils import (
     calculate_student_overall_average,
     get_letter_grade,
 )
-from common.services.pdf_components import append_pdf_document_header
+from common.services.pdf_components import append_pdf_document_header, resolve_tenant_school
 
 
 class StudentReportCardPDF:
@@ -53,7 +53,7 @@ class StudentReportCardPDF:
         self.student = student
         self.academic_year = academic_year
         self.enrollment = enrollment
-        self.school = student.school
+        self.school = resolve_tenant_school(getattr(student, "school", None))
 
         # Get accumulation setting
         self.cumulative_average_calculation = True
@@ -272,9 +272,11 @@ class StudentReportCardPDF:
         Get all gradebooks for the student's section and academic year.
         Optimized with select_related.
         """
+        if not self.enrollment.section_id:
+            return []
         return list(
             GradeBook.objects.filter(
-                section=self.enrollment.section,
+                section_id=self.enrollment.section_id,
                 academic_year=self.academic_year,
                 active=True,
             )
@@ -314,7 +316,7 @@ class StudentReportCardPDF:
                 mp_percentages[mp.id] = float(percentage)
                 subject_data["marking_periods"][mp.id] = {
                     "percentage": float(percentage),
-                    "letter": get_letter_grade(float(percentage), self.school),
+                    "letter": get_letter_grade(float(percentage)),
                 }
 
         # Calculate semester averages (including exam periods)
@@ -404,8 +406,14 @@ class StudentReportCardPDF:
         if len(student_name) > 30:
             student_name = student_name[:27] + "..."
 
+        grade_level_name = (
+            self.enrollment.grade_level.name if self.enrollment.grade_level else ""
+        )
+        section_name = self.enrollment.section.name if self.enrollment.section else ""
         grade_text = (
-            f"{self.enrollment.grade_level.name} - {self.enrollment.section.name}"
+            f"{grade_level_name} - {section_name}".strip(" -")
+            if section_name
+            else grade_level_name
         )
         if len(grade_text) > 25:
             grade_text = grade_text[:22] + "..."
@@ -623,11 +631,13 @@ class StudentReportCardPDF:
 
         # Calculate Rank for this column using optimized batch fetch
         # Fetch all ranks once
-        all_ranks = RankingService.get_report_card_rankings(
-            student_id=self.student.id,
-            academic_year_id=self.academic_year.id,
-            section_id=self.enrollment.section.id,
-        )
+        all_ranks = {}
+        if self.enrollment.section_id:
+            all_ranks = RankingService.get_report_card_rankings(
+                student_id=self.student.id,
+                academic_year_id=self.academic_year.id,
+                section_id=self.enrollment.section_id,
+            )
 
         # Iterate again for rank row to ensure alignment
         for col_idx in range(1, len(headers)):
@@ -856,6 +866,16 @@ class StudentReportCardPDF:
         buffer.seek(0)
 
         return buffer
+
+
+def build_student_report_card_pdf_bytes(
+    student: Student,
+    academic_year: AcademicYear,
+    enrollment: Enrollment,
+) -> bytes:
+    """Generate report card PDF bytes for bulk packaging."""
+    pdf_generator = StudentReportCardPDF(student, academic_year, enrollment)
+    return pdf_generator.generate().getvalue()
 
 
 def generate_student_report_card_pdf(

@@ -41,6 +41,7 @@ from .views.payroll_reports import (
 )
 from .views.attendance_reports import AttendanceSummaryReportView, DailyAttendanceRegisterReportView
 from .views.academic_reports import ClassGradeSummaryReportView, HonorRollReportView
+from .views.report_cards import BulkReportCardsExportView
 from .views.hr_reports import StaffDirectoryReportView
 from .views.advanced_reports import ProfitLossReportView, RevenueReportView, CustomReportBuilderView
 
@@ -80,6 +81,11 @@ urlpatterns = [
     # Academic Reports
     path("academics/grade-summary/", ClassGradeSummaryReportView.as_view(), name="class-grade-summary-reports"),
     path("academics/honor-roll/", HonorRollReportView.as_view(), name="honor-roll-reports"),
+    path(
+        "academics/report-cards/",
+        BulkReportCardsExportView.as_view(),
+        name="bulk-report-cards",
+    ),
     # HR Reports
     path("hr/staff-directory/", StaffDirectoryReportView.as_view(), name="staff-directory-reports"),
     # Custom report builder metadata

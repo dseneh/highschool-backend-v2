@@ -378,7 +378,7 @@ class PayrollItemViewSet(_BaseAuditedViewSet):
 
 
 class PayrollItemTypeViewSet(_BaseAuditedViewSet):
-    queryset = PayrollItemType.objects.all()
+    queryset = PayrollItemType.objects.prefetch_related("amount_rules").all()
     serializer_class = PayrollItemTypeSerializer
 
     def get_queryset(self):
@@ -429,6 +429,63 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
                 basic=Decimal(str(request.data.get("basic", request.data.get("gross", "1000")))),
                 allowances=Decimal(str(request.data.get("allowances", "0"))),
                 deductions=Decimal(str(request.data.get("deductions", "0"))),
+                target_salary_min=request.data.get("target_salary_min", "0"),
+                target_salary_max=request.data.get("target_salary_max", "0"),
+                target_salary_by=str(request.data.get("target_salary_by", "per_period")),
+                salary_limit=request.data.get("salary_limit"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="preview-rules")
+    def preview_rules(self, request):
+        from .serializers import PayrollItemTypeRuleSerializer
+        from .services import build_preview_amount_rule_objects, preview_amount_rules
+
+        rules_data = request.data.get("rules") or []
+        serializer = PayrollItemTypeRuleSerializer(data=rules_data, many=True)
+        serializer.is_valid(raise_exception=True)
+        rules = build_preview_amount_rule_objects(serializer.validated_data)
+
+        try:
+            gross = Decimal(str(request.data.get("gross", "0")))
+            basic = Decimal(str(request.data.get("basic", request.data.get("gross", "0"))))
+            allowances = Decimal(str(request.data.get("allowances", "0")))
+            deductions = Decimal(str(request.data.get("deductions", "0")))
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid numeric input."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = preview_amount_rules(
+                rules=rules,
+                gross=gross,
+                basic=basic,
+                allowances=allowances,
+                deductions=deductions,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=True, methods=["post"], url_path="preview")
+    def preview(self, request, pk=None):
+        from .services import preview_amount_rules
+
+        item_type = self.get_object()
+        try:
+            gross = Decimal(str(request.data.get("gross", "0")))
+            basic = Decimal(str(request.data.get("basic", request.data.get("gross", "0"))))
+            allowances = Decimal(str(request.data.get("allowances", "0")))
+            deductions = Decimal(str(request.data.get("deductions", "0")))
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid numeric input."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = preview_amount_rules(
+                rules=list(item_type.amount_rules.all()),
+                gross=gross,
+                basic=basic,
+                allowances=allowances,
+                deductions=deductions,
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -436,7 +493,7 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
 
 
 class TaxRuleViewSet(_BaseAuditedViewSet):
-    queryset = TaxRule.objects.all()
+    queryset = TaxRule.objects.prefetch_related("amount_rules").all()
     serializer_class = TaxRuleSerializer
 
     def get_queryset(self):
@@ -462,6 +519,63 @@ class TaxRuleViewSet(_BaseAuditedViewSet):
                 basic=Decimal(str(request.data.get("basic", request.data.get("gross", "1000")))),
                 allowances=Decimal(str(request.data.get("allowances", "0"))),
                 deductions=Decimal(str(request.data.get("deductions", "0"))),
+                target_salary_min=request.data.get("target_salary_min", "0"),
+                target_salary_max=request.data.get("target_salary_max", "0"),
+                target_salary_by=str(request.data.get("target_salary_by", "per_period")),
+                salary_limit=request.data.get("salary_limit"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="preview-rules")
+    def preview_rules(self, request):
+        from .serializers import TaxAmountRuleSerializer
+        from .services import build_preview_amount_rule_objects, preview_amount_rules
+
+        rules_data = request.data.get("rules") or []
+        serializer = TaxAmountRuleSerializer(data=rules_data, many=True)
+        serializer.is_valid(raise_exception=True)
+        rules = build_preview_amount_rule_objects(serializer.validated_data)
+
+        try:
+            gross = Decimal(str(request.data.get("gross", "0")))
+            basic = Decimal(str(request.data.get("basic", request.data.get("gross", "0"))))
+            allowances = Decimal(str(request.data.get("allowances", "0")))
+            deductions = Decimal(str(request.data.get("deductions", "0")))
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid numeric input."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = preview_amount_rules(
+                rules=rules,
+                gross=gross,
+                basic=basic,
+                allowances=allowances,
+                deductions=deductions,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+    @action(detail=True, methods=["post"], url_path="preview")
+    def preview_tax(self, request, pk=None):
+        from .services import preview_amount_rules
+
+        tax_rule = self.get_object()
+        try:
+            gross = Decimal(str(request.data.get("gross", "0")))
+            basic = Decimal(str(request.data.get("basic", request.data.get("gross", "0"))))
+            allowances = Decimal(str(request.data.get("allowances", "0")))
+            deductions = Decimal(str(request.data.get("deductions", "0")))
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid numeric input."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = preview_amount_rules(
+                rules=list(tax_rule.amount_rules.all()),
+                gross=gross,
+                basic=basic,
+                allowances=allowances,
+                deductions=deductions,
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -523,8 +637,10 @@ class TaxRuleViewSet(_BaseAuditedViewSet):
         from decimal import Decimal
 
         rule_ids = request.data.get("rules") or []
-        rules = list(TaxRule.objects.filter(id__in=rule_ids)) if rule_ids else list(
-            TaxRule.objects.filter(is_active=True)
+        rules = list(
+            TaxRule.objects.filter(id__in=rule_ids).prefetch_related("amount_rules")
+        ) if rule_ids else list(
+            TaxRule.objects.filter(is_active=True).prefetch_related("amount_rules")
         )
         try:
             gross = Decimal(str(request.data.get("gross", "0")))

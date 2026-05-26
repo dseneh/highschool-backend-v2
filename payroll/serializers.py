@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
+    AmountCalculationType,
     EmployeeTaxRuleOverride,
     PayrollItem,
     PayrollItemType,
+    PayrollItemTypeRule,
     PayrollPeriod,
     PayrollRun,
     Payslip,
     PaySchedule,
+    TaxAmountRule,
     TaxRule,
 )
 
@@ -49,7 +53,6 @@ class PayScheduleSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         instance = self.instance
         if instance and instance.periods.exists():
-            # Currency frozen once any period exists for the schedule.
             new_currency = attrs.get("currency", instance.currency)
             if new_currency != instance.currency:
                 raise serializers.ValidationError(
@@ -235,11 +238,134 @@ class PayrollRunSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# PayrollItem
+# Amount rules (shared)
+# ---------------------------------------------------------------------------
+
+
+def _validate_amount_rule_payload(data: dict, *, applies_to_choices) -> dict:
+    calc = data.get("calculation_type") or AmountCalculationType.FLAT
+    data["calculation_type"] = calc
+    if calc in (AmountCalculationType.FLAT, AmountCalculationType.PERCENTAGE):
+        if data.get("value") is None:
+            raise serializers.ValidationError({"value": "Value is required for flat/percentage rules."})
+    if calc == AmountCalculationType.FORMULA:
+        formula = (data.get("formula") or "").strip()
+        if not formula:
+            raise serializers.ValidationError({"formula": "Formula is required for formula rules."})
+    applies_to = data.get("applies_to")
+    if applies_to and applies_to not in dict(applies_to_choices):
+        raise serializers.ValidationError({"applies_to": "Invalid applies_to value."})
+    return data
+
+
+class PayrollItemTypeRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayrollItemTypeRule
+        fields = [
+            "id",
+            "calculation_type",
+            "value",
+            "formula",
+            "applies_to",
+            "target_salary_min",
+            "target_salary_max",
+            "target_salary_by",
+            "salary_limit",
+            "sort_order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        from .models import ItemAppliesTo
+
+        merged = {}
+        if self.instance:
+            for field in self.Meta.fields:
+                if field in ("id", "created_at", "updated_at"):
+                    continue
+                merged[field] = getattr(self.instance, field, None)
+        merged.update(attrs)
+        _validate_amount_rule_payload(merged, applies_to_choices=ItemAppliesTo.choices)
+        attrs["calculation_type"] = merged["calculation_type"]
+        return attrs
+
+
+class TaxAmountRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TaxAmountRule
+        fields = [
+            "id",
+            "calculation_type",
+            "value",
+            "formula",
+            "applies_to",
+            "target_salary_min",
+            "target_salary_max",
+            "target_salary_by",
+            "salary_limit",
+            "sort_order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        from .models import TaxAppliesTo
+
+        merged = {}
+        if self.instance:
+            for field in self.Meta.fields:
+                if field in ("id", "created_at", "updated_at"):
+                    continue
+                merged[field] = getattr(self.instance, field, None)
+        merged.update(attrs)
+        _validate_amount_rule_payload(merged, applies_to_choices=TaxAppliesTo.choices)
+        attrs["calculation_type"] = merged["calculation_type"]
+        return attrs
+
+
+def _sync_nested_rules(parent, rules_data, *, rule_model, parent_field):
+    if rules_data is None:
+        return
+    existing = {str(r.id): r for r in parent.amount_rules.all()}
+    keep_ids: set[str] = set()
+    user = getattr(parent, "_request_user", None)
+
+    for idx, rule_data in enumerate(rules_data):
+        rule_id = rule_data.get("id")
+        payload = {k: v for k, v in rule_data.items() if k != "id"}
+        payload.setdefault("sort_order", idx)
+        if rule_id and str(rule_id) in existing:
+            rule = existing[str(rule_id)]
+            for key, value in payload.items():
+                setattr(rule, key, value)
+            if user:
+                rule.updated_by = user
+            rule.save()
+            keep_ids.add(str(rule.id))
+        else:
+            create_kwargs = {parent_field: parent, **payload}
+            if user:
+                create_kwargs["created_by"] = user
+                create_kwargs["updated_by"] = user
+            created = rule_model.objects.create(**create_kwargs)
+            keep_ids.add(str(created.id))
+
+    for rule_id, rule in existing.items():
+        if rule_id not in keep_ids:
+            rule.delete()
+
+
+# ---------------------------------------------------------------------------
+# PayrollItemType
 # ---------------------------------------------------------------------------
 
 
 class PayrollItemTypeSerializer(serializers.ModelSerializer):
+    amount_rules = PayrollItemTypeRuleSerializer(many=True, required=False)
+
     class Meta:
         model = PayrollItemType
         fields = [
@@ -247,14 +373,10 @@ class PayrollItemTypeSerializer(serializers.ModelSerializer):
             "name",
             "code",
             "item_type",
-            "calculation_type",
-            "default_value",
-            "default_formula",
-            "applies_to",
-            "default_amount",
             "description",
             "is_active",
             "is_system_managed",
+            "amount_rules",
             "created_at",
             "updated_at",
         ]
@@ -270,14 +392,39 @@ class PayrollItemTypeSerializer(serializers.ModelSerializer):
                         raise serializers.ValidationError(
                             {field: "This field cannot be changed for system-managed payroll item types."}
                         )
-        calc = attrs.get("calculation_type", getattr(self.instance, "calculation_type", None))
-        if calc == PayrollItemType.CalculationType.FORMULA:
-            formula = attrs.get("default_formula", getattr(self.instance, "default_formula", ""))
-            if not (formula or "").strip():
-                raise serializers.ValidationError(
-                    {"default_formula": "Formula is required when calculation type is FORMULA."}
-                )
         return super().validate(attrs)
+
+    @transaction.atomic
+    def create(self, validated_data):
+        rules_data = validated_data.pop("amount_rules", [])
+        instance = super().create(validated_data)
+        instance._request_user = self.context["request"].user
+        _sync_nested_rules(
+            instance,
+            rules_data,
+            rule_model=PayrollItemTypeRule,
+            parent_field="item_type",
+        )
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        rules_data = validated_data.pop("amount_rules", None)
+        instance = super().update(instance, validated_data)
+        if rules_data is not None:
+            instance._request_user = self.context["request"].user
+            _sync_nested_rules(
+                instance,
+                rules_data,
+                rule_model=PayrollItemTypeRule,
+                parent_field="item_type",
+            )
+        return instance
+
+
+# ---------------------------------------------------------------------------
+# PayrollItem
+# ---------------------------------------------------------------------------
 
 
 class PayrollItemSerializer(serializers.ModelSerializer):
@@ -296,11 +443,6 @@ class PayrollItemSerializer(serializers.ModelSerializer):
             "item_type_ref_code",
             "name",
             "item_type",
-            "calculation_type",
-            "value",
-            "formula",
-            "applies_to",
-            "amount",
             "is_active",
             "effective_from",
             "effective_to",
@@ -325,13 +467,6 @@ class PayrollItemSerializer(serializers.ModelSerializer):
             )
         attrs["name"] = item_type_ref.name
         attrs["item_type"] = item_type_ref.item_type
-        calc = attrs.get("calculation_type", getattr(self.instance, "calculation_type", None))
-        if calc == PayrollItem.CalculationType.FORMULA:
-            formula = attrs.get("formula", getattr(self.instance, "formula", ""))
-            if not (formula or "").strip():
-                raise serializers.ValidationError(
-                    {"formula": "Formula is required when calculation type is FORMULA."}
-                )
         return super().validate(attrs)
 
 
@@ -341,6 +476,8 @@ class PayrollItemSerializer(serializers.ModelSerializer):
 
 
 class TaxRuleSerializer(serializers.ModelSerializer):
+    amount_rules = TaxAmountRuleSerializer(many=True, required=False)
+
     class Meta:
         model = TaxRule
         fields = [
@@ -348,38 +485,47 @@ class TaxRuleSerializer(serializers.ModelSerializer):
             "name",
             "code",
             "description",
-            "calculation_type",
-            "value",
-            "formula",
-            "applies_to",
             "priority",
             "is_active",
             "effective_from",
             "effective_to",
+            "amount_rules",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
-    def validate(self, attrs):
-        calc = attrs.get("calculation_type") or (self.instance and self.instance.calculation_type)
-        formula = attrs.get("formula", self.instance.formula if self.instance else "")
-        if calc == TaxRule.CalculationType.FORMULA and not (formula or "").strip():
-            raise serializers.ValidationError(
-                {"formula": "Formula is required when calculation type is 'formula'."}
+    @transaction.atomic
+    def create(self, validated_data):
+        rules_data = validated_data.pop("amount_rules", [])
+        instance = super().create(validated_data)
+        instance._request_user = self.context["request"].user
+        _sync_nested_rules(
+            instance,
+            rules_data,
+            rule_model=TaxAmountRule,
+            parent_field="tax_rule",
+        )
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        rules_data = validated_data.pop("amount_rules", None)
+        instance = super().update(instance, validated_data)
+        if rules_data is not None:
+            instance._request_user = self.context["request"].user
+            _sync_nested_rules(
+                instance,
+                rules_data,
+                rule_model=TaxAmountRule,
+                parent_field="tax_rule",
             )
-        return attrs
+        return instance
 
 
 class EmployeeTaxRuleOverrideSerializer(serializers.ModelSerializer):
     rule_name = serializers.CharField(source="rule.name", read_only=True)
     rule_code = serializers.CharField(source="rule.code", read_only=True)
-    rule_calculation_type = serializers.CharField(source="rule.calculation_type", read_only=True)
-    rule_value = serializers.DecimalField(
-        source="rule.value", max_digits=12, decimal_places=4, read_only=True
-    )
-    rule_formula = serializers.CharField(source="rule.formula", read_only=True)
-    rule_applies_to = serializers.CharField(source="rule.applies_to", read_only=True)
 
     class Meta:
         model = EmployeeTaxRuleOverride
@@ -389,10 +535,6 @@ class EmployeeTaxRuleOverrideSerializer(serializers.ModelSerializer):
             "rule",
             "rule_name",
             "rule_code",
-            "rule_calculation_type",
-            "rule_value",
-            "rule_formula",
-            "rule_applies_to",
             "calculation_type",
             "value",
             "formula",

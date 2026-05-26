@@ -637,6 +637,8 @@ class StudentReportCardPDFView(APIView):
         PDF file download
     """
 
+    permission_classes = [GradebookAccessPolicy]
+
     def get(self, request, student_id, academic_year_id):
         # Get student (support both ID and ID number)
         try:
@@ -671,5 +673,15 @@ class StudentReportCardPDFView(APIView):
                 {"detail": "Student is not enrolled in this academic year."}, status=404
             )
 
-        # Generate and return PDF
-        return generate_student_report_card_pdf(student, academic_year, enrollment)
+        try:
+            return generate_student_report_card_pdf(student, academic_year, enrollment)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Report card PDF failed for student %s", student_id
+            )
+            return Response(
+                {"detail": f"Failed to generate report card: {exc}"},
+                status=500,
+            )
