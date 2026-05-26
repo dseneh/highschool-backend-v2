@@ -10,11 +10,13 @@ from types import SimpleNamespace
 from typing import Iterable
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import (
     AmountCalculationType,
     PayrollItem,
+    PayrollItemType,
     PayrollPeriod,
     PayrollRun,
     Payslip,
@@ -194,19 +196,70 @@ def _salary_in_bracket(
 
 
 def match_amount_rule(rules, *, basic: Decimal):
-    """Pick the first amount rule whose salary bracket contains ``basic``."""
-    for rule in rules:
+    """Pick the first amount rule whose salary bracket contains ``basic``.
+
+    When no bracket matches, fall back to a catch-all rule (min=0 and max=0)
+    if one exists so item types with a single open bracket still apply to all
+    salaries.
+    """
+    catch_all = None
+    ordered_rules = sorted(
+        rules,
+        key=lambda rule: (
+            int(getattr(rule, "sort_order", 0) or 0),
+            Decimal(getattr(rule, "target_salary_min", 0) or 0),
+        ),
+    )
+    for rule in ordered_rules:
         bracket_salary = _normalize_salary_for_bracket(
             basic,
             target_salary_by=rule.target_salary_by,
         )
+        min_bound = Decimal(rule.target_salary_min or 0)
+        max_bound = Decimal(rule.target_salary_max or 0)
+        if min_bound <= 0 and max_bound <= 0:
+            catch_all = rule
         if _salary_in_bracket(
             bracket_salary,
-            target_min=rule.target_salary_min,
-            target_max=rule.target_salary_max,
+            target_min=min_bound,
+            target_max=max_bound,
         ):
             return rule
-    return None
+    return catch_all
+
+
+def _ordered_amount_rules(item_type) -> list:
+    return list(
+        item_type.amount_rules.order_by("sort_order", "target_salary_min"),
+    )
+
+
+def _pick_amount_rule(
+    rules,
+    *,
+    basic: Decimal,
+    ignore_brackets: bool = False,
+):
+    """Return ``(rule, matched)`` for amount resolution.
+
+    Post-net additions skip bracket checks and always use the first configured
+    rule so assigned employees receive the amount regardless of salary/tax band.
+    """
+    ordered = sorted(
+        rules,
+        key=lambda rule: (
+            int(getattr(rule, "sort_order", 0) or 0),
+            Decimal(getattr(rule, "target_salary_min", 0) or 0),
+        ),
+    )
+    if not ordered:
+        return None, False
+    if ignore_brackets:
+        return ordered[0], True
+    matched = match_amount_rule(ordered, basic=basic)
+    if matched is not None:
+        return matched, True
+    return None, False
 
 
 def _resolve_calc_base(applies_to: str, ctx: dict) -> Decimal:
@@ -464,23 +517,276 @@ def _quantize(value: Decimal) -> Decimal:
     return Decimal(value or 0).quantize(Decimal("0.01"))
 
 
-def _resolve_item_amount(item: PayrollItem, *, basic: Decimal, gross: Decimal) -> Decimal:
+def _item_catalog_kind(item: PayrollItem) -> str:
+    ref = item.item_type_ref
+    if ref is not None:
+        return ref.item_type
+    return item.item_type
+
+
+def _item_is_taxable_addition(item: PayrollItem) -> bool:
+    kind = _item_catalog_kind(item)
+    if kind in (PayrollItemType.ItemType.DEDUCTION, PayrollItemType.ItemType.ADJUSTMENT):
+        return False
+    ref = item.item_type_ref
+    if ref is None:
+        return True
+    return bool(ref.is_taxable)
+
+
+def _summarize_payroll_items(
+    resolved: list[tuple[PayrollItem, Decimal, bool]],
+) -> dict:
+    taxable_allowances = ZERO
+    post_net_additions = ZERO
+    deduction_total = ZERO
+    allowance_lines: list[dict] = []
+    adjustment_lines: list[dict] = []
+    deduction_lines: list[dict] = []
+
+    for item, amount, matched in resolved:
+        amt = _quantize(amount)
+        kind = _item_catalog_kind(item)
+        line = {
+            "id": str(item.id),
+            "name": item.name,
+            "amount": str(amt),
+            "matched": matched,
+        }
+
+        if amt == ZERO:
+            if not matched:
+                target_lines = (
+                    deduction_lines
+                    if kind == PayrollItemType.ItemType.DEDUCTION
+                    else adjustment_lines
+                    if not _item_is_taxable_addition(item)
+                    else allowance_lines
+                )
+                target_lines.append(line)
+            continue
+
+        if kind == PayrollItemType.ItemType.DEDUCTION:
+            deduction_total += amt
+            deduction_lines.append(line)
+            continue
+
+        if _item_is_taxable_addition(item):
+            taxable_allowances += amt
+            allowance_lines.append(line)
+        else:
+            post_net_additions += amt
+            adjustment_lines.append(line)
+
+    return {
+        "allowances": _quantize(taxable_allowances),
+        "adjustments": _quantize(post_net_additions),
+        "deductions": _quantize(deduction_total),
+        "breakdown": {
+            "allowances": allowance_lines,
+            "adjustments": adjustment_lines,
+            "deductions": deduction_lines,
+        },
+    }
+
+
+def _resolve_item_amount(
+    item: PayrollItem,
+    *,
+    basic: Decimal,
+    gross: Decimal,
+    allowances: Decimal = ZERO,
+    deductions: Decimal = ZERO,
+    ignore_brackets: bool = False,
+) -> tuple[Decimal, bool]:
     """Compute an item's effective amount from its catalog type's amount rules."""
     item_type = item.item_type_ref
     if item_type is None:
-        return ZERO
-    rules = list(item_type.amount_rules.all())
-    matched = match_amount_rule(rules, basic=basic)
+        return ZERO, False
+    rules = _ordered_amount_rules(item_type)
+    matched, bracket_matched = _pick_amount_rule(
+        rules,
+        basic=basic,
+        ignore_brackets=ignore_brackets,
+    )
     if matched is None:
-        return ZERO
+        return ZERO, False
     ctx = {
         "gross": Decimal(gross or 0),
         "basic": Decimal(basic or 0),
-        "allowances": ZERO,
-        "deductions": ZERO,
+        "allowances": Decimal(allowances or 0),
+        "deductions": Decimal(deductions or 0),
         "taxable_gross": Decimal(gross or 0),
     }
-    return resolve_amount_from_rule(matched, ctx=ctx)
+    return resolve_amount_from_rule(matched, ctx=ctx), bracket_matched
+
+
+def _resolve_payroll_items_for_employee(
+    items: list[PayrollItem],
+    *,
+    basic: Decimal,
+    overtime_pay: Decimal = ZERO,
+) -> dict:
+    """Resolve assigned payroll items, iterating until taxable gross stabilizes."""
+    gross_estimate = basic
+    resolved: list[tuple[PayrollItem, Decimal, bool]] = []
+
+    for _ in range(10):
+        pass_resolved: list[tuple[PayrollItem, Decimal, bool]] = []
+        running_allowances = ZERO
+        running_deductions = ZERO
+
+        for item in items:
+            kind = _item_catalog_kind(item)
+            ignore_brackets = (
+                kind != PayrollItemType.ItemType.DEDUCTION
+                and not _item_is_taxable_addition(item)
+            )
+            amount, matched = _resolve_item_amount(
+                item,
+                basic=basic,
+                gross=gross_estimate,
+                allowances=running_allowances,
+                deductions=running_deductions,
+                ignore_brackets=ignore_brackets,
+            )
+            pass_resolved.append((item, amount, matched))
+            amt = _quantize(amount)
+            if kind == PayrollItemType.ItemType.DEDUCTION:
+                running_deductions += amt
+            elif _item_is_taxable_addition(item):
+                running_allowances += amt
+
+        summarized = _summarize_payroll_items(pass_resolved)
+        new_gross = _quantize(basic + summarized["allowances"] + overtime_pay)
+        resolved = pass_resolved
+        if new_gross == gross_estimate:
+            break
+        gross_estimate = new_gross
+
+    return _summarize_payroll_items(resolved)
+
+
+def preview_employee_payroll_items(
+    employee,
+    *,
+    on_date: date | None = None,
+    basic_override: Decimal | None = None,
+) -> dict:
+    """Preview resolved payroll item amounts for an employee (no payslip persisted)."""
+    on_date = on_date or date.today()
+    basic = _quantize(
+        basic_override
+        if basic_override is not None
+        else (employee.basic_salary or 0)
+    )
+    items = [
+        item
+        for item in employee.payroll_items.select_related("item_type_ref").prefetch_related(
+            "item_type_ref__amount_rules",
+        )
+        if item.applies_on(on_date)
+    ]
+    summarized = _resolve_payroll_items_for_employee(items, basic=basic)
+    lines: list[dict] = []
+    for bucket in ("allowances", "adjustments", "deductions"):
+        for line in summarized["breakdown"].get(bucket, []):
+            lines.append(
+                {
+                    **line,
+                    "bucket": bucket,
+                }
+            )
+    return {
+        "basic_salary": str(basic),
+        "allowances_total": str(summarized["allowances"]),
+        "adjustments_total": str(summarized["adjustments"]),
+        "deductions_total": str(summarized["deductions"]),
+        "lines": lines,
+    }
+
+
+def sync_payroll_item_type_to_employees(
+    *,
+    item_type: PayrollItemType,
+    scope: str,
+    employee_ids: list[str] | None = None,
+    department_id: str | None = None,
+    position_id: str | None = None,
+) -> dict:
+    """
+    Create per-employee PayrollItem rows for a catalog item type when missing.
+    Does not remove or overwrite existing assignments.
+    """
+    from hr.models import Employee
+
+    normalized_scope = (scope or "all").strip().lower()
+    if normalized_scope not in {"all", "selected", "department", "position"}:
+        raise ValueError("Invalid sync scope. Use all, selected, department, or position.")
+
+    employees = Employee.objects.filter(
+        employment_status=Employee.EmploymentStatus.ACTIVE,
+    ).select_related("department", "position")
+    if normalized_scope == "selected":
+        identifiers = [str(v).strip() for v in (employee_ids or []) if str(v).strip()]
+        if not identifiers:
+            raise ValueError("Provide at least one employee id or id_number for selected scope.")
+        employees = employees.filter(
+            Q(id__in=identifiers) | Q(id_number__in=identifiers)
+        )
+    elif normalized_scope == "department":
+        if not department_id:
+            raise ValueError("department_id is required for department scope.")
+        employees = employees.filter(department_id=department_id)
+    elif normalized_scope == "position":
+        if not position_id:
+            raise ValueError("position_id is required for position scope.")
+        employees = employees.filter(position_id=position_id)
+
+    employees = employees.order_by("id_number", "id")
+    employee_list = list(employees)
+    if not employee_list:
+        return {
+            "scope": normalized_scope,
+            "item_type_id": str(item_type.id),
+            "item_type_name": item_type.name,
+            "matched_employees": 0,
+            "created": 0,
+            "already_assigned": 0,
+        }
+
+    existing_employee_ids = set(
+        PayrollItem.objects.filter(
+            item_type_ref_id=item_type.id,
+            employee_id__in=[e.id for e in employee_list],
+        ).values_list("employee_id", flat=True)
+    )
+
+    to_create: list[PayrollItem] = []
+    for employee in employee_list:
+        if employee.id in existing_employee_ids:
+            continue
+        to_create.append(
+            PayrollItem(
+                employee=employee,
+                item_type_ref=item_type,
+                name=item_type.name,
+                item_type=item_type.item_type,
+                is_active=True,
+            )
+        )
+
+    if to_create:
+        PayrollItem.objects.bulk_create(to_create)
+
+    return {
+        "scope": normalized_scope,
+        "item_type_id": str(item_type.id),
+        "item_type_name": item_type.name,
+        "matched_employees": len(employee_list),
+        "created": len(to_create),
+        "already_assigned": len(employee_list) - len(to_create),
+    }
 
 
 def _build_payslip_payload(employee, run: PayrollRun) -> dict:
@@ -493,27 +799,25 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
 
     items = [
         item
-        for item in employee.payroll_items.all()
+        for item in employee.payroll_items.select_related("item_type_ref").prefetch_related(
+            "item_type_ref__amount_rules",
+        )
         if item.applies_on(on_date)
     ]
-    # Estimate gross with FLAT/percentage-of-basic only first (to feed formula items).
-    pre_gross = basic
-    resolved: list[tuple[PayrollItem, Decimal]] = []
-    for it in items:
-        amt = _resolve_item_amount(it, basic=basic, gross=pre_gross)
-        resolved.append((it, amt))
-
-    allowance_total = _quantize(
-        sum((amt for it, amt in resolved if it.item_type == PayrollItem.ItemType.ALLOWANCE), ZERO)
-    )
-    deduction_total = _quantize(
-        sum((amt for it, amt in resolved if it.item_type == PayrollItem.ItemType.DEDUCTION), ZERO)
-    )
 
     overtime_hours = ZERO  # editable in DRAFT
     overtime_pay = _quantize(
         Decimal(employee.hourly_rate or 0) * overtime_hours * Decimal(schedule.overtime_multiplier or 0)
     )
+
+    summarized = _resolve_payroll_items_for_employee(
+        items,
+        basic=basic,
+        overtime_pay=overtime_pay,
+    )
+    allowance_total = summarized["allowances"]
+    adjustment_total = summarized["adjustments"]
+    deduction_total = summarized["deductions"]
 
     gross = _quantize(basic + allowance_total + overtime_pay)
 
@@ -529,7 +833,7 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
         on_date=on_date,
     )
 
-    net = _quantize(gross - tax - deduction_total)
+    net = _quantize(gross - tax - deduction_total + adjustment_total)
 
     return {
         "currency": schedule.currency,
@@ -538,21 +842,13 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
         "overtime_pay": overtime_pay,
         "unpaid_leave_days": ZERO,
         "allowances": allowance_total,
+        "adjustments": adjustment_total,
         "deductions": deduction_total,
         "tax": tax,
         "gross_pay": gross,
         "net_pay": net,
         "breakdown": {
-            "allowances": [
-                {"id": str(it.id), "name": it.name, "amount": str(amt)}
-                for it, amt in resolved
-                if it.item_type == PayrollItem.ItemType.ALLOWANCE
-            ],
-            "deductions": [
-                {"id": str(it.id), "name": it.name, "amount": str(amt)}
-                for it, amt in resolved
-                if it.item_type == PayrollItem.ItemType.DEDUCTION
-            ],
+            **summarized["breakdown"],
             "tax": tax_breakdown,
         },
     }
@@ -642,13 +938,14 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
         deductions=payload["deductions"],
         on_date=payslip.payroll_run.period.end_date,
     )
-    net = _quantize(gross - tax - payload["deductions"])
+    net = _quantize(gross - tax - payload["deductions"] + payload["adjustments"])
 
     payslip.basic_salary = basic
     payslip.overtime_hours = overtime_hours
     payslip.overtime_pay = overtime_pay
     payslip.unpaid_leave_days = unpaid_leave_days
     payslip.allowances = payload["allowances"]
+    payslip.adjustments = payload["adjustments"]
     payslip.deductions = payload["deductions"]
     payslip.tax = tax
     payslip.gross_pay = gross

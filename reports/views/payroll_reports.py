@@ -49,9 +49,11 @@ class PayrollRunSummaryReportView(APIView):
         for run in runs:
             payslips = Payslip.objects.filter(payroll_run=run)
             gross = payslips.aggregate(total=Coalesce(Sum("gross_pay"), Decimal("0")))["total"] or 0
-            net = payslips.aggregate(total=Coalesce(Sum("net_pay"), Decimal("0")))["total"] or 0
+            take_home = payslips.aggregate(total=Coalesce(Sum("net_pay"), Decimal("0")))["total"] or 0
+            adjustments = payslips.aggregate(total=Coalesce(Sum("adjustments"), Decimal("0")))["total"] or 0
             deductions = payslips.aggregate(total=Coalesce(Sum("deductions"), Decimal("0")))["total"] or 0
             tax = payslips.aggregate(total=Coalesce(Sum("tax"), Decimal("0")))["total"] or 0
+            taxable_net = take_home - adjustments
             results.append(
                 {
                     "run_id": str(run.id),
@@ -64,7 +66,9 @@ class PayrollRunSummaryReportView(APIView):
                     "gross_total": float(gross),
                     "deductions_total": float(deductions),
                     "tax_total": float(tax),
-                    "net_total": float(net),
+                    "taxable_net_total": float(taxable_net),
+                    "adjustments_total": float(adjustments),
+                    "take_home_total": float(take_home),
                 }
             )
 
@@ -74,7 +78,9 @@ class PayrollRunSummaryReportView(APIView):
             "gross_total": sum(row["gross_total"] for row in results),
             "deductions_total": sum(row["deductions_total"] for row in results),
             "tax_total": sum(row["tax_total"] for row in results),
-            "net_total": sum(row["net_total"] for row in results),
+            "taxable_net_total": sum(row["taxable_net_total"] for row in results),
+            "adjustments_total": sum(row["adjustments_total"] for row in results),
+            "take_home_total": sum(row["take_home_total"] for row in results),
         }
         payload = {"results": results, "summary": summary}
         if get_export_format(request):
@@ -89,7 +95,9 @@ class PayrollRunSummaryReportView(APIView):
                     r["gross_total"],
                     r["deductions_total"],
                     r["tax_total"],
-                    r["net_total"],
+                    r["taxable_net_total"],
+                    r["adjustments_total"],
+                    r["take_home_total"],
                 ]
                 for r in results
             ]
@@ -102,7 +110,9 @@ class PayrollRunSummaryReportView(APIView):
                     ("Runs", summary["run_count"]),
                     ("Employees", summary["employee_count"]),
                     ("Gross Total", summary["gross_total"]),
-                    ("Net Total", summary["net_total"]),
+                    ("Net Total", summary["taxable_net_total"]),
+                    ("Adjustments Total", summary["adjustments_total"]),
+                    ("Take Home Total", summary["take_home_total"]),
                 ],
                 headers=[
                     "Schedule",
@@ -115,6 +125,8 @@ class PayrollRunSummaryReportView(APIView):
                     "Deductions",
                     "Tax",
                     "Net",
+                    "Adjustments",
+                    "Take Home",
                 ],
                 rows=rows,
             )
@@ -151,6 +163,9 @@ class PayrollRegisterReportView(APIView):
         for slip in payslips:
             period = slip.payroll_run.period if slip.payroll_run else None
             schedule = period.schedule if period else None
+            take_home = float(slip.net_pay or 0)
+            adjustments = float(slip.adjustments or 0)
+            taxable_net = take_home - adjustments
             results.append(
                 {
                     "employee_id": slip.employee.id_number or str(slip.employee_id),
@@ -161,7 +176,9 @@ class PayrollRegisterReportView(APIView):
                     "gross_pay": float(slip.gross_pay or 0),
                     "total_deductions": float(slip.deductions or 0),
                     "tax": float(slip.tax or 0),
-                    "net_pay": float(slip.net_pay or 0),
+                    "taxable_net": taxable_net,
+                    "adjustments": adjustments,
+                    "take_home": take_home,
                 }
             )
 
@@ -170,7 +187,9 @@ class PayrollRegisterReportView(APIView):
             "gross_total": sum(row["gross_pay"] for row in results),
             "deductions_total": sum(row["total_deductions"] for row in results),
             "tax_total": sum(row["tax"] for row in results),
-            "net_total": sum(row["net_pay"] for row in results),
+            "taxable_net_total": sum(row["taxable_net"] for row in results),
+            "adjustments_total": sum(row["adjustments"] for row in results),
+            "take_home_total": sum(row["take_home"] for row in results),
         }
         payload = {"results": results, "summary": summary}
         if get_export_format(request):
@@ -184,7 +203,9 @@ class PayrollRegisterReportView(APIView):
                     r["gross_pay"],
                     r["total_deductions"],
                     r["tax"],
-                    r["net_pay"],
+                    r["taxable_net"],
+                    r["adjustments"],
+                    r["take_home"],
                 ]
                 for r in results
             ]
@@ -196,7 +217,9 @@ class PayrollRegisterReportView(APIView):
                 summary_rows=[
                     ("Employee Count", summary["employee_count"]),
                     ("Gross Total", summary["gross_total"]),
-                    ("Net Total", summary["net_total"]),
+                    ("Net Total", summary["taxable_net_total"]),
+                    ("Adjustments Total", summary["adjustments_total"]),
+                    ("Take Home Total", summary["take_home_total"]),
                 ],
                 headers=[
                     "Employee ID",
@@ -208,6 +231,8 @@ class PayrollRegisterReportView(APIView):
                     "Deductions",
                     "Tax",
                     "Net",
+                    "Adjustments",
+                    "Take Home",
                 ],
                 rows=rows,
             )

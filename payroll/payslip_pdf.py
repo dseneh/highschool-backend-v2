@@ -264,6 +264,15 @@ class PayslipPDF:
         rows.append(("Gross Pay", payslip.gross_pay))
         self._build_amount_table(story, "EARNINGS", rows, emphasize_last=True)
 
+    def _build_adjustments(self, story: list) -> None:
+        payslip = self.payslip
+        adjustment_rows = self._breakdown_rows((payslip.breakdown or {}).get("adjustments", []))
+        if not adjustment_rows and Decimal(str(payslip.adjustments or 0)) <= 0:
+            return
+        if not adjustment_rows and Decimal(str(payslip.adjustments or 0)) > 0:
+            adjustment_rows = [("Adjustments", payslip.adjustments)]
+        self._build_amount_table(story, "POST-NET ADJUSTMENTS", adjustment_rows)
+
     def _build_deductions(self, story: list) -> None:
         payslip = self.payslip
         breakdown = payslip.breakdown or {}
@@ -273,7 +282,16 @@ class PayslipPDF:
             rows.append(("Tax", payslip.tax))
         if Decimal(str(payslip.deductions or 0)) > 0 and not breakdown.get("deductions"):
             rows.append(("Total Deductions", payslip.deductions))
-        rows.append(("Net Pay", payslip.net_pay))
+        has_adjustments = Decimal(str(payslip.adjustments or 0)) > 0
+        if has_adjustments:
+            taxable_net = (
+                Decimal(str(payslip.gross_pay or 0))
+                - Decimal(str(payslip.tax or 0))
+                - Decimal(str(payslip.deductions or 0))
+            )
+            rows.append(("Net Pay (before adjustments)", taxable_net))
+        else:
+            rows.append(("Net Pay", payslip.net_pay))
         self._build_amount_table(story, "DEDUCTIONS & NET PAY", rows, emphasize_last=True)
 
     def _build_summary_strip(self, story: list) -> None:
@@ -351,6 +369,14 @@ class PayslipPDF:
         self._build_summary_strip(story)
         self._build_earnings(story)
         self._build_deductions(story)
+        self._build_adjustments(story)
+        if Decimal(str(self.payslip.adjustments or 0)) > 0:
+            self._build_amount_table(
+                story,
+                "TAKE HOME PAY",
+                [("Take Home Pay", self.payslip.net_pay)],
+                emphasize_last=True,
+            )
         self._build_footer(story)
         doc.build(story)
         return buffer.getvalue()

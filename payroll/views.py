@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from django.db.models import Q
@@ -48,6 +49,7 @@ from .services import (
     submit_for_approval,
     get_formula_guide,
     preview_formula_amount,
+    sync_payroll_item_type_to_employees,
 )
 from .payslip_pdf import build_payslip_pdf_bytes
 
@@ -327,6 +329,53 @@ class PayrollItemViewSet(_BaseAuditedViewSet):
             qs = qs.filter(item_type=item_type)
         return qs
 
+    @action(detail=False, methods=["get"], url_path="preview-for-employee")
+    def preview_for_employee(self, request):
+        from hr.models import Employee
+
+        from .services import preview_employee_payroll_items
+
+        employee_id = request.query_params.get("employee")
+        if not employee_id:
+            return Response(
+                {"detail": "employee query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            employee = Employee.objects.get(pk=employee_id)
+        except Employee.DoesNotExist:
+            return Response({"detail": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        on_date = None
+        on_date_raw = request.query_params.get("on_date")
+        if on_date_raw:
+            try:
+                on_date = date.fromisoformat(on_date_raw)
+            except ValueError:
+                return Response(
+                    {"detail": "on_date must be ISO format (YYYY-MM-DD)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        basic_override = None
+        basic_raw = request.query_params.get("basic")
+        if basic_raw is not None and str(basic_raw).strip() != "":
+            try:
+                basic_override = Decimal(str(basic_raw))
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "basic must be a valid number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        return Response(
+            preview_employee_payroll_items(
+                employee,
+                on_date=on_date,
+                basic_override=basic_override,
+            )
+        )
+
 
 class PayrollItemTypeViewSet(_BaseAuditedViewSet):
     queryset = PayrollItemType.objects.prefetch_related("amount_rules").all()
@@ -441,6 +490,45 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(result)
+
+    @action(detail=True, methods=["post"], url_path="sync-employees")
+    def sync_employees(self, request, pk=None):
+        item_type = self.get_object()
+        scope = str(request.data.get("scope", "all"))
+        employee_ids = request.data.get("employee_ids") or []
+        employee_identifiers = request.data.get("employee_identifiers") or []
+        department_id = request.data.get("department_id")
+        position_id = request.data.get("position_id")
+
+        combined_identifiers = list(employee_ids) + list(employee_identifiers)
+        try:
+            result = sync_payroll_item_type_to_employees(
+                item_type=item_type,
+                scope=scope,
+                employee_ids=combined_identifiers if scope == "selected" else None,
+                department_id=department_id,
+                position_id=position_id,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        created = result["created"]
+        already_assigned = result["already_assigned"]
+        detail = f"Assigned '{result['item_type_name']}' to {created} employee(s)."
+        if already_assigned:
+            detail += f" {already_assigned} already had this item."
+
+        return Response(
+            {
+                "detail": detail,
+                "targeted": result["matched_employees"],
+                "updated": created,
+                "already_assigned": already_assigned,
+                "item_type_id": result["item_type_id"],
+                "scope": result["scope"],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class TaxRuleViewSet(_BaseAuditedViewSet):

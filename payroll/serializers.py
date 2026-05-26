@@ -134,6 +134,7 @@ class PayslipSerializer(serializers.ModelSerializer):
             "overtime_pay",
             "unpaid_leave_days",
             "allowances",
+            "adjustments",
             "deductions",
             "tax",
             "gross_pay",
@@ -155,6 +156,7 @@ class PayslipSerializer(serializers.ModelSerializer):
             "basic_salary",
             "overtime_pay",
             "allowances",
+            "adjustments",
             "deductions",
             "tax",
             "gross_pay",
@@ -294,16 +296,22 @@ class PayrollRunSerializer(serializers.ModelSerializer):
         agg = obj.payslips.aggregate(
             gross=Sum("gross_pay"),
             allowances=Sum("allowances"),
+            adjustments=Sum("adjustments"),
             deductions=Sum("deductions"),
             tax=Sum("tax"),
             net=Sum("net_pay"),
         )
+        take_home = agg["net"] or Decimal("0.00")
+        adjustments = agg["adjustments"] or Decimal("0.00")
+        taxable_net = take_home - adjustments
         return {
             "gross": str(agg["gross"] or Decimal("0.00")),
             "allowances": str(agg["allowances"] or Decimal("0.00")),
+            "adjustments": str(adjustments),
             "deductions": str(agg["deductions"] or Decimal("0.00")),
             "tax": str(agg["tax"] or Decimal("0.00")),
-            "net": str(agg["net"] or Decimal("0.00")),
+            "taxable_net": str(taxable_net),
+            "net": str(take_home),
         }
 
 
@@ -443,6 +451,7 @@ class PayrollItemTypeSerializer(serializers.ModelSerializer):
             "name",
             "code",
             "item_type",
+            "is_taxable",
             "description",
             "is_active",
             "is_system_managed",
@@ -454,7 +463,7 @@ class PayrollItemTypeSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if self.instance is not None and getattr(self.instance, "is_system_managed", False):
-            locked_fields = {"name", "code", "item_type", "is_active"}
+            locked_fields = {"name", "code", "item_type", "is_taxable", "is_active"}
             for field in locked_fields:
                 if field in attrs:
                     current_value = getattr(self.instance, field, None)
@@ -462,6 +471,15 @@ class PayrollItemTypeSerializer(serializers.ModelSerializer):
                         raise serializers.ValidationError(
                             {field: "This field cannot be changed for system-managed payroll item types."}
                         )
+
+        item_type = attrs.get("item_type", getattr(self.instance, "item_type", None))
+        if item_type == PayrollItemType.ItemType.DEDUCTION:
+            attrs["is_taxable"] = True
+        elif item_type == PayrollItemType.ItemType.ADJUSTMENT:
+            attrs["is_taxable"] = False
+        elif "is_taxable" not in attrs and self.instance is None:
+            attrs["is_taxable"] = True
+
         return super().validate(attrs)
 
     @transaction.atomic

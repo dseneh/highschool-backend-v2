@@ -163,6 +163,12 @@ class Payslip(BaseModel):
     overtime_pay = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     unpaid_leave_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     allowances = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    adjustments = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Non-taxable additions applied after net pay (reimbursements, adjustments, etc.).",
+    )
     deductions = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     tax = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     gross_pay = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
@@ -220,6 +226,7 @@ class PayrollItemType(BaseModel):
 
     class ItemType(models.TextChoices):
         ALLOWANCE = "allowance", "Allowance"
+        ADJUSTMENT = "adjustment", "Adjustment"
         DEDUCTION = "deduction", "Deduction"
 
     name = models.CharField(max_length=150)
@@ -233,6 +240,13 @@ class PayrollItemType(BaseModel):
         max_length=20,
         choices=ItemType.choices,
         default=ItemType.ALLOWANCE,
+    )
+    is_taxable = models.BooleanField(
+        default=True,
+        help_text=(
+            "For allowances and adjustments: when false, the amount is excluded from gross/tax "
+            "and added to take-home pay after net is calculated."
+        ),
     )
     description = models.TextField(blank=True, null=True, default=None)
     is_active = models.BooleanField(default=True)
@@ -333,6 +347,7 @@ class PayrollItem(BaseModel):
 
     class ItemType(models.TextChoices):
         ALLOWANCE = "allowance", "Allowance"
+        ADJUSTMENT = "adjustment", "Adjustment"
         DEDUCTION = "deduction", "Deduction"
 
     employee = models.ForeignKey(
