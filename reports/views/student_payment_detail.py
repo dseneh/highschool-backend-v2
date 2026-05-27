@@ -190,6 +190,7 @@ class StudentPaymentDetailReportView(APIView):
                         enrollment.section.name if enrollment and enrollment.section else ""
                     ),
                     "gross": float(bill.gross_amount) if bill else 0,
+                    "concession": float(bill.concession_amount) if bill else 0,
                     "net": float(bill.net_amount) if bill else 0,
                     "balance": balance_info.get(
                         "balance_total",
@@ -237,17 +238,17 @@ class StudentPaymentDetailReportView(APIView):
         ws = wb.active
         ws.title = "Student Payments"
 
-        ws.merge_cells("A1:O1")
+        ws.merge_cells("A1:P1")
         ws["A1"] = "Student Payment Detail Report"
         ws["A1"].font = Font(bold=True, size=14)
         ws["A1"].alignment = Alignment(horizontal="center")
 
-        ws.merge_cells("A2:O2")
+        ws.merge_cells("A2:P2")
         ws["A2"] = f"Academic Year {academic_year.name}"
         ws["A2"].font = Font(bold=True, size=11)
         ws["A2"].alignment = Alignment(horizontal="center")
 
-        ws.merge_cells("A3:O3")
+        ws.merge_cells("A3:P3")
         ws["A3"] = f"Report Date: {today.strftime('%A, %B %d, %Y')}"
         ws["A3"].alignment = Alignment(horizontal="center")
 
@@ -260,6 +261,7 @@ class StudentPaymentDetailReportView(APIView):
             "Grade Level",
             "Section",
             "Gross",
+            "Concession",
             "Net",
             "Balance",
             "Amount",
@@ -278,8 +280,8 @@ class StudentPaymentDetailReportView(APIView):
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
-        currency_col = 10
-        currency_columns = {7, 8, 9, 10}
+        currency_col = 11
+        currency_columns = {7, 8, 9, 10, 11}
         thin = Side(style="thin")
         thin_border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -294,6 +296,7 @@ class StudentPaymentDetailReportView(APIView):
                 row["grade_level"],
                 row["section"],
                 row["gross"],
+                row["concession"],
                 row["net"],
                 row["balance"],
                 row["amount"],
@@ -321,7 +324,7 @@ class StudentPaymentDetailReportView(APIView):
 
         total_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
         total_font = Font(bold=True, size=9)
-        for col_idx in range(1, 16):
+        for col_idx in range(1, 17):
             cell = ws.cell(row=total_row, column=col_idx)
             cell.fill = total_fill
             cell.font = total_font
@@ -330,7 +333,7 @@ class StudentPaymentDetailReportView(APIView):
         amount_cell = ws.cell(row=total_row, column=currency_col, value=totals["total_amount"])
         apply_xlsx_cell_style(amount_cell, "Amount", totals["total_amount"], currency)
 
-        col_widths = [16, 12, 12, 28, 14, 14, 12, 12, 12, 12, 16, 18, 16, 12, 28]
+        col_widths = [16, 12, 12, 28, 14, 14, 12, 12, 12, 12, 12, 16, 18, 16, 12, 28]
         for col_idx, width in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(col_idx)].width = width
         ws.freeze_panes = f"A{data_start}"
