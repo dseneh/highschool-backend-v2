@@ -139,6 +139,26 @@ class PayrollRun(BaseModel):
         return self.period.schedule.currency
 
 
+class PayrollPayslipColumnGroup(BaseModel):
+    """Tenant-level display column group for payroll item types on payslip tables."""
+
+    label = models.CharField(max_length=100)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = "payroll_payslip_column_group"
+        ordering = ["sort_order", "label"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["label"],
+                name="payroll_uniq_payslip_column_group_label_per_tenant",
+            ),
+        ]
+
+    def __str__(self):
+        return self.label
+
+
 class Payslip(BaseModel):
     """Snapshot of an employee's pay for a single payroll run."""
 
@@ -202,19 +222,21 @@ class AmountCalculationType(models.TextChoices):
 
 
 class TargetSalaryBy(models.TextChoices):
-    ANNUAL = "annual", "Annual"
-    PER_PERIOD = "per_period", "Per Period"
+    ANNUAL = "annual", "Annual Salary"
+    PER_PERIOD = "per_period", "Monthly / Per Pay Period"
 
 
 class ItemAppliesTo(models.TextChoices):
     GROSS = "gross", "Gross Pay"
     BASIC = "basic", "Basic Salary"
+    ANNUAL = "annual", "Annual Salary"
 
 
 class TaxAppliesTo(models.TextChoices):
     GROSS = "gross", "Gross Pay"
     TAXABLE_GROSS = "taxable_gross", "Taxable Gross"
     BASIC = "basic", "Basic Salary"
+    ANNUAL = "annual", "Annual Salary"
 
 
 class PayrollItemType(BaseModel):
@@ -253,6 +275,17 @@ class PayrollItemType(BaseModel):
     is_system_managed = models.BooleanField(
         default=False,
         help_text="System-managed types cannot be deleted; protected fields cannot be edited.",
+    )
+    payslip_column_group = models.ForeignKey(
+        PayrollPayslipColumnGroup,
+        on_delete=models.SET_NULL,
+        related_name="item_types",
+        null=True,
+        blank=True,
+        help_text=(
+            "Optional payslip table column group. Item types in the same group are summed "
+            "into one column when payslips are generated. Leave blank for a standalone column."
+        ),
     )
 
     class Meta:
@@ -295,7 +328,7 @@ class PayrollItemTypeRule(BaseModel):
         default="",
         help_text=(
             "Python expression when calculation_type=FORMULA. "
-            "Variables: gross, basic, allowances, deductions, taxable_gross."
+            "Variables: gross, basic, annual, allowances, deductions, taxable_gross."
         ),
     )
     applies_to = models.CharField(
@@ -373,6 +406,34 @@ class PayrollItem(BaseModel):
     effective_from = models.DateField(blank=True, null=True, default=None)
     effective_to = models.DateField(blank=True, null=True, default=None)
     notes = models.TextField(blank=True, null=True, default=None)
+    override_calculation_type = models.CharField(
+        max_length=20,
+        choices=AmountCalculationType.choices,
+        blank=True,
+        null=True,
+        default=None,
+        help_text="When set, replaces catalog bracket rules for this employee assignment.",
+    )
+    override_value = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        blank=True,
+        null=True,
+        default=None,
+        help_text="Flat amount or percentage depending on override_calculation_type.",
+    )
+    override_formula = models.TextField(
+        blank=True,
+        default="",
+        help_text="Python expression when override_calculation_type=formula.",
+    )
+    override_applies_to = models.CharField(
+        max_length=20,
+        choices=ItemAppliesTo.choices,
+        blank=True,
+        null=True,
+        default=None,
+    )
 
     class Meta:
         db_table = "payroll_item"
@@ -389,6 +450,10 @@ class PayrollItem(BaseModel):
         if self.effective_to and on_date > self.effective_to:
             return False
         return True
+
+    @property
+    def has_amount_override(self) -> bool:
+        return bool(self.override_calculation_type)
 
 
 class TaxRule(BaseModel):
@@ -463,7 +528,7 @@ class TaxAmountRule(BaseModel):
         default="",
         help_text=(
             "Python expression when calculation_type=FORMULA. "
-            "Variables: gross, basic, allowances, deductions, taxable_gross."
+            "Variables: gross, basic, annual, allowances, deductions, taxable_gross."
         ),
     )
     applies_to = models.CharField(
@@ -519,11 +584,6 @@ class EmployeeTaxRuleOverride(BaseModel):
         PERCENTAGE = "percentage", "Percentage"
         FORMULA = "formula", "Formula"
 
-    class AppliesTo(models.TextChoices):
-        GROSS = "gross", "Gross Pay"
-        TAXABLE_GROSS = "taxable_gross", "Taxable Gross"
-        BASIC = "basic", "Basic Salary"
-
     employee = models.ForeignKey(
         "hr.Employee",
         on_delete=models.CASCADE,
@@ -551,7 +611,7 @@ class EmployeeTaxRuleOverride(BaseModel):
     formula = models.TextField(blank=True, default="")
     applies_to = models.CharField(
         max_length=20,
-        choices=AppliesTo.choices,
+        choices=TaxAppliesTo.choices,
         blank=True,
         null=True,
         default=None,
@@ -583,6 +643,14 @@ class PayrollSettings(BaseModel):
         null=True,
         blank=True,
         help_text="Expense transaction type used when posting payroll cash disbursements.",
+    )
+    payslip_table_column_labels = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Optional tenant overrides for standard payslip table column headers, e.g. "
+            '{"basic": "Base Salary", "tax": "PAYE"}.'
+        ),
     )
 
     class Meta:

@@ -13,7 +13,7 @@ from accounting.models import AccountingPayrollPostingBatch, AccountingPayrollPo
 from payroll.models import PayrollRun, Payslip
 
 from ..access_policies import ReportsAccessPolicy
-from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param
+from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param, resolve_export_currency_note
 
 
 def _apply_payroll_run_filters(queryset, request):
@@ -105,7 +105,7 @@ class PayrollRunSummaryReportView(APIView):
                 request,
                 filename_base="payroll-run-summary",
                 title="Payroll Run Summary",
-                subtitle=None,
+                subtitle=resolve_export_currency_note(request),
                 summary_rows=[
                     ("Runs", summary["run_count"]),
                     ("Employees", summary["employee_count"]),
@@ -129,6 +129,7 @@ class PayrollRunSummaryReportView(APIView):
                     "Take Home",
                 ],
                 rows=rows,
+                plain_amounts=True,
             )
             if export_response:
                 return export_response
@@ -213,7 +214,7 @@ class PayrollRegisterReportView(APIView):
                 request,
                 filename_base="payroll-register",
                 title="Payroll Register",
-                subtitle=None,
+                subtitle=resolve_export_currency_note(request),
                 summary_rows=[
                     ("Employee Count", summary["employee_count"]),
                     ("Gross Total", summary["gross_total"]),
@@ -235,6 +236,7 @@ class PayrollRegisterReportView(APIView):
                     "Take Home",
                 ],
                 rows=rows,
+                plain_amounts=True,
             )
             if export_response:
                 return export_response
@@ -304,11 +306,11 @@ class PayrollPostingJournalReportView(APIView):
                 filename_base="payroll-posting-journal",
                 
                 title="Payroll Posting Journal",
-                subtitle=None,
+                subtitle=resolve_export_currency_note(request),
                 summary_rows=[("Line Count", len(results))],
                 headers=["Date", "Status", "Journal Ref", "Staff", "Line Type", "Debit Acct", "Credit Acct", "Debit", "Credit", "Description"],
                 rows=rows,
-            
+                plain_amounts=True,
             )
             if export_response:
                 return export_response

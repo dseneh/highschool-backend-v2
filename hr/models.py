@@ -175,7 +175,13 @@ class Employee(BasePersonModel):
         max_digits=14,
         decimal_places=2,
         default=Decimal("0.00"),
-        help_text="Monthly base for MONTHLY salary types; ignored for HOURLY.",
+        help_text="Per-period base for MONTHLY salary types; ignored for HOURLY.",
+    )
+    annual_salary = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Computed from basic_salary and pay schedule frequency; used for annual tax/item brackets.",
     )
     hourly_rate = models.DecimalField(
         max_digits=10,
@@ -214,9 +220,27 @@ class Employee(BasePersonModel):
     def __str__(self):
         return f"{self.id_number} - {self.get_full_name()}"
 
+    def compute_annual_salary(self) -> Decimal:
+        """Derive contracted annual pay from per-period basic and pay schedule."""
+        if self.salary_type == self.SalaryType.HOURLY:
+            return Decimal("0.00")
+        from payroll.services import (
+            annual_salary_from_period_basic,
+            periods_per_year_for_schedule,
+        )
+
+        schedule = None
+        if self.pay_schedule_id:
+            schedule = self.pay_schedule
+        return annual_salary_from_period_basic(
+            self.basic_salary or 0,
+            periods_per_year=periods_per_year_for_schedule(schedule),
+        ).quantize(Decimal("0.01"))
+
     def save(self, *args, **kwargs):
         if not self.id_number:
             self.id_number = self._generate_id_number()
+        self.annual_salary = self.compute_annual_salary()
         super().save(*args, **kwargs)
 
     @classmethod

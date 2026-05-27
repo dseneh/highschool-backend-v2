@@ -15,8 +15,10 @@ from django.utils import timezone
 
 from .models import (
     AmountCalculationType,
+    ItemAppliesTo,
     PayrollItem,
     PayrollItemType,
+    PayrollPayslipColumnGroup,
     PayrollPeriod,
     PayrollRun,
     Payslip,
@@ -106,11 +108,12 @@ _FORMULA_BUILTINS = {
 }
 
 FORMULA_GUIDE = {
-    "variables": ["gross", "basic", "allowances", "deductions", "taxable_gross"],
+    "variables": ["gross", "basic", "annual", "allowances", "deductions", "taxable_gross"],
     "helpers": ["min", "max", "abs", "Decimal"],
     "templates": [
         {"label": "10% of gross", "formula": "gross * 0.10"},
         {"label": "5% of basic capped at 500", "formula": "min(basic * 0.05, 500)"},
+        {"label": "2% of annual salary", "formula": "annual * 0.02"},
         {"label": "Fixed 150", "formula": "150"},
         {"label": "Taxable gross floor", "formula": "max(taxable_gross, 0)"},
     ],
@@ -165,14 +168,122 @@ def get_formula_guide() -> dict:
     return FORMULA_GUIDE
 
 
+def periods_per_year_for_schedule(schedule) -> Decimal:
+    """Map pay schedule frequency to annualization factor for per-period basic pay."""
+    if schedule is None:
+        return Decimal("12")
+    frequency = getattr(schedule, "frequency", None) or PaySchedule.Frequency.MONTHLY
+    if frequency == PaySchedule.Frequency.WEEKLY:
+        return Decimal("52")
+    if frequency == PaySchedule.Frequency.BIWEEKLY:
+        return Decimal("26")
+    return Decimal("12")
+
+
+def annual_salary_from_period_basic(
+    basic: Decimal,
+    *,
+    periods_per_year: Decimal | None = None,
+) -> Decimal:
+    pp = periods_per_year or Decimal("12")
+    return Decimal(basic or 0) * pp
+
+
+def _normalize_applies_to(applies_to) -> str:
+    """Normalize applies_to from model enums or legacy strings."""
+    if applies_to is None:
+        return ItemAppliesTo.GROSS
+    if hasattr(applies_to, "value"):
+        applies_to = applies_to.value
+    normalized = str(applies_to).strip().lower()
+    if normalized in ("basic", "gross", "taxable_gross", "annual"):
+        return normalized
+    return ItemAppliesTo.GROSS
+
+
+def build_amount_rule_context(
+    *,
+    gross: Decimal,
+    basic: Decimal,
+    allowances: Decimal = ZERO,
+    deductions: Decimal = ZERO,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
+) -> dict:
+    pp = periods_per_year or Decimal("12")
+    gross_d = Decimal(gross or 0)
+    basic_d = Decimal(basic or 0)
+    allowances_d = Decimal(allowances or 0)
+    annual = (
+        Decimal(annual_salary or 0)
+        if annual_salary is not None
+        else annual_salary_from_period_basic(basic_d, periods_per_year=pp)
+    )
+    return {
+        "gross": gross_d,
+        "basic": basic_d,
+        "allowances": allowances_d,
+        "deductions": Decimal(deductions or 0),
+        "taxable_gross": (basic_d + allowances_d).quantize(Decimal("0.01")),
+        "annual": annual,
+        "periods_per_year": pp,
+    }
+
+
+def _bracket_salary_for_amount_rule(
+    rule,
+    *,
+    ctx: dict | None = None,
+    basic: Decimal,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
+) -> Decimal:
+    """Salary basis used to test bracket min/max for an amount rule."""
+    target_by = getattr(rule, "target_salary_by", TargetSalaryBy.PER_PERIOD) or TargetSalaryBy.PER_PERIOD
+    if target_by == TargetSalaryBy.ANNUAL:
+        return _normalize_salary_for_bracket(
+            basic,
+            target_salary_by=TargetSalaryBy.ANNUAL,
+            periods_per_year=periods_per_year,
+            annual_salary=annual_salary,
+        )
+
+    if ctx is None:
+        ctx = build_amount_rule_context(
+            gross=basic,
+            basic=basic,
+            periods_per_year=periods_per_year,
+            annual_salary=annual_salary,
+        )
+
+    applies_to = _normalize_applies_to(getattr(rule, "applies_to", None))
+    if applies_to == "annual":
+        return ctx.get("annual") or annual_salary_from_period_basic(
+            ctx["basic"],
+            periods_per_year=ctx.get("periods_per_year"),
+        )
+    if applies_to == "gross":
+        return ctx["gross"]
+    if applies_to == "taxable_gross":
+        return ctx["taxable_gross"]
+    return ctx["basic"]
+
+
 def _normalize_salary_for_bracket(
     basic: Decimal,
     *,
     target_salary_by: str,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
 ) -> Decimal:
-    """Convert employee basic salary to the basis used for bracket matching."""
+    """Convert employee pay to the salary basis used for bracket matching."""
     if target_salary_by == TargetSalaryBy.ANNUAL:
-        return Decimal(basic or 0) * Decimal("12")
+        if annual_salary is not None:
+            return Decimal(annual_salary or 0)
+        return annual_salary_from_period_basic(
+            basic,
+            periods_per_year=periods_per_year,
+        )
     return Decimal(basic or 0)
 
 
@@ -195,8 +306,18 @@ def _salary_in_bracket(
     return True
 
 
-def match_amount_rule(rules, *, basic: Decimal):
-    """Pick the first amount rule whose salary bracket contains ``basic``.
+def match_amount_rule(
+    rules,
+    *,
+    basic: Decimal,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
+    ctx: dict | None = None,
+):
+    """Pick the first amount rule whose salary bracket contains the employee.
+
+    Bracket matching uses the rule's ``applies_to`` basis (gross, taxable gross,
+    basic, or annual) when ``target_salary_by`` is per-period.
 
     When no bracket matches, fall back to a catch-all rule (min=0 and max=0)
     if one exists so item types with a single open bracket still apply to all
@@ -211,9 +332,12 @@ def match_amount_rule(rules, *, basic: Decimal):
         ),
     )
     for rule in ordered_rules:
-        bracket_salary = _normalize_salary_for_bracket(
-            basic,
-            target_salary_by=rule.target_salary_by,
+        bracket_salary = _bracket_salary_for_amount_rule(
+            rule,
+            ctx=ctx,
+            basic=basic,
+            periods_per_year=periods_per_year,
+            annual_salary=annual_salary,
         )
         min_bound = Decimal(rule.target_salary_min or 0)
         max_bound = Decimal(rule.target_salary_max or 0)
@@ -239,6 +363,9 @@ def _pick_amount_rule(
     *,
     basic: Decimal,
     ignore_brackets: bool = False,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
+    ctx: dict | None = None,
 ):
     """Return ``(rule, matched)`` for amount resolution.
 
@@ -256,16 +383,28 @@ def _pick_amount_rule(
         return None, False
     if ignore_brackets:
         return ordered[0], True
-    matched = match_amount_rule(ordered, basic=basic)
+    matched = match_amount_rule(
+        ordered,
+        basic=basic,
+        periods_per_year=periods_per_year,
+        annual_salary=annual_salary,
+        ctx=ctx,
+    )
     if matched is not None:
         return matched, True
     return None, False
 
 
-def _resolve_calc_base(applies_to: str, ctx: dict) -> Decimal:
-    if applies_to == "basic":
+def _resolve_calc_base(applies_to, ctx: dict) -> Decimal:
+    normalized = _normalize_applies_to(applies_to)
+    if normalized == "basic":
         return ctx["basic"]
-    if applies_to == "taxable_gross":
+    if normalized == "annual":
+        return ctx.get("annual") or annual_salary_from_period_basic(
+            ctx["basic"],
+            periods_per_year=ctx.get("periods_per_year"),
+        )
+    if normalized == "taxable_gross":
         return ctx["taxable_gross"]
     return ctx["gross"]
 
@@ -333,19 +472,26 @@ def preview_formula_amount(
     target_salary_max: Decimal | str | int | float | None = None,
     target_salary_by: str = TargetSalaryBy.PER_PERIOD,
     salary_limit: Decimal | str | int | float | None = None,
+    periods_per_year: Decimal | str | int | float | None = None,
 ) -> dict:
-    taxable_gross = gross
-    ctx = {
-        "gross": Decimal(gross or 0),
-        "basic": Decimal(basic or 0),
-        "allowances": Decimal(allowances or 0),
-        "deductions": Decimal(deductions or 0),
-        "taxable_gross": Decimal(taxable_gross or 0),
-    }
+    pp = Decimal(str(periods_per_year or 12))
+    ctx = build_amount_rule_context(
+        gross=gross,
+        basic=basic,
+        allowances=allowances,
+        deductions=deductions,
+        periods_per_year=pp,
+    )
 
-    bracket_salary = _normalize_salary_for_bracket(
-        ctx["basic"],
+    preview_rule = SimpleNamespace(
         target_salary_by=target_salary_by,
+        applies_to=applies_to,
+    )
+    bracket_salary = _bracket_salary_for_amount_rule(
+        preview_rule,
+        ctx=ctx,
+        basic=ctx["basic"],
+        periods_per_year=pp,
     )
     matched = _salary_in_bracket(
         bracket_salary,
@@ -388,22 +534,30 @@ def preview_amount_rules(
     basic: Decimal,
     allowances: Decimal,
     deductions: Decimal,
+    periods_per_year: Decimal | None = None,
 ) -> dict:
     """Preview all bracket rules and return per-rule results."""
-    ctx = {
-        "gross": Decimal(gross or 0),
-        "basic": Decimal(basic or 0),
-        "allowances": Decimal(allowances or 0),
-        "deductions": Decimal(deductions or 0),
-        "taxable_gross": Decimal(gross or 0),
-    }
-    matched_rule = match_amount_rule(rules, basic=ctx["basic"])
+    ctx = build_amount_rule_context(
+        gross=gross,
+        basic=basic,
+        allowances=allowances,
+        deductions=deductions,
+        periods_per_year=periods_per_year,
+    )
+    matched_rule = match_amount_rule(
+        rules,
+        basic=ctx["basic"],
+        periods_per_year=ctx["periods_per_year"],
+        ctx=ctx,
+    )
     breakdown = []
     for rule in rules:
         _coerce_rule_calc_fields(rule)
-        bracket_salary = _normalize_salary_for_bracket(
-            ctx["basic"],
-            target_salary_by=rule.target_salary_by,
+        bracket_salary = _bracket_salary_for_amount_rule(
+            rule,
+            ctx=ctx,
+            basic=ctx["basic"],
+            periods_per_year=ctx["periods_per_year"],
         )
         in_bracket = _salary_in_bracket(
             bracket_salary,
@@ -458,6 +612,8 @@ def apply_tax_rules(
     allowances: Decimal,
     deductions: Decimal,
     on_date: date,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
     overrides: dict | None = None,
 ) -> tuple[Decimal, list[dict]]:
     """Evaluate tax rules using bracket-based amount rules.
@@ -465,14 +621,14 @@ def apply_tax_rules(
     Each tax rule resolves to zero when no amount rule matches the employee's
     salary bracket.
     """
-    taxable_gross = gross
-    ctx = {
-        "gross": gross,
-        "basic": basic,
-        "allowances": allowances,
-        "deductions": deductions,
-        "taxable_gross": taxable_gross,
-    }
+    ctx = build_amount_rule_context(
+        gross=gross,
+        basic=basic,
+        allowances=allowances,
+        deductions=deductions,
+        periods_per_year=periods_per_year,
+        annual_salary=annual_salary,
+    )
 
     total = ZERO
     breakdown: list[dict] = []
@@ -480,7 +636,13 @@ def apply_tax_rules(
         if not rule.applies_on(on_date):
             continue
         amount_rules = list(rule.amount_rules.all())
-        matched = match_amount_rule(amount_rules, basic=basic)
+        matched = match_amount_rule(
+            amount_rules,
+            basic=basic,
+            periods_per_year=ctx["periods_per_year"],
+            annual_salary=annual_salary,
+            ctx=ctx,
+        )
         if matched is None:
             breakdown.append(
                 {
@@ -552,7 +714,15 @@ def _summarize_payroll_items(
             "name": item.name,
             "amount": str(amt),
             "matched": matched,
+            "override": bool(getattr(item, "override_calculation_type", None)),
         }
+        item_type = item.item_type_ref
+        if item_type is not None:
+            line["item_type_id"] = str(item_type.id)
+            line["item_type_name"] = item_type.name
+        else:
+            line["item_type_id"] = ""
+            line["item_type_name"] = ""
 
         if amt == ZERO:
             if not matched:
@@ -590,6 +760,112 @@ def _summarize_payroll_items(
     }
 
 
+def _load_item_type_payslip_column_groups(
+    item_type_ids: Iterable[str] | None = None,
+) -> dict[str, PayrollPayslipColumnGroup]:
+    qs = PayrollItemType.objects.select_related("payslip_column_group").filter(
+        payslip_column_group_id__isnull=False,
+    )
+    if item_type_ids is not None:
+        ids = [value for value in item_type_ids if value]
+        if not ids:
+            return {}
+        qs = qs.filter(id__in=ids)
+    return {
+        str(item_type.id): item_type.payslip_column_group
+        for item_type in qs
+    }
+
+
+def _collect_breakdown_item_type_ids(breakdown: dict) -> set[str]:
+    ids: set[str] = set()
+    for bucket in ("allowances", "adjustments", "deductions"):
+        for line in breakdown.get(bucket, []):
+            item_type_id = (line.get("item_type_id") or "").strip()
+            if item_type_id:
+                ids.add(item_type_id)
+    return ids
+
+
+def _apply_payslip_column_layout_from_item_types(breakdown: dict) -> None:
+    """Stamp display column ids on breakdown lines from item-type group assignments."""
+    item_type_ids = _collect_breakdown_item_type_ids(breakdown)
+    item_type_to_group = _load_item_type_payslip_column_groups(item_type_ids)
+    for bucket in ("allowances", "adjustments", "deductions"):
+        for line in breakdown.get(bucket, []):
+            item_type_id = (line.get("item_type_id") or "").strip()
+            if not item_type_id:
+                line["table_column_id"] = ""
+                line["table_column_label"] = ""
+                continue
+            group = item_type_to_group.get(item_type_id)
+            if group is not None:
+                line["table_column_id"] = f"group:{group.id}"
+                line["table_column_label"] = group.label
+            else:
+                label = (line.get("item_type_name") or line.get("name") or "").strip()
+                line["table_column_id"] = f"item:{item_type_id}"
+                line["table_column_label"] = label
+
+
+def _apply_payslip_column_layout_for_unassigned(breakdown: dict) -> None:
+    """Apply item-type group/standalone layout only where no column is stamped yet."""
+    item_type_ids = _collect_breakdown_item_type_ids(breakdown)
+    item_type_to_group = _load_item_type_payslip_column_groups(item_type_ids)
+    for bucket in ("allowances", "adjustments", "deductions"):
+        for line in breakdown.get(bucket, []):
+            if (line.get("table_column_id") or "").strip():
+                continue
+            item_type_id = (line.get("item_type_id") or "").strip()
+            if not item_type_id:
+                line["table_column_id"] = ""
+                line["table_column_label"] = ""
+                continue
+            group = item_type_to_group.get(item_type_id)
+            if group is not None:
+                line["table_column_id"] = f"group:{group.id}"
+                line["table_column_label"] = group.label
+            else:
+                label = (line.get("item_type_name") or line.get("name") or "").strip()
+                line["table_column_id"] = f"item:{item_type_id}"
+                line["table_column_label"] = label
+
+
+def _preserve_breakdown_column_layout(new_breakdown: dict, old_breakdown: dict | None) -> None:
+    """Keep existing table column assignments when recalculating a single payslip."""
+    old_breakdown = old_breakdown or {}
+    for bucket in ("allowances", "adjustments", "deductions"):
+        old_by_type = {
+            line.get("item_type_id"): line
+            for line in old_breakdown.get(bucket, [])
+            if line.get("item_type_id")
+        }
+        for line in new_breakdown.get(bucket, []):
+            item_type_id = line.get("item_type_id") or ""
+            if not item_type_id:
+                line["table_column_id"] = ""
+                line["table_column_label"] = ""
+                continue
+            previous = old_by_type.get(item_type_id)
+            if previous is not None:
+                line["table_column_id"] = previous.get("table_column_id") or ""
+                line["table_column_label"] = previous.get("table_column_label") or ""
+    _apply_payslip_column_layout_for_unassigned(new_breakdown)
+
+
+def _payroll_item_override_rule(item: PayrollItem):
+    calc_type = getattr(item, "override_calculation_type", None)
+    if not calc_type:
+        return None
+    return SimpleNamespace(
+        calculation_type=calc_type,
+        value=getattr(item, "override_value", None),
+        formula=getattr(item, "override_formula", "") or "",
+        applies_to=getattr(item, "override_applies_to", None) or ItemAppliesTo.BASIC,
+        salary_limit=None,
+    )
+
+
 def _resolve_item_amount(
     item: PayrollItem,
     *,
@@ -598,8 +874,22 @@ def _resolve_item_amount(
     allowances: Decimal = ZERO,
     deductions: Decimal = ZERO,
     ignore_brackets: bool = False,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
 ) -> tuple[Decimal, bool]:
-    """Compute an item's effective amount from its catalog type's amount rules."""
+    """Compute an item's effective amount from override or catalog type rules."""
+    ctx = build_amount_rule_context(
+        gross=gross,
+        basic=basic,
+        allowances=allowances,
+        deductions=deductions,
+        periods_per_year=periods_per_year,
+        annual_salary=annual_salary,
+    )
+    override_rule = _payroll_item_override_rule(item)
+    if override_rule is not None:
+        return resolve_amount_from_rule(override_rule, ctx=ctx), True
+
     item_type = item.item_type_ref
     if item_type is None:
         return ZERO, False
@@ -608,16 +898,12 @@ def _resolve_item_amount(
         rules,
         basic=basic,
         ignore_brackets=ignore_brackets,
+        periods_per_year=ctx["periods_per_year"],
+        annual_salary=annual_salary,
+        ctx=ctx,
     )
     if matched is None:
         return ZERO, False
-    ctx = {
-        "gross": Decimal(gross or 0),
-        "basic": Decimal(basic or 0),
-        "allowances": Decimal(allowances or 0),
-        "deductions": Decimal(deductions or 0),
-        "taxable_gross": Decimal(gross or 0),
-    }
     return resolve_amount_from_rule(matched, ctx=ctx), bracket_matched
 
 
@@ -626,6 +912,8 @@ def _resolve_payroll_items_for_employee(
     *,
     basic: Decimal,
     overtime_pay: Decimal = ZERO,
+    periods_per_year: Decimal | None = None,
+    annual_salary: Decimal | None = None,
 ) -> dict:
     """Resolve assigned payroll items, iterating until taxable gross stabilizes."""
     gross_estimate = basic
@@ -645,10 +933,12 @@ def _resolve_payroll_items_for_employee(
             amount, matched = _resolve_item_amount(
                 item,
                 basic=basic,
-                gross=gross_estimate,
+                gross=_quantize(gross_estimate + overtime_pay),
                 allowances=running_allowances,
                 deductions=running_deductions,
                 ignore_brackets=ignore_brackets,
+                periods_per_year=periods_per_year,
+                annual_salary=annual_salary,
             )
             pass_resolved.append((item, amount, matched))
             amt = _quantize(amount)
@@ -682,12 +972,25 @@ def preview_employee_payroll_items(
     )
     items = [
         item
-        for item in employee.payroll_items.select_related("item_type_ref").prefetch_related(
+        for item in employee.payroll_items.select_related(
+            "item_type_ref",
+            "item_type_ref__payslip_column_group",
+        ).prefetch_related(
             "item_type_ref__amount_rules",
         )
         if item.applies_on(on_date)
     ]
-    summarized = _resolve_payroll_items_for_employee(items, basic=basic)
+    periods_per_year = periods_per_year_for_schedule(getattr(employee, "pay_schedule", None))
+    if basic_override is not None:
+        annual_salary = annual_salary_from_period_basic(basic, periods_per_year=periods_per_year)
+    else:
+        annual_salary = Decimal(getattr(employee, "annual_salary", 0) or 0)
+    summarized = _resolve_payroll_items_for_employee(
+        items,
+        basic=basic,
+        periods_per_year=periods_per_year,
+        annual_salary=annual_salary,
+    )
     lines: list[dict] = []
     for bucket in ("allowances", "adjustments", "deductions"):
         for line in summarized["breakdown"].get(bucket, []):
@@ -699,6 +1002,8 @@ def preview_employee_payroll_items(
             )
     return {
         "basic_salary": str(basic),
+        "annual_salary": str(annual_salary),
+        "periods_per_year": str(periods_per_year),
         "allowances_total": str(summarized["allowances"]),
         "adjustments_total": str(summarized["adjustments"]),
         "deductions_total": str(summarized["deductions"]),
@@ -789,17 +1094,27 @@ def sync_payroll_item_type_to_employees(
     }
 
 
-def _build_payslip_payload(employee, run: PayrollRun) -> dict:
+def _build_payslip_payload(
+    employee,
+    run: PayrollRun,
+    *,
+    apply_column_layout: bool = False,
+) -> dict:
     """Compute a fresh payslip payload for ``employee`` against ``run``."""
     period = run.period
     schedule = period.schedule
     on_date = period.end_date
 
     basic = _quantize(employee.basic_salary or 0)
+    periods_per_year = periods_per_year_for_schedule(schedule)
+    annual_salary = Decimal(getattr(employee, "annual_salary", 0) or 0)
 
     items = [
         item
-        for item in employee.payroll_items.select_related("item_type_ref").prefetch_related(
+        for item in employee.payroll_items.select_related(
+            "item_type_ref",
+            "item_type_ref__payslip_column_group",
+        ).prefetch_related(
             "item_type_ref__amount_rules",
         )
         if item.applies_on(on_date)
@@ -814,6 +1129,8 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
         items,
         basic=basic,
         overtime_pay=overtime_pay,
+        periods_per_year=periods_per_year,
+        annual_salary=annual_salary,
     )
     allowance_total = summarized["allowances"]
     adjustment_total = summarized["adjustments"]
@@ -831,9 +1148,18 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
         allowances=allowance_total,
         deductions=deduction_total,
         on_date=on_date,
+        periods_per_year=periods_per_year,
+        annual_salary=annual_salary,
     )
 
     net = _quantize(gross - tax - deduction_total + adjustment_total)
+
+    breakdown = {
+        **summarized["breakdown"],
+        "tax": tax_breakdown,
+    }
+    if apply_column_layout:
+        _apply_payslip_column_layout_from_item_types(breakdown)
 
     return {
         "currency": schedule.currency,
@@ -847,10 +1173,7 @@ def _build_payslip_payload(employee, run: PayrollRun) -> dict:
         "tax": tax,
         "gross_pay": gross,
         "net_pay": net,
-        "breakdown": {
-            **summarized["breakdown"],
-            "tax": tax_breakdown,
-        },
+        "breakdown": breakdown,
     }
 
 
@@ -876,7 +1199,11 @@ def generate_payslips(run: PayrollRun, *, regenerate: bool = False) -> list[Pays
 
     employees = (
         Employee.objects.filter(employment_status=Employee.EmploymentStatus.ACTIVE)
-        .prefetch_related("payroll_items__item_type_ref__amount_rules", "tax_rules__amount_rules")
+        .prefetch_related(
+            "payroll_items__item_type_ref__amount_rules",
+            "payroll_items__item_type_ref__payslip_column_group",
+            "tax_rules__amount_rules",
+        )
     )
 
     payslips: list[Payslip] = []
@@ -884,7 +1211,7 @@ def generate_payslips(run: PayrollRun, *, regenerate: bool = False) -> list[Pays
         readiness = employee.payroll_readiness()
         if not readiness["ready"]:
             continue
-        payload = _build_payslip_payload(employee, run)
+        payload = _build_payslip_payload(employee, run, apply_column_layout=True)
         payslips.append(
             Payslip.objects.create(
                 payroll_run=run,
@@ -905,7 +1232,7 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
     if payslip.payroll_run.status != PayrollRun.Status.DRAFT:
         raise ValueError("Payslips can only be recalculated while the run is in DRAFT.")
 
-    payload = _build_payslip_payload(payslip.employee, payslip.payroll_run)
+    payload = _build_payslip_payload(payslip.employee, payslip.payroll_run, apply_column_layout=False)
     overtime_hours = payslip.overtime_hours or ZERO
     unpaid_leave_days = payslip.unpaid_leave_days or ZERO
 
@@ -926,6 +1253,7 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
 
     basic = _quantize(Decimal(employee.basic_salary or 0) - leave_deduction)
     gross = _quantize(basic + payload["allowances"] + overtime_pay)
+    annual_salary = Decimal(getattr(employee, "annual_salary", 0) or 0)
 
     rules = list(
         employee.tax_rules.prefetch_related("amount_rules").all()
@@ -937,6 +1265,8 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
         allowances=payload["allowances"],
         deductions=payload["deductions"],
         on_date=payslip.payroll_run.period.end_date,
+        periods_per_year=periods_per_year_for_schedule(schedule),
+        annual_salary=annual_salary,
     )
     net = _quantize(gross - tax - payload["deductions"] + payload["adjustments"])
 
@@ -950,10 +1280,12 @@ def recalculate_payslip(payslip: Payslip) -> Payslip:
     payslip.tax = tax
     payslip.gross_pay = gross
     payslip.net_pay = net
-    payslip.breakdown = {
+    new_breakdown = {
         **payload["breakdown"],
         "tax": tax_breakdown,
     }
+    _preserve_breakdown_column_layout(new_breakdown, payslip.breakdown)
+    payslip.breakdown = new_breakdown
     payslip.save()
     return payslip
 

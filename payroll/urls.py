@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     PayrollItemTypeViewSet,
     PayrollItemViewSet,
+    PayrollPayslipColumnGroupViewSet,
     PayrollPeriodViewSet,
     PayrollRunViewSet,
     PayrollSettingsView,
@@ -19,6 +20,11 @@ router.register(r"payroll-periods", PayrollPeriodViewSet, basename="payroll-peri
 router.register(r"payroll-runs", PayrollRunViewSet, basename="payroll-run")
 router.register(r"payslips", PayslipViewSet, basename="payslip")
 router.register(r"payroll-items", PayrollItemViewSet, basename="payroll-item")
+router.register(
+    r"payroll-payslip-column-groups",
+    PayrollPayslipColumnGroupViewSet,
+    basename="payroll-payslip-column-group",
+)
 router.register(r"payroll-item-types", PayrollItemTypeViewSet, basename="payroll-item-type")
 router.register(r"tax-rules", TaxRuleViewSet, basename="tax-rule")
 router.register(

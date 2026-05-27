@@ -414,6 +414,18 @@ def resolve_currency_symbol(currency=None, *, fallback: str = "$") -> str:
     return fallback
 
 
+def format_pdf_amount(amount) -> str:
+    """Format a monetary amount for PDF/table display without a currency symbol."""
+    if amount is None or amount == "":
+        return ""
+    try:
+        numeric = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+    sign = "-" if numeric < 0 else ""
+    return f"{sign}{abs(numeric):,.2f}"
+
+
 def format_pdf_currency(amount, currency_symbol: str = "$") -> str:
     """Format a monetary amount for PDF display using the currency symbol."""
     if amount is None or amount == "":

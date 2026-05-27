@@ -26,7 +26,7 @@ from common.services.pdf_components import (
     PDF_TEXT_MUTED,
     append_pdf_document_header,
     append_pdf_subtitle,
-    format_pdf_currency,
+    format_pdf_amount,
     pdf_alternating_row_style,
     pdf_base_table_style,
     pdf_primary_header_row_style,
@@ -46,6 +46,7 @@ class PayslipPDF:
         self.period = self.run.period
         self.schedule = self.period.schedule
         self.currency_symbol = resolve_currency_symbol(payslip.currency)
+        self.currency_code = getattr(payslip.currency, "code", None) or self.currency_symbol
         self._setup_styles()
 
     def _setup_styles(self) -> None:
@@ -101,7 +102,12 @@ class PayslipPDF:
         )
 
     def _money(self, value) -> str:
-        return format_pdf_currency(value, self.currency_symbol)
+        return format_pdf_amount(value)
+
+    def _currency_note(self) -> str:
+        if self.currency_code and self.currency_symbol and self.currency_code != self.currency_symbol:
+            return f"All amounts in {self.currency_code} ({self.currency_symbol})"
+        return f"All amounts in {self.currency_code or self.currency_symbol}"
 
     def _employee_name(self) -> str:
         name = self.employee.get_full_name().strip()
@@ -126,6 +132,7 @@ class PayslipPDF:
             f"Payment Date: {self.period.payment_date:%b %d, %Y}"
         )
         append_pdf_subtitle(story, period_text)
+        append_pdf_subtitle(story, self._currency_note())
 
     def _build_employee_info(self, story: list) -> None:
         department = getattr(self.employee.department, "name", None) or "—"

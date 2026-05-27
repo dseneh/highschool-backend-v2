@@ -19,6 +19,7 @@ from .access_policies import PayrollAccessPolicy
 from .models import (
     PayrollItem,
     PayrollItemType,
+    PayrollPayslipColumnGroup,
     PayrollPeriod,
     PayrollRun,
     PayrollSettings,
@@ -30,6 +31,7 @@ from .models import (
 from .serializers import (
     PayrollItemSerializer,
     PayrollItemTypeSerializer,
+    PayrollPayslipColumnGroupSerializer,
     PayrollPeriodSerializer,
     PayrollRunSerializer,
     PayrollSettingsSerializer,
@@ -44,6 +46,7 @@ from .services import (
     derive_next_period,
     generate_payslips,
     mark_paid as mark_paid_service,
+    periods_per_year_for_schedule,
     recalculate_payslip,
     revert_to_draft as revert_to_draft_service,
     submit_for_approval,
@@ -52,6 +55,18 @@ from .services import (
     sync_payroll_item_type_to_employees,
 )
 from .payslip_pdf import build_payslip_pdf_bytes
+
+
+def _periods_per_year_from_request(request) -> Decimal | None:
+    raw = request.data.get("periods_per_year") if hasattr(request, "data") else None
+    if raw is None:
+        raw = request.query_params.get("periods_per_year")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return Decimal(str(raw))
+    except (TypeError, ValueError, ArithmeticError):
+        return None
 
 
 class _BaseAuditedViewSet(viewsets.ModelViewSet):
@@ -136,7 +151,10 @@ class PayrollRunViewSet(_BaseAuditedViewSet):
             "bank_account",
             "bank_account__currency",
         )
-        .prefetch_related("payslips", "accounting_posting_batches__journal_entry")
+        .prefetch_related(
+            "payslips",
+            "accounting_posting_batches__journal_entry",
+        )
         .all()
     )
     serializer_class = PayrollRunSerializer
@@ -342,7 +360,7 @@ class PayrollItemViewSet(_BaseAuditedViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            employee = Employee.objects.get(pk=employee_id)
+            employee = Employee.objects.select_related("pay_schedule").get(pk=employee_id)
         except Employee.DoesNotExist:
             return Response({"detail": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -377,8 +395,15 @@ class PayrollItemViewSet(_BaseAuditedViewSet):
         )
 
 
+class PayrollPayslipColumnGroupViewSet(_BaseAuditedViewSet):
+    queryset = PayrollPayslipColumnGroup.objects.all()
+    serializer_class = PayrollPayslipColumnGroupSerializer
+
+
 class PayrollItemTypeViewSet(_BaseAuditedViewSet):
-    queryset = PayrollItemType.objects.prefetch_related("amount_rules").all()
+    queryset = PayrollItemType.objects.select_related("payslip_column_group").prefetch_related(
+        "amount_rules",
+    ).all()
     serializer_class = PayrollItemTypeSerializer
 
     def get_queryset(self):
@@ -433,6 +458,7 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
                 target_salary_max=request.data.get("target_salary_max", "0"),
                 target_salary_by=str(request.data.get("target_salary_by", "per_period")),
                 salary_limit=request.data.get("salary_limit"),
+                periods_per_year=_periods_per_year_from_request(request),
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -462,6 +488,7 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
                 basic=basic,
                 allowances=allowances,
                 deductions=deductions,
+                periods_per_year=_periods_per_year_from_request(request),
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -486,6 +513,7 @@ class PayrollItemTypeViewSet(_BaseAuditedViewSet):
                 basic=basic,
                 allowances=allowances,
                 deductions=deductions,
+                periods_per_year=_periods_per_year_from_request(request),
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -562,6 +590,7 @@ class TaxRuleViewSet(_BaseAuditedViewSet):
                 target_salary_max=request.data.get("target_salary_max", "0"),
                 target_salary_by=str(request.data.get("target_salary_by", "per_period")),
                 salary_limit=request.data.get("salary_limit"),
+                periods_per_year=_periods_per_year_from_request(request),
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -591,6 +620,7 @@ class TaxRuleViewSet(_BaseAuditedViewSet):
                 basic=basic,
                 allowances=allowances,
                 deductions=deductions,
+                periods_per_year=_periods_per_year_from_request(request),
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -615,6 +645,7 @@ class TaxRuleViewSet(_BaseAuditedViewSet):
                 basic=basic,
                 allowances=allowances,
                 deductions=deductions,
+                periods_per_year=_periods_per_year_from_request(request),
             )
         except Exception as exc:  # noqa: BLE001
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

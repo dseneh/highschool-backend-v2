@@ -162,6 +162,12 @@ def is_percentage_column_header(header: str) -> bool:
     return bool(_PERCENTAGE_HEADER_PATTERN.search(normalized))
 
 
+def format_amount_display(amount) -> str:
+    from common.services.pdf_components import format_pdf_amount
+
+    return format_pdf_amount(amount)
+
+
 def format_currency_display(amount, currency_symbol: str = "$") -> str:
     from common.services.pdf_components import format_pdf_currency
 
@@ -181,12 +187,20 @@ def format_percentage_display(value) -> str:
     return f"{text}%"
 
 
-def format_export_cell_display(header: str, value, currency_symbol: str = "$") -> str:
+def format_export_cell_display(
+    header: str,
+    value,
+    currency_symbol: str = "$",
+    *,
+    plain_amounts: bool = False,
+) -> str:
     if value is None:
         return ""
     if is_percentage_column_header(header):
         return format_percentage_display(value)
     if is_monetary_column_header(header):
+        if plain_amounts:
+            return format_amount_display(value)
         return format_currency_display(value, currency_symbol)
     return str(value)
 
@@ -219,6 +233,27 @@ def apply_xlsx_cell_style(cell, header: str, value, currency_symbol: str = "$") 
             cell.alignment = Alignment(horizontal="right")
 
 
+def resolve_export_currency_note(request=None) -> str:
+    """Human-readable currency note for payroll report exports."""
+    try:
+        from accounting.models import AccountingCurrency
+        from common.services.pdf_components import resolve_currency_symbol
+
+        currency = AccountingCurrency.objects.filter(is_active=True).order_by(
+            "-is_base_currency", "code"
+        ).first()
+        if currency:
+            symbol = resolve_currency_symbol(currency)
+            code = getattr(currency, "code", None) or symbol
+            if code and symbol and str(code) != str(symbol):
+                return f"All amounts in {code} ({symbol})"
+            return f"All amounts in {code or symbol}"
+    except Exception:
+        pass
+    symbol = resolve_export_currency(request)
+    return f"All amounts in {symbol}"
+
+
 def build_pdf_response(
     *,
     request=None,
@@ -230,6 +265,7 @@ def build_pdf_response(
     rows: list[list[object]],
     show_generated_date: bool = True,
     currency_symbol: str | None = None,
+    plain_amounts: bool = False,
 ) -> HttpResponse:
     from django.utils import timezone
     from reportlab.lib import colors
@@ -285,7 +321,7 @@ def build_pdf_response(
 
     table_data = [headers] + [
         [
-            format_export_cell_display(headers[col_idx], cell, currency)
+            format_export_cell_display(headers[col_idx], cell, currency, plain_amounts=plain_amounts)
             if col_idx < len(headers)
             else (str(cell) if cell is not None else "")
             for col_idx, cell in enumerate(row)
@@ -324,6 +360,7 @@ def build_xlsx_response(
     column_widths: list[int] | None = None,
     currency_symbol: str | None = None,
     request=None,
+    plain_amounts: bool = False,
 ) -> HttpResponse:
     currency = currency_symbol or resolve_export_currency(request)
     wb = Workbook()
@@ -393,6 +430,7 @@ def export_tabular_report(
     headers: list[str],
     rows: list[list[object]],
     column_widths: list[int] | None = None,
+    plain_amounts: bool = False,
 ):
     currency_symbol = resolve_export_currency(request)
     export_format = get_export_format(request)
@@ -405,6 +443,7 @@ def export_tabular_report(
             headers=headers,
             rows=rows,
             currency_symbol=currency_symbol,
+            plain_amounts=plain_amounts,
         )
     if export_format == "xlsx":
         return build_xlsx_response(
@@ -417,5 +456,6 @@ def export_tabular_report(
             column_widths=column_widths,
             currency_symbol=currency_symbol,
             request=request,
+            plain_amounts=plain_amounts,
         )
     return None

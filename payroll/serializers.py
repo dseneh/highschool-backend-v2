@@ -12,15 +12,18 @@ from accounting.models import AccountingBankAccount, AccountingTransactionType
 from .models import (
     AmountCalculationType,
     EmployeeTaxRuleOverride,
+    ItemAppliesTo,
     PayrollItem,
     PayrollItemType,
     PayrollItemTypeRule,
     PayrollPeriod,
+    PayrollPayslipColumnGroup,
     PayrollRun,
     PayrollSettings,
     Payslip,
     PaySchedule,
     TaxAmountRule,
+    TaxAppliesTo,
     TaxRule,
 )
 
@@ -111,6 +114,16 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
 class PayslipSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     id_number = serializers.CharField(source="employee.id_number", read_only=True)
+    department_name = serializers.CharField(
+        source="employee.department.name",
+        read_only=True,
+        allow_null=True,
+    )
+    position_title = serializers.CharField(
+        source="employee.position.title",
+        read_only=True,
+        allow_null=True,
+    )
     payroll_run_status = serializers.CharField(source="payroll_run.status", read_only=True)
     payroll_run_period_name = serializers.CharField(source="payroll_run.period.name", read_only=True)
     currency_code = serializers.CharField(source="currency.code", read_only=True)
@@ -126,6 +139,8 @@ class PayslipSerializer(serializers.ModelSerializer):
             "employee",
             "employee_name",
             "id_number",
+            "department_name",
+            "position_title",
             "currency",
             "currency_code",
             "currency_symbol",
@@ -153,6 +168,8 @@ class PayslipSerializer(serializers.ModelSerializer):
             "currency_symbol",
             "employee_name",
             "id_number",
+            "department_name",
+            "position_title",
             "basic_salary",
             "overtime_pay",
             "allowances",
@@ -174,6 +191,25 @@ class PayslipSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+
+
+class PayrollPayslipColumnGroupSerializer(serializers.ModelSerializer):
+    item_type_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PayrollPayslipColumnGroup
+        fields = [
+            "id",
+            "label",
+            "sort_order",
+            "item_type_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "item_type_count", "created_at", "updated_at"]
+
+    def get_item_type_count(self, obj):
+        return obj.item_types.count()
 
 
 class PayrollRunSerializer(serializers.ModelSerializer):
@@ -294,6 +330,10 @@ class PayrollRunSerializer(serializers.ModelSerializer):
         from django.db.models import Sum
 
         agg = obj.payslips.aggregate(
+            basic_salary=Sum("basic_salary"),
+            overtime_hours=Sum("overtime_hours"),
+            overtime_pay=Sum("overtime_pay"),
+            unpaid_leave_days=Sum("unpaid_leave_days"),
             gross=Sum("gross_pay"),
             allowances=Sum("allowances"),
             adjustments=Sum("adjustments"),
@@ -305,6 +345,10 @@ class PayrollRunSerializer(serializers.ModelSerializer):
         adjustments = agg["adjustments"] or Decimal("0.00")
         taxable_net = take_home - adjustments
         return {
+            "basic_salary": str(agg["basic_salary"] or Decimal("0.00")),
+            "overtime_hours": str(agg["overtime_hours"] or Decimal("0.00")),
+            "overtime_pay": str(agg["overtime_pay"] or Decimal("0.00")),
+            "unpaid_leave_days": str(agg["unpaid_leave_days"] or Decimal("0.00")),
             "gross": str(agg["gross"] or Decimal("0.00")),
             "allowances": str(agg["allowances"] or Decimal("0.00")),
             "adjustments": str(adjustments),
@@ -443,6 +487,15 @@ def _sync_nested_rules(parent, rules_data, *, rule_model, parent_field):
 
 class PayrollItemTypeSerializer(serializers.ModelSerializer):
     amount_rules = PayrollItemTypeRuleSerializer(many=True, required=False)
+    payslip_column_group = serializers.PrimaryKeyRelatedField(
+        queryset=PayrollPayslipColumnGroup.objects.all(),
+        allow_null=True,
+        required=False,
+    )
+    payslip_column_group_label = serializers.CharField(
+        source="payslip_column_group.label",
+        read_only=True,
+    )
 
     class Meta:
         model = PayrollItemType
@@ -455,11 +508,13 @@ class PayrollItemTypeSerializer(serializers.ModelSerializer):
             "description",
             "is_active",
             "is_system_managed",
+            "payslip_column_group",
+            "payslip_column_group_label",
             "amount_rules",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "is_system_managed", "created_at", "updated_at"]
+        read_only_fields = ["id", "is_system_managed", "payslip_column_group_label", "created_at", "updated_at"]
 
     def validate(self, attrs):
         if self.instance is not None and getattr(self.instance, "is_system_managed", False):
@@ -519,6 +574,7 @@ class PayrollItemSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     item_type_ref_name = serializers.CharField(source="item_type_ref.name", read_only=True)
     item_type_ref_code = serializers.CharField(source="item_type_ref.code", read_only=True)
+    has_amount_override = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = PayrollItem
@@ -535,10 +591,15 @@ class PayrollItemSerializer(serializers.ModelSerializer):
             "effective_from",
             "effective_to",
             "notes",
+            "override_calculation_type",
+            "override_value",
+            "override_formula",
+            "override_applies_to",
+            "has_amount_override",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "name", "item_type", "created_at", "updated_at"]
+        read_only_fields = ["id", "name", "item_type", "has_amount_override", "created_at", "updated_at"]
 
     def get_employee_name(self, obj):
         return obj.employee.get_full_name() if obj.employee else None
@@ -555,6 +616,37 @@ class PayrollItemSerializer(serializers.ModelSerializer):
             )
         attrs["name"] = item_type_ref.name
         attrs["item_type"] = item_type_ref.item_type
+
+        override_calc = attrs.get(
+            "override_calculation_type",
+            getattr(self.instance, "override_calculation_type", None),
+        )
+        if override_calc in ("", None):
+            attrs["override_calculation_type"] = None
+            attrs["override_value"] = None
+            attrs["override_formula"] = ""
+            attrs["override_applies_to"] = None
+        else:
+            if override_calc == AmountCalculationType.FORMULA:
+                formula = attrs.get(
+                    "override_formula",
+                    getattr(self.instance, "override_formula", ""),
+                )
+                if not (formula or "").strip():
+                    raise serializers.ValidationError(
+                        {"override_formula": "Formula is required when calculation type is 'formula'."}
+                    )
+            elif override_calc in (AmountCalculationType.FLAT, AmountCalculationType.PERCENTAGE):
+                if attrs.get("override_value", getattr(self.instance, "override_value", None)) is None:
+                    raise serializers.ValidationError(
+                        {"override_value": "Value is required for flat or percentage overrides."}
+                    )
+            if not attrs.get(
+                "override_applies_to",
+                getattr(self.instance, "override_applies_to", None),
+            ):
+                attrs["override_applies_to"] = ItemAppliesTo.BASIC
+
         return super().validate(attrs)
 
 
@@ -644,6 +736,9 @@ class EmployeeTaxRuleOverrideSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"formula": "Formula is required when calculation type is 'formula'."}
                 )
+        applies_to = attrs.get("applies_to", getattr(self.instance, "applies_to", None))
+        if applies_to and applies_to not in dict(TaxAppliesTo.choices):
+            raise serializers.ValidationError({"applies_to": "Invalid applies_to value."})
         return attrs
 
 
@@ -669,6 +764,7 @@ class PayrollSettingsSerializer(serializers.ModelSerializer):
             "transaction_type",
             "transaction_type_name",
             "transaction_type_code",
+            "payslip_table_column_labels",
             "created_at",
             "updated_at",
         ]
@@ -679,6 +775,18 @@ class PayrollSettingsSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def validate_payslip_table_column_labels(self, value):
+        if value in (None, ""):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Column labels must be an object.")
+        cleaned: dict[str, str] = {}
+        for key, raw in value.items():
+            label = str(raw or "").strip()
+            if label:
+                cleaned[str(key)] = label
+        return cleaned
 
     def validate_transaction_type(self, value):
         if value is None:

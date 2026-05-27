@@ -509,6 +509,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "highest_qualification",
             "salary_type",
             "basic_salary",
+            "annual_salary",
             "hourly_rate",
             "pay_schedule",
             "tax_rules",
@@ -521,7 +522,15 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "contacts", "dependents", "specializations"]
+        read_only_fields = [
+            "id",
+            "annual_salary",
+            "created_at",
+            "updated_at",
+            "contacts",
+            "dependents",
+            "specializations",
+        ]
 
     def validate_manager(self, value):
         if self.instance and value and self.instance.pk == value.pk:

@@ -27,7 +27,14 @@ def _payroll_run_id(run: PayrollRun) -> str:
 
 
 def _payroll_reference_number(run: PayrollRun) -> str:
-    return f"PAYROLL-{_payroll_run_id(run)[:8]}"
+    base = f"PAYROLL-{_payroll_run_id(run)[:8]}"
+    prior_entries = AccountingJournalEntry.objects.filter(
+        source="payroll",
+        source_reference=_payroll_run_id(run),
+    ).count()
+    if prior_entries == 0:
+        return base
+    return f"{base}-R{prior_entries}"
 
 
 def _payroll_idempotent_key(run: PayrollRun) -> str:
@@ -155,7 +162,7 @@ def _reverse_journal_entry(
 def post_payroll_run_to_ledger(run: PayrollRun, *, actor=None) -> AccountingPayrollPostingBatch:
     """Post an approved payroll run to GL and record the net cash disbursement."""
     idempotent_key = _payroll_idempotent_key(run)
-    existing = (
+    existing_posted = (
         AccountingPayrollPostingBatch.objects.filter(
             idempotent_key=idempotent_key,
             batch_status=AccountingPayrollPostingBatch.BatchStatus.POSTED,
@@ -163,8 +170,8 @@ def post_payroll_run_to_ledger(run: PayrollRun, *, actor=None) -> AccountingPayr
         .select_related("journal_entry", "payroll_run__bank_account")
         .first()
     )
-    if existing:
-        return existing
+    if existing_posted:
+        return existing_posted
 
     if not run.bank_account_id:
         raise ValidationError("Assign a bank account to this payroll run before marking it paid.")
@@ -205,18 +212,50 @@ def post_payroll_run_to_ledger(run: PayrollRun, *, actor=None) -> AccountingPayr
     tax_payable = _ledger_by_code("2002")
     deductions_payable = _ledger_by_code("2003")
 
-    batch = AccountingPayrollPostingBatch.objects.create(
-        payroll_run=run,
-        posting_date=posting_date,
-        academic_year=academic_year,
-        batch_status=AccountingPayrollPostingBatch.BatchStatus.PENDING,
-        gross_amount=gross,
-        tax_amount=tax,
-        net_amount=net,
-        currency=currency,
-        idempotent_key=idempotent_key,
-        notes=f"Payroll run {run.period.name}",
-    )
+    batch = AccountingPayrollPostingBatch.objects.filter(idempotent_key=idempotent_key).first()
+    if batch is None:
+        batch = AccountingPayrollPostingBatch.objects.create(
+            payroll_run=run,
+            posting_date=posting_date,
+            academic_year=academic_year,
+            batch_status=AccountingPayrollPostingBatch.BatchStatus.PENDING,
+            gross_amount=gross,
+            tax_amount=tax,
+            net_amount=net,
+            currency=currency,
+            idempotent_key=idempotent_key,
+            notes=f"Payroll run {run.period.name}",
+        )
+    else:
+        batch.payroll_run = run
+        batch.posting_date = posting_date
+        batch.academic_year = academic_year
+        batch.batch_status = AccountingPayrollPostingBatch.BatchStatus.PENDING
+        batch.gross_amount = gross
+        batch.tax_amount = tax
+        batch.net_amount = net
+        batch.currency = currency
+        batch.notes = f"Payroll run {run.period.name}"
+        batch.journal_entry = None
+        batch.posted_by = None
+        batch.posted_at = None
+        batch.save(
+            update_fields=[
+                "payroll_run",
+                "posting_date",
+                "academic_year",
+                "batch_status",
+                "gross_amount",
+                "tax_amount",
+                "net_amount",
+                "currency",
+                "notes",
+                "journal_entry",
+                "posted_by",
+                "posted_at",
+                "updated_at",
+            ]
+        )
 
     journal_entry = AccountingJournalEntry.objects.create(
         posting_date=posting_date,
