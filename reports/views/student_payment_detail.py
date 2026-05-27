@@ -264,7 +264,7 @@ class StudentPaymentDetailReportView(APIView):
             "Concession",
             "Net",
             "Balance",
-            "Amount",
+            "Paid",
             "Payment Method",
             "Bank Account",
             "Type",
