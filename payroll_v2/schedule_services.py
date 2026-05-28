@@ -10,6 +10,23 @@ from .enums import PayScheduleFrequency
 from .models import PaySchedule, PayrollPeriod
 
 
+def get_pay_schedule(schedule_id):
+    """Return a pay schedule by id without raising DoesNotExist."""
+    if not schedule_id:
+        return None
+    return PaySchedule.objects.select_related("currency").filter(id=schedule_id).first()
+
+
+def get_employee_pay_schedule(employee):
+    """Return an employee's pay schedule, tolerating stale FK ids."""
+    if employee is None:
+        return None
+    schedule_id = getattr(employee, "pay_schedule_id", None)
+    if not schedule_id:
+        return None
+    return get_pay_schedule(schedule_id)
+
+
 @dataclass
 class DerivedPeriod:
     name: str

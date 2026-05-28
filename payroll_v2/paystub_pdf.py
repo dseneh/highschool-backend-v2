@@ -222,7 +222,10 @@ class PaystubV2PDF:
         self.school = school or resolve_tenant_school()
         self.currency_symbol = resolve_currency_symbol(self.run.currency)
         self.currency_code = getattr(self.run.currency, "code", None) or self.currency_symbol
-        self.frequency = getattr(self.run.pay_schedule, "frequency", None) or ""
+        from payroll_v2.schedule_services import get_pay_schedule
+
+        run_schedule = get_pay_schedule(getattr(self.run, "pay_schedule_id", None))
+        self.frequency = getattr(run_schedule, "frequency", None) or ""
         self.ytd = build_ytd_accumulator(employee_item)
         self.ytd_year = self.run.payment_date.year
         self._setup_styles()

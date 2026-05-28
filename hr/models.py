@@ -221,7 +221,10 @@ class Employee(BasePersonModel):
 
     def get_current_payroll_metadata(self, as_of_date=None) -> dict:
         """Return the employee's current payroll inputs for calculations and APIs."""
-        from payroll_v2.schedule_services import periods_per_year_for_schedule
+        from payroll_v2.schedule_services import (
+            get_employee_pay_schedule,
+            periods_per_year_for_schedule,
+        )
         from payroll_v2.services import (
             get_active_employee_compensation,
             get_compensation_annual_salary,
@@ -230,7 +233,7 @@ class Employee(BasePersonModel):
 
         as_of = as_of_date or timezone.now().date()
         compensation = get_active_employee_compensation(self, as_of_date=as_of)
-        schedule = self.pay_schedule if self.pay_schedule_id else None
+        schedule = get_employee_pay_schedule(self)
         periods_per_year = periods_per_year_for_schedule(schedule)
 
         if not compensation:

@@ -72,12 +72,10 @@ def compute_compensation_annual_salary(compensation, *, employee=None) -> Decima
         period_amount = compensation.base_amount or Decimal("0.00")
 
     schedule = None
-    if employee is not None and getattr(employee, "pay_schedule_id", None):
-        schedule = getattr(employee, "pay_schedule", None)
-        if schedule is None and employee.pay_schedule_id:
-            from .models import PaySchedule
+    if employee is not None:
+        from .schedule_services import get_employee_pay_schedule
 
-            schedule = PaySchedule.objects.filter(id=employee.pay_schedule_id).first()
+        schedule = get_employee_pay_schedule(employee)
 
     return annual_salary_from_period_basic(
         period_amount,
@@ -1220,12 +1218,19 @@ def create_payroll_v2_run(
     created_by=None,
     updated_by=None,
 ) -> PayrollRunRecord:
-    from payroll_v2.schedule_services import derive_next_period
+    from payroll_v2.schedule_services import derive_next_period, get_pay_schedule
 
     if isinstance(pay_schedule, PaySchedule):
-        schedule = pay_schedule if hasattr(pay_schedule, "currency") else PaySchedule.objects.select_related("currency").get(id=pay_schedule.id)
+        schedule = (
+            pay_schedule
+            if hasattr(pay_schedule, "currency")
+            else get_pay_schedule(pay_schedule.id)
+        )
     else:
-        schedule = PaySchedule.objects.select_related("currency").get(id=pay_schedule)
+        schedule = get_pay_schedule(pay_schedule)
+
+    if schedule is None:
+        raise ValueError("Pay schedule not found. Choose an active schedule or create one in Payroll settings.")
 
     if not schedule.is_active:
         raise ValueError("Selected pay schedule is inactive.")

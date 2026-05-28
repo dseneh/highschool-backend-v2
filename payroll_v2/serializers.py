@@ -282,11 +282,7 @@ class PayrollEmployeeItemSerializer(serializers.ModelSerializer):
     pay_period_start = serializers.DateField(source="payroll.pay_period_start", read_only=True)
     pay_period_end = serializers.DateField(source="payroll.pay_period_end", read_only=True)
     payment_date = serializers.DateField(source="payroll.payment_date", read_only=True)
-    pay_schedule_frequency = serializers.CharField(
-        source="payroll.pay_schedule.frequency",
-        read_only=True,
-        allow_null=True,
-    )
+    pay_schedule_frequency = serializers.SerializerMethodField()
 
     class Meta:
         model = PayrollEmployeeItem
@@ -333,6 +329,12 @@ class PayrollEmployeeItemSerializer(serializers.ModelSerializer):
     def get_payroll_run_period_name(self, obj):
         run = obj.payroll
         return f"{run.pay_period_start} – {run.pay_period_end}"
+
+    def get_pay_schedule_frequency(self, obj):
+        from payroll_v2.schedule_services import get_pay_schedule
+
+        schedule = get_pay_schedule(getattr(obj.payroll, "pay_schedule_id", None))
+        return schedule.frequency if schedule else None
 
 
 class PayScheduleSerializer(serializers.ModelSerializer):
@@ -403,8 +405,8 @@ class PayrollRunListSerializer(serializers.ModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     currency_symbol = serializers.CharField(source="currency.symbol", read_only=True)
     bank_account_name = serializers.CharField(source="bank_account.account_name", read_only=True)
-    pay_schedule_name = serializers.CharField(source="pay_schedule.name", read_only=True)
-    pay_schedule_frequency = serializers.CharField(source="pay_schedule.frequency", read_only=True)
+    pay_schedule_name = serializers.SerializerMethodField()
+    pay_schedule_frequency = serializers.SerializerMethodField()
     period_name = serializers.CharField(source="payroll_period.name", read_only=True)
 
     class Meta:
@@ -456,6 +458,19 @@ class PayrollRunListSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+
+    def get_pay_schedule_name(self, obj):
+        from payroll_v2.schedule_services import get_pay_schedule
+
+        schedule = get_pay_schedule(obj.pay_schedule_id)
+        return schedule.name if schedule else None
+
+    def get_pay_schedule_frequency(self, obj):
+        from payroll_v2.schedule_services import get_pay_schedule
+
+        schedule = get_pay_schedule(obj.pay_schedule_id)
+        return schedule.frequency if schedule else None
 
 
 class PayrollRunWriteSerializer(PayrollRunListSerializer):

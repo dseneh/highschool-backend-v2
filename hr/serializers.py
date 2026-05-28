@@ -668,12 +668,19 @@ class EmployeeSerializer(serializers.ModelSerializer):
             data["compensation_history"] = []
 
         if instance.pay_schedule_id:
-            data["pay_schedule_detail"] = {
-                "id": str(instance.pay_schedule.id),
-                "name": instance.pay_schedule.name,
-                "frequency": instance.pay_schedule.frequency,
-                "currency_code": instance.pay_schedule.currency.code,
-            }
-            data["pay_schedule"] = data["pay_schedule_detail"]
+            from payroll_v2.schedule_services import get_employee_pay_schedule
+
+            schedule = get_employee_pay_schedule(instance)
+            if schedule:
+                data["pay_schedule_detail"] = {
+                    "id": str(schedule.id),
+                    "name": schedule.name,
+                    "frequency": schedule.frequency,
+                    "currency_code": schedule.currency.code,
+                }
+                data["pay_schedule"] = data["pay_schedule_detail"]
+            else:
+                data["pay_schedule"] = None
+                data["pay_schedule_detail"] = None
 
         return data
