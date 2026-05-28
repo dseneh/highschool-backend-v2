@@ -962,7 +962,7 @@ def create_accounting_bank_accounts(tenant, user, accounting_currency_obj):
 def create_default_pay_schedule(tenant, user, accounting_currency_obj):
     """Create the default monthly PaySchedule for the tenant."""
     from django_tenants.utils import schema_context
-    from payroll.models import PaySchedule
+    from payroll_v2.models import PaySchedule
 
     if accounting_currency_obj is None:
         print("Skipped pay schedule (no accounting currency)...")

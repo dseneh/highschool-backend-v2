@@ -190,17 +190,11 @@ class Employee(BasePersonModel):
         help_text="Hourly rate; required for HOURLY and used for overtime computation.",
     )
     pay_schedule = models.ForeignKey(
-        "payroll.PaySchedule",
+        "payroll_v2.PaySchedule",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="employees",
-    )
-    tax_rules = models.ManyToManyField(
-        "payroll.TaxRule",
-        blank=True,
-        related_name="employees",
-        help_text="Override tax rules for this employee. If empty, all active rules apply.",
     )
     tax_id = models.CharField(max_length=60, blank=True, null=True, default=None)
     bank_name = models.CharField(max_length=120, blank=True, null=True, default=None)
@@ -221,26 +215,61 @@ class Employee(BasePersonModel):
         return f"{self.id_number} - {self.get_full_name()}"
 
     def compute_annual_salary(self) -> Decimal:
-        """Derive contracted annual pay from per-period basic and pay schedule."""
-        if self.salary_type == self.SalaryType.HOURLY:
-            return Decimal("0.00")
-        from payroll.services import (
-            annual_salary_from_period_basic,
-            periods_per_year_for_schedule,
+        """Legacy helper; prefer active compensation or ``get_current_payroll_metadata()``."""
+        metadata = self.get_current_payroll_metadata()
+        return Decimal(str(metadata.get("annual_salary") or 0)).quantize(Decimal("0.01"))
+
+    def get_current_payroll_metadata(self, as_of_date=None) -> dict:
+        """Return the employee's current payroll inputs for calculations and APIs."""
+        from payroll_v2.schedule_services import periods_per_year_for_schedule
+        from payroll_v2.services import (
+            get_active_employee_compensation,
+            get_compensation_annual_salary,
+            get_employee_base_amount,
         )
 
-        schedule = None
-        if self.pay_schedule_id:
-            schedule = self.pay_schedule
-        return annual_salary_from_period_basic(
-            self.basic_salary or 0,
-            periods_per_year=periods_per_year_for_schedule(schedule),
-        ).quantize(Decimal("0.01"))
+        as_of = as_of_date or timezone.now().date()
+        compensation = get_active_employee_compensation(self, as_of_date=as_of)
+        schedule = self.pay_schedule if self.pay_schedule_id else None
+        periods_per_year = periods_per_year_for_schedule(schedule)
+
+        if not compensation:
+            return {
+                "compensation_id": None,
+                "pay_type": None,
+                "base_amount": Decimal("0.00"),
+                "hourly_rate": Decimal("0.00"),
+                "daily_rate": None,
+                "annual_salary": Decimal("0.00"),
+                "basic_salary": Decimal("0.00"),
+                "periods_per_year": periods_per_year,
+                "pay_schedule_id": str(schedule.id) if schedule else None,
+                "pay_schedule_name": schedule.name if schedule else None,
+                "pay_schedule_frequency": schedule.frequency if schedule else None,
+                "currency_code": getattr(schedule.currency, "code", None) if schedule else None,
+            }
+
+        return {
+            "compensation_id": str(compensation.id) if compensation.pk else None,
+            "pay_type": compensation.pay_type,
+            "base_amount": compensation.base_amount or Decimal("0.00"),
+            "hourly_rate": compensation.hourly_rate,
+            "daily_rate": compensation.daily_rate,
+            "annual_salary": get_compensation_annual_salary(compensation, employee=self),
+            "basic_salary": get_employee_base_amount(compensation),
+            "periods_per_year": periods_per_year,
+            "pay_schedule_id": str(schedule.id) if schedule else None,
+            "pay_schedule_name": schedule.name if schedule else None,
+            "pay_schedule_frequency": schedule.frequency if schedule else None,
+            "currency_code": (
+                getattr(compensation.currency, "code", None)
+                or (getattr(schedule.currency, "code", None) if schedule else None)
+            ),
+        }
 
     def save(self, *args, **kwargs):
         if not self.id_number:
             self.id_number = self._generate_id_number()
-        self.annual_salary = self.compute_annual_salary()
         super().save(*args, **kwargs)
 
     @classmethod
@@ -354,31 +383,39 @@ class Employee(BasePersonModel):
                     "accrual_frequency": leave_type.accrual_frequency,
                     "allow_carryover": leave_type.allow_carryover,
                     "max_carryover_days": leave_type.max_carryover_days,
+                    "include_on_paystub": leave_type.include_on_paystub,
                 }
             )
 
         return summary
 
     def payroll_readiness(self):
-        """Return ``{ready: bool, missing: [str]}`` summarizing payroll setup.
-
-        An employee is payroll-ready when they have an assigned pay
-        schedule and either a non-zero basic salary (MONTHLY) or hourly
-        rate (HOURLY).
-        """
+        """Return ``{ready: bool, missing: [str]}`` summarizing payroll setup."""
         missing: list[str] = []
         if not self.pay_schedule_id:
             missing.append("pay_schedule")
-        if self.salary_type == self.SalaryType.MONTHLY:
-            if not self.basic_salary or self.basic_salary <= 0:
-                missing.append("basic_salary")
-        else:  # HOURLY
-            if not self.hourly_rate or self.hourly_rate <= 0:
-                missing.append("hourly_rate")
-        if self.pk and not self.tax_rules.exists():
-            missing.append("tax_rules")
         if self.employment_status != self.EmploymentStatus.ACTIVE:
             missing.append("active_status")
+
+        active_compensation = None
+        if self.pk:
+            from payroll_v2.services import (
+                compensation_has_valid_amount,
+                get_active_employee_compensation,
+            )
+
+            active_compensation = get_active_employee_compensation(self)
+
+        if not active_compensation:
+            missing.append("compensation")
+        elif not compensation_has_valid_amount(active_compensation):
+            from payroll_v2.enums import PayType
+
+            if active_compensation.pay_type == PayType.HOURLY:
+                missing.append("hourly_rate")
+            else:
+                missing.append("basic_salary")
+
         return {"ready": not missing, "missing": missing}
 
 
@@ -550,6 +587,10 @@ class LeaveType(BaseModel):
     )
     allow_carryover = models.BooleanField(default=False)
     max_carryover_days = models.PositiveIntegerField(default=0)
+    include_on_paystub = models.BooleanField(
+        default=True,
+        help_text="When enabled, this leave type appears on employee paystubs.",
+    )
 
     class Meta:
         db_table = "leave_type"

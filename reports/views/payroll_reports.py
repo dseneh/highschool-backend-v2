@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from django.db.models import Sum
-from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounting.models import AccountingPayrollPostingBatch, AccountingPayrollPostingLine
-from payroll.models import PayrollRun, Payslip
+from payroll_v2.models import PayrollEmployeeItem, PayrollRunRecord
 
 from ..access_policies import ReportsAccessPolicy
 from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param, resolve_export_currency_note
@@ -27,11 +25,11 @@ def _apply_payroll_run_filters(queryset, request):
     )
 
     if start_date:
-        queryset = queryset.filter(period__end_date__gte=start_date)
+        queryset = queryset.filter(pay_period_end__gte=start_date)
     if end_date:
-        queryset = queryset.filter(period__start_date__lte=end_date)
+        queryset = queryset.filter(pay_period_start__lte=end_date)
     if pay_schedule_id:
-        queryset = queryset.filter(period__schedule_id=pay_schedule_id)
+        queryset = queryset.filter(pay_schedule_id=pay_schedule_id)
     return queryset
 
 
@@ -39,35 +37,39 @@ class PayrollRunSummaryReportView(APIView):
     permission_classes = [ReportsAccessPolicy]
 
     def get(self, request):
-        runs = PayrollRun.objects.select_related("period", "period__schedule").order_by(
-            "-period__end_date",
+        runs = PayrollRunRecord.objects.select_related("pay_schedule", "payroll_period").order_by(
+            "-pay_period_end",
             "-created_at",
         )
         runs = _apply_payroll_run_filters(runs, request)
 
         results = []
         for run in runs:
-            payslips = Payslip.objects.filter(payroll_run=run)
-            gross = payslips.aggregate(total=Coalesce(Sum("gross_pay"), Decimal("0")))["total"] or 0
-            take_home = payslips.aggregate(total=Coalesce(Sum("net_pay"), Decimal("0")))["total"] or 0
-            adjustments = payslips.aggregate(total=Coalesce(Sum("adjustments"), Decimal("0")))["total"] or 0
-            deductions = payslips.aggregate(total=Coalesce(Sum("deductions"), Decimal("0")))["total"] or 0
-            tax = payslips.aggregate(total=Coalesce(Sum("tax"), Decimal("0")))["total"] or 0
-            taxable_net = take_home - adjustments
+            items = run.employee_items.all()
+            employee_count = items.count()
+            gross = sum((item.gross_pay for item in items), Decimal("0.00"))
+            tax = sum((item.total_tax for item in items), Decimal("0.00"))
+            deductions = sum((item.total_deductions for item in items), Decimal("0.00"))
+            reimbursements = sum((item.total_reimbursements for item in items), Decimal("0.00"))
+            take_home = sum((item.net_pay for item in items), Decimal("0.00"))
+            non_tax_deductions = deductions - tax
+            taxable_net = take_home - reimbursements
+            schedule = run.pay_schedule
+            period = run.payroll_period
             results.append(
                 {
                     "run_id": str(run.id),
-                    "schedule_name": run.period.schedule.name if run.period and run.period.schedule else "",
-                    "period_name": run.period.name if run.period else "",
-                    "start_date": run.period.start_date.isoformat() if run.period else "",
-                    "end_date": run.period.end_date.isoformat() if run.period else "",
+                    "schedule_name": schedule.name if schedule else "",
+                    "period_name": period.name if period else run.payroll_number,
+                    "start_date": run.pay_period_start.isoformat() if run.pay_period_start else "",
+                    "end_date": run.pay_period_end.isoformat() if run.pay_period_end else "",
                     "status": run.status,
-                    "employee_count": payslips.count(),
+                    "employee_count": employee_count,
                     "gross_total": float(gross),
-                    "deductions_total": float(deductions),
+                    "deductions_total": float(non_tax_deductions),
                     "tax_total": float(tax),
                     "taxable_net_total": float(taxable_net),
-                    "adjustments_total": float(adjustments),
+                    "adjustments_total": float(reimbursements),
                     "take_home_total": float(take_home),
                 }
             )
@@ -146,39 +148,42 @@ class PayrollRegisterReportView(APIView):
             or request.query_params.get("schedule_id")
             or request.query_params.get("schedule")
         )
-        payslips = Payslip.objects.select_related(
+        items = PayrollEmployeeItem.objects.select_related(
             "employee",
-            "payroll_run",
-            "payroll_run__period",
-            "payroll_run__period__schedule",
+            "payroll",
+            "payroll__pay_schedule",
+            "payroll__payroll_period",
         ).order_by(
             "employee__last_name",
             "employee__first_name",
         )
         if payroll_run_id:
-            payslips = payslips.filter(payroll_run_id=payroll_run_id)
+            items = items.filter(payroll_id=payroll_run_id)
         if pay_schedule_id:
-            payslips = payslips.filter(payroll_run__period__schedule_id=pay_schedule_id)
+            items = items.filter(payroll__pay_schedule_id=pay_schedule_id)
 
         results = []
-        for slip in payslips:
-            period = slip.payroll_run.period if slip.payroll_run else None
-            schedule = period.schedule if period else None
-            take_home = float(slip.net_pay or 0)
-            adjustments = float(slip.adjustments or 0)
-            taxable_net = take_home - adjustments
+        for item in items:
+            run = item.payroll
+            period = run.payroll_period if run else None
+            schedule = run.pay_schedule if run else None
+            take_home = float(item.net_pay or 0)
+            reimbursements = float(item.total_reimbursements or 0)
+            tax = float(item.total_tax or 0)
+            deductions = float(item.total_deductions or 0)
+            taxable_net = take_home - reimbursements
             results.append(
                 {
-                    "employee_id": slip.employee.id_number or str(slip.employee_id),
-                    "employee_name": slip.employee.get_full_name(),
+                    "employee_id": item.employee.id_number or str(item.employee_id),
+                    "employee_name": item.employee.get_full_name(),
                     "schedule_name": schedule.name if schedule else "",
-                    "period_name": period.name if period else "",
-                    "run_status": slip.payroll_run.status if slip.payroll_run else "",
-                    "gross_pay": float(slip.gross_pay or 0),
-                    "total_deductions": float(slip.deductions or 0),
-                    "tax": float(slip.tax or 0),
+                    "period_name": period.name if period else (run.payroll_number if run else ""),
+                    "run_status": run.status if run else "",
+                    "gross_pay": float(item.gross_pay or 0),
+                    "total_deductions": deductions - tax,
+                    "tax": tax,
                     "taxable_net": taxable_net,
-                    "adjustments": adjustments,
+                    "adjustments": reimbursements,
                     "take_home": take_home,
                 }
             )
@@ -248,7 +253,6 @@ class PayrollPostingJournalReportView(APIView):
 
     def get(self, request):
         batches = AccountingPayrollPostingBatch.objects.select_related(
-            "payroll_run",
             "journal_entry",
             "currency",
         ).prefetch_related("lines__staff_member", "lines__debit_account", "lines__credit_account")
@@ -304,7 +308,6 @@ class PayrollPostingJournalReportView(APIView):
             export_response = export_tabular_report(
                 request,
                 filename_base="payroll-posting-journal",
-                
                 title="Payroll Posting Journal",
                 subtitle=resolve_export_currency_note(request),
                 summary_rows=[("Line Count", len(results))],

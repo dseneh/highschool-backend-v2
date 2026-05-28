@@ -86,7 +86,7 @@ TENANT_APPS = [
     "finance",  # Finance models (BankAccount, Transaction, PaymentMethod, PaymentInstallment, etc.)
     "accounting",  # Accounting models (Ledger, Journal, Cash, AR, Tax, Posting Bridge - Phase 2-5)
     "hr",  # HR models (Payroll, Contracts, Workforce - Phase 6-7)
-    "payroll",  # Payroll: schedules, periods, runs, payslips, items, tax rules
+    "payroll_v2",  # Payroll: schedules, runs, items, settings, paystubs
     "settings",  # Tenant-specific settings (grading settings)
     "reports",  # Reports (transaction reporting, exports, placeholders)
     "defaults",  # Default data creation for new tenants

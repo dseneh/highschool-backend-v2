@@ -68,7 +68,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("hr", "0001_initial"),
-        ("payroll", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -94,27 +93,6 @@ class Migration(migrations.Migration):
                 on_delete=django.db.models.deletion.SET_NULL,
                 related_name="direct_reports",
                 to="hr.employee",
-            ),
-        ),
-        SafeAddField(
-            model_name="employee",
-            name="pay_schedule",
-            field=models.ForeignKey(
-                blank=True,
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
-                related_name="employees",
-                to="payroll.payschedule",
-            ),
-        ),
-        SafeAddField(
-            model_name="employee",
-            name="tax_rules",
-            field=models.ManyToManyField(
-                blank=True,
-                help_text="Override tax rules for this employee. If empty, all active rules apply.",
-                related_name="employees",
-                to="payroll.taxrule",
             ),
         ),
         SafeAddField(

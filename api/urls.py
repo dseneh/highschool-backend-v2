@@ -9,6 +9,8 @@ from django.views.static import serve
 from django.http import JsonResponse
 import os
 
+from payroll_v2.views import PayrollSettingsView
+
 
 # ---------------------------------------------------------------------------
 # Health check  – lightweight, no auth, no tenant header required
@@ -55,7 +57,8 @@ urlpatterns = [
     path(api_base, include("accounting.urls")),
     path(api_base, include("hr.urls")),
     path(api_base, include("staff.urls")),
-    path(api_base, include("payroll.urls")),
+    path(f"{api_base}payroll/settings/", PayrollSettingsView.as_view(), name="payroll-settings"),
+    path(f"{api_base}payroll-v2/", include("payroll_v2.urls")),
     path(api_base + "grading/", include("grading.urls")),
     path(api_base + "settings/", include("settings.urls")),
     path(api_base + "reports/", include("reports.urls")),

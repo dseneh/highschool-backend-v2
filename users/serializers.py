@@ -88,12 +88,10 @@ class UserSerializer(serializers.ModelSerializer):
     def _build_logo_url(self, tenant):
         """Return an absolute logo URL so the frontend doesn't try to
         load it from its own origin (e.g. the Next.js dev server)."""
-        logo = getattr(tenant, 'logo', None)
-        if not logo:
-            return None
-        try:
-            relative = logo.url
-        except Exception:
+        from core.utils import resolve_tenant_logo_media_url
+
+        relative = resolve_tenant_logo_media_url(getattr(tenant, "logo", None))
+        if not relative:
             return None
         request = self.context.get('request') if hasattr(self, 'context') else None
         if request is not None:

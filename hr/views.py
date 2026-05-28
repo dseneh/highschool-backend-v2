@@ -475,23 +475,29 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
         payroll_ready_param = self.request.query_params.get("payroll_ready")
         if payroll_ready_param is not None:
+            from django.db.models import Exists, OuterRef, Q
+            from django.utils import timezone
+
+            from payroll_v2.models import EmployeeCompensation
+
             normalized = str(payroll_ready_param).strip().lower()
+            today = timezone.now().date()
+            active_compensation = EmployeeCompensation.objects.filter(
+                employee_id=OuterRef("pk"),
+                is_active=True,
+                effective_start_date__lte=today,
+            ).filter(Q(effective_end_date__isnull=True) | Q(effective_end_date__gte=today))
+
             if normalized in {"true", "1", "yes"}:
                 queryset = queryset.filter(
                     pay_schedule__isnull=False,
                     employment_status=Employee.EmploymentStatus.ACTIVE,
-                ).filter(
-                    Q(salary_type=Employee.SalaryType.MONTHLY, basic_salary__gt=0)
-                    | Q(~Q(salary_type=Employee.SalaryType.MONTHLY), hourly_rate__gt=0)
-                )
+                ).annotate(_has_compensation=Exists(active_compensation)).filter(_has_compensation=True)
             elif normalized in {"false", "0", "no"}:
                 queryset = queryset.filter(
                     Q(pay_schedule__isnull=True)
-                    | Q(salary_type=Employee.SalaryType.MONTHLY, basic_salary__isnull=True)
-                    | Q(salary_type=Employee.SalaryType.MONTHLY, basic_salary=0)
-                    | Q(~Q(salary_type=Employee.SalaryType.MONTHLY), hourly_rate__isnull=True)
-                    | Q(~Q(salary_type=Employee.SalaryType.MONTHLY), hourly_rate=0)
                     | ~Q(employment_status=Employee.EmploymentStatus.ACTIVE)
+                    | ~Exists(active_compensation)
                 )
 
         hire_date_after = self.request.query_params.get("hire_date_after")

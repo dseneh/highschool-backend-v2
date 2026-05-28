@@ -1,13 +1,7 @@
 from users.access_policies.access import BaseSchoolAccessPolicy
 
 
-class PayrollAccessPolicy(BaseSchoolAccessPolicy):
-    """Access rules for payroll endpoints.
-
-    Mirrors HRAccessPolicy: admins/payroll-officers can mutate;
-    teachers/viewers can only read.
-    """
-
+class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
     statements = [
         {
             "action": ["*"],
@@ -23,22 +17,21 @@ class PayrollAccessPolicy(BaseSchoolAccessPolicy):
                 "update",
                 "partial_update",
                 "destroy",
-                "next_period",
-                "generate",
-                "regenerate",
-                "submit",
-                "approve",
-                "mark_paid",
-                "preview",
-                "recalculate",
-                "patch",
+            "generate",
+            "submit",
+            "approve",
+            "mark_paid",
+            "revert_to_draft",
+            "recalculate",
+            "next_period",
+            "sync_employees",
             ],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:registrar,data_entry",
         },
         {
-            "action": ["list", "retrieve", "get"],
+            "action": ["list", "retrieve"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:teacher,viewer",

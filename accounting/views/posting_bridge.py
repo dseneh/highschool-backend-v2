@@ -11,7 +11,6 @@ from accounting.views.base import AccountingErrorFormattingMixin
 
 class AccountingPayrollPostingBatchViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
     queryset = AccountingPayrollPostingBatch.objects.select_related(
-        "payroll_run",
         "academic_year",
         "journal_entry",
         "currency",

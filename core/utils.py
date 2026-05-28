@@ -3,6 +3,33 @@ Utility functions for core app
 """
 
 from django.db.models import Q
+from django_tenants.utils import get_public_schema_name, schema_context
+
+
+def resolve_tenant_logo_media_url(logo_field) -> str | None:
+    """
+    Return the media URL for a Tenant.logo ImageField.
+
+    Tenant logos are stored under the public schema media prefix
+    (``public/tenants/{schema}/...``) even when the active DB connection
+    is on a tenant schema. Reading ``logo.url`` in tenant context would
+    incorrectly prefix the path with the tenant schema name.
+    """
+    if not logo_field:
+        return None
+
+    name = getattr(logo_field, "name", "") or ""
+    if name.startswith("tenants/"):
+        with schema_context(get_public_schema_name()):
+            try:
+                return logo_field.url
+            except Exception:
+                return None
+
+    try:
+        return logo_field.url
+    except Exception:
+        return None
 
 
 def get_school_object(id, school_model):

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.utils import timezone
 from rest_framework import serializers
 from academics.models import Section, SectionSubject, Subject
@@ -336,6 +338,7 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
             "accrual_frequency",
             "allow_carryover",
             "max_carryover_days",
+            "include_on_paystub",
             "active",
             "created_at",
             "updated_at",
@@ -509,10 +512,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "highest_qualification",
             "salary_type",
             "basic_salary",
-            "annual_salary",
             "hourly_rate",
             "pay_schedule",
-            "tax_rules",
             "tax_id",
             "bank_name",
             "bank_account_number",
@@ -524,7 +525,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
-            "annual_salary",
             "created_at",
             "updated_at",
             "contacts",
@@ -570,12 +570,18 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         self._strip_salary_fields_if_unauthorized(validated_data)
+        previous_schedule_id = instance.pay_schedule_id
         position = validated_data.get("position")
         if position and not validated_data.get("job_title"):
             validated_data["job_title"] = position.title
         if position and not validated_data.get("employment_type"):
             validated_data["employment_type"] = position.employment_type
-        return super().update(instance, validated_data)
+        instance = super().update(instance, validated_data)
+        if "pay_schedule" in validated_data and instance.pay_schedule_id != previous_schedule_id:
+            from payroll_v2.services import refresh_employee_compensation_annual_salaries
+
+            refresh_employee_compensation_annual_salaries(instance, actor=getattr(self.context.get("request"), "user", None))
+        return instance
 
     def _generate_employee_number(self):
         last_employee = Employee.objects.order_by("created_at").last()
@@ -637,62 +643,37 @@ class EmployeeSerializer(serializers.ModelSerializer):
         readiness = instance.payroll_readiness()
         data["payroll_ready"] = readiness["ready"]
         data["missing_payroll_fields"] = readiness["missing"]
+
+        from payroll_v2.serializers import EmployeeCompensationSerializer
+        from payroll_v2.services import (
+            get_active_employee_compensation,
+            get_employee_compensation_history,
+        )
+
+        active_compensation = get_active_employee_compensation(instance)
+        data["active_compensation"] = (
+            EmployeeCompensationSerializer(active_compensation).data if active_compensation else None
+        )
+        metadata = instance.get_current_payroll_metadata()
+        data["current_payroll_metadata"] = {
+            key: str(value) if isinstance(value, Decimal) else value
+            for key, value in metadata.items()
+        }
+        if include_leave_details:
+            data["compensation_history"] = EmployeeCompensationSerializer(
+                get_employee_compensation_history(instance),
+                many=True,
+            ).data
+        else:
+            data["compensation_history"] = []
+
         if instance.pay_schedule_id:
-            data["pay_schedule"] = {
+            data["pay_schedule_detail"] = {
                 "id": str(instance.pay_schedule.id),
                 "name": instance.pay_schedule.name,
                 "frequency": instance.pay_schedule.frequency,
                 "currency_code": instance.pay_schedule.currency.code,
             }
-
-        if instance.pk:
-            override_map = {
-                ov.rule_id: ov
-                for ov in instance.tax_rule_overrides.all()
-            }
-            data["tax_rules_detail"] = [
-                {
-                    "id": str(rule.id),
-                    "name": rule.name,
-                    "code": rule.code,
-                    "priority": rule.priority,
-                    "is_active": rule.is_active,
-                    "amount_rules": [
-                        {
-                            "id": str(ar.id),
-                            "calculation_type": ar.calculation_type,
-                            "value": str(ar.value) if ar.value is not None else None,
-                            "applies_to": ar.applies_to,
-                            "formula": ar.formula,
-                            "target_salary_min": str(ar.target_salary_min),
-                            "target_salary_max": str(ar.target_salary_max),
-                            "target_salary_by": ar.target_salary_by,
-                            "salary_limit": (
-                                str(ar.salary_limit) if ar.salary_limit is not None else None
-                            ),
-                        }
-                        for ar in rule.amount_rules.all()
-                    ],
-                    "override": (
-                        {
-                            "id": str(override_map[rule.id].id),
-                            "calculation_type": override_map[rule.id].calculation_type,
-                            "value": (
-                                str(override_map[rule.id].value)
-                                if override_map[rule.id].value is not None
-                                else None
-                            ),
-                            "applies_to": override_map[rule.id].applies_to,
-                            "formula": override_map[rule.id].formula,
-                            "is_active": override_map[rule.id].is_active,
-                        }
-                        if rule.id in override_map
-                        else None
-                    ),
-                }
-                for rule in instance.tax_rules.prefetch_related("amount_rules").all()
-            ]
-        else:
-            data["tax_rules_detail"] = []
+            data["pay_schedule"] = data["pay_schedule_detail"]
 
         return data

@@ -174,6 +174,46 @@ class EmployeeHrModelSmokeTest(SimpleTestCase):
         self.assertEqual(summary[0]["used_days"], 3)
         self.assertEqual(summary[0]["remaining_days"], 9)
 
+    def test_leave_balance_summary_includes_paystub_visibility(self):
+        visible_leave = LeaveType(
+            name="Annual Leave",
+            code="AL",
+            default_days=21,
+            include_on_paystub=True,
+        )
+        hidden_leave = LeaveType(
+            name="Comp Time",
+            code="CT",
+            default_days=10,
+            include_on_paystub=False,
+        )
+        employee = Employee(
+            first_name="Ada",
+            last_name="Lovelace",
+            employee_number="EMP-0001",
+            employment_status=Employee.EmploymentStatus.ACTIVE,
+        )
+        visible_request = LeaveRequest(
+            employee=employee,
+            leave_type=visible_leave,
+            start_date=date(2026, 4, 10),
+            end_date=date(2026, 4, 12),
+            status=LeaveRequest.Status.APPROVED,
+        )
+        hidden_request = LeaveRequest(
+            employee=employee,
+            leave_type=hidden_leave,
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 1),
+            status=LeaveRequest.Status.APPROVED,
+        )
+
+        summary = employee.get_leave_balance_summary([visible_request, hidden_request])
+        summary_by_type = {item["leave_type"]: item["include_on_paystub"] for item in summary}
+
+        self.assertTrue(summary_by_type["Annual Leave"])
+        self.assertFalse(summary_by_type["Comp Time"])
+
     def test_employee_attendance_calculates_hours_worked(self):
         employee = Employee(
             first_name="Ada",

@@ -127,7 +127,6 @@ class Migration(migrations.Migration):
     dependencies = [
         ("academics", "0002_initial"),
         ("accounting", "0001_initial"),
-        ("payroll", "0001_initial"),
         ("staff", "0001_initial"),
         ("students", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
@@ -869,18 +868,6 @@ class Migration(migrations.Migration):
                 on_delete=django.db.models.deletion.SET_NULL,
                 related_name="payroll_posting_batches",
                 to="accounting.accountingjournalentry",
-            ),
-        ),
-        SafeAddField(
-            model_name="accountingpayrollpostingbatch",
-            name="payroll_run",
-            field=models.ForeignKey(
-                blank=True,
-                help_text="Payroll run this batch was generated from",
-                null=True,
-                on_delete=django.db.models.deletion.PROTECT,
-                related_name="accounting_posting_batches",
-                to="payroll.payrollrun",
             ),
         ),
         SafeAddField(

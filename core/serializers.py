@@ -3,6 +3,7 @@ Serializers for core models (Tenant)
 """
 from rest_framework import serializers
 from core.models import Tenant, Domain, SignupRequest
+from core.utils import resolve_tenant_logo_media_url
 from django_tenants.utils import schema_context
 
 
@@ -49,13 +50,12 @@ class TenantDomainMixin:
         """
         Build full URL for logo if available.
         """
-        if instance.logo and hasattr(instance.logo, 'url'):
-            if request:
-                return request.build_absolute_uri(instance.logo.url)
-            return instance.logo.url
-        # default_path = '/media/images/default-logo.png'
-        # return request.build_absolute_uri(default_path) if request else default_path
-        return None
+        relative = resolve_tenant_logo_media_url(getattr(instance, "logo", None))
+        if not relative:
+            return None
+        if request:
+            return request.build_absolute_uri(relative)
+        return relative
 
 
 class BaseTenantSerializer(TenantDomainMixin, serializers.ModelSerializer):
