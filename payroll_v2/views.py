@@ -62,6 +62,7 @@ from .services import (
     sync_payroll_catalog_item_to_employees,
 )
 from .schedule_services import derive_next_period
+from .settings_services import get_tenant_payroll_settings
 
 
 TARGET_MIN_AMOUNT_OUTPUT_FIELD = DecimalField(max_digits=14, decimal_places=2)
@@ -676,24 +677,13 @@ class PayrollSettingsView(APIView):
     permission_classes = [PayrollV2AccessPolicy]
 
     def get(self, request):
-        settings, _ = PayrollSettings.objects.get_or_create(
-            defaults={
-                "created_by": request.user,
-                "updated_by": request.user,
-            },
-        )
+        settings = get_tenant_payroll_settings(user=request.user)
         return Response(PayrollSettingsSerializer(settings).data)
 
     def patch(self, request):
-        settings, created = PayrollSettings.objects.get_or_create(
-            defaults={
-                "created_by": request.user,
-                "updated_by": request.user,
-            },
-        )
+        settings = get_tenant_payroll_settings(user=request.user)
         serializer = PayrollSettingsSerializer(settings, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save(updated_by=request.user)
-        if created:
-            settings.refresh_from_db()
-        return Response(serializer.data)
+        settings = serializer.save(updated_by=request.user)
+        settings.refresh_from_db()
+        return Response(PayrollSettingsSerializer(settings).data)

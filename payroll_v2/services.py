@@ -1163,10 +1163,10 @@ def snapshot_payslip_template(template: PayrollPayslipTemplate | None) -> dict:
 
 
 def validate_payroll_settings_configured() -> None:
-    from payroll_v2.models import PayrollSettings
+    from payroll_v2.settings_services import get_tenant_payroll_settings
 
-    settings = PayrollSettings.objects.select_related("transaction_type").first()
-    if settings is None or settings.transaction_type_id is None:
+    settings = get_tenant_payroll_settings()
+    if settings.transaction_type_id is None:
         raise ValueError("Configure a payroll transaction type in Payroll settings before continuing.")
     tx_type = settings.transaction_type
     if not tx_type.is_active:
