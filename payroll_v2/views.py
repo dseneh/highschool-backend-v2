@@ -599,12 +599,22 @@ class PayrollEmployeeItemViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["get"], url_path="download-pdf")
     def download_pdf(self, request, pk=None):
+        import logging
+
         from common.services.pdf_components import resolve_tenant_school
 
         from .paystub_pdf import build_paystub_v2_pdf_bytes
 
+        logger = logging.getLogger(__name__)
         item = self.get_object()
-        pdf_bytes = build_paystub_v2_pdf_bytes(item, school=resolve_tenant_school())
+        try:
+            pdf_bytes = build_paystub_v2_pdf_bytes(item, school=resolve_tenant_school())
+        except Exception as exc:
+            logger.exception("Paystub PDF generation failed for employee run item %s", item.id)
+            return Response(
+                {"detail": f"Could not generate paystub PDF: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         employee_name = item.employee.get_full_name().strip()
         period_label = f"{item.payroll.pay_period_start:%Y-%m-%d}_{item.payroll.pay_period_end:%Y-%m-%d}"

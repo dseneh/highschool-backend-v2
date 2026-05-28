@@ -475,7 +475,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
         payroll_ready_param = self.request.query_params.get("payroll_ready")
         if payroll_ready_param is not None:
-            from django.db.models import Exists, OuterRef, Q
+            from django.db.models import Exists, OuterRef
             from django.utils import timezone
 
             from payroll_v2.models import EmployeeCompensation

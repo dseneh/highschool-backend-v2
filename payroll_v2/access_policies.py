@@ -28,6 +28,7 @@ class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
             "mark_paid",
             "revert_to_draft",
             "recalculate",
+            "download_pdf",
             "next_period",
             "sync_employees",
             ],
