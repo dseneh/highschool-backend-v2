@@ -5,6 +5,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
@@ -50,6 +51,12 @@ from accounting.services.post_all import (
     get_eligible_post_all_queryset,
 )
 from accounting.views.base import AccountingErrorFormattingMixin
+
+
+class AccountingCashTransactionPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 500
 
 
 def _delete_transfer_bundle(transfer: AccountingAccountTransfer) -> None:
@@ -181,6 +188,13 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
             return AccountingBankAccountDetailSerializer
         return super().get_serializer_class()
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        recalculate_bank_account_current_balance(instance)
+        instance.refresh_from_db()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
 
 class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
     queryset = AccountingCashTransaction.objects.select_related(
@@ -205,6 +219,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     ).order_by("-updated_at", "-created_at")
     serializer_class = AccountingCashTransactionSerializer
     permission_classes = [AccountingTransactionAccessPolicy]
+    pagination_class = AccountingCashTransactionPagination
 
     @staticmethod
     def _to_bool(value):

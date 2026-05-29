@@ -35,7 +35,11 @@ from accounting.models import (
     AccountingTaxRemittance,
     AccountingTransactionType,
 )
-from accounting.services.posting import _resolve_academic_year
+from accounting.services.posting import (
+    _resolve_academic_year,
+    aggregate_bank_account_approved_totals,
+    compute_bank_account_balance,
+)
 from students.models import Student
 
 
@@ -648,22 +652,12 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
             return cached
 
         approved_tx = instance.transactions.filter(status=AccountingCashTransaction.TransactionStatus.APPROVED)
-
-        total_income = (
-            approved_tx.filter(transaction_type__transaction_category="income").aggregate(
-                total=Sum("base_amount")
-            )["total"]
-            or Decimal("0")
-        )
-        total_expense = (
-            approved_tx.filter(transaction_type__transaction_category="expense").aggregate(
-                total=Sum("base_amount")
-            )["total"]
-            or Decimal("0")
-        )
+        totals = aggregate_bank_account_approved_totals(approved_tx)
+        total_income = totals["income"]
+        total_expense = totals["expense"]
 
         opening_amount = instance.opening_balance or Decimal("0")
-        net_balance = opening_amount + total_income - total_expense
+        net_balance = compute_bank_account_balance(instance)
 
         monthly_rows = (
             approved_tx.annotate(month=TruncMonth("transaction_date"))

@@ -16,12 +16,8 @@ from accounting.models import (
 )
 
 
-def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount) -> Decimal:
-    """Recalculate and persist bank account balance from approved cash transactions."""
-    approved_tx = bank_account.transactions.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED
-    )
-
+def aggregate_bank_account_approved_totals(approved_tx) -> dict[str, Decimal]:
+    """Sum approved cash activity by income, expense, and transfer types."""
     totals = approved_tx.aggregate(
         income=Sum(
             "base_amount",
@@ -40,19 +36,33 @@ def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount
             filter=Q(transaction_type__code__iexact="TRANSFER_OUT"),
         ),
     )
+    return {
+        "income": totals.get("income") or Decimal("0"),
+        "expense": totals.get("expense") or Decimal("0"),
+        "transfer_in": totals.get("transfer_in") or Decimal("0"),
+        "transfer_out": totals.get("transfer_out") or Decimal("0"),
+    }
 
-    opening_balance = bank_account.opening_balance or Decimal("0")
-    income_total = totals.get("income") or Decimal("0")
-    expense_total = totals.get("expense") or Decimal("0")
-    transfer_in_total = totals.get("transfer_in") or Decimal("0")
-    transfer_out_total = totals.get("transfer_out") or Decimal("0")
-    new_balance = (
-        opening_balance
-        + income_total
-        - expense_total
-        + transfer_in_total
-        - transfer_out_total
+
+def compute_bank_account_balance(bank_account: AccountingBankAccount) -> Decimal:
+    """Compute bank balance from opening balance and approved cash transactions."""
+    approved_tx = bank_account.transactions.filter(
+        status=AccountingCashTransaction.TransactionStatus.APPROVED
     )
+    totals = aggregate_bank_account_approved_totals(approved_tx)
+    opening_balance = bank_account.opening_balance or Decimal("0")
+    return (
+        opening_balance
+        + totals["income"]
+        - totals["expense"]
+        + totals["transfer_in"]
+        - totals["transfer_out"]
+    )
+
+
+def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount) -> Decimal:
+    """Recalculate and persist bank account balance from approved cash transactions."""
+    new_balance = compute_bank_account_balance(bank_account)
 
     if bank_account.current_balance != new_balance:
         bank_account.current_balance = new_balance
