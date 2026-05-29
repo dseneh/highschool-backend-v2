@@ -178,7 +178,7 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        summary = build_journal_entry_list_summary(queryset)
+        summary = build_journal_entry_list_summary(queryset, request.query_params)
 
         page = self.paginate_queryset(queryset)
         if page is not None:
