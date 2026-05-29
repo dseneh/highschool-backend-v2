@@ -3,8 +3,8 @@ from typing import Any
 from datetime import datetime
 import uuid
 
-from django.db.models import Q, Sum, Max
-from django.db.models.functions import TruncMonth
+from django.db.models import F, Q, Sum, Max
+from django.db.models.functions import Abs, TruncMonth
 
 from rest_framework import serializers
 
@@ -37,6 +37,8 @@ from accounting.models import (
 )
 from accounting.services.posting import (
     _resolve_academic_year,
+    _inflow_filter,
+    _outflow_filter,
     aggregate_bank_account_approved_totals,
     compute_bank_account_balance,
 )
@@ -663,8 +665,8 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
             approved_tx.annotate(month=TruncMonth("transaction_date"))
             .values("month")
             .annotate(
-                income=Sum("base_amount", filter=Q(transaction_type__transaction_category="income")),
-                expense=Sum("base_amount", filter=Q(transaction_type__transaction_category="expense")),
+                income=Sum(Abs(F("base_amount")), filter=_inflow_filter()),
+                expense=Sum(Abs(F("base_amount")), filter=_outflow_filter()),
             )
             .order_by("month")
         )

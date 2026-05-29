@@ -147,6 +147,8 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
+        for account in queryset:
+            recalculate_bank_account_current_balance(account)
         serializer = self.get_serializer(queryset, many=True)
 
         balances_by_currency: dict[str, dict[str, object]] = {}

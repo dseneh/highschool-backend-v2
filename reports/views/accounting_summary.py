@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import io
 
-from django.db.models import Count, Q, Sum
-from django.db.models.functions import TruncMonth
+from django.db.models import Count, F, Q, Sum
+from django.db.models.functions import Abs, TruncMonth
 from django.http import HttpResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,10 +13,11 @@ from rest_framework.views import APIView
 from accounting.models import AccountingCashTransaction
 from accounting.services.post_all import apply_cash_transaction_list_filters
 
+from ..accounting_totals import EXPENSE_CATEGORY, INCOME_CATEGORY
 from ..access_policies import ReportsAccessPolicy
 
-INCOME = Q(transaction_type__transaction_category="income")
-EXPENSE = Q(transaction_type__transaction_category="expense")
+INCOME = INCOME_CATEGORY
+EXPENSE = EXPENSE_CATEGORY
 LEDGER_CATEGORIES = Q(transaction_type__transaction_category__in=("income", "expense"))
 
 GROUP_BY_OPTIONS = {
@@ -75,8 +76,8 @@ class AccountingSummaryReportView(APIView):
         grouped_rows = (
             grouped_queryset.values(*group_config["values"])
             .annotate(
-                income=Sum("amount", filter=INCOME),
-                expense=Sum("amount", filter=EXPENSE),
+                income=Sum(Abs(F("base_amount")), filter=INCOME),
+                expense=Sum(Abs(F("base_amount")), filter=EXPENSE),
                 income_count=Count("id", filter=INCOME),
                 expense_count=Count("id", filter=EXPENSE),
             )
@@ -199,8 +200,8 @@ class AccountingSummaryReportView(APIView):
             response_group_by = group_by
 
         totals = queryset.aggregate(
-            income_total=Sum("amount", filter=INCOME),
-            expense_total=Sum("amount", filter=EXPENSE),
+            income_total=Sum(Abs(F("base_amount")), filter=INCOME),
+            expense_total=Sum(Abs(F("base_amount")), filter=EXPENSE),
             income_count=Count("id", filter=INCOME),
             expense_count=Count("id", filter=EXPENSE),
             transaction_count=Count("id"),

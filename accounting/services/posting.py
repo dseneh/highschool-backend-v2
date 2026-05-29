@@ -4,7 +4,8 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
-from django.db.models import Q, Sum
+from django.db.models import Case, DecimalField, F, Q, Sum, When
+from django.db.models.functions import Abs
 from django.utils import timezone
 
 from academics.models import AcademicYear
@@ -16,48 +17,48 @@ from accounting.models import (
 )
 
 
+def _inflow_filter() -> Q:
+    return Q(transaction_type__transaction_category="income") | Q(
+        transaction_type__code__iexact="TRANSFER_IN"
+    )
+
+
+def _outflow_filter() -> Q:
+    return Q(transaction_type__transaction_category="expense") | Q(
+        transaction_type__code__iexact="TRANSFER_OUT"
+    )
+
+
+def approved_signed_base_amount_expression():
+    """Signed cash effect per transaction — mirrors cash-transaction list net logic."""
+    return Case(
+        When(_outflow_filter(), then=-Abs(F("base_amount"))),
+        When(_inflow_filter(), then=Abs(F("base_amount"))),
+        default=F("base_amount"),
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+
+
 def aggregate_bank_account_approved_totals(approved_tx) -> dict[str, Decimal]:
-    """Sum approved cash activity by income, expense, and transfer types."""
+    """Sum approved inflows and outflows (expense + transfer out, income + transfer in)."""
     totals = approved_tx.aggregate(
-        income=Sum(
-            "base_amount",
-            filter=Q(transaction_type__transaction_category="income"),
-        ),
-        expense=Sum(
-            "base_amount",
-            filter=Q(transaction_type__transaction_category="expense"),
-        ),
-        transfer_in=Sum(
-            "base_amount",
-            filter=Q(transaction_type__code__iexact="TRANSFER_IN"),
-        ),
-        transfer_out=Sum(
-            "base_amount",
-            filter=Q(transaction_type__code__iexact="TRANSFER_OUT"),
-        ),
+        income=Sum(Abs(F("base_amount")), filter=_inflow_filter()),
+        expense=Sum(Abs(F("base_amount")), filter=_outflow_filter()),
     )
     return {
         "income": totals.get("income") or Decimal("0"),
         "expense": totals.get("expense") or Decimal("0"),
-        "transfer_in": totals.get("transfer_in") or Decimal("0"),
-        "transfer_out": totals.get("transfer_out") or Decimal("0"),
     }
 
 
 def compute_bank_account_balance(bank_account: AccountingBankAccount) -> Decimal:
-    """Compute bank balance from opening balance and approved cash transactions."""
+    """Net balance from approved cash transactions only (no opening balance)."""
     approved_tx = bank_account.transactions.filter(
         status=AccountingCashTransaction.TransactionStatus.APPROVED
     )
-    totals = aggregate_bank_account_approved_totals(approved_tx)
-    opening_balance = bank_account.opening_balance or Decimal("0")
-    return (
-        opening_balance
-        + totals["income"]
-        - totals["expense"]
-        + totals["transfer_in"]
-        - totals["transfer_out"]
-    )
+    signed_amount = approved_signed_base_amount_expression()
+    total = approved_tx.aggregate(net=Sum(signed_amount))["net"]
+    return total or Decimal("0")
 
 
 def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount) -> Decimal:

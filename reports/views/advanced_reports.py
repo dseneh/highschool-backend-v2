@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
-
-from django.db.models import Sum
-from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounting.models import AccountingCashTransaction, AccountingStudentBill
+from academics.models import AcademicYear
 from accounting.services.post_all import apply_cash_transaction_list_filters
 
 from ..access_policies import ReportsAccessPolicy
+from ..accounting_totals import (
+    approved_cash_queryset,
+    expense_breakdown_by_type,
+    filter_cash_by_period,
+    income_breakdown_by_type,
+    sum_expense_total,
+    sum_income_revenue,
+)
+from ..revenue_report import (
+    REVENUE_METRICS,
+    build_revenue_overview_payload,
+    build_revenue_year_payload,
+)
 from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param, resolve_academic_year
-
-LEDGER_INCOME = {"income"}
-LEDGER_EXPENSE = {"expense"}
 
 
 class ProfitLossReportView(APIView):
@@ -26,49 +32,41 @@ class ProfitLossReportView(APIView):
         start_date = parse_date_param(request.query_params.get("start_date"))
         end_date = parse_date_param(request.query_params.get("end_date"))
 
-        txns = AccountingCashTransaction.objects.filter(status="approved").select_related("transaction_type")
+        txns = approved_cash_queryset()
         txns = apply_cash_transaction_list_filters(txns, request.query_params)
-        if start_date:
-            txns = txns.filter(transaction_date__gte=start_date)
-        if end_date:
-            txns = txns.filter(transaction_date__lte=end_date)
+        txns = filter_cash_by_period(txns, start_date, end_date)
 
-        income_total = (
-            txns.filter(transaction_type__transaction_category="income").aggregate(
-                total=Coalesce(Sum("amount"), Decimal("0"))
-            )["total"]
-            or 0
-        )
-        expense_total = (
-            txns.filter(transaction_type__transaction_category="expense").aggregate(
-                total=Coalesce(Sum("amount"), Decimal("0"))
-            )["total"]
-            or 0
-        )
-        net = float(income_total) - float(expense_total)
+        income_total = float(sum_income_revenue(txns))
+        expense_total = float(sum_expense_total(txns))
+        net = round(income_total - expense_total, 2)
 
-        by_type = (
-            txns.filter(transaction_type__transaction_category__in=["income", "expense"])
-            .values("transaction_type__name", "transaction_type__transaction_category")
-            .annotate(total=Coalesce(Sum("amount"), Decimal("0")))
-            .order_by("transaction_type__transaction_category", "transaction_type__name")
-        )
+        income_breakdown = income_breakdown_by_type(txns)
+        expense_breakdown = expense_breakdown_by_type(txns)
         breakdown = [
             {
-                "transaction_type": row["transaction_type__name"] or "Unknown",
-                "category": row["transaction_type__transaction_category"],
-                "total": float(row["total"] or 0),
+                "transaction_type": row["transaction_type"],
+                "category": "income",
+                "total": row["total"],
+                "transaction_count": row["transaction_count"],
             }
-            for row in by_type
+            for row in income_breakdown
+        ] + [
+            {
+                "transaction_type": row["transaction_type"],
+                "category": "expense",
+                "total": row["total"],
+                "transaction_count": row["transaction_count"],
+            }
+            for row in expense_breakdown
         ]
 
         payload = {
             "start_date": start_date.isoformat() if start_date else None,
             "end_date": end_date.isoformat() if end_date else None,
             "summary": {
-                "income_total": float(income_total),
-                "expense_total": float(expense_total),
-                "net_income": round(net, 2),
+                "income_total": income_total,
+                "expense_total": expense_total,
+                "net_income": net,
             },
             "breakdown": breakdown,
         }
@@ -79,7 +77,6 @@ class ProfitLossReportView(APIView):
             export_response = export_tabular_report(
                 request,
                 filename_base="profit-loss-summary",
-                
                 title="Profit & Loss Summary",
                 subtitle=f"{payload['start_date'] or 'Beginning'} to {payload['end_date'] or 'Today'}",
                 summary_rows=[
@@ -89,7 +86,6 @@ class ProfitLossReportView(APIView):
                 ],
                 headers=["Category", "Transaction Type", "Total"],
                 rows=rows,
-            
             )
             if export_response:
                 return export_response
@@ -100,61 +96,54 @@ class RevenueReportView(APIView):
     permission_classes = [ReportsAccessPolicy]
 
     def get(self, request):
+        view = (request.query_params.get("view") or "overview").strip().lower()
+
+        if view == "overview":
+            payload = build_revenue_overview_payload(AcademicYear.objects.all())
+            if get_export_format(request):
+                headers = ["Academic Year", *[metric["label"] for metric in REVENUE_METRICS]]
+                rows = [
+                    [
+                        row["academic_year_label"],
+                        *[row["metrics"][metric["key"]]["value"] for metric in REVENUE_METRICS],
+                    ]
+                    for row in payload["rows"]
+                ]
+                export_response = export_tabular_report(
+                    request,
+                    filename_base="revenue-report-overview",
+                    title="Revenue Report — Overview",
+                    subtitle="All academic years",
+                    summary_rows=None,
+                    headers=headers,
+                    rows=rows,
+                )
+                if export_response:
+                    return export_response
+            return Response(payload)
+
         academic_year, error = resolve_academic_year(request)
         if error:
             return error
 
         start_date = parse_date_param(request.query_params.get("start_date"))
         end_date = parse_date_param(request.query_params.get("end_date"))
-
-        bills = AccountingStudentBill.objects.filter(academic_year=academic_year).exclude(
-            status=AccountingStudentBill.BillStatus.CANCELLED
-        )
-        billed_total = bills.aggregate(total=Coalesce(Sum("net_amount"), Decimal("0")))["total"] or 0
-        collected_total = bills.aggregate(total=Coalesce(Sum("paid_amount"), Decimal("0")))["total"] or 0
-        outstanding_total = bills.aggregate(total=Coalesce(Sum("outstanding_amount"), Decimal("0")))["total"] or 0
-
-        cash_income = AccountingCashTransaction.objects.filter(
-            status="approved",
-            transaction_type__transaction_category="income",
-        )
-        if start_date:
-            cash_income = cash_income.filter(transaction_date__gte=start_date)
-        if end_date:
-            cash_income = cash_income.filter(transaction_date__lte=end_date)
-        other_income = cash_income.aggregate(total=Coalesce(Sum("amount"), Decimal("0")))["total"] or 0
-
-        summary = {
-            "total_billed": float(billed_total),
-            "total_collected_on_bills": float(collected_total),
-            "outstanding_on_bills": float(outstanding_total),
-            "other_income": float(other_income),
-            "total_revenue": round(float(collected_total) + float(other_income), 2),
-        }
-        results = [
-            {"metric": "Billed (Net)", "amount": summary["total_billed"]},
-            {"metric": "Collected on Bills", "amount": summary["total_collected_on_bills"]},
-            {"metric": "Outstanding on Bills", "amount": summary["outstanding_on_bills"]},
-            {"metric": "Other Income", "amount": summary["other_income"]},
-            {"metric": "Total Revenue", "amount": summary["total_revenue"]},
-        ]
-        payload = {
-            "academic_year_id": str(academic_year.id),
-            "summary": summary,
-            "results": results,
-        }
+        payload = build_revenue_year_payload(academic_year, start_date, end_date)
 
         if get_export_format(request):
-            rows = [[r["metric"], r["amount"]] for r in results]
+            rows = [[r["metric"], r["amount"]] for r in payload["results"]]
             export_response = export_tabular_report(
                 request,
                 filename_base=f"revenue-report-{academic_year.id}",
                 title="Revenue Report",
-                subtitle=f"Academic Year: {academic_year}",
+                subtitle=(
+                    f"Academic Year: {payload['academic_year_label']} · "
+                    f"{payload['summary']['period_start'] or 'Start'} to "
+                    f"{payload['summary']['period_end'] or 'End'}"
+                ),
                 summary_rows=None,
                 headers=["Metric", "Amount"],
                 rows=rows,
-            
             )
             if export_response:
                 return export_response
