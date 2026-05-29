@@ -447,15 +447,20 @@ class PayrollPeriodViewSet(BasePayrollViewSet):
 
 
 class PayrollRunViewSet(BasePayrollViewSet):
-    queryset = PayrollRunRecord.objects.annotate(employee_count=Count("employee_items")).select_related(
-        "currency",
-        "bank_account",
-        "table_view",
-        "payslip_template",
-        "pay_schedule",
-        "payroll_period",
+    queryset = (
+        PayrollRunRecord.objects.annotate(employee_count=Count("employee_items"))
+        .select_related(
+            "currency",
+            "bank_account",
+            "table_view",
+            "payslip_template",
+            "pay_schedule",
+            "payroll_period",
+        )
+        .order_by("-pay_period_end", "-created_at")
     )
     search_fields = ["payroll_number", "notes"]
+    ordering = ["-pay_period_end", "-created_at"]
     ordering_fields = ["pay_period_start", "pay_period_end", "payment_date", "created_at", "status"]
 
     def get_queryset(self):
