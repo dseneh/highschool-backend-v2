@@ -26,6 +26,7 @@ from accounting.views import (
     AccountingTaxRemittanceViewSet,
     AccountingTransactionTypeViewSet,
 )
+from accounting.views.settings import AccountingSettingsView
 
 router = DefaultRouter()
 router.register(r"accounting/currencies", AccountingCurrencyViewSet, basename="accounting-currency")
@@ -53,5 +54,6 @@ router.register(r"accounting/payroll-posting-batches", AccountingPayrollPostingB
 router.register(r"accounting/payroll-posting-lines", AccountingPayrollPostingLineViewSet, basename="accounting-payroll-posting-line")
 
 urlpatterns = [
+    path("accounting/settings/", AccountingSettingsView.as_view(), name="accounting-settings"),
     path("", include(router.urls)),
 ]

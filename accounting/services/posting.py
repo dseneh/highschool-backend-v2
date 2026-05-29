@@ -31,12 +31,28 @@ def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount
             "base_amount",
             filter=Q(transaction_type__transaction_category="expense"),
         ),
+        transfer_in=Sum(
+            "base_amount",
+            filter=Q(transaction_type__code__iexact="TRANSFER_IN"),
+        ),
+        transfer_out=Sum(
+            "base_amount",
+            filter=Q(transaction_type__code__iexact="TRANSFER_OUT"),
+        ),
     )
 
     opening_balance = bank_account.opening_balance or Decimal("0")
     income_total = totals.get("income") or Decimal("0")
     expense_total = totals.get("expense") or Decimal("0")
-    new_balance = opening_balance + income_total - expense_total
+    transfer_in_total = totals.get("transfer_in") or Decimal("0")
+    transfer_out_total = totals.get("transfer_out") or Decimal("0")
+    new_balance = (
+        opening_balance
+        + income_total
+        - expense_total
+        + transfer_in_total
+        - transfer_out_total
+    )
 
     if bank_account.current_balance != new_balance:
         bank_account.current_balance = new_balance

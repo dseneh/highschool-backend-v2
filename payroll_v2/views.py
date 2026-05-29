@@ -61,6 +61,7 @@ from .services import (
     submit_payroll_for_approval,
     sync_payroll_catalog_item_to_employees,
 )
+from .portal_access import apply_employee_portal_paystub_filters
 from .schedule_services import derive_next_period
 from .settings_services import get_tenant_payroll_settings
 
@@ -588,7 +589,7 @@ class PayrollEmployeeItemViewSet(BasePayrollViewSet):
                 | Q(employee__last_name__icontains=search)
                 | Q(employee__id_number__icontains=search)
             )
-        return qs
+        return apply_employee_portal_paystub_filters(qs, self.request.user)
 
     @action(detail=True, methods=["post"], url_path="recalculate")
     def recalculate(self, request, pk=None):

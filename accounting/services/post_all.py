@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
+from uuid import UUID
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -107,6 +108,21 @@ def build_cash_transaction_search_filter(search: str) -> Q:
     return query
 
 
+def _build_bank_account_filter(bank_account: str) -> Q:
+    """Match bank account by account number, or by id when the value is a UUID."""
+    bank_account_value = str(bank_account).strip()
+    if not bank_account_value:
+        return Q()
+
+    account_filter = Q(bank_account__account_number__iexact=bank_account_value)
+    try:
+        UUID(bank_account_value)
+    except (ValueError, AttributeError, TypeError):
+        return account_filter
+
+    return account_filter | Q(bank_account_id=bank_account_value)
+
+
 def apply_cash_transaction_list_filters(queryset, params) -> object:
     category = params.get("category")
     status_param = params.get("status")
@@ -132,7 +148,9 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
     if status_param:
         queryset = queryset.filter(status=status_param)
     if bank_account:
-        queryset = queryset.filter(bank_account_id=bank_account)
+        bank_account_filter = _build_bank_account_filter(bank_account)
+        if bank_account_filter:
+            queryset = queryset.filter(bank_account_filter)
     if transaction_type:
         queryset = queryset.filter(transaction_type_id=transaction_type)
     if transaction_type_code:
@@ -161,7 +179,25 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
     if reference:
         queryset = queryset.filter(reference_number__icontains=reference)
 
-    return queryset
+    ordering = params.get("ordering")
+    ordering_map = {
+        "transaction_date": "transaction_date",
+        "-transaction_date": "-transaction_date",
+        "updated_at": "updated_at",
+        "-updated_at": "-updated_at",
+        "reference_number": "reference_number",
+        "-reference_number": "-reference_number",
+        "description": "description",
+        "-description": "-description",
+        "status": "status",
+        "-status": "-status",
+        "amount": "amount",
+        "-amount": "-amount",
+        "created_at": "created_at",
+        "-created_at": "-created_at",
+    }
+    order_by = ordering_map.get(str(ordering or "").strip(), "-updated_at")
+    return queryset.order_by(order_by, "-created_at")
 
 
 def get_eligible_post_all_queryset(
@@ -301,11 +337,20 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
             signed_amount,
             filter=Q(status=approved_status),
         ),
+        approved_income_total=Sum(
+            Abs(F("amount")),
+            filter=Q(status=approved_status)
+            & (
+                Q(transaction_type__transaction_category="income")
+                | Q(transaction_type__code__iexact="TRANSFER_IN")
+            ),
+        ),
         approved_expense_total=Sum(
             Abs(F("amount")),
-            filter=Q(
-                status=approved_status,
-                transaction_type__transaction_category="expense",
+            filter=Q(status=approved_status)
+            & (
+                Q(transaction_type__transaction_category="expense")
+                | Q(transaction_type__code__iexact="TRANSFER_OUT")
             ),
         ),
     )
@@ -318,5 +363,6 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
         "not_posted_count": agg["not_posted_count"] or 0,
         "approved_unposted_count": agg["approved_unposted_count"] or 0,
         "approved_net_total": str(agg["approved_net_total"] or Decimal("0")),
+        "approved_income_total": str(agg["approved_income_total"] or Decimal("0")),
         "approved_expense_total": str(agg["approved_expense_total"] or Decimal("0")),
     }

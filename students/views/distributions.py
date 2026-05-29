@@ -9,6 +9,7 @@ Provides:
 """
 
 from decimal import Decimal
+from datetime import timedelta
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -352,6 +353,92 @@ def get_section_distribution(request):
         )
 
 
+def _trend_direction(change: float) -> str:
+    if change > 0:
+        return "up"
+    if change < 0:
+        return "down"
+    return "neutral"
+
+
+def _trend_pct(current: float, previous: float) -> dict:
+    if previous == 0:
+        change = 100.0 if current > 0 else 0.0
+    else:
+        change = round(((current - previous) / previous) * 100, 1)
+    return {
+        "value": abs(change),
+        "direction": _trend_direction(change),
+    }
+
+
+def _build_payment_summary_trends(academic_year, decimal_zero) -> dict | None:
+    """Month-over-month trends for dashboard finance stats."""
+    from django.db.models import Sum
+    from accounting.models.receivables import (
+        AccountingStudentBill,
+        AccountingStudentPaymentAllocation,
+    )
+
+    today = timezone.now().date()
+    this_month_start = today.replace(day=1)
+    prev_month_end = this_month_start - timedelta(days=1)
+    prev_month_start = prev_month_end.replace(day=1)
+
+    def allocation_total(start, end):
+        return float(
+            AccountingStudentPaymentAllocation.objects.filter(
+                student_bill__academic_year=academic_year,
+                allocation_date__gte=start,
+                allocation_date__lte=end,
+            ).aggregate(total=Coalesce(Sum("allocated_amount"), decimal_zero))["total"]
+            or 0
+        )
+
+    def billed_total(start, end):
+        return float(
+            AccountingStudentBill.objects.filter(
+                academic_year=academic_year,
+                bill_date__gte=start,
+                bill_date__lte=end,
+            )
+            .exclude(status=AccountingStudentBill.BillStatus.CANCELLED)
+            .aggregate(total=Coalesce(Sum("net_amount"), decimal_zero))["total"]
+            or 0
+        )
+
+    this_paid = allocation_total(this_month_start, today)
+    prev_paid = allocation_total(prev_month_start, prev_month_end)
+    this_billed = billed_total(this_month_start, today)
+    prev_billed = billed_total(prev_month_start, prev_month_end)
+
+    this_rate = round((this_paid / this_billed) * 100, 1) if this_billed > 0 else 0.0
+    prev_rate = round((prev_paid / prev_billed) * 100, 1) if prev_billed > 0 else 0.0
+    rate_delta = round(this_rate - prev_rate, 1)
+
+    paid_trend = _trend_pct(this_paid, prev_paid)
+    pending_direction = (
+        "down"
+        if paid_trend["direction"] == "up"
+        else "up"
+        if paid_trend["direction"] == "down"
+        else "neutral"
+    )
+
+    return {
+        "collection_rate": {
+            "value": abs(rate_delta),
+            "direction": _trend_direction(rate_delta),
+        },
+        "total_expected": _trend_pct(this_billed, prev_billed),
+        "total_paid": paid_trend,
+        "total_pending": {
+            "value": paid_trend["value"],
+            "direction": pending_direction,
+        },
+    }
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_payment_summary(request):
@@ -368,7 +455,13 @@ def get_payment_summary(request):
         "overdue_amount": 45000,
         "overdue_count": 18,
         "paid_count": 180,
-        "total_count": 250
+        "total_count": 250,
+        "trends": {
+            "collection_rate": {"value": 2.1, "direction": "up"},
+            "total_expected": {"value": 5.0, "direction": "up"},
+            "total_paid": {"value": 12.5, "direction": "up"},
+            "total_pending": {"value": 12.5, "direction": "down"}
+        }
     }
     """
     try:
@@ -394,6 +487,7 @@ def get_payment_summary(request):
             'overdue_count': 0,
             'paid_count': 0,
             'total_count': 0,
+            'trends': None,
         }
         if not current_academic_year:
             return Response(empty, status=status.HTTP_200_OK)
@@ -441,6 +535,11 @@ def get_payment_summary(request):
 
         collection_rate = round((total_paid / total_expected * 100), 1) if total_expected > 0 else 0
 
+        trends = _build_payment_summary_trends(
+            current_academic_year,
+            decimal_zero,
+        )
+
         result = {
             'total_expected': total_expected,
             'total_paid': total_paid,
@@ -451,6 +550,7 @@ def get_payment_summary(request):
             'overdue_count': int(bill_totals.get('overdue_count') or 0),
             'paid_count': int(bill_totals.get('paid_count') or 0),
             'total_count': int(bill_totals.get('total_count') or 0),
+            'trends': trends,
         }
         cache.set(cache_key, result, DASHBOARD_CACHE_TTL)
         return Response(result, status=status.HTTP_200_OK)
@@ -468,6 +568,7 @@ def get_payment_summary(request):
                 'overdue_count': 0,
                 'paid_count': 0,
                 'total_count': 0,
+                'trends': None,
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )

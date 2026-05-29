@@ -27,6 +27,7 @@ from accounting.models import (
     AccountingPaymentMethod,
     AccountingPayrollPostingBatch,
     AccountingPayrollPostingLine,
+    AccountingSettings,
     AccountingStudentBill,
     AccountingStudentBillLine,
     AccountingStudentPaymentAllocation,
@@ -1378,3 +1379,130 @@ class AccountingPayrollPostingLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = AccountingPayrollPostingLine
         fields = "__all__"
+
+
+class AccountingSettingsSerializer(serializers.ModelSerializer):
+    transfer_in_account_name = serializers.CharField(
+        source="transfer_in_account.name",
+        read_only=True,
+    )
+    transfer_in_account_code = serializers.CharField(
+        source="transfer_in_account.code",
+        read_only=True,
+    )
+    transfer_out_account_name = serializers.CharField(
+        source="transfer_out_account.name",
+        read_only=True,
+    )
+    transfer_out_account_code = serializers.CharField(
+        source="transfer_out_account.code",
+        read_only=True,
+    )
+    salary_expense_account_name = serializers.CharField(
+        source="salary_expense_account.name",
+        read_only=True,
+    )
+    salary_expense_account_code = serializers.CharField(
+        source="salary_expense_account.code",
+        read_only=True,
+    )
+    payroll_tax_payable_account_name = serializers.CharField(
+        source="payroll_tax_payable_account.name",
+        read_only=True,
+    )
+    payroll_tax_payable_account_code = serializers.CharField(
+        source="payroll_tax_payable_account.code",
+        read_only=True,
+    )
+    payroll_deductions_payable_account_name = serializers.CharField(
+        source="payroll_deductions_payable_account.name",
+        read_only=True,
+    )
+    payroll_deductions_payable_account_code = serializers.CharField(
+        source="payroll_deductions_payable_account.code",
+        read_only=True,
+    )
+
+    class Meta:
+        model = AccountingSettings
+        fields = [
+            "id",
+            "transfer_in_account",
+            "transfer_in_account_name",
+            "transfer_in_account_code",
+            "transfer_out_account",
+            "transfer_out_account_name",
+            "transfer_out_account_code",
+            "salary_expense_account",
+            "salary_expense_account_name",
+            "salary_expense_account_code",
+            "payroll_tax_payable_account",
+            "payroll_tax_payable_account_name",
+            "payroll_tax_payable_account_code",
+            "payroll_deductions_payable_account",
+            "payroll_deductions_payable_account_name",
+            "payroll_deductions_payable_account_code",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "transfer_in_account_name",
+            "transfer_in_account_code",
+            "transfer_out_account_name",
+            "transfer_out_account_code",
+            "salary_expense_account_name",
+            "salary_expense_account_code",
+            "payroll_tax_payable_account_name",
+            "payroll_tax_payable_account_code",
+            "payroll_deductions_payable_account_name",
+            "payroll_deductions_payable_account_code",
+            "created_at",
+            "updated_at",
+        ]
+
+    def _validate_ledger_account(self, account, *, expected_type: str, label: str):
+        if account is None:
+            return account
+        if not account.is_active:
+            raise serializers.ValidationError(f"{label} must be an active ledger account.")
+        if account.is_header:
+            raise serializers.ValidationError(f"{label} cannot be a header account.")
+        if account.account_type != expected_type:
+            raise serializers.ValidationError(f"{label} must be a {expected_type} account.")
+        return account
+
+    def validate_transfer_in_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=AccountingLedgerAccount.AccountType.ASSET,
+            label="Transfer in account",
+        )
+
+    def validate_transfer_out_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=AccountingLedgerAccount.AccountType.ASSET,
+            label="Transfer out account",
+        )
+
+    def validate_salary_expense_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=AccountingLedgerAccount.AccountType.EXPENSE,
+            label="Salary expense account",
+        )
+
+    def validate_payroll_tax_payable_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=AccountingLedgerAccount.AccountType.LIABILITY,
+            label="Payroll tax payable account",
+        )
+
+    def validate_payroll_deductions_payable_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=AccountingLedgerAccount.AccountType.LIABILITY,
+            label="Payroll deductions payable account",
+        )

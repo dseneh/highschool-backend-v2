@@ -38,6 +38,7 @@ from .posting_bridge import (
     AccountingPayrollPostingBatch,
     AccountingPayrollPostingLine,
 )
+from .settings import AccountingSettings
 
 __all__ = [
     # Ledger
@@ -69,4 +70,5 @@ __all__ = [
     # Posting Bridge
     "AccountingPayrollPostingBatch",
     "AccountingPayrollPostingLine",
+    "AccountingSettings",
 ]

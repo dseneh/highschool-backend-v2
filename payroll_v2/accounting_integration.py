@@ -9,7 +9,6 @@ from django.utils import timezone
 from accounting.models import (
     AccountingCashTransaction,
     AccountingJournalEntry,
-    AccountingLedgerAccount,
     AccountingPayrollPostingBatch,
 )
 from accounting.services.payroll_posting import (
@@ -19,6 +18,10 @@ from accounting.services.payroll_posting import (
     _resolve_payroll_transaction_type,
 )
 from accounting.services.posting import _resolve_academic_year, recalculate_bank_account_current_balance
+from accounting.services.settings_services import (
+    bank_accounts_missing_ledger_message,
+    resolve_payroll_ledger_accounts,
+)
 
 from .models import PayrollRunRecord
 
@@ -33,13 +36,6 @@ def aggregate_payroll_v2_run_totals(run: PayrollRunRecord) -> dict[str, Decimal]
         "deductions": combined_deductions - tax,
         "net": run.net_pay_total or Decimal("0.00"),
     }
-
-
-def _ledger_by_code(code: str) -> AccountingLedgerAccount:
-    account = AccountingLedgerAccount.objects.filter(code=code, is_active=True).first()
-    if account is None:
-        raise ValidationError(f"Ledger account {code} is not configured.")
-    return account
 
 
 def _payroll_v2_reference_number(run: PayrollRunRecord) -> str:
@@ -75,7 +71,7 @@ def post_payroll_v2_run_to_ledger(run: PayrollRunRecord, *, actor=None) -> Accou
 
     bank_account = run.bank_account
     if bank_account.ledger_account_id is None:
-        raise ValidationError("The selected bank account must have a linked ledger account.")
+        raise ValidationError(bank_accounts_missing_ledger_message([bank_account]))
 
     if not run.employee_items.exists():
         raise ValidationError("Cannot post payroll with no employee items.")
@@ -108,9 +104,10 @@ def post_payroll_v2_run_to_ledger(run: PayrollRunRecord, *, actor=None) -> Accou
     reference_number = _payroll_v2_reference_number(run)
     period_label = run.payroll_period.name if run.payroll_period_id else run.payroll_number
 
-    salary_expense = _ledger_by_code("5001")
-    tax_payable = _ledger_by_code("2002")
-    deductions_payable = _ledger_by_code("2003")
+    payroll_ledgers = resolve_payroll_ledger_accounts()
+    salary_expense = payroll_ledgers["salary_expense"]
+    tax_payable = payroll_ledgers["tax_payable"]
+    deductions_payable = payroll_ledgers["deductions_payable"]
 
     batch = AccountingPayrollPostingBatch.objects.filter(idempotent_key=idempotent_key).first()
     if batch is None:

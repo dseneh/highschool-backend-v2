@@ -35,6 +35,13 @@ from accounting.services import (
     sync_cash_transaction_journal_entry,
     sync_ledger_account_for_type,
 )
+from accounting.services.settings_services import (
+    ensure_system_payment_method,
+    ensure_transfer_transaction_types,
+    bank_accounts_missing_ledger_message,
+    validation_error_detail,
+)
+from accounting.services.transfer_posting import post_account_transfer_to_ledger
 from accounting.services.post_all import (
     apply_cash_transaction_list_filters,
     build_cash_transaction_list_summary,
@@ -51,14 +58,21 @@ def _delete_transfer_bundle(transfer: AccountingAccountTransfer) -> None:
         source_reference=transfer.reference_number
     )
 
-    bank_account_ids = list(
-        linked_transactions.values_list("bank_account_id", flat=True).distinct()
-    )
+    bank_account_ids = {
+        transfer.from_account_id,
+        transfer.to_account_id,
+        *linked_transactions.values_list("bank_account_id", flat=True),
+    }
 
-    journal_entry_ids = list(
+    journal_entry_ids = set(
         linked_transactions.exclude(journal_entry_id__isnull=True)
         .values_list("journal_entry_id", flat=True)
-        .distinct()
+    )
+    journal_entry_ids.update(
+        AccountingJournalEntry.objects.filter(
+            source_reference=transfer.reference_number,
+            source="bank_transfer",
+        ).values_list("id", flat=True)
     )
 
     linked_transactions.delete()
@@ -188,7 +202,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         # at a constant query count.
         "bill_allocations__student_bill__academic_year",
         "bill_allocations__student_bill__student__grade_level",
-    ).order_by("-transaction_date", "-created_at")
+    ).order_by("-updated_at", "-created_at")
     serializer_class = AccountingCashTransactionSerializer
     permission_classes = [AccountingTransactionAccessPolicy]
 
@@ -884,41 +898,27 @@ class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.
                 }
             )
 
-        payment_method = (
-            AccountingPaymentMethod.objects.filter(code__iexact="system", is_active=True).first()
-            or AccountingPaymentMethod.objects.filter(name__iexact="system", is_active=True).first()
-        )
-        if payment_method is None:
+        missing_ledger_accounts = []
+        if from_account.ledger_account_id is None:
+            missing_ledger_accounts.append(from_account)
+        if to_account.ledger_account_id is None:
+            missing_ledger_accounts.append(to_account)
+        if missing_ledger_accounts:
             raise serializers.ValidationError(
-                {"payment_method": "System payment method not found. Create an active 'system' payment method first."}
+                {"detail": bank_accounts_missing_ledger_message(missing_ledger_accounts)}
             )
 
-        transfer_out_type = AccountingTransactionType.objects.filter(code__iexact="TRANSFER_OUT", is_active=True).first()
-        transfer_in_type = AccountingTransactionType.objects.filter(code__iexact="TRANSFER_IN", is_active=True).first()
-        if transfer_out_type is None or transfer_in_type is None:
-            raise serializers.ValidationError(
-                {
-                    "transaction_type": (
-                        "Transfer transaction types not found. Please create active TRANSFER_OUT and TRANSFER_IN types."
-                    )
-                }
-            )
-
-        # Posting service currently supports income/expense categories only.
-        if transfer_out_type.transaction_category != "expense" or transfer_in_type.transaction_category != "income":
-            raise serializers.ValidationError(
-                {
-                    "transaction_type": (
-                        "TRANSFER_OUT must be category 'expense' and TRANSFER_IN must be category 'income' for auto-posting."
-                    )
-                }
-            )
+        try:
+            payment_method = ensure_system_payment_method()
+            transfer_out_type, transfer_in_type = ensure_transfer_transaction_types()
+        except ValidationError as exc:
+            raise serializers.ValidationError({"detail": validation_error_detail(exc)}) from exc
 
         cash_tx_serializer = AccountingCashTransactionSerializer()
         with transaction.atomic():
             transfer = serializer.save()
 
-            transfer_out_tx = AccountingCashTransaction.objects.create(
+            AccountingCashTransaction.objects.create(
                 bank_account=transfer.from_account,
                 transaction_date=transfer.transfer_date,
                 reference_number=cash_tx_serializer._generate_reference_number(transfer.transfer_date),
@@ -934,7 +934,7 @@ class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.
                 source_reference=transfer.reference_number,
             )
 
-            transfer_in_tx = AccountingCashTransaction.objects.create(
+            AccountingCashTransaction.objects.create(
                 bank_account=transfer.to_account,
                 transaction_date=transfer.transfer_date,
                 reference_number=cash_tx_serializer._generate_reference_number(transfer.transfer_date),
@@ -950,8 +950,14 @@ class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.
                 source_reference=transfer.reference_number,
             )
 
-            post_cash_transaction_to_ledger(transfer_out_tx, actor=self.request.user)
-            post_cash_transaction_to_ledger(transfer_in_tx, actor=self.request.user)
+            try:
+                journal_entry = post_account_transfer_to_ledger(transfer, actor=self.request.user)
+            except ValidationError as exc:
+                raise serializers.ValidationError({"detail": validation_error_detail(exc)}) from exc
+
+            AccountingCashTransaction.objects.filter(
+                source_reference=transfer.reference_number,
+            ).update(journal_entry=journal_entry)
 
             recalculate_bank_account_current_balance(transfer.from_account)
             recalculate_bank_account_current_balance(transfer.to_account)

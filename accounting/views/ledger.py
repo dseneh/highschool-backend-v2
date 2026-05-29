@@ -17,6 +17,7 @@ from accounting.models import (
     AccountingTransactionType,
 )
 from accounting.services import sync_transaction_type_for_ledger_account
+from accounting.services.journal_list_filters import apply_journal_entry_list_filters
 from accounting.services.journal_summary import build_journal_entry_list_summary
 from accounting.serializers import (
     AccountingCurrencySerializer,
@@ -162,7 +163,7 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
                 output_field=DecimalField(max_digits=18, decimal_places=2),
             ),
         )
-        .order_by("-posting_date", "-created_at")
+        .order_by("-updated_at", "-created_at")
     )
     serializer_class = AccountingJournalEntrySerializer
     permission_classes = [AccountingFinanceAccessPolicy]
@@ -178,29 +179,20 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         summary = build_journal_entry_list_summary(queryset)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            paginated = self.get_paginated_response(serializer.data)
+            paginated.data["summary"] = summary
+            return paginated
+
         serializer = self.get_serializer(queryset, many=True)
         return Response({"results": serializer.data, "count": queryset.count(), "summary": summary})
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        status_param = self.request.query_params.get("status")
-        source = self.request.query_params.get("source")
-        academic_year = self.request.query_params.get("academic_year")
-        start_date = self.request.query_params.get("start_date")
-        end_date = self.request.query_params.get("end_date")
-
-        if status_param:
-            queryset = queryset.filter(status=status_param)
-        if source:
-            queryset = queryset.filter(source=source)
-        if academic_year:
-            queryset = queryset.filter(academic_year_id=academic_year)
-        if start_date:
-            queryset = queryset.filter(posting_date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(posting_date__lte=end_date)
-
-        return queryset
+        return apply_journal_entry_list_filters(queryset, self.request.query_params)
 
     def _validate_mutable(self, journal_entry):
         immutable_statuses = {

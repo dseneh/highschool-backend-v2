@@ -112,6 +112,11 @@ accounting_ledger_accounts = [
 
 
 accounting_payment_methods = [
+    {
+        "name": "System",
+        "code": "SYSTEM",
+        "description": "Internal system-generated transactions such as account transfers.",
+    },
     {"name": "Cash", "code": "CASH", "description": "Cash payments"},
     {"name": "Check", "code": "CHECK", "description": "Check / cheque payments"},
     {"name": "Bank Transfer", "code": "BANK", "description": "Bank wire / transfer"},
