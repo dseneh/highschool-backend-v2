@@ -51,12 +51,36 @@ def aggregate_bank_account_approved_totals(approved_tx) -> dict[str, Decimal]:
     }
 
 
-def compute_bank_account_balance(bank_account: AccountingBankAccount) -> Decimal:
+def compute_bank_account_balance(
+    bank_account: AccountingBankAccount,
+    *,
+    end_date=None,
+) -> Decimal:
     """Net balance from approved cash transactions only (no opening balance)."""
     approved_tx = bank_account.transactions.filter(
         status=AccountingCashTransaction.TransactionStatus.APPROVED
     )
+    if end_date:
+        approved_tx = approved_tx.filter(transaction_date__lte=end_date)
     signed_amount = approved_signed_base_amount_expression()
+    total = approved_tx.aggregate(net=Sum(signed_amount))["net"]
+    return total or Decimal("0")
+
+
+def compute_bank_account_native_balance(
+    bank_account: AccountingBankAccount,
+    *,
+    end_date=None,
+) -> Decimal:
+    """Net approved cash in the bank account's native currency (no opening balance)."""
+    from accounting.services.currency_totals import approved_signed_native_amount_expression
+
+    approved_tx = bank_account.transactions.filter(
+        status=AccountingCashTransaction.TransactionStatus.APPROVED
+    )
+    if end_date:
+        approved_tx = approved_tx.filter(transaction_date__lte=end_date)
+    signed_amount = approved_signed_native_amount_expression()
     total = approved_tx.aggregate(net=Sum(signed_amount))["net"]
     return total or Decimal("0")
 

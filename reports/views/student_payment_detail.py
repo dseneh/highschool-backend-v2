@@ -47,6 +47,7 @@ class StudentPaymentDetailReportView(APIView):
             AccountingCashTransaction,
             AccountingStudentPaymentAllocation,
         )
+        from accounting.services.currency_totals import get_tenant_base_currency, serialize_currency
         from accounting.services.post_all import build_student_payment_list_filter
         from students.models import Enrollment
 
@@ -55,7 +56,7 @@ class StudentPaymentDetailReportView(APIView):
         section_ids = self._read_multi_query_values(request, "section_id")
         student_query = (request.query_params.get("student") or "").strip()
         reference_query = (request.query_params.get("reference") or "").strip()
-        status_param = (request.query_params.get("status") or "").strip()
+        status_param = (request.query_params.get("status") or "approved").strip()
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
         amount_min = self._parse_decimal_param(request.query_params.get("amount_min"))
@@ -132,6 +133,7 @@ class StudentPaymentDetailReportView(APIView):
             ).distinct()
 
         transactions = list(queryset)
+        base_currency = serialize_currency(get_tenant_base_currency())
 
         student_ids = set()
         for txn in transactions:
@@ -197,7 +199,9 @@ class StudentPaymentDetailReportView(APIView):
                         float(bill.outstanding_amount) if bill else 0,
                     ),
                     "amount": float(txn.amount or 0),
+                    "base_amount": float(txn.base_amount or 0),
                     "currency": txn.currency.symbol if txn.currency else "$",
+                    "currency_code": txn.currency.code if txn.currency else "",
                     "payment_method": txn.payment_method.name if txn.payment_method else "",
                     "bank_account": txn.bank_account.account_name if txn.bank_account else "",
                     "transaction_type": txn.transaction_type.name if txn.transaction_type else "",
@@ -209,7 +213,8 @@ class StudentPaymentDetailReportView(APIView):
 
         totals = {
             "payment_count": len(results),
-            "total_amount": sum(row["amount"] for row in results),
+            "total_amount": sum(row["base_amount"] for row in results),
+            "total_native_amount": sum(row["amount"] for row in results),
         }
 
         if fmt == "xlsx":
@@ -219,6 +224,7 @@ class StudentPaymentDetailReportView(APIView):
             {
                 "count": len(results),
                 "academic_year": {"id": str(academic_year.id), "name": academic_year.name},
+                "base_currency": base_currency,
                 "results": results,
                 "totals": totals,
             }

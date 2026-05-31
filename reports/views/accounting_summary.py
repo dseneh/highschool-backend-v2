@@ -13,8 +13,16 @@ from rest_framework.views import APIView
 from accounting.models import AccountingCashTransaction
 from accounting.services.post_all import apply_cash_transaction_list_filters
 
-from ..accounting_totals import EXPENSE_CATEGORY, INCOME_CATEGORY
+from ..accounting_totals import (
+    EXPENSE_CATEGORY,
+    INCOME_CATEGORY,
+    approved_cash_queryset,
+    filter_cash_by_period,
+    sum_approved_cash_net,
+    sum_period_income_minus_expense,
+)
 from ..access_policies import ReportsAccessPolicy
+from accounting.services.currency_totals import get_tenant_base_currency, serialize_currency
 
 INCOME = INCOME_CATEGORY
 EXPENSE = EXPENSE_CATEGORY
@@ -150,7 +158,9 @@ class AccountingSummaryReportView(APIView):
             "payer_payee": txn.payer_payee or "",
             "source_reference": txn.source_reference or "",
             "amount": str(txn.amount or 0),
+            "base_amount": str(txn.base_amount or 0),
             "currency_symbol": txn.currency.symbol if txn.currency else currency_symbol,
+            "base_currency_symbol": currency_symbol,
             "status": txn.status,
         }
 
@@ -160,7 +170,7 @@ class AccountingSummaryReportView(APIView):
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
 
-        status_param = (request.query_params.get("status") or "all").strip().lower()
+        status_param = (request.query_params.get("status") or "approved").strip().lower()
         fmt = request.query_params.get("export") or request.query_params.get("format")
 
         filter_params: dict[str, str] = {}
@@ -177,6 +187,19 @@ class AccountingSummaryReportView(APIView):
         category_filter = (request.query_params.get("category") or "").strip().lower()
         if category_filter in {"income", "expense"}:
             filter_params["category"] = category_filter
+
+        base_currency = serialize_currency(get_tenant_base_currency())
+        currency_symbol = base_currency["symbol"] or base_currency["code"] or "$"
+
+        cash_scope_queryset = apply_cash_transaction_list_filters(
+            approved_cash_queryset(),
+            filter_params,
+        )
+        net_cash_movement = float(
+            sum_approved_cash_net(
+                filter_cash_by_period(cash_scope_queryset, start_date, end_date)
+            )
+        )
 
         queryset = apply_cash_transaction_list_filters(
             AccountingCashTransaction.objects.select_related(
@@ -208,12 +231,10 @@ class AccountingSummaryReportView(APIView):
         )
         income_total = float(totals["income_total"] or 0)
         expense_total = float(totals["expense_total"] or 0)
+        operating_net = float(sum_period_income_minus_expense(queryset))
 
-        currency_symbol = "$"
         results = []
         for txn in queryset:
-            if txn.currency and txn.currency.symbol:
-                currency_symbol = txn.currency.symbol
             results.append(self._serialize_transaction(txn, currency_symbol))
 
         payload = {
@@ -225,12 +246,15 @@ class AccountingSummaryReportView(APIView):
             "summary": {
                 "income_total": income_total,
                 "expense_total": expense_total,
-                "net_total": income_total - expense_total,
-                "balance_total": income_total - expense_total,
+                "net_total": operating_net,
+                "operating_net": operating_net,
+                "net_cash_movement": net_cash_movement,
+                "balance_total": operating_net,
                 "income_count": totals["income_count"] or 0,
                 "expense_count": totals["expense_count"] or 0,
                 "transaction_count": totals["transaction_count"] or 0,
                 "currency_symbol": currency_symbol,
+                "base_currency_code": base_currency["code"],
             },
             "groups": groups,
             "results": results,
@@ -264,7 +288,8 @@ class AccountingSummaryReportView(APIView):
         overview_rows = [
             ("Total Income", payload["summary"]["income_total"]),
             ("Total Expense", payload["summary"]["expense_total"]),
-            ("Balance", payload["summary"]["balance_total"]),
+            ("Operating Net", payload["summary"]["operating_net"]),
+            ("Net Cash Movement", payload["summary"]["net_cash_movement"]),
         ]
         for row_offset, (label, value) in enumerate(overview_rows, 5):
             ws_overview[f"A{row_offset}"] = label

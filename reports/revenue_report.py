@@ -9,11 +9,18 @@ from django.db.models import Sum
 from django.db.models.functions import Coalesce
 
 from accounting.models import AccountingStudentBill
+from accounting.services.currency_totals import (
+    get_tenant_base_currency,
+    serialize_currency,
+    sum_cash_metric_by_currency,
+)
 from reports.accounting_totals import (
     approved_cash_queryset,
     filter_cash_by_period,
     income_breakdown_by_type,
     split_tuition_and_other_income,
+    sum_approved_cash_net,
+    sum_expense_total,
 )
 
 REVENUE_METRICS: list[dict[str, str]] = [
@@ -23,6 +30,13 @@ REVENUE_METRICS: list[dict[str, str]] = [
     {"key": "tuition_income", "label": "Tuition Income (Cash)", "section": "revenue"},
     {"key": "other_income", "label": "Other Income (Cash)", "section": "revenue"},
     {"key": "total_revenue", "label": "Total Revenue", "section": "revenue"},
+    {"key": "total_expense", "label": "Total Expense (Cash)", "section": "cash"},
+    {"key": "net_cash_movement", "label": "Net Cash Movement (Period)", "section": "cash"},
+    {
+        "key": "cash_on_hand",
+        "label": "Cash Balance (Approved)",
+        "section": "cash",
+    },
 ]
 
 CHART_METRIC_KEYS = ("total_revenue", "tuition_income", "total_collected_on_bills")
@@ -49,16 +63,38 @@ def compute_revenue_summary_for_year(academic_year, start_date=None, end_date=No
 
     cash_qs = filter_cash_by_period(approved_cash_queryset(), period_start, period_end)
     tuition_income, other_income, total_revenue = split_tuition_and_other_income(cash_qs)
+    total_expense = sum_expense_total(cash_qs)
+    net_cash_movement = sum_approved_cash_net(cash_qs)
+    cash_on_hand_qs = filter_cash_by_period(approved_cash_queryset(), None, period_end)
+    cash_on_hand = sum_approved_cash_net(cash_on_hand_qs)
+    cash_on_hand_by_currency = [
+        {
+            "currency_code": row["currency_code"],
+            "currency_symbol": row["currency_symbol"],
+            "balance": str(row["net_all_flows"]),
+        }
+        for row in sum_cash_metric_by_currency(cash_on_hand_qs, use_base=False)
+    ]
+    base_currency = serialize_currency(get_tenant_base_currency())
+    currency_breakdown = sum_cash_metric_by_currency(cash_qs, use_base=False)
+    currency_breakdown_base = sum_cash_metric_by_currency(cash_qs, use_base=True)
 
     return {
         "period_start": period_start.isoformat() if period_start else None,
         "period_end": period_end.isoformat() if period_end else None,
+        "base_currency": base_currency,
         "total_billed": float(billed_total),
         "total_collected_on_bills": float(collected_on_bills),
         "outstanding_on_bills": float(outstanding_on_bills),
         "tuition_income": float(tuition_income),
         "other_income": float(other_income),
         "total_revenue": float(total_revenue),
+        "total_expense": float(total_expense),
+        "net_cash_movement": float(net_cash_movement),
+        "cash_on_hand": float(cash_on_hand),
+        "currency_breakdown": currency_breakdown,
+        "currency_breakdown_base": currency_breakdown_base,
+        "cash_on_hand_by_currency": cash_on_hand_by_currency,
     }
 
 
@@ -138,6 +174,7 @@ def build_revenue_overview_payload(academic_years) -> dict[str, Any]:
     return {
         "view": "overview",
         "metrics": REVENUE_METRICS,
+        "base_currency": serialize_currency(get_tenant_base_currency()),
         "rows": list(reversed(rows)),
         "chart": {
             "categories": chart_categories,
@@ -187,8 +224,12 @@ def build_revenue_year_payload(academic_year, start_date=None, end_date=None) ->
         "academic_year_id": str(academic_year.id),
         "academic_year_label": academic_year_label(academic_year),
         "prior_academic_year_label": academic_year_label(prior_year) if prior_year else None,
+        "base_currency": summary.get("base_currency"),
         "summary": summary,
         "metrics": metrics_with_trends,
         "results": results,
         "breakdown": type_breakdown,
+        "currency_breakdown": summary.get("currency_breakdown") or [],
+        "currency_breakdown_base": summary.get("currency_breakdown_base") or [],
+        "cash_on_hand_by_currency": summary.get("cash_on_hand_by_currency") or [],
     }

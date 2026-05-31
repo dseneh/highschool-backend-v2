@@ -151,6 +151,8 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
             recalculate_bank_account_current_balance(account)
         serializer = self.get_serializer(queryset, many=True)
 
+        from accounting.services.posting import compute_bank_account_native_balance
+
         balances_by_currency: dict[str, dict[str, object]] = {}
         for account in queryset:
             currency = account.currency
@@ -162,9 +164,12 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
                     "currency_symbol": currency.symbol,
                     "total_balance": Decimal("0"),
                 }
+            native_balance = compute_bank_account_native_balance(account)
+            if account.opening_balance:
+                native_balance += Decimal(str(account.opening_balance or 0))
             balances_by_currency[key]["total_balance"] = (
                 Decimal(str(balances_by_currency[key]["total_balance"]))
-                + Decimal(str(account.current_balance or 0))
+                + native_balance
             )
 
         summary = {
@@ -309,48 +314,88 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
 
         return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
 
-    def perform_create(self, serializer):
-        """Validate student balance before creating an income transaction linked to a student."""
+    def _validate_student_income_payment(self, data, *, existing_instance=None):
         from academics.models import AcademicYear
+        from accounting.services.currency_totals import effective_payment_base_amount
         from accounting.services.student_resolution import resolve_student_from_identifier
         from finance.validators import get_student_net_remaining_balance
 
-        data = serializer.validated_data
         transaction_type = data.get("transaction_type")
-        source_reference = (data.get("source_reference") or "").strip()
+        if transaction_type is None and existing_instance is not None:
+            transaction_type = existing_instance.transaction_type
+
         amount = data.get("amount")
+        if amount is None and existing_instance is not None:
+            amount = existing_instance.amount
 
         if (
-            transaction_type
-            and transaction_type.transaction_category == "income"
-            and amount is not None
+            not transaction_type
+            or transaction_type.transaction_category != "income"
+            or amount is None
         ):
-            student = data.get("student")
-            if student is None and source_reference:
-                student = resolve_student_from_identifier(source_reference)
+            return
 
-            if student:
-                tx_date = data.get("transaction_date")
-                academic_year = (
-                    AcademicYear.objects.filter(
-                        Q(start_date__lte=tx_date) & Q(end_date__gte=tx_date)
-                    ).first()
-                    if tx_date
-                    else None
-                ) or AcademicYear.objects.filter(current=True).first()
+        source_reference = (data.get("source_reference") or "").strip()
+        if not source_reference and existing_instance is not None:
+            source_reference = (existing_instance.source_reference or "").strip()
 
-                if academic_year:
-                    remaining = get_student_net_remaining_balance(student, academic_year)
+        student = data.get("student")
+        if student is None and existing_instance is not None:
+            student = existing_instance.student
+        if student is None and source_reference:
+            student = resolve_student_from_identifier(source_reference)
 
-                    if remaining <= 0:
-                        raise serializers.ValidationError(
-                            {"detail": "Student has no balance due. Cannot create transaction."}
-                        )
+        if not student:
+            return
 
-                    if Decimal(str(amount)) > remaining:
-                        raise serializers.ValidationError(
-                            {"detail": f"Payment amount of {amount:,.2f} exceeds student balance due of {remaining:,.2f}."}
-                        )
+        tx_date = data.get("transaction_date")
+        if tx_date is None and existing_instance is not None:
+            tx_date = existing_instance.transaction_date
+
+        academic_year = (
+            AcademicYear.objects.filter(
+                Q(start_date__lte=tx_date) & Q(end_date__gte=tx_date)
+            ).first()
+            if tx_date
+            else None
+        ) or AcademicYear.objects.filter(current=True).first()
+
+        if not academic_year:
+            return
+
+        remaining = get_student_net_remaining_balance(student, academic_year)
+        if remaining <= 0:
+            raise serializers.ValidationError(
+                {"detail": "Student has no balance due. Cannot create transaction."}
+            )
+
+        exchange_rate = data.get("exchange_rate")
+        if exchange_rate is None and existing_instance is not None:
+            exchange_rate = existing_instance.exchange_rate
+
+        base_amount = data.get("base_amount")
+        if base_amount is None and existing_instance is not None and "amount" not in data and "exchange_rate" not in data:
+            base_amount = existing_instance.base_amount
+
+        effective = effective_payment_base_amount(
+            amount,
+            exchange_rate=exchange_rate,
+            base_amount=base_amount,
+        )
+
+        if effective > remaining:
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        f"Payment amount of {effective:,.2f} (base currency equivalent) "
+                        f"exceeds student balance due of {remaining:,.2f}."
+                    )
+                }
+            )
+
+    def perform_create(self, serializer):
+        """Validate student balance before creating an income transaction linked to a student."""
+        self._validate_student_income_payment(serializer.validated_data)
 
         cash_transaction = serializer.save()
         if cash_transaction.status == AccountingCashTransaction.TransactionStatus.APPROVED:
@@ -398,6 +443,11 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     def perform_update(self, serializer):
         cash_transaction = self.get_object()
         previous_bank_account_id = cash_transaction.bank_account_id
+
+        self._validate_student_income_payment(
+            serializer.validated_data,
+            existing_instance=cash_transaction,
+        )
 
         with transaction.atomic():
             cash_transaction = serializer.save()

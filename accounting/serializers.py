@@ -365,6 +365,19 @@ class AccountingJournalLineSerializer(serializers.ModelSerializer):
 class AccountingJournalEntryListSerializer(serializers.ModelSerializer):
     total_debit = serializers.SerializerMethodField()
     total_credit = serializers.SerializerMethodField()
+    bank_accounts = serializers.SerializerMethodField()
+
+    def get_bank_accounts(self, obj):
+        bank_by_ledger = self.context.get("bank_by_ledger") or {}
+        ledger_ids = {line.ledger_account_id for line in obj.lines.all()}
+        names = sorted(
+            {
+                bank_by_ledger[str(ledger_id)]
+                for ledger_id in ledger_ids
+                if str(ledger_id) in bank_by_ledger
+            }
+        )
+        return ", ".join(names) if names else ""
 
     def _resolve_total(self, obj, annotated_field: str, line_field: str) -> str:
         annotated_value = getattr(obj, annotated_field, None)
@@ -394,6 +407,7 @@ class AccountingJournalEntryListSerializer(serializers.ModelSerializer):
             "posted_at",
             "reversal_of",
             "source_reference",
+            "bank_accounts",
             "total_debit",
             "total_credit",
             "created_at",

@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from django.db.models import Q, Sum
-from django.db.models.functions import Coalesce
-from decimal import Decimal
-
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
 from accounting.services.post_all import apply_cash_transaction_list_filters
+from accounting.services.posting import (
+    compute_bank_account_native_balance,
+    recalculate_bank_account_current_balance,
+)
 
 from ..access_policies import ReportsAccessPolicy
+from ..accounting_totals import (
+    approved_cash_for_bank_account,
+    compute_bank_account_cash_on_hand,
+    sum_approved_cash_net_native,
+    sum_inflow_amount,
+    sum_outflow_amount,
+)
 from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param
 
 
@@ -20,9 +27,17 @@ class BankBalanceSummaryReportView(APIView):
     permission_classes = [ReportsAccessPolicy]
 
     def get(self, request):
-        accounts = AccountingBankAccount.objects.filter(status=AccountingBankAccount.AccountStatus.ACTIVE).order_by("account_name")
+        accounts = AccountingBankAccount.objects.filter(
+            status=AccountingBankAccount.AccountStatus.ACTIVE
+        ).select_related("currency").order_by("account_name")
+
         results = []
         for account in accounts:
+            recalculate_bank_account_current_balance(account)
+            opening = float(account.opening_balance or 0)
+            transaction_net = float(compute_bank_account_native_balance(account))
+            cash_on_hand = float(compute_bank_account_cash_on_hand(account))
+
             results.append(
                 {
                     "account_id": str(account.id),
@@ -30,8 +45,10 @@ class BankBalanceSummaryReportView(APIView):
                     "bank_name": account.bank_name,
                     "account_number": account.account_number,
                     "account_type": account.account_type,
-                    "opening_balance": float(account.opening_balance or 0),
-                    "current_balance": float(account.current_balance or 0),
+                    "opening_balance": opening,
+                    "transaction_net": transaction_net,
+                    "cash_on_hand": cash_on_hand,
+                    "current_balance": cash_on_hand,
                     "currency": account.currency.code if account.currency else "",
                 }
             )
@@ -45,7 +62,8 @@ class BankBalanceSummaryReportView(APIView):
                     r["account_number"],
                     r["account_type"],
                     r["opening_balance"],
-                    r["current_balance"],
+                    r["transaction_net"],
+                    r["cash_on_hand"],
                     r["currency"],
                 ]
                 for r in results
@@ -54,9 +72,18 @@ class BankBalanceSummaryReportView(APIView):
                 request,
                 filename_base="bank-balance-summary",
                 title="Bank Balance Summary",
-                subtitle=None,
+                subtitle="Opening balance plus approved cash activity (native currency per account).",
                 summary_rows=None,
-                headers=["Account", "Bank", "Account No.", "Type", "Opening", "Current", "Currency"],
+                headers=[
+                    "Account",
+                    "Bank",
+                    "Account No.",
+                    "Type",
+                    "Opening",
+                    "Activity Net",
+                    "Cash on Hand",
+                    "Currency",
+                ],
                 rows=rows,
             )
             if export_response:
@@ -72,44 +99,33 @@ class BankReconciliationReportView(APIView):
         end_date = parse_date_param(request.query_params.get("end_date"))
         bank_account_id = request.query_params.get("bank_account_id")
 
-        accounts = AccountingBankAccount.objects.filter(status=AccountingBankAccount.AccountStatus.ACTIVE)
+        accounts = AccountingBankAccount.objects.filter(
+            status=AccountingBankAccount.AccountStatus.ACTIVE
+        ).select_related("currency")
         if bank_account_id:
             accounts = accounts.filter(id=bank_account_id)
 
         results = []
         for account in accounts:
-            txns = AccountingCashTransaction.objects.filter(
+            period_txns = AccountingCashTransaction.objects.filter(
                 bank_account=account,
-                status="approved",
+                status=AccountingCashTransaction.TransactionStatus.APPROVED,
             )
-            txns = apply_cash_transaction_list_filters(txns, request.query_params)
+            period_txns = apply_cash_transaction_list_filters(period_txns, request.query_params)
             if start_date:
-                txns = txns.filter(transaction_date__gte=start_date)
+                period_txns = period_txns.filter(transaction_date__gte=start_date)
             if end_date:
-                txns = txns.filter(transaction_date__lte=end_date)
+                period_txns = period_txns.filter(transaction_date__lte=end_date)
+            if account.currency_id:
+                period_txns = period_txns.filter(currency_id=account.currency_id)
 
-            income_total = (
-                txns.filter(transaction_type__transaction_category="income").aggregate(
-                    total=Coalesce(Sum("amount"), Decimal("0"))
-                )["total"]
-                or 0
-            )
-            expense_total = (
-                txns.filter(transaction_type__transaction_category="expense").aggregate(
-                    total=Coalesce(Sum("amount"), Decimal("0"))
-                )["total"]
-                or 0
-            )
-            transfer_in = (
-                txns.filter(transaction_type__transaction_category="transfer").aggregate(
-                    total=Coalesce(Sum("amount"), Decimal("0"))
-                )["total"]
-                or 0
-            )
+            income_total = float(sum_inflow_amount(period_txns, use_base=False))
+            expense_total = float(sum_outflow_amount(period_txns, use_base=False))
+            period_net = float(sum_approved_cash_net_native(period_txns))
+            transfer_net = round(period_net - (income_total - expense_total), 2)
 
             opening = float(account.opening_balance or 0)
-            computed = round(opening + float(income_total) + float(transfer_in) - float(expense_total), 2)
-            current = float(account.current_balance or 0)
+            cash_on_hand = float(compute_bank_account_cash_on_hand(account, end_date=end_date))
 
             results.append(
                 {
@@ -117,13 +133,16 @@ class BankReconciliationReportView(APIView):
                     "bank_name": account.bank_name,
                     "account_number": account.account_number,
                     "opening_balance": opening,
-                    "income_total": float(income_total),
-                    "expense_total": float(expense_total),
-                    "transfer_total": float(transfer_in),
-                    "computed_balance": computed,
-                    "recorded_balance": current,
-                    "variance": round(current - computed, 2),
-                    "transaction_count": txns.count(),
+                    "income_total": income_total,
+                    "expense_total": expense_total,
+                    "transfer_total": transfer_net,
+                    "period_net_cash": round(period_net, 2),
+                    "currency": account.currency.code if account.currency else "",
+                    "cash_on_hand": cash_on_hand,
+                    "computed_balance": cash_on_hand,
+                    "recorded_balance": cash_on_hand,
+                    "variance": 0,
+                    "transaction_count": period_txns.count(),
                 }
             )
 
@@ -137,9 +156,8 @@ class BankReconciliationReportView(APIView):
                     r["income_total"],
                     r["expense_total"],
                     r["transfer_total"],
-                    r["computed_balance"],
-                    r["recorded_balance"],
-                    r["variance"],
+                    r["period_net_cash"],
+                    r["cash_on_hand"],
                     r["transaction_count"],
                 ]
                 for r in results
@@ -148,7 +166,7 @@ class BankReconciliationReportView(APIView):
                 request,
                 filename_base="bank-reconciliation",
                 title="Bank Reconciliation Report",
-                subtitle=None,
+                subtitle="Approved cash activity in account currency; cash on hand = opening + cumulative net.",
                 summary_rows=None,
                 headers=[
                     "Account",
@@ -157,9 +175,8 @@ class BankReconciliationReportView(APIView):
                     "Income",
                     "Expense",
                     "Transfers",
-                    "Computed",
-                    "Recorded",
-                    "Variance",
+                    "Period Net",
+                    "Cash on Hand",
                     "Transactions",
                 ],
                 rows=rows,

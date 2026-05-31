@@ -9,13 +9,22 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Case, Count, DecimalField, F, Q, Sum, When
+from django.db.models import Count, F, Q, Sum
 from django.db.models.functions import Abs
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
 from accounting.services import (
     post_cash_transaction_to_ledger,
     recalculate_bank_account_current_balance,
+)
+from accounting.services.currency_totals import (
+    get_tenant_base_currency,
+    serialize_currency,
+)
+from accounting.services.posting import (
+    _inflow_filter,
+    _outflow_filter,
+    approved_signed_base_amount_expression,
 )
 
 FILTER_PARAM_KEYS = (
@@ -294,34 +303,11 @@ def execute_post_all(
     }
 
 
-def _approved_signed_amount_expression():
-    """Mirror frontend getSignedAmount() for approved-net aggregation."""
-    return Case(
-        When(
-            transaction_type__code__iexact="TRANSFER_OUT",
-            then=-Abs(F("amount")),
-        ),
-        When(
-            transaction_type__code__iexact="TRANSFER_IN",
-            then=Abs(F("amount")),
-        ),
-        When(
-            transaction_type__transaction_category="expense",
-            then=-Abs(F("amount")),
-        ),
-        When(
-            transaction_type__transaction_category="income",
-            then=Abs(F("amount")),
-        ),
-        default=F("amount"),
-        output_field=DecimalField(max_digits=18, decimal_places=2),
-    )
-
-
 def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
     """Aggregate list stats across the full filtered queryset (before pagination)."""
     approved_status = AccountingCashTransaction.TransactionStatus.APPROVED
-    signed_amount = _approved_signed_amount_expression()
+    signed_base_amount = approved_signed_base_amount_expression()
+    approved_filter = Q(status=approved_status)
 
     agg = queryset.aggregate(
         pending_count=Count("id", filter=Q(status=AccountingCashTransaction.TransactionStatus.PENDING)),
@@ -334,24 +320,16 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
             filter=Q(status=approved_status, journal_entry__isnull=True),
         ),
         approved_net_total=Sum(
-            signed_amount,
-            filter=Q(status=approved_status),
+            signed_base_amount,
+            filter=approved_filter,
         ),
         approved_income_total=Sum(
-            Abs(F("amount")),
-            filter=Q(status=approved_status)
-            & (
-                Q(transaction_type__transaction_category="income")
-                | Q(transaction_type__code__iexact="TRANSFER_IN")
-            ),
+            Abs(F("base_amount")),
+            filter=approved_filter & _inflow_filter(),
         ),
         approved_expense_total=Sum(
-            Abs(F("amount")),
-            filter=Q(status=approved_status)
-            & (
-                Q(transaction_type__transaction_category="expense")
-                | Q(transaction_type__code__iexact="TRANSFER_OUT")
-            ),
+            Abs(F("base_amount")),
+            filter=approved_filter & _outflow_filter(),
         ),
     )
 
@@ -365,4 +343,5 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
         "approved_net_total": str(agg["approved_net_total"] or Decimal("0")),
         "approved_income_total": str(agg["approved_income_total"] or Decimal("0")),
         "approved_expense_total": str(agg["approved_expense_total"] or Decimal("0")),
+        "base_currency": serialize_currency(get_tenant_base_currency()),
     }

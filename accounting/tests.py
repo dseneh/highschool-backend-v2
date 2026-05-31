@@ -362,3 +362,92 @@ class AccountingCashTransactionExportTests(SimpleTestCase):
         mock_queryset.iterator.assert_called_once_with(chunk_size=2000)
         self.assertIsInstance(response, HttpResponse)
         mock_generate.assert_called_once()
+
+
+class AccountingJournalEntryExportTests(SimpleTestCase):
+    @patch("common.file_generators.FileGenerator.generate_file")
+    def test_export_uses_chunked_iterator_for_prefetched_queryset(self, mock_generate):
+        from accounting.views.ledger import AccountingJournalEntryViewSet
+
+        mock_generate.return_value = HttpResponse(b"csv")
+
+        viewset = AccountingJournalEntryViewSet()
+        request = SimpleNamespace(
+            query_params={"file_format": "csv"},
+        )
+        viewset.request = request
+        viewset.format_kwarg = None
+
+        mock_queryset = MagicMock()
+        mock_queryset._prefetch_related_lookups = ["lines__ledger_account"]
+        mock_queryset.iterator.return_value = iter([])
+
+        with patch.object(viewset, "get_queryset", return_value=mock_queryset):
+            response = viewset.export_entries(request)
+
+        mock_queryset.iterator.assert_called_once_with(chunk_size=2000)
+        self.assertIsInstance(response, HttpResponse)
+        mock_generate.assert_called_once()
+
+
+class CashStandingBalanceTests(SimpleTestCase):
+    def _bank_account(
+        self,
+        *,
+        opening_balance=Decimal("0"),
+        opening_balance_date=None,
+        ledger_account_id="ledger-1",
+        account_id="bank-1",
+    ):
+        currency = SimpleNamespace(id="cur-1", code="LRD", symbol="L$")
+        return SimpleNamespace(
+            id=account_id,
+            currency=currency,
+            opening_balance=opening_balance,
+            opening_balance_date=opening_balance_date,
+            ledger_account_id=ledger_account_id,
+            transactions=MagicMock(),
+        )
+
+    @patch("accounting.services.journal_summary._ledger_gl_balance_base")
+    def test_linked_ledger_uses_gl_net_only_not_opening_field(self, mock_gl_balance):
+        from accounting.services.journal_summary import _account_cash_standing_base
+
+        account = self._bank_account(
+            opening_balance=Decimal("30000000"),
+            opening_balance_date=SimpleNamespace(year=2026, month=1, day=1),
+        )
+        mock_gl_balance.return_value = Decimal("4700000")
+
+        balance = _account_cash_standing_base(account)
+
+        self.assertEqual(balance, Decimal("4700000"))
+
+    @patch("accounting.services.journal_summary._bank_accounts_queryset")
+    @patch("accounting.services.journal_summary._ledger_gl_balance_base")
+    def test_shared_ledger_is_counted_once_across_bank_accounts(self, mock_gl_balance, mock_queryset):
+        from accounting.services.journal_summary import compute_cash_standing_balance
+
+        shared_ledger = "ledger-shared"
+        accounts = [
+            self._bank_account(ledger_account_id=shared_ledger, account_id="bank-a"),
+            self._bank_account(ledger_account_id=shared_ledger, account_id="bank-b"),
+        ]
+        mock_queryset.return_value.select_related.return_value = accounts
+        mock_gl_balance.return_value = Decimal("4700000")
+
+        balance = compute_cash_standing_balance()
+
+        self.assertEqual(balance, Decimal("4700000"))
+        mock_gl_balance.assert_called_once()
+
+    @patch("accounting.services.journal_summary._ledger_gl_balance_base")
+    def test_expense_credits_reduce_standing_balance(self, mock_gl_balance):
+        from accounting.services.journal_summary import _account_cash_standing_base
+
+        account = self._bank_account(opening_balance=Decimal("0"))
+        mock_gl_balance.return_value = Decimal("-250000")
+
+        balance = _account_cash_standing_base(account)
+
+        self.assertEqual(balance, Decimal("-250000"))

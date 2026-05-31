@@ -7,9 +7,14 @@ from decimal import Decimal
 from django.db.models import Count, F, Q, QuerySet, Sum
 from django.db.models.functions import Abs, Coalesce
 
-from accounting.models import AccountingCashTransaction
+from accounting.models import AccountingBankAccount, AccountingCashTransaction
 from accounting.services.post_all import build_student_payment_list_filter
-from accounting.services.posting import _inflow_filter, _outflow_filter
+from accounting.services.posting import (
+    _inflow_filter,
+    _outflow_filter,
+    compute_bank_account_balance,
+    compute_bank_account_native_balance,
+)
 
 INCOME_CATEGORY = Q(transaction_type__transaction_category="income")
 EXPENSE_CATEGORY = Q(transaction_type__transaction_category="expense")
@@ -33,17 +38,19 @@ def approved_cash_queryset() -> QuerySet:
     ).select_related("transaction_type", "student", "bank_account")
 
 
-def sum_inflow_amount(queryset: QuerySet) -> Decimal:
+def sum_inflow_amount(queryset: QuerySet, *, use_base: bool = True) -> Decimal:
     """Income + transfer in (bank inflow totals)."""
+    amount_field = "base_amount" if use_base else "amount"
     return queryset.filter(_inflow_filter()).aggregate(
-        total=Coalesce(Sum(Abs(F("base_amount"))), Decimal("0"))
+        total=Coalesce(Sum(Abs(F(amount_field))), Decimal("0"))
     )["total"] or Decimal("0")
 
 
-def sum_outflow_amount(queryset: QuerySet) -> Decimal:
+def sum_outflow_amount(queryset: QuerySet, *, use_base: bool = True) -> Decimal:
     """Expense + transfer out (bank outflow totals)."""
+    amount_field = "base_amount" if use_base else "amount"
     return queryset.filter(_outflow_filter()).aggregate(
-        total=Coalesce(Sum(Abs(F("base_amount"))), Decimal("0"))
+        total=Coalesce(Sum(Abs(F(amount_field))), Decimal("0"))
     )["total"] or Decimal("0")
 
 
@@ -59,6 +66,79 @@ def sum_expense_total(queryset: QuerySet) -> Decimal:
     return queryset.filter(EXPENSE_CATEGORY).aggregate(
         total=Coalesce(Sum(Abs(F("base_amount"))), Decimal("0"))
     )["total"] or Decimal("0")
+
+
+def sum_period_income_minus_expense(queryset: QuerySet) -> Decimal:
+    """Approved income-category cash minus expense-category cash in the queryset period."""
+    return sum_income_revenue(queryset) - sum_expense_total(queryset)
+
+
+def sum_approved_cash_net(queryset: QuerySet) -> Decimal:
+    """Signed net approved cash in base currency (income − expense, incl. transfers)."""
+    from accounting.services.posting import approved_signed_base_amount_expression
+
+    signed = approved_signed_base_amount_expression()
+    return queryset.aggregate(
+        total=Coalesce(Sum(signed), Decimal("0")),
+    )["total"] or Decimal("0")
+
+
+def sum_approved_cash_net_native(queryset: QuerySet) -> Decimal:
+    """Signed net approved cash in each transaction's native currency."""
+    from accounting.services.currency_totals import approved_signed_native_amount_expression
+
+    signed = approved_signed_native_amount_expression()
+    return queryset.aggregate(
+        total=Coalesce(Sum(signed), Decimal("0")),
+    )["total"] or Decimal("0")
+
+
+def approved_cash_for_bank_account(
+    bank_account: AccountingBankAccount,
+    *,
+    end_date=None,
+) -> QuerySet:
+    queryset = approved_cash_queryset().filter(bank_account=bank_account)
+    if bank_account.currency_id:
+        queryset = queryset.filter(currency_id=bank_account.currency_id)
+    return filter_cash_by_period(queryset, None, end_date)
+
+
+def compute_bank_account_cash_on_hand(
+    bank_account: AccountingBankAccount,
+    *,
+    end_date=None,
+) -> Decimal:
+    """Opening balance plus approved signed native cash activity."""
+    opening = bank_account.opening_balance or Decimal("0")
+    if opening and end_date and bank_account.opening_balance_date and bank_account.opening_balance_date > end_date:
+        opening = Decimal("0")
+    transaction_net = compute_bank_account_native_balance(bank_account, end_date=end_date)
+    return opening + transaction_net
+
+
+def compute_bank_account_cash_on_hand_base(
+    bank_account: AccountingBankAccount,
+    *,
+    end_date=None,
+) -> Decimal:
+    """Opening balance (converted to base) plus approved signed base cash activity."""
+    from accounting.services.currency_totals import convert_amount_to_base
+
+    opening = bank_account.opening_balance or Decimal("0")
+    if opening and end_date and bank_account.opening_balance_date and bank_account.opening_balance_date > end_date:
+        opening = Decimal("0")
+    opening_base = (
+        convert_amount_to_base(
+            opening,
+            bank_account.currency,
+            as_of=end_date or bank_account.opening_balance_date,
+        )
+        if opening
+        else Decimal("0")
+    )
+    transaction_net = compute_bank_account_balance(bank_account, end_date=end_date)
+    return opening_base + transaction_net
 
 
 def split_tuition_and_other_income(
