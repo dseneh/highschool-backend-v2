@@ -369,6 +369,7 @@ class PayrollRunRecord(BaseModel):
     approved_at = models.DateTimeField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
+    paid_table_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = "payroll_v2_run"

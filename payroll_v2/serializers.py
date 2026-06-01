@@ -401,7 +401,7 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
 
 
 class PayrollRunListSerializer(serializers.ModelSerializer):
-    employee_count = serializers.IntegerField(read_only=True, required=False)
+    employee_count = serializers.SerializerMethodField()
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     currency_symbol = serializers.CharField(source="currency.symbol", read_only=True)
     bank_account_name = serializers.CharField(source="bank_account.account_name", read_only=True)
@@ -459,6 +459,26 @@ class PayrollRunListSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+
+    def get_employee_count(self, obj):
+        from payroll_v2.enums import PayrollStatus
+
+        if obj.status == PayrollStatus.PAID:
+            snapshot = getattr(obj, "paid_table_snapshot", None) or {}
+            totals = snapshot.get("totals") or {}
+            line_count = totals.get("line_count")
+            if line_count is not None:
+                return int(line_count)
+            rows = snapshot.get("rows") or []
+            if rows:
+                return len(rows)
+            employee_items = snapshot.get("employee_items") or []
+            if employee_items:
+                return len(employee_items)
+        annotated = getattr(obj, "employee_count", None)
+        if annotated is not None:
+            return annotated
+        return obj.employee_items.count()
 
     def get_pay_schedule_name(self, obj):
         from payroll_v2.schedule_services import get_pay_schedule
@@ -528,11 +548,12 @@ def normalize_payroll_v2_table_column_key(key):
 
 
 class PayrollRunDetailSerializer(PayrollRunListSerializer):
-    employee_items = PayrollEmployeeItemSerializer(many=True, read_only=True)
+    employee_items = serializers.SerializerMethodField()
     columns = serializers.SerializerMethodField()
     rows = serializers.SerializerMethodField()
     table_view_snapshot = serializers.JSONField(read_only=True)
     payslip_template_snapshot = serializers.JSONField(read_only=True)
+    paid_table_snapshot = serializers.JSONField(read_only=True)
     totals = serializers.SerializerMethodField()
 
     class Meta(PayrollRunListSerializer.Meta):
@@ -541,13 +562,39 @@ class PayrollRunDetailSerializer(PayrollRunListSerializer):
             "table_view_snapshot",
             "payslip_template",
             "payslip_template_snapshot",
+            "paid_table_snapshot",
             "columns",
             "rows",
             "totals",
             "employee_items",
         ]
 
+    def _paid_snapshot(self, obj):
+        snapshot = getattr(obj, "paid_table_snapshot", None) or {}
+        if not snapshot or not snapshot.get("rows"):
+            return None
+        from payroll_v2.enums import PayrollStatus
+
+        if obj.status != PayrollStatus.PAID:
+            return None
+        return snapshot
+
+    def get_employee_items(self, obj):
+        paid_snapshot = self._paid_snapshot(obj)
+        if paid_snapshot is not None:
+            employee_items = paid_snapshot.get("employee_items")
+            if employee_items is not None:
+                return employee_items
+            return []
+        return PayrollEmployeeItemSerializer(
+            obj.employee_items.prefetch_related("line_items").all(),
+            many=True,
+        ).data
+
     def get_totals(self, obj):
+        paid_snapshot = self._paid_snapshot(obj)
+        if paid_snapshot and paid_snapshot.get("totals"):
+            return paid_snapshot["totals"]
         return {
             "gross": str(obj.gross_pay_total or Decimal("0.00")),
             "deductions": str(obj.deduction_total or Decimal("0.00")),
@@ -575,6 +622,10 @@ class PayrollRunDetailSerializer(PayrollRunListSerializer):
         ]
 
     def get_columns(self, obj):
+        paid_snapshot = self._paid_snapshot(obj)
+        if paid_snapshot and paid_snapshot.get("columns"):
+            return paid_snapshot["columns"]
+
         columns = OrderedDict((c["key"], dict(c)) for c in self._base_columns())
 
         line_qs = PayrollLineItem.objects.filter(
@@ -631,6 +682,10 @@ class PayrollRunDetailSerializer(PayrollRunListSerializer):
         return str(value)
 
     def get_rows(self, obj):
+        paid_snapshot = self._paid_snapshot(obj)
+        if paid_snapshot and paid_snapshot.get("rows"):
+            return paid_snapshot["rows"]
+
         rows = []
         for item in obj.employee_items.prefetch_related("line_items", "employee").all():
             dynamic_values = {}

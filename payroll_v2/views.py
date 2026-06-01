@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from hr.models import Employee
 
-from .enums import TargetAmountSource
+from .enums import PayrollStatus, TargetAmountSource
 from .access_policies import PayrollV2AccessPolicy
 from .models import (
     EmployeeCompensation,
@@ -596,9 +596,24 @@ class PayrollEmployeeItemViewSet(BasePayrollViewSet):
             )
         return apply_employee_portal_paystub_filters(qs, self.request.user)
 
+    def _reject_if_paid_run(self, item):
+        if item.payroll.status == PayrollStatus.PAID:
+            from rest_framework.exceptions import ValidationError
+
+            raise ValidationError("Paid payroll run items cannot be modified.")
+
+    def partial_update(self, request, *args, **kwargs):
+        self._reject_if_paid_run(self.get_object())
+        return super().partial_update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        self._reject_if_paid_run(self.get_object())
+        return super().update(request, *args, **kwargs)
+
     @action(detail=True, methods=["post"], url_path="recalculate")
     def recalculate(self, request, pk=None):
         item = self.get_object()
+        self._reject_if_paid_run(item)
         item.recalculate_totals()
         item.payroll.recalculate_totals()
         return Response(self.get_serializer(item).data)

@@ -14,7 +14,19 @@ from accounting.models import (
     AccountingCashTransaction,
     AccountingJournalEntry,
     AccountingJournalLine,
+    AccountingTransactionType,
 )
+
+
+def resolve_transaction_type_counter_ledger(tx_type: AccountingTransactionType):
+    """Return the income/expense GL account linked to a transaction type."""
+    if tx_type.managed_ledger_account_id:
+        return tx_type.managed_ledger_account
+    if tx_type.default_ledger_account_id:
+        return tx_type.default_ledger_account
+    raise ValidationError(
+        "Transaction type must have a default or managed ledger account."
+    )
 
 
 def _inflow_filter() -> Q:

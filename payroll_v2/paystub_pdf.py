@@ -711,4 +711,386 @@ class PaystubV2PDF:
 
 
 def build_paystub_v2_pdf_bytes(employee_item: PayrollEmployeeItem, *, school=None) -> bytes:
+    from employee_disbursements.enums import DisbursementRecordStatus, DisbursementSourceType
+    from employee_disbursements.models import EmployeeDisbursementRecord
+
+    record = (
+        EmployeeDisbursementRecord.objects.filter(
+            payroll_employee_item_id=employee_item.id,
+            status=DisbursementRecordStatus.ACTIVE,
+        )
+        .only("snapshot")
+        .first()
+    )
+    if not record:
+        record = (
+            EmployeeDisbursementRecord.objects.filter(
+                source_type=DisbursementSourceType.PAYROLL,
+                source_id=employee_item.payroll_id,
+                employee_id=employee_item.employee_id,
+                status=DisbursementRecordStatus.ACTIVE,
+            )
+            .only("snapshot")
+            .order_by("-paid_at")
+            .first()
+        )
+    if record and record.snapshot:
+        return PaystubV2SnapshotPDF(record.snapshot, school=school).generate()
+    if employee_item.payroll.status == PayrollStatus.PAID:
+        raise ValueError("Paid paystub is unavailable without a disbursement snapshot.")
     return PaystubV2PDF(employee_item, school=school).generate()
+
+
+class PaystubV2SnapshotPDF:
+    """Render a paystub PDF from a frozen disbursement snapshot JSON."""
+
+    def __init__(self, snapshot: dict, *, school=None):
+        self.snapshot = snapshot or {}
+        self.school = school or resolve_tenant_school()
+        self.currency_code = "USD"
+        self._setup_styles()
+
+    def _setup_styles(self) -> None:
+        styles = getSampleStyleSheet()
+        self.section_title_style = ParagraphStyle(
+            "SnapSectionTitle",
+            parent=styles["Normal"],
+            fontSize=11,
+            fontName="Helvetica-Bold",
+            textColor=PAYSTUB_TEXT,
+            alignment=TA_LEFT,
+            spaceBefore=6,
+            spaceAfter=4,
+            leading=13,
+        )
+        self.block_title_style = ParagraphStyle(
+            "SnapBlockTitle",
+            parent=styles["Normal"],
+            fontSize=11,
+            fontName="Helvetica-Bold",
+            textColor=PAYSTUB_TEXT,
+            alignment=TA_LEFT,
+            leading=13,
+        )
+        self.block_line_style = ParagraphStyle(
+            "SnapBlockLine",
+            parent=styles["Normal"],
+            fontSize=10,
+            fontName="Helvetica",
+            textColor=PAYSTUB_TEXT_MUTED,
+            alignment=TA_LEFT,
+            leading=12,
+            spaceBefore=2,
+        )
+        self.cell_style = ParagraphStyle(
+            "SnapCell",
+            parent=styles["Normal"],
+            fontSize=10,
+            fontName="Helvetica",
+            textColor=PAYSTUB_TEXT,
+            alignment=TA_LEFT,
+            leading=12,
+        )
+        self.cell_right_style = ParagraphStyle(
+            "SnapCellRight",
+            parent=self.cell_style,
+            alignment=TA_RIGHT,
+        )
+        self.header_cell_style = ParagraphStyle(
+            "SnapHeaderCell",
+            parent=styles["Normal"],
+            fontSize=10,
+            fontName="Helvetica-Bold",
+            textColor=PAYSTUB_TEXT,
+            alignment=TA_LEFT,
+            leading=12,
+        )
+        self.header_cell_right_style = ParagraphStyle(
+            "SnapHeaderCellRight",
+            parent=self.header_cell_style,
+            alignment=TA_RIGHT,
+        )
+        self.total_cell_style = ParagraphStyle(
+            "SnapTotalCell",
+            parent=self.cell_style,
+            fontName="Helvetica-Bold",
+        )
+        self.total_cell_right_style = ParagraphStyle(
+            "SnapTotalCellRight",
+            parent=self.cell_right_style,
+            fontName="Helvetica-Bold",
+        )
+        self.summary_label_style = ParagraphStyle(
+            "SnapSummaryLabel",
+            parent=self.cell_style,
+            fontName="Helvetica-Bold",
+        )
+        self.summary_value_style = ParagraphStyle(
+            "SnapSummaryValue",
+            parent=self.cell_right_style,
+            fontName="Helvetica-Bold",
+        )
+
+    def _table_padding_style(self) -> list:
+        return [
+            ("LEFTPADDING", (0, 0), (-1, -1), TABLE_PADDING),
+            ("RIGHTPADDING", (0, 0), (-1, -1), TABLE_PADDING),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]
+
+    def _paystub_table_style(self, *, header_rows: tuple[int, ...] = (0,), total_row: int | None = None) -> list:
+        styles = [
+            ("BOX", (0, 0), (-1, -1), 0.6, PAYSTUB_BORDER),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, PAYSTUB_BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            *self._table_padding_style(),
+        ]
+        for row_index in header_rows:
+            styles.extend(
+                [
+                    ("BACKGROUND", (0, row_index), (-1, row_index), PAYSTUB_HEADER_BG),
+                    ("FONTNAME", (0, row_index), (-1, row_index), "Helvetica-Bold"),
+                ]
+            )
+        if total_row is not None:
+            styles.extend(
+                [
+                    ("BACKGROUND", (0, total_row), (-1, total_row), PAYSTUB_TOTAL_BG),
+                    ("FONTNAME", (0, total_row), (-1, total_row), "Helvetica-Bold"),
+                ]
+            )
+        return styles
+
+    def _build_section_table(
+        self,
+        title: str,
+        headers: list[str],
+        rows: list[list[str]],
+        *,
+        footer: list[str] | None = None,
+        empty_label: str = "None",
+        col_widths: list[float],
+    ) -> list:
+        flowables: list = [Paragraph(title, self.section_title_style)]
+        table_data = [
+            [
+                Paragraph(header, self.header_cell_right_style if index else self.header_cell_style)
+                for index, header in enumerate(headers)
+            ]
+        ]
+        if rows:
+            for row in rows:
+                table_data.append(
+                    [
+                        Paragraph(str(row[0]), self.cell_style),
+                        *[Paragraph(str(cell), self.cell_right_style) for cell in row[1:]],
+                    ]
+                )
+        else:
+            table_data.append(
+                [
+                    Paragraph(empty_label, ParagraphStyle("Empty", parent=self.cell_style, textColor=PAYSTUB_TEXT_MUTED)),
+                    *[Paragraph("", self.cell_style) for _ in headers[1:]],
+                ]
+            )
+
+        total_row = None
+        if footer:
+            total_row = len(table_data)
+            table_data.append(
+                [
+                    Paragraph(str(footer[0]), self.total_cell_style),
+                    *[Paragraph(str(cell), self.total_cell_right_style) for cell in footer[1:]],
+                ]
+            )
+
+        table = Table(table_data, colWidths=col_widths, hAlign="LEFT")
+        table.setStyle(TableStyle(self._paystub_table_style(header_rows=(0,), total_row=total_row)))
+        flowables.append(table)
+        return flowables
+
+    def _five_col_widths(self) -> list[float]:
+        return [2.2 * inch, 1.2 * inch, 0.8 * inch, 1.5 * inch, 1.5 * inch]
+
+    def _build_document_header(self, story: list) -> None:
+        append_pdf_document_header(
+            story,
+            self.school,
+            "EMPLOYEE PAYSTUB",
+            show_statement_date=False,
+            bottom_spacer_inches=0.04,
+            header_width_inches=7.2,
+        )
+        append_pdf_subtitle(story, f"All amounts in {self.currency_code}")
+
+    def _build_employee_period_grid(self) -> Table:
+        employee = self.snapshot.get("employee") or {}
+        period = self.snapshot.get("period") or {}
+        name = employee.get("name") or "Employee"
+        id_number = employee.get("idNumber") or ""
+        title = f"{name} (ID #: {id_number})" if id_number else name
+
+        left_lines = [Paragraph(title, self.block_title_style)]
+        if employee.get("taxIdLine"):
+            left_lines.append(Paragraph(employee["taxIdLine"], self.block_line_style))
+        address = ", ".join(employee.get("addressLines") or [])
+        if address:
+            left_lines.append(Paragraph(address, self.block_line_style))
+        if employee.get("department"):
+            left_lines.append(Paragraph(f"Department: {employee['department']}", self.block_line_style))
+        if employee.get("position"):
+            left_lines.append(Paragraph(f"Position: {employee['position']}", self.block_line_style))
+
+        right_lines = [
+            Paragraph(period.get("scheduleLabel") or "Pay Period", self.block_title_style),
+            Paragraph(period.get("periodRange") or "—", self.block_line_style),
+            Paragraph(period.get("paymentDateLabel") or "—", self.block_line_style),
+            Paragraph(f"Stub Number: {period.get('stubNumber') or '—'}", self.block_line_style),
+        ]
+
+        table = Table([[left_lines, right_lines]], colWidths=[CONTENT_WIDTH / 2, CONTENT_WIDTH / 2], hAlign="LEFT")
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 0.6, PAYSTUB_BORDER),
+                    ("LINEAFTER", (0, 0), (0, -1), 0.6, PAYSTUB_BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    *self._table_padding_style(),
+                    ("TOPPADDING", (0, 0), (-1, -1), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        return table
+
+    def _build_body(self) -> list:
+        flowables: list = []
+        flowables.append(self._build_employee_period_grid())
+        flowables.append(Spacer(1, 0.08 * inch))
+
+        ytd_label = self.snapshot.get("ytdColumnLabel") or "YTD"
+        earnings = self.snapshot.get("earnings") or []
+        earning_rows = [
+            [row.get("label", ""), row.get("rateOrUnits", ""), row.get("units", ""), row.get("amount", ""), row.get("ytd", "")]
+            for row in earnings
+        ]
+        earnings_total = self.snapshot.get("earningsTotal") or {}
+        flowables.extend(
+            self._build_section_table(
+                "Earnings",
+                ["Earnings", "Rate/Units", "Units", "Amount", ytd_label],
+                earning_rows,
+                footer=["Total Gross Amount", "", "", earnings_total.get("amount", ""), earnings_total.get("ytd", "")]
+                if earning_rows
+                else None,
+                empty_label="No earnings for this period",
+                col_widths=self._five_col_widths(),
+            )
+        )
+
+        taxes = self.snapshot.get("taxes") or []
+        deductions = self.snapshot.get("deductions") or []
+        tax_ded_rows = [
+            [row.get("label", ""), row.get("amount", ""), row.get("ytd", "")]
+            for row in [*taxes, *deductions]
+        ]
+        taxes_total = self.snapshot.get("taxesTotal") or {}
+        deductions_total = self.snapshot.get("deductionsTotal") or {}
+        combined_total = {
+            "amount": str(Decimal(str(taxes_total.get("amount", "0"))) + Decimal(str(deductions_total.get("amount", "0")))),
+            "ytd": str(Decimal(str(taxes_total.get("ytd", "0"))) + Decimal(str(deductions_total.get("ytd", "0")))),
+        }
+        flowables.extend(
+            self._build_section_table(
+                "Tax/Deductions",
+                ["Tax/Deduction", "Amount", ytd_label],
+                tax_ded_rows,
+                footer=["Total Deductions", combined_total.get("amount", ""), combined_total.get("ytd", "")]
+                if tax_ded_rows
+                else None,
+                empty_label="No tax or deductions for this period",
+                col_widths=[3.5 * inch, 1.85 * inch, 1.85 * inch],
+            )
+        )
+
+        time_off = self.snapshot.get("timeOff") or []
+        if time_off:
+            time_off_rows = [
+                [
+                    row.get("description", ""),
+                    row.get("startingBalance", ""),
+                    row.get("usedInPeriod", ""),
+                    row.get("accruedInPeriod", ""),
+                    row.get("remainingBalance", ""),
+                ]
+                for row in time_off
+            ]
+            flowables.extend(
+                self._build_section_table(
+                    "Time-Off",
+                    [
+                        "Description",
+                        "Starting Balance (days)",
+                        "Used in Period (days)",
+                        "Accrued in Period (days)",
+                        "Remaining Balance (days)",
+                    ],
+                    time_off_rows,
+                    col_widths=self._five_col_widths(),
+                )
+            )
+
+        flowables.append(Spacer(1, 0.08 * inch))
+        summary = Table(
+            [
+                [
+                    Paragraph("Net Pay", self.summary_label_style),
+                    Paragraph(str(self.snapshot.get("netPay") or "0.00"), self.summary_value_style),
+                ],
+                [
+                    Paragraph("Year-To-Date (Net Pay)", self.summary_label_style),
+                    Paragraph(str(self.snapshot.get("netPayYtd") or "0.00"), self.summary_value_style),
+                ],
+            ],
+            colWidths=[1.5 * inch, 1.1 * inch],
+            hAlign="LEFT",
+        )
+        summary.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 0.6, PAYSTUB_BORDER),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.4, PAYSTUB_BORDER),
+                    *self._table_padding_style(),
+                ]
+            )
+        )
+        wrapper = Table([[None, summary]], colWidths=[CONTENT_WIDTH - SUMMARY_WIDTH, SUMMARY_WIDTH], hAlign="LEFT")
+        wrapper.setStyle(
+            TableStyle(
+                [
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        flowables.append(wrapper)
+        return flowables
+
+    def generate(self) -> bytes:
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            topMargin=0.4 * inch,
+            bottomMargin=0.4 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        )
+        story: list = []
+        self._build_document_header(story)
+        story.extend(self._build_body())
+        doc.build(story)
+        return buffer.getvalue()

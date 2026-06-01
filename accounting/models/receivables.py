@@ -318,7 +318,7 @@ class AccountingStudentPaymentAllocation(BaseModel):
     class Meta:
         db_table = "accounting_student_payment_allocation"
         verbose_name = "Student Payment Allocation"
-        verbose_name_plural = "Student Payment Allocations"
+        verbose_name_plural = "Student Payment Allotment"
         ordering = ["-allocation_date"]
 
     def __str__(self):

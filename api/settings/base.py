@@ -87,6 +87,8 @@ TENANT_APPS = [
     "accounting",  # Accounting models (Ledger, Journal, Cash, AR, Tax, Posting Bridge - Phase 2-5)
     "hr",  # HR models (Payroll, Contracts, Workforce - Phase 6-7)
     "payroll_v2",  # Payroll: schedules, runs, items, settings, paystubs
+    "employee_benefits",  # Named employee benefits/allocations with approval workflow
+    "employee_disbursements",  # Paid payroll/benefit disbursement snapshots
     "settings",  # Tenant-specific settings (grading settings)
     "reports",  # Reports (transaction reporting, exports, placeholders)
     "defaults",  # Default data creation for new tenants
@@ -280,3 +282,6 @@ if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_BROWSER_XSS_FILTER = True
     X_FRAME_OPTIONS = "DENY"
+
+# When True, live payroll/benefit line rows are deleted after mark-paid; revert rebuilds from snapshot.
+DELETE_PAID_LIVE_ROWS = config("DELETE_PAID_LIVE_ROWS", default=True, cast=bool)

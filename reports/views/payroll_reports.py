@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 from accounting.models import AccountingPayrollPostingBatch, AccountingPayrollPostingLine
 from payroll_v2.models import PayrollEmployeeItem, PayrollRunRecord
+from payroll_v2.report_snapshot_helpers import paid_snapshot_rows, summarize_run_employees
 
 from ..access_policies import ReportsAccessPolicy
 from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param, resolve_export_currency_note
@@ -45,13 +46,13 @@ class PayrollRunSummaryReportView(APIView):
 
         results = []
         for run in runs:
-            items = run.employee_items.all()
-            employee_count = items.count()
-            gross = sum((item.gross_pay for item in items), Decimal("0.00"))
-            tax = sum((item.total_tax for item in items), Decimal("0.00"))
-            deductions = sum((item.total_deductions for item in items), Decimal("0.00"))
-            reimbursements = sum((item.total_reimbursements for item in items), Decimal("0.00"))
-            take_home = sum((item.net_pay for item in items), Decimal("0.00"))
+            summary = summarize_run_employees(run)
+            employee_count = summary["employee_count"]
+            gross = summary["gross"]
+            tax = summary["tax"]
+            deductions = summary["deductions"]
+            reimbursements = summary["reimbursements"]
+            take_home = summary["take_home"]
             non_tax_deductions = deductions - tax
             taxable_net = take_home - reimbursements
             schedule = run.pay_schedule
@@ -187,6 +188,36 @@ class PayrollRegisterReportView(APIView):
                     "take_home": take_home,
                 }
             )
+
+        if payroll_run_id and not results:
+            run = PayrollRunRecord.objects.select_related("pay_schedule", "payroll_period").filter(
+                id=payroll_run_id,
+            ).first()
+            if run:
+                period = run.payroll_period
+                schedule = run.pay_schedule
+                for row in paid_snapshot_rows(run):
+                    employee = row.get("employee") or {}
+                    take_home = float(row.get("net_pay") or 0)
+                    reimbursements = float(row.get("total_reimbursements") or 0)
+                    tax = float(row.get("total_tax") or 0)
+                    deductions = float(row.get("total_deductions") or 0)
+                    taxable_net = take_home - reimbursements
+                    results.append(
+                        {
+                            "employee_id": employee.get("id_number") or employee.get("id") or "",
+                            "employee_name": employee.get("name") or "",
+                            "schedule_name": schedule.name if schedule else "",
+                            "period_name": period.name if period else run.payroll_number,
+                            "run_status": run.status,
+                            "gross_pay": float(row.get("gross_pay") or 0),
+                            "total_deductions": deductions - tax,
+                            "tax": tax,
+                            "taxable_net": taxable_net,
+                            "adjustments": reimbursements,
+                            "take_home": take_home,
+                        }
+                    )
 
         summary = {
             "employee_count": len(results),

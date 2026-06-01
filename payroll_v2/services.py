@@ -1500,7 +1500,15 @@ def mark_payroll_paid(payroll_run, user=None):
 
     from .accounting_integration import post_payroll_v2_run_to_ledger
 
-    post_payroll_v2_run_to_ledger(payroll_run, actor=user)
+    batch = post_payroll_v2_run_to_ledger(payroll_run, actor=user)
+
+    from employee_disbursements.services.records import create_payroll_disbursement_records
+
+    create_payroll_disbursement_records(
+        payroll_run,
+        journal_entry=getattr(batch, "journal_entry", None),
+        actor=user,
+    )
 
     if payroll_run.payroll_period_id:
         period = payroll_run.payroll_period
@@ -1515,6 +1523,14 @@ def mark_payroll_paid(payroll_run, user=None):
     payroll_run.updated_by = user
     payroll_run.save(update_fields=["status", "paid_at", "updated_by", "updated_at"])
     payroll_run.employee_items.update(payment_status=PaymentStatus.PAID)
+
+    from .paid_table_snapshot import capture_payroll_paid_table_snapshot
+
+    capture_payroll_paid_table_snapshot(payroll_run)
+
+    from .live_row_lifecycle import purge_paid_live_rows_if_enabled
+
+    purge_paid_live_rows_if_enabled(payroll_run)
     return payroll_run
 
 
@@ -1529,13 +1545,35 @@ def revert_payroll_to_draft(payroll_run, user=None):
 
         reverse_payroll_v2_run_posting(payroll_run, actor=user)
 
+        from employee_disbursements.enums import DisbursementSourceType
+        from employee_disbursements.services.records import revert_disbursement_records_for_source
+
+        revert_disbursement_records_for_source(
+            DisbursementSourceType.PAYROLL,
+            payroll_run.id,
+            actor=user,
+        )
+
+        from .live_row_lifecycle import restore_payroll_live_rows_from_snapshot
+
+        restore_payroll_live_rows_from_snapshot(payroll_run, actor=user)
+
     payroll_run.status = PayrollStatus.DRAFT
     payroll_run.approved_by = None
     payroll_run.approved_at = None
     payroll_run.paid_at = None
+    payroll_run.paid_table_snapshot = {}
     payroll_run.updated_by = user
     payroll_run.save(
-        update_fields=["status", "approved_by", "approved_at", "paid_at", "updated_by", "updated_at"],
+        update_fields=[
+            "status",
+            "approved_by",
+            "approved_at",
+            "paid_at",
+            "paid_table_snapshot",
+            "updated_by",
+            "updated_at",
+        ],
     )
 
     if payroll_run.payroll_period_id:
@@ -1546,7 +1584,8 @@ def revert_payroll_to_draft(payroll_run, user=None):
                 period.updated_by = user
             period.save(update_fields=["is_closed", "updated_by", "updated_at"])
 
-    payroll_run.employee_items.update(payment_status=PaymentStatus.UNPAID)
+    if payroll_run.employee_items.exists():
+        payroll_run.employee_items.update(payment_status=PaymentStatus.UNPAID)
     return payroll_run
 
 

@@ -1016,7 +1016,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 "verbose_name": "Student Payment Allocation",
-                "verbose_name_plural": "Student Payment Allocations",
+                "verbose_name_plural": "Student Payment Allotment",
                 "db_table": "accounting_student_payment_allocation",
                 "ordering": ["-allocation_date"],
             },
