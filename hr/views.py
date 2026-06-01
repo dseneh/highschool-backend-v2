@@ -419,6 +419,28 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         queryset = apply_employee_list_filters(queryset, self.request.query_params)
         return queryset.order_by("first_name", "last_name")
 
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+
+        include_stats = str(request.query_params.get("include_stats", "")).lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if include_stats and isinstance(response.data, dict):
+            from hr.employee_stats import (
+                compute_employee_list_stats,
+                employee_list_filters_applied,
+                stats_queryset_for_request,
+            )
+
+            stats_queryset = stats_queryset_for_request(request.query_params)
+            stats = compute_employee_list_stats(stats_queryset)
+            stats["filters_applied"] = employee_list_filters_applied(request.query_params)
+            response.data["stats"] = stats
+
+        return response
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
