@@ -42,7 +42,7 @@ from .views.payroll_reports import (
 from .views.attendance_reports import AttendanceSummaryReportView, DailyAttendanceRegisterReportView
 from .views.academic_reports import ClassGradeSummaryReportView, HonorRollReportView
 from .views.report_cards import BulkReportCardsExportView
-from .views.hr_reports import StaffDirectoryReportView
+from .views.hr_reports import EmployeeListReportView, StaffDirectoryReportView
 from .views.advanced_reports import ProfitLossReportView, RevenueReportView, CustomReportBuilderView
 
 app_name = "reports"
@@ -87,6 +87,7 @@ urlpatterns = [
         name="bulk-report-cards",
     ),
     # HR Reports
+    path("hr/employees/", EmployeeListReportView.as_view(), name="employee-list-reports"),
     path("hr/staff-directory/", StaffDirectoryReportView.as_view(), name="staff-directory-reports"),
     # Custom report builder metadata
     path("custom-builder/", CustomReportBuilderView.as_view(), name="custom-report-builder"),
