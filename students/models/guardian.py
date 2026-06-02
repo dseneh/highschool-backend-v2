@@ -1,6 +1,10 @@
 """
 Student guardian model for storing parent/guardian information
 """
+from django.core.validators import RegexValidator
+
+from common.utils import ID_ENTITY_PARENT, generate_entity_id_number
+
 from .base import BaseModel, models
 
 
@@ -39,6 +43,15 @@ class StudentGuardian(BaseModel):
     occupation = models.CharField(max_length=100, blank=True, null=True, default=None)
     workplace = models.CharField(max_length=200, blank=True, null=True, default=None)
     is_primary = models.BooleanField(default=False)
+    id_number = models.CharField(
+        max_length=20,
+        validators=[RegexValidator(r"^\d+$")],
+        db_index=True,
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False,
+    )
     photo = models.URLField(blank=True, null=True, default=None)
     notes = models.TextField(blank=True, null=True, default=None)
     user_account_id_number = models.CharField(
@@ -58,6 +71,13 @@ class StudentGuardian(BaseModel):
             models.Index(fields=["student", "is_primary"]),
             models.Index(fields=["student", "relationship"]),
         ]
+
+    def save(self, *args, **kwargs):
+        if not self.id_number:
+            self.id_number = generate_entity_id_number(
+                self.__class__, ID_ENTITY_PARENT
+            )
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.relationship})"

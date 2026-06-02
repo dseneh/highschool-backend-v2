@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from academics.services.school_days import get_academic_year_duration
 from common.utils import get_enrollment_bill_summary
 
 from ..models import Enrollment
@@ -42,6 +43,7 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
             "start_date": instance.academic_year.start_date,
             "end_date": instance.academic_year.end_date,
             "current": instance.academic_year.current,
+            "duration": get_academic_year_duration(instance.academic_year),
         }
 
         # Get include_payment_plan and include_payment_status from context

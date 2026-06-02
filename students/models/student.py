@@ -7,7 +7,11 @@ from django.core.validators import RegexValidator
 from django.db import models, transaction
 
 from academics.models import AcademicYear
-from common.utils import compute_id_number, get_object_by_uuid_or_fields
+from common.utils import (
+    ID_ENTITY_STUDENT,
+    compute_id_number,
+    get_object_by_uuid_or_fields,
+)
 
 from .base import BasePersonModel, Case, DecimalField, Sum, When, models
 
@@ -65,7 +69,7 @@ class Student(BasePersonModel):
     withdrawal_reason = models.TextField(blank=True, null=True, default=None)
     school_code = (
         models.PositiveSmallIntegerField()
-    )  # 0–99 last 2 digits of school code
+    )  # 0–9 last digit of school id_number
     student_seq = (
         models.PositiveIntegerField()
     )  # 0–9999 (or higher if you want) student sequence number
@@ -117,13 +121,19 @@ class Student(BasePersonModel):
                 from django.db import connection
                 from core.models import Tenant
                 tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
-                self.school_code = int(str(tenant.id_number)[-2:]) if (tenant and tenant.id_number) else 1
+                self.school_code = (
+                    int(str(tenant.id_number)[-1])
+                    if (tenant and tenant.id_number)
+                    else 1
+                )
             except Exception:
                 self.school_code = 1
 
         # keep the id_number column in sync
         if not self.id_number:
-            self.id_number = compute_id_number(self.school_code, self.student_seq)
+            self.id_number = compute_id_number(
+                self.school_code, ID_ENTITY_STUDENT, self.student_seq
+            )
 
         # set default photo
         if not self.photo:

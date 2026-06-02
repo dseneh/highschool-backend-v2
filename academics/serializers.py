@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from business.core.adapters.supporting_adapter import section_subject_has_grades
 from core.models import Tenant
@@ -251,17 +251,9 @@ class AcademicYearSerializer(serializers.ModelSerializer):
         semester_serializer = SemesterSerializer(semesters, many=True, context=self.context)
         response["semesters"] = semester_serializer.data
 
-        # Calculate duration in days
-        total_days = (instance.end_date - instance.start_date).days + 1  # +1 to include end date
-        days_elapsed = (today - instance.start_date).days
-        days_elapsed = max(0, min(days_elapsed, total_days))  # Clamp between 0 and total_days
-        completion_percentage = int((days_elapsed / total_days * 100)) if total_days > 0 else 0
+        from academics.services.school_days import get_academic_year_duration
 
-        response["duration"] = {
-            "total_days": total_days,
-            "days_elapsed": days_elapsed,
-            "completion_percentage": completion_percentage,
-        }
+        response["duration"] = get_academic_year_duration(instance)
 
         # Include stats if requested
         include_stats = self.context.get('include_stats', False)
@@ -672,6 +664,7 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
         required=False,
     )
     section_details = serializers.SerializerMethodField()
+    occurrence_dates = serializers.SerializerMethodField()
 
     class Meta:
         model = SchoolCalendarEvent
@@ -681,16 +674,46 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
             "description",
             "event_type",
             "recurrence_type",
+            "recurrence_pattern",
+            "recurrence_interval",
+            "recurrence_until",
             "start_date",
             "end_date",
+            "start_time",
+            "end_time",
             "all_day",
             "applies_to_all_sections",
+            "schedule_visibility",
             "sections",
             "section_details",
+            "occurrence_dates",
             "active",
         ]
 
+    def _resolve_pattern(self, attrs):
+        pattern = attrs.get("recurrence_pattern")
+        if pattern:
+            return pattern
+
+        if self.instance:
+            from academics.services.calendar_recurrence import get_effective_recurrence_pattern
+
+            merged = {**self.instance.__dict__, **attrs}
+            event_proxy = type("EventProxy", (), merged)()
+            event_proxy.recurrence_pattern = attrs.get(
+                "recurrence_pattern", getattr(self.instance, "recurrence_pattern", None)
+            )
+            event_proxy.recurrence_type = attrs.get(
+                "recurrence_type", getattr(self.instance, "recurrence_type", "none")
+            )
+            return get_effective_recurrence_pattern(event_proxy)
+
+        recurrence_type = attrs.get("recurrence_type", "none")
+        return "yearly" if recurrence_type == "yearly" else "none"
+
     def validate(self, attrs):
+        from academics.services.calendar_recurrence import get_effective_recurrence_pattern, resolve_recurrence_until
+
         applies_to_all_sections = attrs.get(
             "applies_to_all_sections",
             self.instance.applies_to_all_sections if self.instance else True,
@@ -702,19 +725,82 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
                 {"sections": "Choose at least one section or mark event as applying to all sections."}
             )
 
+        if "recurrence_pattern" not in attrs and attrs.get("recurrence_type") == "yearly":
+            attrs["recurrence_pattern"] = SchoolCalendarEvent.RecurrencePattern.YEARLY
+        elif "recurrence_pattern" not in attrs and not self.instance:
+            attrs["recurrence_pattern"] = SchoolCalendarEvent.RecurrencePattern.NONE
+
+        pattern = self._resolve_pattern(attrs)
         start_date = attrs.get("start_date") or (self.instance.start_date if self.instance else None)
         end_date = attrs.get("end_date") or (self.instance.end_date if self.instance else None)
+        recurrence_until = attrs.get("recurrence_until")
+        if recurrence_until is None and self.instance:
+            recurrence_until = self.instance.recurrence_until
 
         current_year = AcademicYear.get_current_academic_year()
-        if current_year and start_date and end_date:
-            if start_date < current_year.start_date:
+
+        if pattern == SchoolCalendarEvent.RecurrencePattern.NONE:
+            if current_year and start_date and end_date:
+                if start_date < current_year.start_date:
+                    raise serializers.ValidationError(
+                        {"start_date": "Start date cannot be before the current school year start date."}
+                    )
+                if end_date > current_year.end_date:
+                    raise serializers.ValidationError(
+                        {"end_date": "End date cannot be after the current school year end date."}
+                    )
+        elif start_date and end_date:
+            resolved_until = recurrence_until
+            if not resolved_until:
+                proxy = type(
+                    "EventProxy",
+                    (),
+                    {
+                        "start_date": start_date,
+                        "recurrence_until": None,
+                    },
+                )()
+                resolved_until = resolve_recurrence_until(proxy, academic_year=current_year)
+
+            if resolved_until < start_date:
                 raise serializers.ValidationError(
-                    {"start_date": "Start date cannot be before the current school year start date."}
+                    {"recurrence_until": "Recurrence end date must be on or after the start date."}
                 )
 
-            if end_date > current_year.end_date:
+            if current_year and resolved_until > current_year.end_date:
                 raise serializers.ValidationError(
-                    {"end_date": "End date cannot be after the current school year end date."}
+                    {
+                        "recurrence_until": (
+                            "Recurrence end date cannot be after the current school year end date."
+                        )
+                    }
+                )
+
+        interval = attrs.get("recurrence_interval")
+        if interval is not None and interval < 1:
+            raise serializers.ValidationError(
+                {"recurrence_interval": "Recurrence interval must be at least 1."}
+            )
+
+        all_day = attrs.get("all_day", self.instance.all_day if self.instance else True)
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+        if start_time is None and self.instance:
+            start_time = self.instance.start_time
+        if end_time is None and self.instance:
+            end_time = self.instance.end_time
+
+        if all_day:
+            attrs["start_time"] = None
+            attrs["end_time"] = None
+        else:
+            if not start_time or not end_time:
+                raise serializers.ValidationError(
+                    {"start_time": "Start and end times are required for timed events."}
+                )
+            if start_date and end_date and start_date == end_date and start_time >= end_time:
+                raise serializers.ValidationError(
+                    {"end_time": "End time must be after start time on the same day."}
                 )
 
         return attrs
@@ -722,21 +808,110 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
     def get_section_details(self, obj):
         return [{"id": section.id, "name": section.name} for section in obj.sections.all()]
 
+    def get_occurrence_dates(self, obj):
+        range_start = self.context.get("occurrence_range_start")
+        range_end = self.context.get("occurrence_range_end")
+        if not range_start or not range_end:
+            return None
+
+        from academics.services.calendar_recurrence import iter_event_occurrence_dates
+
+        dates = [
+            occurrence_date.isoformat()
+            for occurrence_date in iter_event_occurrence_dates(
+                obj,
+                range_start=range_start,
+                range_end=range_end,
+            )
+        ]
+
+        if dates:
+            return dates
+
+        persisted = obj.occurrences.filter(
+            occurrence_date__gte=range_start,
+            occurrence_date__lte=range_end,
+        ).values_list("occurrence_date", flat=True)
+        if persisted:
+            return [occurrence_date.isoformat() for occurrence_date in persisted]
+
+        if obj.end_date < range_start or obj.start_date > range_end:
+            return []
+
+        fallback: list[str] = []
+        current = max(obj.start_date, range_start)
+        stop = min(obj.end_date, range_end)
+        while current <= stop:
+            fallback.append(current.isoformat())
+            current += timedelta(days=1)
+        return fallback
+
+    def _apply_recurrence_defaults(self, data: dict) -> dict:
+        from academics.services.calendar_recurrence import (
+            get_effective_recurrence_pattern,
+            resolve_recurrence_until,
+            sync_legacy_recurrence_type,
+        )
+
+        if "recurrence_pattern" not in data and data.get("recurrence_type") == "yearly":
+            data["recurrence_pattern"] = SchoolCalendarEvent.RecurrencePattern.YEARLY
+        elif "recurrence_pattern" not in data:
+            data["recurrence_pattern"] = SchoolCalendarEvent.RecurrencePattern.NONE
+
+        pattern = get_effective_recurrence_pattern(type("EventProxy", (), data)())
+        if pattern != SchoolCalendarEvent.RecurrencePattern.NONE and not data.get("recurrence_until"):
+            data["recurrence_until"] = resolve_recurrence_until(type("EventProxy", (), data)())
+
+        event_proxy = type("EventProxy", (), data)()
+        sync_legacy_recurrence_type(event_proxy)
+        data["recurrence_type"] = event_proxy.recurrence_type
+        return data
+
     def create(self, validated_data):
         sections = validated_data.pop("sections", [])
+        validated_data = self._apply_recurrence_defaults(validated_data)
         event = super().create(validated_data)
         if not event.applies_to_all_sections:
             event.sections.set(sections)
+        event.full_clean()
         event.rebuild_occurrences()
         return event
 
     def update(self, instance, validated_data):
+        from academics.services.calendar_recurrence import (
+            get_effective_recurrence_pattern,
+            resolve_recurrence_until,
+        )
+
         sections = validated_data.pop("sections", None)
+        snapshot = {
+            "recurrence_pattern": validated_data.get("recurrence_pattern", instance.recurrence_pattern),
+            "recurrence_type": validated_data.get("recurrence_type", instance.recurrence_type),
+            "recurrence_until": validated_data.get("recurrence_until", instance.recurrence_until),
+            "start_date": validated_data.get("start_date", instance.start_date),
+            "end_date": validated_data.get("end_date", instance.end_date),
+        }
+        if (
+            get_effective_recurrence_pattern(type("EventProxy", (), snapshot)())
+            != SchoolCalendarEvent.RecurrencePattern.NONE
+            and "recurrence_until" not in validated_data
+            and not instance.recurrence_until
+        ):
+            validated_data["recurrence_until"] = resolve_recurrence_until(
+                type("EventProxy", (), snapshot)()
+            )
+
+        enriched = self._apply_recurrence_defaults({**snapshot, **validated_data})
+        for key in ("recurrence_type", "recurrence_pattern", "recurrence_until", "recurrence_interval"):
+            if key in enriched:
+                validated_data[key] = enriched[key]
+
         event = super().update(instance, validated_data)
         if event.applies_to_all_sections:
             event.sections.clear()
         elif sections is not None:
             event.sections.set(sections)
+        event.full_clean()
         event.rebuild_occurrences()
         return event
 

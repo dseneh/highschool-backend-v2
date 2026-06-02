@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Iterable, Optional
 
-from academics.models import SchoolCalendarEvent, SchoolCalendarEventOccurrence, SchoolCalendarSettings
+from academics.services.school_days import count_instructional_days
 from common.status import AttendanceStatus
 
 
@@ -39,33 +39,7 @@ def count_school_days(
         today,
     )
 
-    if period_start > period_end:
-        return 0
-
-    settings = SchoolCalendarSettings.get_solo()
-    operating_days = set(settings.operating_days or [1, 2, 3, 4, 5])
-
-    blocked_days = set(
-        SchoolCalendarEventOccurrence.objects.filter(
-            occurrence_date__gte=period_start,
-            occurrence_date__lte=period_end,
-            event__event_type__in=[
-                SchoolCalendarEvent.EventType.HOLIDAY,
-                SchoolCalendarEvent.EventType.NON_SCHOOL_DAY,
-            ],
-        )
-        .values_list("occurrence_date", flat=True)
-        .distinct()
-    )
-
-    total = 0
-    current = period_start
-    while current <= period_end:
-        if current.isoweekday() in operating_days and current not in blocked_days:
-            total += 1
-        current = current.fromordinal(current.toordinal() + 1)
-
-    return total
+    return count_instructional_days(period_start, period_end)
 
 
 def build_student_attendance_summary(attendance_rows: Iterable, school_days_elapsed: int) -> dict:

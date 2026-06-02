@@ -3,7 +3,7 @@
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
-from common.utils import generate_unique_id_number, update_model_fields_core
+from common.utils import update_model_fields_core
 from common.images import update_model_image
 from staff.models import Staff
 from staff.utils import filter_allowed_fields
@@ -236,8 +236,10 @@ class StaffService:
 
     @staticmethod
     def _generate_id_number(school):
-        """Generate unique staff ID number"""
-        return generate_unique_id_number(Staff, school)
+        """Generate unique staff ID number using the employee entity prefix."""
+        from common.utils import ID_ENTITY_EMPLOYEE, generate_entity_id_number
+
+        return generate_entity_id_number(Staff, ID_ENTITY_EMPLOYEE, tenant=school)
 
     @staticmethod
     def _upload_photo(staff, photo, gender=None):

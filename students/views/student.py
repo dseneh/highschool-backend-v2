@@ -35,7 +35,7 @@ from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.utils import create_enrollment_for_student
 from finance.models import Transaction
 from grading.services.ranking import RankingService
-from common.status import StudentStatus
+from common.status import EnrollmentStatus, StudentStatus
 
 # Import business logic (framework-agnostic)
 from business.students.services import student_service
@@ -439,7 +439,7 @@ class StudentListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        school_code = int(str(tenant.id_number)[-2:]) if tenant.id_number else 1
+        school_code = int(str(tenant.id_number)[-1]) if tenant.id_number else 1
         student_seq = get_next_student_sequence()
         
         data = student_service.prepare_student_data_for_creation(
@@ -602,11 +602,28 @@ class StudentSummaryView(APIView):
                 total_teachers = 0
                 employee_status_counts = {}
 
-            # Count total enrolled students in current academic year
+            # Enrolled students for the selected academic year (active enrollments only)
             if current_academic_year:
-                total_enrolled = Enrollment.objects.filter(
-                    academic_year=current_academic_year
-                ).values('student').distinct().count()
+                total_enrolled = (
+                    Enrollment.objects.filter(academic_year=current_academic_year)
+                    .exclude(
+                        status__in=[
+                            EnrollmentStatus.CANCELED,
+                            EnrollmentStatus.WITHDRAWN,
+                        ]
+                    )
+                    .exclude(
+                        student__status__in=[
+                            StudentStatus.WITHDRAWN,
+                            StudentStatus.GRADUATED,
+                            StudentStatus.TRANSFERRED,
+                            StudentStatus.DELETED,
+                        ]
+                    )
+                    .values("student")
+                    .distinct()
+                    .count()
+                )
             else:
                 total_enrolled = 0
 

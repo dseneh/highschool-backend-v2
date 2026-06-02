@@ -3,11 +3,8 @@
 All models are tenant-specific (live in tenant schemas).
 """
 
-from datetime import timedelta
-
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.utils import timezone
 
 from common.models import BaseModel
 
@@ -104,6 +101,20 @@ class SchoolCalendarEvent(BaseModel):
         NONE = "none", "None"
         YEARLY = "yearly", "Yearly"
 
+    class RecurrencePattern(models.TextChoices):
+        NONE = "none", "None"
+        YEARLY = "yearly", "Yearly"
+        WEEKLY = "weekly", "Weekly"
+        MONTHLY_DAY = "monthly_day", "Monthly Day"
+        MONTHLY_FIRST_WEEKDAY = "monthly_first_weekday", "Monthly First Weekday"
+        MONTHLY_LAST_WEEKDAY = "monthly_last_weekday", "Monthly Last Weekday"
+
+    class ScheduleVisibility(models.TextChoices):
+        NONE = "none", "None"
+        STUDENTS = "students", "Students"
+        TEACHERS = "teachers", "Teachers"
+        BOTH = "both", "Students and Teachers"
+
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True, null=True, default=None)
     event_type = models.CharField(
@@ -116,10 +127,24 @@ class SchoolCalendarEvent(BaseModel):
         choices=RecurrenceType.choices,
         default=RecurrenceType.NONE,
     )
+    recurrence_pattern = models.CharField(
+        max_length=30,
+        choices=RecurrencePattern.choices,
+        default=RecurrencePattern.NONE,
+    )
+    recurrence_interval = models.PositiveIntegerField(default=1)
+    recurrence_until = models.DateField(null=True, blank=True, default=None)
     start_date = models.DateField()
     end_date = models.DateField()
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     all_day = models.BooleanField(default=True)
     applies_to_all_sections = models.BooleanField(default=True)
+    schedule_visibility = models.CharField(
+        max_length=20,
+        choices=ScheduleVisibility.choices,
+        default=ScheduleVisibility.BOTH,
+    )
     sections = models.ManyToManyField(
         "Section",
         blank=True,
@@ -127,16 +152,24 @@ class SchoolCalendarEvent(BaseModel):
         db_table="calendar_event_sections",
     )
 
-    OCCURRENCE_YEAR_PAST = 1
-    OCCURRENCE_YEAR_FUTURE = 5
-
     def clean(self):
+        from academics.services.calendar_recurrence import get_effective_recurrence_pattern
+
         if self.start_date > self.end_date:
             raise ValidationError({"end_date": "End date must be on or after start date."})
 
-        if self.recurrence_type == self.RecurrenceType.YEARLY and self.start_date.year != self.end_date.year:
+        pattern = get_effective_recurrence_pattern(self)
+        if pattern == self.RecurrencePattern.YEARLY and self.start_date.year != self.end_date.year:
             raise ValidationError(
                 {"end_date": "Yearly recurring events must start and end within the same calendar year."}
+            )
+
+        if self.recurrence_interval < 1:
+            raise ValidationError({"recurrence_interval": "Recurrence interval must be at least 1."})
+
+        if self.recurrence_until and self.recurrence_until < self.start_date:
+            raise ValidationError(
+                {"recurrence_until": "Recurrence end date must be on or after the start date."}
             )
 
         if self.applies_to_all_sections and self.pk and self.sections.exists():
@@ -144,52 +177,34 @@ class SchoolCalendarEvent(BaseModel):
                 {"sections": "Section-specific assignments must be empty when event applies to all sections."}
             )
 
-    def occurs_in_range(self, range_start, range_end):
-        if self.recurrence_type == self.RecurrenceType.NONE:
-            return self.start_date <= range_end and self.end_date >= range_start
-
-        duration_days = (self.end_date - self.start_date).days
-        for year in range(range_start.year - 1, range_end.year + 2):
-            occurrence_start = self.start_date.replace(year=year)
-            occurrence_end = occurrence_start + timedelta(days=duration_days)
-            if occurrence_start <= range_end and occurrence_end >= range_start:
-                return True
-        return False
-
-    def _normalize_occurrence_start(self, year):
-        try:
-            return self.start_date.replace(year=year)
-        except ValueError:
-            if self.start_date.month == 2 and self.start_date.day == 29:
-                return self.start_date.replace(year=year, day=28)
-            raise
+        if self.all_day:
+            if self.start_time or self.end_time:
+                raise ValidationError(
+                    {"start_time": "All-day events cannot include start or end times."}
+                )
+        else:
+            if not self.start_time or not self.end_time:
+                raise ValidationError(
+                    {"start_time": "Start and end times are required for timed events."}
+                )
+            if self.start_date == self.end_date and self.start_time >= self.end_time:
+                raise ValidationError(
+                    {"end_time": "End time must be after start time on the same day."}
+                )
 
     def _iter_occurrence_dates(self):
-        if self.recurrence_type == self.RecurrenceType.NONE:
-            current = self.start_date
-            while current <= self.end_date:
-                yield current
-                current += timedelta(days=1)
-            return
+        from academics.services.calendar_recurrence import iter_event_occurrence_dates
 
-        duration_days = (self.end_date - self.start_date).days
-        current_year = timezone.now().date().year
-        start_year = current_year - self.OCCURRENCE_YEAR_PAST
-        end_year = current_year + self.OCCURRENCE_YEAR_FUTURE
-
-        for year in range(start_year, end_year + 1):
-            occurrence_start = self._normalize_occurrence_start(year)
-            occurrence_end = occurrence_start + timedelta(days=duration_days)
-            current = occurrence_start
-            while current <= occurrence_end:
-                yield current
-                current += timedelta(days=1)
+        yield from iter_event_occurrence_dates(self)
 
     def rebuild_occurrences(self):
         if not self.pk:
             return
 
         SchoolCalendarEventOccurrence.objects.filter(event=self).delete()
+        if not self.active:
+            return
+
         occurrence_rows = [
             SchoolCalendarEventOccurrence(event=self, occurrence_date=occurrence_date)
             for occurrence_date in self._iter_occurrence_dates()
@@ -205,6 +220,7 @@ class SchoolCalendarEvent(BaseModel):
         indexes = [
             models.Index(fields=["event_type", "start_date", "end_date"]),
             models.Index(fields=["recurrence_type", "start_date"]),
+            models.Index(fields=["recurrence_pattern", "start_date"]),
         ]
 
 

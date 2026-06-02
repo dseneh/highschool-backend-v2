@@ -68,8 +68,9 @@ def create_staff_in_db(data: dict, position_id: Optional[str] = None,
     Returns:
         Created Staff instance
     """
-    from common.utils import generate_unique_id_number
+    from common.utils import ID_ENTITY_EMPLOYEE, generate_entity_id_number
     from core.models import Tenant
+    from django.db import connection
     
     # Get position if provided
     position = None
@@ -84,7 +85,10 @@ def create_staff_in_db(data: dict, position_id: Optional[str] = None,
     # Generate ID if not provided
     id_number = data.get('id_number')
     if not id_number:
-        id_number = generate_unique_id_number(Staff, Tenant)
+        tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+        id_number = generate_entity_id_number(
+            Staff, ID_ENTITY_EMPLOYEE, tenant=tenant
+        )
     
     # Create staff
     staff = Staff.objects.create(

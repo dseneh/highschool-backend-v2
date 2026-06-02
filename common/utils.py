@@ -136,8 +136,8 @@ def generate_student_id_number(school, student_model=None):
     Generate a unique student ID for SaaS application with school-specific prefix.
     Supports dynamic digit expansion when reaching limits (4-digit -> 5-digit -> 6-digit etc.)
 
-    Format: [School ID last 2 digits][variable-digit sequential number]
-    Examples: "120001", "120002", ..., "129999", "1200001", "1200002"
+    Format: [School last digit][entity type 1][variable-digit sequential number]
+    Examples: "110001", "110002", ..., "119999", "1100001", "1100002"
 
     Args:
         school: School instance
@@ -153,8 +153,10 @@ def generate_student_id_number(school, student_model=None):
 
     from django.db import transaction
 
-    # School ID last 2 digits as prefix
-    school_prefix = str(school.id_number)[-2:].zfill(2)
+    from common.utils import ID_ENTITY_STUDENT, id_number_prefix
+
+    school_digit = int(str(school.id_number)[-1]) if school.id_number else 1
+    school_prefix = id_number_prefix(school_digit, ID_ENTITY_STUDENT)
 
     # Use database transaction to ensure atomicity
     with transaction.atomic():
@@ -171,7 +173,7 @@ def generate_student_id_number(school, student_model=None):
 
         for id_num in existing_students:
             try:
-                seq_part = id_num[len(school_prefix) :]  # Remove school prefix
+                seq_part = id_num[len(school_prefix) :]  # Remove entity prefix
                 if seq_part.isdigit():
                     digit_length = len(seq_part)
                     seq_number = int(seq_part)
@@ -1041,7 +1043,7 @@ class StudentBulkProcessor:
 
             tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
             if tenant and tenant.id_number:
-                return int(str(tenant.id_number)[-2:])
+                return int(str(tenant.id_number)[-1])
         except Exception:
             pass
 
@@ -1192,7 +1194,9 @@ class StudentBulkProcessor:
             for attempt in range(max_attempts):
                 # Try the next sequence number
                 test_seq = starting_seq + attempt + 1
-                test_id = compute_id_number(school_code, test_seq)
+                test_id = compute_id_number(
+                    school_code, ID_ENTITY_STUDENT, test_seq
+                )
 
                 # Check if this ID is available
                 if not Student.objects.filter(id_number=test_id).exists():
@@ -1212,7 +1216,9 @@ class StudentBulkProcessor:
                 safe_seq = max_actual_seq + 100  # Give some buffer
 
                 # Verify this safe sequence works
-                safe_id = compute_id_number(school_code, safe_seq)
+                safe_id = compute_id_number(
+                    school_code, ID_ENTITY_STUDENT, safe_seq
+                )
                 if not Student.objects.filter(id_number=safe_id).exists():
                     sequence_obj.last_seq = safe_seq
                     sequence_obj.save()
@@ -1422,11 +1428,81 @@ def format_import_response(total_created, all_errors, success=True):
     }
 
 
-def compute_id_number(school_code: int, student_seq: int) -> str:
+# Entity-type digit embedded after the school's last digit in id_numbers.
+ID_ENTITY_STUDENT = 1
+ID_ENTITY_EMPLOYEE = 2
+ID_ENTITY_PARENT = 3
+
+
+def get_tenant_school_digit(tenant=None) -> int:
+    """Return the last digit of the tenant's id_number (defaults to 1)."""
+    if tenant is None:
+        try:
+            from django.db import connection
+            from core.models import Tenant
+
+            tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+        except Exception:
+            tenant = None
+
+    if tenant and tenant.id_number:
+        try:
+            return int(str(tenant.id_number)[-1])
+        except (TypeError, ValueError):
+            pass
+    return 1
+
+
+def id_number_prefix(school_digit: int, entity_type: int) -> str:
+    """Two-digit prefix: <school last digit><entity type>."""
+    return f"{int(school_digit)}{int(entity_type)}"
+
+
+def compute_id_number(school_digit: int, entity_type: int, sequence: int) -> str:
     """
-    Format: <school_code (no leading zeros)><sequence with at least 4 digits, then grows>.
-    Examples: 2 + 1 -> 20001 ; 2 + 10000 -> 210000
+    Format: <school last digit><entity type><sequence with at least 4 digits, then grows>.
+
+    Entity types: 1=Student, 2=Employee, 3=Parent
+    Examples:
+        school=1, student(1), seq=1   -> 110001
+        school=1, employee(2), seq=1  -> 120001
+        school=1, parent(3), seq=1    -> 130001
+        school=1, student(1), seq=10000 -> 1110000
     """
-    seq = str(int(student_seq))
+    prefix = id_number_prefix(school_digit, entity_type)
+    seq = str(int(sequence))
     width = max(4, len(seq))  # 0001..9999 -> 4, then 10000 -> 5, etc.
-    return f"{int(school_code)}{int(student_seq):0{width}d}"
+    return f"{prefix}{int(sequence):0{width}d}"
+
+
+def next_id_sequence(prefix: str, model_class, id_number_field: str = "id_number") -> int:
+    """Return the next unused sequence for ids matching ``prefix`` + digits."""
+    filter_kwargs = {
+        f"{id_number_field}__startswith": prefix,
+        f"{id_number_field}__regex": rf"^{prefix}\d+$",
+    }
+    existing_ids = model_class.objects.filter(**filter_kwargs).values_list(
+        id_number_field, flat=True
+    )
+
+    max_seq = 0
+    for existing_id in existing_ids:
+        suffix = existing_id[len(prefix) :]
+        if suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+
+    return max_seq + 1
+
+
+def generate_entity_id_number(model_class, entity_type: int, tenant=None) -> str:
+    """Allocate the next unique id_number for a model and entity type."""
+    school_digit = get_tenant_school_digit(tenant)
+    prefix = id_number_prefix(school_digit, entity_type)
+    next_seq = next_id_sequence(prefix, model_class)
+    candidate = compute_id_number(school_digit, entity_type, next_seq)
+
+    while model_class.objects.filter(id_number=candidate).exists():
+        next_seq += 1
+        candidate = compute_id_number(school_digit, entity_type, next_seq)
+
+    return candidate

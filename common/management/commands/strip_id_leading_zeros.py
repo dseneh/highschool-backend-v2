@@ -94,13 +94,15 @@ class Command(BaseCommand):
 
         # ── 1. Students ────────────────────────────────────────────────────────
         # Recompute from school_code + student_seq (authoritative source).
-        from common.utils import compute_id_number
+        from common.utils import ID_ENTITY_STUDENT, compute_id_number
 
         student_renames: dict[str, str] = {}
         students_to_update = []
 
         for student in Student.objects.only("id", "id_number", "school_code", "student_seq"):
-            new_id = compute_id_number(student.school_code, student.student_seq)
+            new_id = compute_id_number(
+                student.school_code, ID_ENTITY_STUDENT, student.student_seq
+            )
             if new_id != student.id_number:
                 student_renames[student.id_number] = new_id
                 student.id_number = new_id

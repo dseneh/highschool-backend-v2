@@ -82,11 +82,27 @@ class SchoolCalendarEventListView(APIView):
             .distinct()
         )
 
-        return queryset.filter(id__in=event_ids).order_by("start_date", "name")
+        direct_overlap_ids = queryset.filter(
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+        ).values_list("id", flat=True)
+
+        combined_ids = set(event_ids) | set(direct_overlap_ids)
+        return queryset.filter(id__in=combined_ids).order_by("start_date", "name")
 
     def get(self, request):
+        start_date = self._parse_date(request.query_params.get("start"))
+        end_date = self._parse_date(request.query_params.get("end"))
         events = self._get_queryset(request)
-        serializer = SchoolCalendarEventSerializer(events, many=True, context={"request": request})
+        serializer = SchoolCalendarEventSerializer(
+            events,
+            many=True,
+            context={
+                "request": request,
+                "occurrence_range_start": start_date,
+                "occurrence_range_end": end_date,
+            },
+        )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):

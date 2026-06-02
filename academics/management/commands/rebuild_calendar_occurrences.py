@@ -109,8 +109,8 @@ class Command(BaseCommand):
                 )
 
     def _run_for_current_schema(self, *, include_inactive, event_id, dry_run):
-        if "school_calendar_event" not in connection.introspection.table_names():
-            raise ProgrammingError("relation \"school_calendar_event\" does not exist")
+        if "calendar_event" not in connection.introspection.table_names():
+            raise ProgrammingError('relation "calendar_event" does not exist')
 
         queryset = SchoolCalendarEvent.objects.all().order_by("start_date", "name")
         if not include_inactive:

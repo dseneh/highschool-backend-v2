@@ -8,6 +8,7 @@ class StudentGuardianSerializer(serializers.ModelSerializer):
         model = StudentGuardian
         fields = [
             "id",
+            "id_number",
             "student",
             "first_name",
             "last_name",

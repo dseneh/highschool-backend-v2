@@ -279,43 +279,12 @@ class Employee(BasePersonModel):
     def _generate_id_number(cls) -> str:
         """Generate a tenant-unique employee id_number.
 
-        Format mirrors student IDs: <2-digit school code><sequential digits>.
-        Example: 010001, 010002, 0110000 (auto-expands width after 9999).
+        Format: <school last digit><2 employee><sequential digits>.
+        Example: 120001, 120002, 1210000 (auto-expands width after 9999).
         """
-        from common.utils import compute_id_number
-        from core.models import Tenant
+        from common.utils import ID_ENTITY_EMPLOYEE, generate_entity_id_number
 
-        school_code = 1
-        tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
-        if tenant and tenant.id_number:
-            try:
-                school_code = int(str(tenant.id_number)[-2:])
-            except (TypeError, ValueError):
-                school_code = 1
-
-        prefix = f"{school_code}"
-        next_seq = 1
-
-        existing_ids = cls.objects.filter(
-            id_number__startswith=prefix,
-            id_number__regex=rf"^{prefix}\\d+$",
-        ).values_list("id_number", flat=True)
-
-        max_seq = 0
-        for existing_id in existing_ids:
-            suffix = existing_id[len(prefix):]
-            if suffix.isdigit():
-                max_seq = max(max_seq, int(suffix))
-
-        if max_seq > 0:
-            next_seq = max_seq + 1
-
-        candidate = compute_id_number(school_code, next_seq)
-        while cls.objects.filter(id_number=candidate).exists():
-            next_seq += 1
-            candidate = compute_id_number(school_code, next_seq)
-
-        return candidate
+        return generate_entity_id_number(cls, ID_ENTITY_EMPLOYEE)
 
     def get_leave_requests_for_display(self, leave_requests=None):
         if leave_requests is not None:

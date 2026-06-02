@@ -724,7 +724,7 @@ def create_students(school, grade_levels, user):
         from students.models import Student
 
         student_seq = Student.allocate_next_seq(school)
-        school_code = int(school.id_number[-2:]) if school.id_number else 1
+        school_code = int(school.id_number[-1]) if school.id_number else 1
 
         student = school.students.create(
             # Don't set id_number manually - let the model compute it from school_code + student_seq
