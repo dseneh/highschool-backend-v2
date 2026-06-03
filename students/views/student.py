@@ -118,7 +118,11 @@ class StudentListView(APIView):
 
         # Parse enrollment status using business logic.
         # Keep status out of generic query parser and handle it with OR semantics below.
-        enrollment_statuses, other_statuses = student_service.parse_enrollment_status_filter(status)
+        (
+            presence_statuses,
+            enrollment_row_statuses,
+            lifecycle_statuses,
+        ) = student_service.parse_enrollment_status_filter(status)
         query_params.pop("status", None)
 
         query = get_student_queryparams(query_params, filter_fields)
@@ -220,52 +224,86 @@ class StudentListView(APIView):
             if paid_max_value is not None:
                 students = students.filter(**{f"{paid_filter_field}__lte": paid_max_value})
             
-        # Compute enrollment status stats before applying status filter so counts
-        # reflect the full filtered set regardless of which status tab is active.
+        from students.services.student_status import (
+            build_student_list_stats,
+            filter_students_by_enrollment_row_status,
+            filter_students_enrolled,
+            filter_students_not_enrolled,
+            filter_students_pending,
+            filter_students_year_completed,
+        )
+
+        enrollment_row_status = request.query_params.get("enrollment_status", "").strip()
+        if enrollment_row_status:
+            values = [
+                s.strip().lower()
+                for s in enrollment_row_status.split(",")
+                if s.strip()
+            ]
+            if values:
+                students = students.filter(
+                    enrollments__academic_year__current=True,
+                    enrollments__status__in=values,
+                ).distinct()
+
+        # Stats before status tab filter (aligned with display status contract).
         stats_data: dict = {}
         if include_stats:
-            status_rows = students.values("status").annotate(count=Count("id")).order_by()
-            for row in status_rows:
-                stats_data[row["status"]] = row["count"]
-            stats_data["enrolled_this_year"] = (
-                students.filter(enrollments__academic_year__current=True).distinct().count()
-            )
-            stats_data["not_enrolled_this_year"] = (
-                students.exclude(enrollments__academic_year__current=True).distinct().count()
-            )
-            stats_data["total"] = students.distinct().count()
+            stats_data = build_student_list_stats(students)
 
-        # Apply status filtering with OR semantics between student-status and enrollment-status buckets.
-        if enrollment_statuses or other_statuses:
-            status_qs = None
+        # Apply status filtering with OR semantics across lifecycle, presence, and row status.
+        if presence_statuses or enrollment_row_statuses or lifecycle_statuses:
+            combined_qs = None
 
-            if other_statuses:
-                status_qs = students.filter(status__in=other_statuses).distinct()
+            if lifecycle_statuses:
+                combined_qs = students.filter(
+                    status__in=lifecycle_statuses
+                ).distinct()
 
-            enrollment_qs = None
-            if enrollment_statuses:
+            if presence_statuses:
+                presence_qs = None
                 enrolled_qs = None
                 not_enrolled_qs = None
+                if "enrolled" in presence_statuses:
+                    enrolled_qs = filter_students_enrolled(students)
+                if "not_enrolled" in presence_statuses:
+                    not_enrolled_qs = filter_students_not_enrolled(students)
+                completed_qs = None
+                if "completed" in presence_statuses:
+                    completed_qs = filter_students_year_completed(students)
 
-                if "enrolled" in enrollment_statuses:
-                    enrolled_qs = students.filter(enrollments__academic_year__current=True).distinct()
+                parts = [
+                    qs
+                    for qs in (enrolled_qs, not_enrolled_qs, completed_qs)
+                    if qs is not None
+                ]
+                if len(parts) == 1:
+                    presence_qs = parts[0]
+                elif len(parts) > 1:
+                    presence_qs = parts[0]
+                    for part in parts[1:]:
+                        presence_qs = (presence_qs | part).distinct()
 
-                if "not_enrolled" in enrollment_statuses:
-                    not_enrolled_qs = students.exclude(enrollments__academic_year__current=True).distinct()
+                if presence_qs is not None:
+                    combined_qs = (
+                        (combined_qs | presence_qs).distinct()
+                        if combined_qs is not None
+                        else presence_qs
+                    )
 
-                if enrolled_qs is not None and not_enrolled_qs is not None:
-                    enrollment_qs = (enrolled_qs | not_enrolled_qs).distinct()
-                elif enrolled_qs is not None:
-                    enrollment_qs = enrolled_qs
-                elif not_enrolled_qs is not None:
-                    enrollment_qs = not_enrolled_qs
+            if enrollment_row_statuses:
+                row_qs = filter_students_by_enrollment_row_status(
+                    students,
+                    enrollment_row_statuses,
+                )
+                combined_qs = (
+                    (combined_qs | row_qs).distinct()
+                    if combined_qs is not None
+                    else row_qs
+                )
 
-            if status_qs is not None and enrollment_qs is not None:
-                students = (status_qs | enrollment_qs).distinct()
-            elif status_qs is not None:
-                students = status_qs
-            elif enrollment_qs is not None:
-                students = enrollment_qs
+            if combined_qs is not None:
+                students = combined_qs
 
         registered_grade_level = query_params.get("registered_grade_level")
 
@@ -1017,8 +1055,8 @@ class StudentReinstateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Reinstate student — set status to enrolled, clear withdrawal fields
-        student.status = "enrolled"
+        # Reinstate student — operational lifecycle; enrollment row carries enrolled
+        student.status = StudentStatus.ACTIVE
         student.withdrawal_date = None
         student.withdrawal_reason = None
         student.save(update_fields=["status", "withdrawal_date", "withdrawal_reason"])
@@ -1028,7 +1066,7 @@ class StudentReinstateView(APIView):
             academic_year__current=True
         ).first()
         if current_enrollment and current_enrollment.status == "withdrawn":
-            current_enrollment.status = "completed"
+            current_enrollment.status = EnrollmentStatus.ENROLLED
             current_enrollment.save(update_fields=["status"])
 
         serializer = StudentDetailSerializer(student, context={"request": request})

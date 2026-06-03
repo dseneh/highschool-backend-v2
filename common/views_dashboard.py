@@ -107,7 +107,7 @@ def _get_overview_stats(divisions, grade_levels, sections, subjects, academic_ye
             # Fallback to all active students if no academic year
             from students.models import Student
             active_students = Student.objects.filter(
-                status__in=['active', 'enrolled']
+                status__in=['active', 'enrolled'],  # legacy student.status
             ).count()
     except:
         active_students = 0
@@ -135,7 +135,9 @@ def _get_student_stats(academic_year_id):
     from students.models import Student, Enrollment
     
     # Base query for all students in school
-    all_students_query = Student.objects.filter(status__in=['active', 'enrolled'])
+    all_students_query = Student.objects.filter(
+        status__in=['active', 'enrolled'],  # legacy student.status
+    )
     
     # If academic year is provided, filter students by enrollment in that year
     if academic_year_id:
@@ -147,7 +149,9 @@ def _get_student_stats(academic_year_id):
         all_students_query = all_students_query.filter(id__in=enrolled_student_ids)
     
     # Active students only
-    active_query = all_students_query.filter(status__in=['active', 'enrolled'])
+    active_query = all_students_query.filter(
+        status__in=['active', 'enrolled'],  # legacy student.status
+    )
     
     # Total active students
     total_active = active_query.count()

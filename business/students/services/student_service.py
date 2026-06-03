@@ -303,33 +303,64 @@ def can_delete_student(student_data: StudentData, has_enrollments: bool = False,
     return True, None
 
 
-def parse_enrollment_status_filter(status_param: str) -> tuple[list[str], list[str]]:
+def parse_enrollment_status_filter(
+    status_param: str,
+) -> tuple[list[str], list[str], list[str]]:
     """
-    Parse status parameter to extract enrollment statuses
-    
-    Args:
-        status_param: Comma-separated status values
-        
+    Parse ?status= for student list/report queries.
+
     Returns:
-        (enrollment_statuses, other_statuses)
+        (presence_filters, enrollment_row_filters, lifecycle_filters)
+
+    - presence_filters: enrolled | not_enrolled (year seat buckets)
+    - enrollment_row_filters: pending | enrolled | canceled | withdrawn (enrollment.status)
+    - lifecycle_filters: withdrawn | graduated | transferred | … (student.status)
     """
     if not status_param:
-        return [], []
-    
+        return [], [], []
+
     status_values = [s.strip().lower() for s in status_param.split(",") if s.strip()]
-    
-    enrollment_statuses = []
-    other_statuses = []
-    
+
+    presence_filters: list[str] = []
+    enrollment_row_filters: list[str] = []
+    lifecycle_filters: list[str] = []
+
+    lifecycle_values = {
+        "withdrawn",
+        "graduated",
+        "transferred",
+        "inactive",
+        "suspended",
+        "deleted",
+        "dropped",
+        "ntr",
+        "active",
+    }
+    row_values = {
+        "pending",
+        "enrolled",
+        "canceled",
+        "cancelled",
+        "withdrawn",
+    }
+
     for s in status_values:
         if s == "all":
             continue
-        if s in ["enrolled", "not enrolled", "not_enrolled"]:
-            enrollment_statuses.append(s.replace(" ", "_"))
+        if s in ("not enrolled", "not_enrolled"):
+            presence_filters.append("not_enrolled")
+        elif s == "enrolled":
+            presence_filters.append("enrolled")
+        elif s == "completed":
+            presence_filters.append("completed")
+        elif s in row_values:
+            enrollment_row_filters.append("cancelled" if s == "cancelled" else s)
+        elif s in lifecycle_values:
+            lifecycle_filters.append("canceled" if s == "dropped" else s)
         else:
-            other_statuses.append(s)
-    
-    return enrollment_statuses, other_statuses
+            lifecycle_filters.append(s)
+
+    return presence_filters, enrollment_row_filters, lifecycle_filters
 
 
 def get_sorting_fields(ordering: str) -> tuple[list[str], bool]:

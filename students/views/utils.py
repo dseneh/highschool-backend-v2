@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 
 from academics.models import Section, Semester
+from common.status import EnrollmentStatus, StudentStatus
+from students.services.student_status import normalize_enrollment_status
 from accounting.services import create_or_update_accounting_bill_for_enrollment
 from finance.utils import disable_payment_summary_refresh
 
@@ -14,7 +16,7 @@ def create_enrollment_for_student(
     grade_level,
     section,
     request,
-    status="pending",
+    status=EnrollmentStatus.ENROLLED,
     notes=None,
     date_enrolled=None,
     force=True,
@@ -73,7 +75,7 @@ def create_enrollment_for_student(
                 grade_level,
                 section,
                 request,
-                status="pending",
+                status=EnrollmentStatus.ENROLLED,
                 notes=None,
                 date_enrolled=None,
                 **kwargs
@@ -100,7 +102,7 @@ def create_enrollment_for_student(
         "academic_year": academic_year,
         "grade_level": grade_level,
         "section": section,
-        "status": status,
+        "status": normalize_enrollment_status(status),
         "enrolled_as": enrolled_as,
         "date_enrolled": date_enrolled or datetime.now().today(),
         "notes": notes,
@@ -132,8 +134,8 @@ def create_enrollment_for_student(
     # Create grade entries for all assessments in the student's section
     create_grades_for_enrolled_student(enrollment, request.user)
     
-    student.status = "enrolled"
-    student.save()
+    student.status = StudentStatus.ACTIVE
+    student.save(update_fields=["status"])
     return enrollment
 
 def create_grades_for_enrolled_student(enrollment, created_by):

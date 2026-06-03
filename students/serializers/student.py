@@ -5,6 +5,7 @@ from common.utils import get_enrollment_bill_summary
 from common.serializers import PhotoURLMixin
 
 from ..models import Student
+from ..services.student_status import apply_status_fields_to_response
 from .enrollment import EnrollmentListSerializer
 
 
@@ -110,15 +111,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         else:
             response["current_grade_level"] = None
 
-        is_active = response["status"] not in [
-            "inactive",
-            "graduated",
-            "suspended",
-            "deleted",
-            "withdrawn",
-        ]
         if current_enrollment:
-
             include_billing = context.get("include_billing", True)
             include_payment_plan = context.get("include_payment_plan", True)
             include_payment_status = context.get("include_payment_status", True)
@@ -134,14 +127,13 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
                     "include_payment_status": include_payment_status,
                 },
             ).data
-            # response["status"] = "enrolled"
-            if is_active:
-                response["status"] = "enrolled"
-        else:
-            if is_active:
-                response["status"] = "not enrolled"
 
-        response["is_enrolled"] = instance.is_enrolled()
+        apply_status_fields_to_response(
+            response,
+            instance,
+            current_enrollment=current_enrollment,
+            academic_year=selected_academic_year,
+        )
         enrollment_count = (
             instance.enrollments.count()
         )  # 🔥 MEMORY FIX: Use count() instead of len(.all())

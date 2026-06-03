@@ -117,7 +117,7 @@ class EnrollmentListView(APIView):
             "academic_year": academic,
             "grade_level": grade_level,
             "section": section,
-            "status": req.get("status", "active"),
+            "status": req.get("status", EnrollmentStatus.ENROLLED),
             "date_enrolled": req.get("date_enrolled", datetime.now().today()),
             "notes": req.get("notes"),
             "request": request,
@@ -187,7 +187,7 @@ class EnrollmentListView(APIView):
                 # If student was withdrawn/transferred, reset status
                 # (serializer will display as "enrolled" when current enrollment exists)
                 if student.status in (StudentStatus.WITHDRAWN, StudentStatus.TRANSFERRED):
-                    student.status = "enrolled"
+                    student.status = StudentStatus.ACTIVE
                     student.save(update_fields=["status"])
 
                 serializer = EnrollmentSerializer(

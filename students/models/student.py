@@ -161,14 +161,14 @@ class Student(BasePersonModel):
 
     def is_enrolled(self, academic_year=None):
         """
-        Check if the student is enrolled in the given academic year.
-        If no academic year is provided, check for any active enrollment.
+        True when the student has an active enrollment seat for the year.
+        See students.services.student_status and docs/STUDENT_STATUS_CONTRACT.md.
         """
+        from students.services.student_status import compute_is_enrolled
+
         if not academic_year:
             academic_year = _get_current_academic_year()
-        if not academic_year:
-            return False
-        return self.enrollments.filter(academic_year=academic_year).exists()
+        return compute_is_enrolled(self, academic_year=academic_year)
 
     # get balance due for the student for the current academic year
     @property

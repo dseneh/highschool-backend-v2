@@ -156,7 +156,8 @@ class StudentStatus:
 
 class EnrollmentStatus:
     PENDING = "pending"
-    COMPLETED = "completed"
+    ENROLLED = "enrolled"  # active seat for the academic year
+    COMPLETED = "completed"  # year-end closure (not an active seat)
     CANCELED = "canceled"
     WITHDRAWN = "withdrawn"
 

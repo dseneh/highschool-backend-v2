@@ -393,9 +393,11 @@ def _build_students_queryset(query_params, academic_year=None):
 
     status_filter = query_params.get("status", "")
     query_params = query_params.copy()
-    enrollment_statuses, other_statuses = student_service.parse_enrollment_status_filter(
-        status_filter
-    )
+    (
+        presence_statuses,
+        enrollment_row_statuses,
+        lifecycle_statuses,
+    ) = student_service.parse_enrollment_status_filter(status_filter)
     query_params.pop("status", None)
 
     query = get_student_queryparams(query_params, filter_fields)
@@ -458,38 +460,62 @@ def _build_students_queryset(query_params, academic_year=None):
         if max_value is not None:
             students = students.filter(**{f"{filter_field}__lte": max_value})
 
-    if enrollment_statuses or other_statuses:
-        status_qs = None
-        if other_statuses:
-            status_qs = students.filter(status__in=other_statuses).distinct()
+    if presence_statuses or enrollment_row_statuses or lifecycle_statuses:
+        from students.services.student_status import (
+            filter_students_by_enrollment_row_status,
+            filter_students_enrolled,
+            filter_students_not_enrolled,
+            filter_students_pending,
+            filter_students_year_completed,
+        )
 
-        enrollment_qs = None
-        if enrollment_statuses:
-            enrolled_qs = None
-            not_enrolled_qs = None
+        combined_qs = None
 
-            if "enrolled" in enrollment_statuses:
-                enrolled_qs = students.filter(
-                    **({"enrollments__academic_year": academic_year} if academic_year else {"enrollments__academic_year__current": True})
-                ).distinct()
-            if "not_enrolled" in enrollment_statuses:
-                not_enrolled_qs = students.exclude(
-                    **({"enrollments__academic_year": academic_year} if academic_year else {"enrollments__academic_year__current": True})
-                ).distinct()
+        if lifecycle_statuses:
+            combined_qs = students.filter(status__in=lifecycle_statuses).distinct()
 
-            if enrolled_qs is not None and not_enrolled_qs is not None:
-                enrollment_qs = (enrolled_qs | not_enrolled_qs).distinct()
-            elif enrolled_qs is not None:
-                enrollment_qs = enrolled_qs
-            elif not_enrolled_qs is not None:
-                enrollment_qs = not_enrolled_qs
+        if presence_statuses:
+            presence_qs = None
+            parts = []
+            if "enrolled" in presence_statuses:
+                parts.append(filter_students_enrolled(students, academic_year=academic_year))
+            if "not_enrolled" in presence_statuses:
+                parts.append(
+                    filter_students_not_enrolled(students, academic_year=academic_year)
+                )
+            if "pending" in presence_statuses:
+                parts.append(filter_students_pending(students, academic_year=academic_year))
+            if "completed" in presence_statuses:
+                parts.append(
+                    filter_students_year_completed(students, academic_year=academic_year)
+                )
+            if len(parts) == 1:
+                presence_qs = parts[0]
+            elif len(parts) > 1:
+                presence_qs = parts[0]
+                for part in parts[1:]:
+                    presence_qs = (presence_qs | part).distinct()
+            if presence_qs is not None:
+                combined_qs = (
+                    (combined_qs | presence_qs).distinct()
+                    if combined_qs is not None
+                    else presence_qs
+                )
 
-        if status_qs is not None and enrollment_qs is not None:
-            students = (status_qs | enrollment_qs).distinct()
-        elif status_qs is not None:
-            students = status_qs
-        elif enrollment_qs is not None:
-            students = enrollment_qs
+        if enrollment_row_statuses:
+            row_qs = filter_students_by_enrollment_row_status(
+                students,
+                enrollment_row_statuses,
+                academic_year=academic_year,
+            )
+            combined_qs = (
+                (combined_qs | row_qs).distinct()
+                if combined_qs is not None
+                else row_qs
+            )
+
+        if combined_qs is not None:
+            students = combined_qs
 
     ordering = query_params.get("ordering", "id_number")
     sort_fields, is_descending = student_service.get_sorting_fields(ordering)
