@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from ..access_policies import StudentAccessPolicy
 
-from common.status import EnrollmentStatus
+from common.status import EnrollmentStatus, YearEndOutcome
 from common.status import StudentStatus
 from common.utils import (
     update_model_fields,
@@ -221,10 +221,23 @@ class EnrollmentDetailView(APIView):
             "date_enrolled",
             "notes",
             "active",
+            "year_end_outcome",
         ]
 
-        if request.data.get("status") not in EnrollmentStatus.all():
+        new_status = request.data.get("status")
+        if new_status is not None and new_status not in EnrollmentStatus.all():
             return Response({"detail": "Invalid enrollment status"}, 400)
+
+        if new_status == EnrollmentStatus.COMPLETED:
+            outcome = request.data.get("year_end_outcome")
+            if not outcome or outcome not in YearEndOutcome.all():
+                return Response(
+                    {
+                        "detail": "year_end_outcome is required when setting status to completed "
+                        f"({', '.join(YearEndOutcome.all())})."
+                    },
+                    400,
+                )
 
         serializer = update_model_fields(
             request,

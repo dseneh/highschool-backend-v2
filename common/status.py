@@ -175,6 +175,33 @@ class EnrollmentStatus:
         return [(x.lower(), x.capitalize()) for x in cls.all()]
 
 
+class YearEndOutcome:
+    """Set on enrollment when status = completed (or on mid-year exit rows)."""
+
+    PROMOTED = "promoted"
+    REPEATED = "repeated"
+    GRADUATED = "graduated"
+    WITHDRAWN = "withdrawn"
+    TRANSFERRED = "transferred"
+
+    @classmethod
+    def all(cls):
+        return [
+            value
+            for key, value in vars(cls).items()
+            if key.isupper() and isinstance(value, str) and not callable(value)
+        ]
+
+    @classmethod
+    def choices(cls):
+        return [(x.lower(), x.capitalize()) for x in cls.all()]
+
+    @classmethod
+    def close_year_outcomes(cls):
+        """Outcomes allowed via complete-year (promote / repeat)."""
+        return frozenset({cls.PROMOTED, cls.REPEATED})
+
+
 class EnrollmentType:
     NEW = "new"
     TRANSFERRED = "transferred"

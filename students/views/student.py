@@ -697,21 +697,17 @@ class StudentSummaryView(APIView):
                 active_sections = 0
 
             if current_academic_year:
-                attendance_totals = Attendance.objects.filter(
-                    enrollment__academic_year=current_academic_year
-                ).aggregate(
-                    total_records=Count("id"),
-                    present_records=Count(
-                        "id",
-                        filter=Q(status__in=["present", "late", "excused"]),
-                    ),
+                from datetime import date as date_cls
+
+                from students.services.daily_attendance_stats import (
+                    build_attendance_status_distribution,
                 )
 
-                total_records = attendance_totals.get("total_records") or 0
-                present_records = attendance_totals.get("present_records") or 0
-                avg_attendance = (
-                    (present_records / total_records) * 100 if total_records > 0 else 0
+                today_distribution = build_attendance_status_distribution(
+                    academic_year=current_academic_year,
+                    target_date=date_cls.today(),
                 )
+                avg_attendance = float(today_distribution["present"]["percentage"])
             else:
                 avg_attendance = 0
 
@@ -1025,8 +1021,14 @@ class StudentWithdrawView(APIView):
             academic_year__current=True
         ).first()
         if current_enrollment:
+            from common.status import YearEndOutcome
+
             current_enrollment.status = "withdrawn"
-            current_enrollment.save(update_fields=["status"])
+            current_enrollment.year_end_outcome = YearEndOutcome.WITHDRAWN
+            current_enrollment.next_grade_level = None
+            current_enrollment.save(
+                update_fields=["status", "year_end_outcome", "next_grade_level"]
+            )
 
         serializer = StudentDetailSerializer(student, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1067,7 +1069,11 @@ class StudentReinstateView(APIView):
         ).first()
         if current_enrollment and current_enrollment.status == "withdrawn":
             current_enrollment.status = EnrollmentStatus.ENROLLED
-            current_enrollment.save(update_fields=["status"])
+            current_enrollment.year_end_outcome = None
+            current_enrollment.next_grade_level = None
+            current_enrollment.save(
+                update_fields=["status", "year_end_outcome", "next_grade_level"]
+            )
 
         serializer = StudentDetailSerializer(student, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)

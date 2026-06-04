@@ -11,4 +11,5 @@ from common.status import (
     EnrollmentType,
     GradeStatus,
     StudentStatus,
+    YearEndOutcome,
 )

@@ -46,6 +46,16 @@ def create_enrollment_for_student(
 
     re_enroll = request.data.get("re_enroll", False)
     current_enrollment = student.enrollments.filter(academic_year=academic_year)
+    existing_row = current_enrollment.first()
+    if (
+        existing_row
+        and not re_enroll
+        and (existing_row.status or "").lower() == EnrollmentStatus.ENROLLED
+    ):
+        raise Exception(
+            "Student already has an active enrollment for this academic year. "
+            "Complete the year or withdraw before changing placement."
+        )
     # Check if already enrolled
     if current_enrollment.exists():
         if re_enroll:
@@ -96,7 +106,11 @@ def create_enrollment_for_student(
         has_previous_enrollment = student.enrollments.exclude(
             academic_year=academic_year
         ).exists()
-        enrolled_as = "old" if has_previous_enrollment else "new"
+        from common.status import EnrollmentType
+
+        enrolled_as = (
+            EnrollmentType.RETURNING if has_previous_enrollment else EnrollmentType.NEW
+        )
 
     data = {
         "academic_year": academic_year,

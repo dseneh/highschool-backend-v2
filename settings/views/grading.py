@@ -85,6 +85,11 @@ class GradingSettingsView(APIView):
             "allow_teacher_override",
             "lock_grades_after_semester",
             "cumulative_average_calculation",
+            "allow_year_closure",
+            "year_closure_min_overall_average",
+            "year_closure_require_approved_grades",
+            "allow_mid_year_promotion",
+            "mid_year_promotion_min_overall_average",
         ]
 
         # Get or create settings (handle case where settings don't exist yet, tenant-filtered)

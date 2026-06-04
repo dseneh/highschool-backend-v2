@@ -11,8 +11,36 @@ from common.status import AttendanceStatus
 from students.models import Attendance, Enrollment
 from students.services.attendance_stats import build_student_attendance_summary, count_school_days
 
+from students.services.daily_attendance_stats import build_daily_attendance_stats
+
 from ..access_policies import ReportsAccessPolicy
-from ..utils.export_helpers import export_tabular_report, get_export_format, parse_date_param, read_multi_query_values, resolve_academic_year
+from ..utils.attendance_stats_export import build_attendance_stats_pdf, build_attendance_stats_xlsx
+from ..utils.export_helpers import (
+    export_tabular_report,
+    get_export_format,
+    parse_date_param,
+    read_multi_query_values,
+    resolve_academic_year,
+)
+
+
+def _export_daily_attendance_stats(request, payload: dict):
+    target_date = payload.get("date", "")
+    filename_base = f"attendance-stats-{target_date}"
+    export_format = get_export_format(request)
+
+    if export_format == "pdf":
+        return build_attendance_stats_pdf(
+            request=request,
+            payload=payload,
+            filename=f"{filename_base}.pdf",
+        )
+    if export_format == "xlsx":
+        return build_attendance_stats_xlsx(
+            payload=payload,
+            filename=f"{filename_base}.xlsx",
+        )
+    return None
 
 
 def _filter_enrollments(academic_year, grade_level_ids, section_ids):
@@ -172,4 +200,36 @@ class DailyAttendanceRegisterReportView(APIView):
             )
             if export_response:
                 return export_response
+        return Response(payload)
+
+
+class DailyAttendanceStatsReportView(APIView):
+    """School-wide daily attendance counts by class and gender."""
+
+    permission_classes = [ReportsAccessPolicy]
+
+    def get(self, request):
+        academic_year, error = resolve_academic_year(request)
+        if error:
+            return error
+
+        target_date = parse_date_param(request.query_params.get("date"))
+        if not target_date:
+            from datetime import date
+
+            target_date = date.today()
+
+        grade_level_ids = read_multi_query_values(request, "grade_level_id")
+        section_ids = read_multi_query_values(request, "section_id")
+
+        payload = build_daily_attendance_stats(
+            academic_year=academic_year,
+            target_date=target_date,
+            grade_level_ids=grade_level_ids,
+            section_ids=section_ids,
+        )
+
+        export_response = _export_daily_attendance_stats(request, payload)
+        if export_response:
+            return export_response
         return Response(payload)

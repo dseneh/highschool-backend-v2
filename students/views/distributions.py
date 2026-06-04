@@ -21,6 +21,10 @@ from django.core.cache import cache
 from django.utils import timezone
 from academics.models import AcademicYear, GradeLevel
 from students.models import Student, Enrollment, Attendance
+from students.services.daily_attendance_stats import (
+    build_attendance_status_distribution,
+    build_attendance_trend,
+)
 from common.cache_service import DataCache
 import logging
 
@@ -221,75 +225,118 @@ def get_payment_status_distribution(request):
         )
 
 
+def _parse_distribution_date(request):
+    raw = request.GET.get("date")
+    if not raw:
+        return timezone.localdate()
+    try:
+        from datetime import date
+
+        return date.fromisoformat(str(raw).strip())
+    except ValueError:
+        return timezone.localdate()
+
+
+def _empty_attendance_distribution():
+    return {
+        "present": {"count": 0, "percentage": 0},
+        "absent": {"count": 0, "percentage": 0},
+        "late": {"count": 0, "percentage": 0},
+        "excused": {"count": 0, "percentage": 0},
+    }
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_attendance_distribution(request):
     """
-    Get attendance distribution (present vs absent for current marking period/academic year).
-    
-    Returns:
-    {
-        "present": {
-            "count": 1200,
-            "percentage": 75.5
-        },
-        "absent": {
-            "count": 250,
-            "percentage": 15.8
-        },
-        "late": {
-            "count": 150,
-            "percentage": 8.7
-        }
-    }
+    Today's attendance distribution across active enrollments.
+
+    Students without a saved attendance row for the date are counted as present.
     """
     try:
         current_academic_year = _resolve_academic_year(request)
+        target_date = _parse_distribution_date(request)
+
         if not current_academic_year:
-            return Response(
-                {
-                    'present': {'count': 0, 'percentage': 0},
-                    'absent': {'count': 0, 'percentage': 0},
-                    'late': {'count': 0, 'percentage': 0}
-                },
-                status=status.HTTP_200_OK
-            )
-        
-        # Get attendance distribution for the academic year
-        attendance_records = Attendance.objects.filter(
-            enrollment__academic_year=current_academic_year
-        ).values('status').annotate(count=Count('id'))
-        
-        distribution = {}
-        total = 0
-        
-        for record in attendance_records:
-            status_val = record['status'].lower()
-            distribution[status_val] = record['count']
-            total += record['count']
-        
-        result = {}
-        status_labels = ['present', 'absent', 'late', 'excused']
-        
-        for status_label in status_labels:
-            count = distribution.get(status_label, 0)
-            result[status_label] = {
-                'count': count,
-                'percentage': round((count / total * 100), 1) if total > 0 else 0
-            }
-        
-        return Response(result, status=status.HTTP_200_OK)
-    
+            return Response(_empty_attendance_distribution(), status=status.HTTP_200_OK)
+
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_attendance_distribution_v3{_year_cache_suffix(current_academic_year)}_{target_date.isoformat()}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        result = build_attendance_status_distribution(
+            academic_year=current_academic_year,
+            target_date=target_date,
+        )
+        total_students = sum(row["count"] for row in result.values())
+        payload = {
+            **result,
+            "date": target_date.isoformat(),
+            "total_students": total_students,
+        }
+        # Avoid caching empty snapshots (often stale bad data from older logic).
+        if total_students > 0:
+            cache.set(cache_key, payload, DASHBOARD_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+
     except Exception as e:
         logger.error(f"Error in get_attendance_distribution: {str(e)}")
         return Response(
-            {
-                'present': {'count': 0, 'percentage': 0},
-                'absent': {'count': 0, 'percentage': 0},
-                'late': {'count': 0, 'percentage': 0}
-            },
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            _empty_attendance_distribution(),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+
+def _parse_trend_school_days(request) -> int:
+    raw = request.GET.get("days")
+    if not raw:
+        return 30
+    try:
+        days = int(str(raw).strip())
+    except ValueError:
+        return 30
+    return max(7, min(days, 90))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_attendance_trend(request):
+    """
+    Daily attendance counts for dashboard line chart (instructional days only).
+    """
+    try:
+        current_academic_year = _resolve_academic_year(request)
+        end_date = _parse_distribution_date(request)
+        school_days = _parse_trend_school_days(request)
+
+        if not current_academic_year:
+            return Response([], status=status.HTTP_200_OK)
+
+        cache_key = DataCache._get_cache_key(
+            f"dashboard_attendance_trend_v2{_year_cache_suffix(current_academic_year)}_{end_date.isoformat()}_{school_days}",
+            request=request,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
+        series = build_attendance_trend(
+            academic_year=current_academic_year,
+            end_date=end_date,
+            school_days=school_days,
+        )
+        if series:
+            cache.set(cache_key, series, DASHBOARD_CACHE_TTL)
+        return Response(series, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in get_attendance_trend: {str(e)}")
+        return Response([], status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET'])

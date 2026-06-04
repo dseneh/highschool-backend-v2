@@ -39,7 +39,11 @@ from .views.payroll_reports import (
     PayrollRegisterReportView,
     PayrollPostingJournalReportView,
 )
-from .views.attendance_reports import AttendanceSummaryReportView, DailyAttendanceRegisterReportView
+from .views.attendance_reports import (
+    AttendanceSummaryReportView,
+    DailyAttendanceRegisterReportView,
+    DailyAttendanceStatsReportView,
+)
 from .views.academic_reports import ClassGradeSummaryReportView, HonorRollReportView
 from .views.report_cards import BulkReportCardsExportView
 from .views.hr_reports import EmployeeListReportView, StaffDirectoryReportView
@@ -78,6 +82,11 @@ urlpatterns = [
     # Attendance Reports
     path("attendance/summary/", AttendanceSummaryReportView.as_view(), name="attendance-summary-reports"),
     path("attendance/daily/", DailyAttendanceRegisterReportView.as_view(), name="attendance-daily-reports"),
+    path(
+        "attendance/daily-stats/",
+        DailyAttendanceStatsReportView.as_view(),
+        name="attendance-daily-stats-reports",
+    ),
     # Academic Reports
     path("academics/grade-summary/", ClassGradeSummaryReportView.as_view(), name="class-grade-summary-reports"),
     path("academics/honor-roll/", HonorRollReportView.as_view(), name="honor-roll-reports"),

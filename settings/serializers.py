@@ -45,6 +45,11 @@ class GradingSettingsOut(serializers.ModelSerializer):
             "lock_grades_after_semester",
             "display_grade_status",
             "cumulative_average_calculation",
+            "allow_year_closure",
+            "year_closure_min_overall_average",
+            "year_closure_require_approved_grades",
+            "allow_mid_year_promotion",
+            "mid_year_promotion_min_overall_average",
             "notes",
             "created_at",
             "updated_at",
@@ -93,6 +98,11 @@ class GradingSettingsIn(serializers.ModelSerializer):
             "allow_teacher_override",
             "lock_grades_after_semester",
             "cumulative_average_calculation",
+            "allow_year_closure",
+            "year_closure_min_overall_average",
+            "year_closure_require_approved_grades",
+            "allow_mid_year_promotion",
+            "mid_year_promotion_min_overall_average",
             "notes",
         ]
 

@@ -6,11 +6,24 @@ from students.views.student import (
     StudentWithdrawView,
     StudentReinstateView,
 )
+from students.views.enrollment_lifecycle import (
+    StudentCompleteYearView,
+    StudentGraduateView,
+    StudentTransferOutView,
+)
+from students.views.enrollment_lifecycle_bulk import (
+    EnrollmentLifecycleBulkApplyView,
+    EnrollmentLifecycleBulkPreviewView,
+    EnrollmentLifecyclePromotedListView,
+    EnrollmentLifecycleRulesView,
+    EnrollmentLifecycleUndoView,
+)
 from finance.views import StudentPaymentStatusListView
 from students.views.distributions import (
     get_grade_level_distribution,
     get_payment_status_distribution,
     get_attendance_distribution,
+    get_attendance_trend,
     get_section_distribution,
     get_payment_summary,
     get_top_students_by_grade,
@@ -93,6 +106,11 @@ urlpatterns = [
         name="attendance_distribution",
     ),
     path(
+        "students/distributions/attendance/trend/",
+        get_attendance_trend,
+        name="attendance_trend",
+    ),
+    path(
         "students/distributions/sections/",
         get_section_distribution,
         name="section_distribution",
@@ -122,6 +140,46 @@ urlpatterns = [
         "students/<str:id>/reinstate/",
         StudentReinstateView.as_view(),
         name="student_reinstate",
+    ),
+    path(
+        "students/<str:id>/enrollments/current/complete-year/",
+        StudentCompleteYearView.as_view(),
+        name="student_complete_year",
+    ),
+    path(
+        "students/<str:id>/graduate/",
+        StudentGraduateView.as_view(),
+        name="student_graduate",
+    ),
+    path(
+        "students/<str:id>/transfer/",
+        StudentTransferOutView.as_view(),
+        name="student_transfer_out",
+    ),
+    path(
+        "students/enrollment-lifecycle/rules/",
+        EnrollmentLifecycleRulesView.as_view(),
+        name="enrollment_lifecycle_rules",
+    ),
+    path(
+        "students/enrollment-lifecycle/preview/",
+        EnrollmentLifecycleBulkPreviewView.as_view(),
+        name="enrollment_lifecycle_bulk_preview",
+    ),
+    path(
+        "students/enrollment-lifecycle/apply/",
+        EnrollmentLifecycleBulkApplyView.as_view(),
+        name="enrollment_lifecycle_bulk_apply",
+    ),
+    path(
+        "students/enrollment-lifecycle/promoted/",
+        EnrollmentLifecyclePromotedListView.as_view(),
+        name="enrollment_lifecycle_promoted_list",
+    ),
+    path(
+        "students/enrollment-lifecycle/undo/",
+        EnrollmentLifecycleUndoView.as_view(),
+        name="enrollment_lifecycle_undo",
     ),
     path(
         "students/<str:student_id>/enrollments/",

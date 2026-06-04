@@ -1,7 +1,7 @@
 """
 Enrollment model for student academic year enrollments
 """
-from .base import BaseModel, EnrollmentStatus, EnrollmentType, models
+from .base import BaseModel, EnrollmentStatus, EnrollmentType, YearEndOutcome, models
 
 
 class Enrollment(BaseModel):
@@ -36,6 +36,13 @@ class Enrollment(BaseModel):
         max_length=20,
         choices=EnrollmentType.choices(),
         default=EnrollmentType.NEW,
+    )
+    year_end_outcome = models.CharField(
+        max_length=20,
+        choices=YearEndOutcome.choices(),
+        blank=True,
+        null=True,
+        default=None,
     )
 
     class Meta:

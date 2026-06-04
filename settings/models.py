@@ -108,6 +108,36 @@ class GradingSettings(BaseModel):
         help_text="cumulative the points earned to calculate the grade average",
     )
 
+    # Promotion & year-end closure (enrollment workspace)
+    allow_year_closure = models.BooleanField(
+        default=True,
+        help_text="Allow year-end closure and bulk promotion from the enrollment workspace",
+    )
+    year_closure_min_overall_average = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Minimum overall grade average (%) required for year-end promotion",
+    )
+    year_closure_require_approved_grades = models.BooleanField(
+        default=True,
+        help_text="Only approved grades count toward promotion average checks",
+    )
+    allow_mid_year_promotion = models.BooleanField(
+        default=False,
+        help_text="Allow mid-year promotion (advance grade without closing the academic year)",
+    )
+    mid_year_promotion_min_overall_average = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Minimum overall average (%) for mid-year promotion",
+    )
+
     # Metadata
     notes = models.TextField(
         blank=True, null=True, help_text="Additional notes about grading configuration"

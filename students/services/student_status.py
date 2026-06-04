@@ -153,6 +153,9 @@ def apply_status_fields_to_response(
     enrollment_status = (
         current_enrollment.status if current_enrollment is not None else None
     )
+    year_end_outcome = None
+    if current_enrollment is not None:
+        year_end_outcome = getattr(current_enrollment, "year_end_outcome", None)
     is_enrolled = compute_is_enrolled(
         student,
         current_enrollment=current_enrollment,
@@ -165,6 +168,7 @@ def apply_status_fields_to_response(
 
     response["lifecycle_status"] = lifecycle_status
     response["enrollment_status"] = enrollment_status
+    response["year_end_outcome"] = year_end_outcome
     response["is_enrolled"] = is_enrolled
     response["status"] = display_status
     return response

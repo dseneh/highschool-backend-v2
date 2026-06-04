@@ -18,6 +18,8 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
             "status",
             "date_enrolled",
             "enrolled_as",
+            "year_end_outcome",
+            "next_grade_level",
         ]
 
     def to_representation(self, instance):
@@ -28,9 +30,11 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
             "name": instance.section.name,
         }
         response["grade_level"] = {
-            "id": instance.section.grade_level.id,
-            "name": instance.section.grade_level.name,
+            "id": instance.grade_level.id,
+            "name": instance.grade_level.name,
         }
+        if instance.year_end_outcome:
+            response["year_end_outcome"] = instance.year_end_outcome
         next_grade_level = instance.next_grade_level
         if next_grade_level:
             response["next_grade_level"] = {
@@ -74,6 +78,8 @@ class EnrollmentSerializer(serializers.ModelSerializer):
             "date_enrolled",
             "notes",
             "meta",
+            "year_end_outcome",
+            "next_grade_level",
         ]
 
     def to_representation(self, instance):
