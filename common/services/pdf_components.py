@@ -163,6 +163,73 @@ def append_pdf_subtitle(story: List, text: str) -> None:
     story.append(Paragraph(text, subtitle_style))
 
 
+def append_pdf_inline_logo_title(
+    story: List,
+    school,
+    title_text: str,
+    *,
+    logo_inches: float = 0.42,
+    title_font_size: int = 11,
+    header_width_inches: float = 10.3,
+    bottom_spacer_inches: float = 0.05,
+    center_title: bool = False,
+) -> None:
+    """Compact one-line header: small logo with a report title (left or centered)."""
+    title_style = ParagraphStyle(
+        "InlinePdfTitle",
+        fontName="Helvetica-Bold",
+        fontSize=title_font_size,
+        textColor=colors.HexColor("#1976d2"),
+        alignment=TA_CENTER if center_title else TA_LEFT,
+        leading=title_font_size + 2,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+    logo = (
+        get_school_logo(school, width=logo_inches, height=logo_inches)
+        if school
+        else None
+    )
+    total_width = header_width_inches * inch
+    logo_col = (logo_inches + 0.08) * inch
+    title_paragraph = Paragraph(title_text, title_style)
+
+    if center_title and logo:
+        balance_col = logo_col
+        title_col = max(1.0, total_width - logo_col - balance_col)
+        header_table = Table(
+            [[logo, title_paragraph, ""]],
+            colWidths=[logo_col, title_col, balance_col],
+            hAlign="CENTER",
+        )
+    elif center_title:
+        header_table = Table(
+            [[title_paragraph]],
+            colWidths=[total_width],
+            hAlign="CENTER",
+        )
+    else:
+        title_col = max(1.0, total_width - logo_col)
+        header_table = Table(
+            [[logo if logo else "", title_paragraph]],
+            colWidths=[logo_col, title_col],
+            hAlign="LEFT",
+        )
+
+    padding_style = [
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]
+    if not center_title:
+        padding_style.append(("LEFTPADDING", (1, 0), (1, 0), 6))
+    header_table.setStyle(TableStyle(padding_style))
+    story.append(header_table)
+    story.append(Spacer(1, max(0.0, bottom_spacer_inches) * inch))
+
+
 def get_school_logo(school, width: float = 1.0, height: float = 1.0) -> Optional[RLImage]:
     """
     Get school logo as ReportLab Image with multiple loading strategies.

@@ -54,9 +54,29 @@ def _section_row(section: dict) -> list[int | str]:
 def _format_report_title(target_date: str) -> str:
     try:
         parsed = datetime.strptime(target_date, "%Y-%m-%d")
-        return f"Attendance Stats for {parsed.strftime('%B %d, %Y')}"
+        return f"Attendance Stats for {parsed.strftime('%B')} {parsed.day}, {parsed.year}"
     except ValueError:
         return f"Attendance Stats for {target_date}"
+
+
+def _pdf_layout_for_sections(
+    section_count: int,
+) -> tuple[int, float, float, float, int]:
+    """Return font size, cell padding, margin inches, label column share, title size."""
+    if section_count <= 22:
+        return 7, 1.5, 0.3, 0.24, 11
+    if section_count <= 28:
+        return 6, 1.0, 0.28, 0.22, 10
+    return 5, 0.25, 0.24, 0.2, 10
+
+
+def _pdf_table_column_widths(
+    content_width: float, metric_col_count: int, label_share: float
+) -> tuple[float, float]:
+    """Split the printable width between the class label and metric columns."""
+    label_col = content_width * label_share
+    metric_col = (content_width - label_col) / metric_col_count
+    return label_col, metric_col
 
 
 def _excel_styles():
@@ -257,15 +277,15 @@ def build_attendance_stats_xlsx(*, payload: dict, filename: str) -> HttpResponse
 def build_attendance_stats_pdf(*, request, payload: dict, filename: str) -> HttpResponse:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     from common.services.pdf_components import (
-        append_pdf_document_header,
+        append_pdf_inline_logo_title,
         resolve_tenant_school,
     )
 
-    styles = _excel_styles()
     target_date = payload.get("date", "")
     percentages = payload.get("percentages") or {}
     sections = payload.get("sections") or []
@@ -276,30 +296,53 @@ def build_attendance_stats_pdf(*, request, payload: dict, filename: str) -> Http
 
     buf = io.BytesIO()
     page_size = landscape(letter)
+    section_count = len(sections)
+    (
+        data_font_size,
+        cell_pad,
+        margin_in,
+        label_share,
+        title_font_size,
+    ) = _pdf_layout_for_sections(section_count)
+    margin = margin_in * inch
+    content_width = page_size[0] - (2 * margin)
     doc = SimpleDocTemplate(
         buf,
         pagesize=page_size,
-        leftMargin=0.35 * inch,
-        rightMargin=0.35 * inch,
-        topMargin=0.35 * inch,
-        bottomMargin=0.35 * inch,
+        leftMargin=margin,
+        rightMargin=margin,
+        topMargin=margin,
+        bottomMargin=margin,
     )
     story: list = []
 
+    logo_inches = 0.32 if section_count > 28 else 0.42
     if school:
-        append_pdf_document_header(
+        append_pdf_inline_logo_title(
             story,
             school,
-            title.upper(),
-            show_statement_date=False,
-            bottom_spacer_inches=0.08,
+            title,
+            logo_inches=logo_inches,
+            title_font_size=title_font_size,
+            header_width_inches=content_width / inch,
+            bottom_spacer_inches=0.02 if section_count > 28 else 0.04,
+            center_title=True,
         )
     else:
-        story.append(Paragraph(title, getSampleStyleSheet()["Title"]))
+        story.append(
+            Paragraph(
+                title,
+                ParagraphStyle(
+                    "AttendanceStatsTitle",
+                    parent=getSampleStyleSheet()["Heading2"],
+                    fontSize=title_font_size,
+                    alignment=1,
+                    spaceAfter=4,
+                ),
+            )
+        )
 
-    story.append(Spacer(1, 10))
-
-    grid_border = 0.5
+    grid_border = 0.4
     header_bg = colors.HexColor("#D9D9D9")
 
     def _table_style(col_count: int, header_rows: int) -> TableStyle:
@@ -307,17 +350,24 @@ def build_attendance_stats_pdf(*, request, payload: dict, filename: str) -> Http
             [
                 ("GRID", (0, 0), (-1, -1), grid_border, colors.black),
                 ("FONTNAME", (0, 0), (-1, header_rows - 1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("FONTSIZE", (0, 0), (-1, header_rows - 1), data_font_size),
+                ("FONTSIZE", (0, header_rows), (-1, -1), data_font_size),
                 ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("ALIGN", (0, 0), (0, -1), "LEFT"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("BACKGROUND", (0, 0), (0, header_rows - 1), header_bg),
-                ("BACKGROUND", (1, 0), (col_count - 1, header_rows - 1), header_bg),
+                ("BACKGROUND", (0, 0), (-1, header_rows - 1), header_bg),
+                ("TOPPADDING", (0, 0), (-1, -1), cell_pad),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), cell_pad),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
             ]
         )
 
-    from reportlab.lib.styles import getSampleStyleSheet
-
-    pct_col_widths = [1.6 * inch] + [0.55 * inch] * 9
+    class_label_col, class_metric_col = _pdf_table_column_widths(
+        content_width, 12, label_share
+    )
+    pct_label_col, pct_metric_col = _pdf_table_column_widths(content_width, 9, label_share)
+    pct_col_widths = [pct_label_col] + [pct_metric_col] * 9
     pct_header_row1 = [""]
     for label in ("Present", "Tardy", "Absent"):
         pct_header_row1.extend([label, "", ""])
@@ -331,17 +381,22 @@ def build_attendance_stats_pdf(*, request, payload: dict, filename: str) -> Http
         male, female, total = _pct_triplet_from_percentages(percentages, key)
         pct_data_row.extend([str(male), str(female), str(total)])
 
+    compact_row_height = (data_font_size + 1.5) if section_count > 28 else None
+    pct_row_heights = [compact_row_height] * 3 if compact_row_height else None
     pct_table = Table(
         [pct_header_row1, pct_header_row2, pct_data_row],
         colWidths=pct_col_widths,
+        rowHeights=pct_row_heights,
     )
     pct_style = _table_style(10, 2)
+    pct_style.add("SPAN", (0, 0), (0, 1))
     pct_style.add("SPAN", (1, 0), (3, 0))
     pct_style.add("SPAN", (4, 0), (6, 0))
     pct_style.add("SPAN", (7, 0), (9, 0))
     pct_table.setStyle(pct_style)
     story.append(pct_table)
-    story.append(Spacer(1, 14))
+    if section_count <= 28:
+        story.append(Spacer(1, 5))
 
     class_header_row1 = ["Class"]
     for label in GROUP_LABELS:
@@ -368,7 +423,15 @@ def build_attendance_stats_pdf(*, request, payload: dict, filename: str) -> Http
             ]
         )
 
-    class_table = Table(class_rows, colWidths=[1.6 * inch] + [0.55 * inch] * 12, repeatRows=2)
+    class_row_heights = (
+        [compact_row_height] * len(class_rows) if compact_row_height else None
+    )
+    class_table = Table(
+        class_rows,
+        colWidths=[class_label_col] + [class_metric_col] * 12,
+        repeatRows=2,
+        rowHeights=class_row_heights,
+    )
     class_style = _table_style(LAST_COL, 2)
     for group_idx in range(4):
         start = 1 + group_idx * 3
