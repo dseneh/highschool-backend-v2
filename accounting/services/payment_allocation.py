@@ -219,15 +219,23 @@ def _build_student_match_q(student) -> Q:
 
 def build_student_match_q_outerref() -> Q:
     """Same matching rules as ``_build_student_match_q`` for queryset annotations."""
-    from django.db.models import CharField, OuterRef
+    from django.db.models import CharField, OuterRef, Subquery
     from django.db.models.functions import Cast
+
+    from accounting.models import AccountingStudentPaymentAllocation
+
+    # Use a correlated ID subquery instead of joining bill_allocations, which
+    # would multiply rows and break OuterRef resolution when nested.
+    allocation_transaction_ids = AccountingStudentPaymentAllocation.objects.filter(
+        student_bill__student=OuterRef("pk"),
+    ).values("cash_transaction_id")
 
     return (
         Q(student=OuterRef("pk"))
         | Q(source_reference=OuterRef("id_number"))
         | Q(source_reference=OuterRef("prev_id_number"))
         | Q(source_reference=Cast(OuterRef("pk"), CharField()))
-        | Q(bill_allocations__student_bill__student=OuterRef("pk"))
+        | Q(pk__in=Subquery(allocation_transaction_ids))
     )
 
 

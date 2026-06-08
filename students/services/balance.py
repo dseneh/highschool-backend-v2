@@ -40,21 +40,14 @@ def get_effective_paid_for_student(student, academic_year) -> Decimal:
 
 
 def build_effective_paid_subquery(*, start_date, end_date) -> Subquery:
-    """Subquery: deduped approved cash received for the outer student in a date range."""
-    matched_ids = (
+    """Subquery: approved cash received for the outer student in a date range."""
+    return Subquery(
         AccountingCashTransaction.objects.filter(
             build_student_match_q_outerref(),
             status=AccountingCashTransaction.TransactionStatus.APPROVED,
             transaction_date__gte=start_date,
             transaction_date__lte=end_date,
         )
-        .order_by()
-        .values("id")
-        .distinct()
-    )
-
-    return Subquery(
-        AccountingCashTransaction.objects.filter(id__in=Subquery(matched_ids))
         .order_by()
         .annotate(_grp=Value(1))
         .values("_grp")
