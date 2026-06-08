@@ -5,20 +5,25 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.db.models import (
+    Case,
     DecimalField,
+    Exists,
     ExpressionWrapper,
     F,
     OuterRef,
-    Q,
     QuerySet,
     Subquery,
     Sum,
     Value,
+    When,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Greatest
 
-from accounting.models import AccountingCashTransaction, AccountingStudentBill
-from accounting.services.payment_allocation import get_total_paid_for_student_year
+from accounting.models import AccountingCashTransaction, AccountingConcession, AccountingStudentBill
+from accounting.services.payment_allocation import (
+    build_student_match_q_outerref,
+    get_total_paid_for_student_year,
+)
 from finance.models import Transaction
 from students.models import StudentEnrollmentBill
 
@@ -35,16 +40,21 @@ def get_effective_paid_for_student(student, academic_year) -> Decimal:
 
 
 def build_effective_paid_subquery(*, start_date, end_date) -> Subquery:
-    """Subquery: approved cash received for the outer student within date range."""
-    return Subquery(
+    """Subquery: deduped approved cash received for the outer student in a date range."""
+    matched_ids = (
         AccountingCashTransaction.objects.filter(
-            Q(student=OuterRef("pk"))
-            | Q(source_reference=OuterRef("id_number"))
-            | Q(source_reference=OuterRef("prev_id_number")),
+            build_student_match_q_outerref(),
             status=AccountingCashTransaction.TransactionStatus.APPROVED,
             transaction_date__gte=start_date,
             transaction_date__lte=end_date,
         )
+        .order_by()
+        .values("id")
+        .distinct()
+    )
+
+    return Subquery(
+        AccountingCashTransaction.objects.filter(id__in=Subquery(matched_ids))
         .order_by()
         .annotate(_grp=Value(1))
         .values("_grp")
@@ -74,12 +84,22 @@ def annotate_student_balance_totals(
     if bill_year_filter is None:
         if academic_year is not None:
             bill_year_filter = {"academic_year": academic_year}
-            legacy_year_filter = {"enrollment__academic_year": academic_year}
-            legacy_student_year_filter = {"academic_year": academic_year}
+            legacy_year_filter = legacy_year_filter or {
+                "enrollment__academic_year": academic_year
+            }
+            legacy_student_year_filter = legacy_student_year_filter or {
+                "academic_year": academic_year
+            }
+            concession_year_filter = {"academic_year": academic_year}
         else:
             bill_year_filter = {"academic_year__current": True}
-            legacy_year_filter = {"enrollment__academic_year__current": True}
-            legacy_student_year_filter = {"academic_year__current": True}
+            legacy_year_filter = legacy_year_filter or {
+                "enrollment__academic_year__current": True
+            }
+            legacy_student_year_filter = legacy_student_year_filter or {
+                "academic_year__current": True
+            }
+            concession_year_filter = {"academic_year__current": True}
     else:
         legacy_year_filter = legacy_year_filter or {
             "enrollment__academic_year__current": True
@@ -87,8 +107,38 @@ def annotate_student_balance_totals(
         legacy_student_year_filter = legacy_student_year_filter or {
             "academic_year__current": True
         }
+        if "academic_year" in bill_year_filter:
+            concession_year_filter = {
+                "academic_year": bill_year_filter["academic_year"]
+            }
+        else:
+            concession_year_filter = {"academic_year__current": True}
 
-    accounting_billed_subquery = (
+    has_accounting_bills = Exists(
+        AccountingStudentBill.objects.filter(
+            student=OuterRef("pk"),
+            **bill_year_filter,
+        )
+    )
+    has_active_concessions = Exists(
+        AccountingConcession.objects.filter(
+            student=OuterRef("pk"),
+            is_active=True,
+            **concession_year_filter,
+        )
+    )
+
+    accounting_gross_subquery = (
+        AccountingStudentBill.objects.filter(
+            student=OuterRef("pk"),
+            **bill_year_filter,
+        )
+        .order_by()
+        .values("student")
+        .annotate(total=Sum("gross_amount"))
+        .values("total")[:1]
+    )
+    accounting_net_subquery = (
         AccountingStudentBill.objects.filter(
             student=OuterRef("pk"),
             **bill_year_filter,
@@ -96,6 +146,17 @@ def annotate_student_balance_totals(
         .order_by()
         .values("student")
         .annotate(total=Sum("net_amount"))
+        .values("total")[:1]
+    )
+    concession_total_subquery = (
+        AccountingConcession.objects.filter(
+            student=OuterRef("pk"),
+            is_active=True,
+            **concession_year_filter,
+        )
+        .order_by()
+        .values("student")
+        .annotate(total=Sum("computed_amount"))
         .values("total")[:1]
     )
     legacy_billed_subquery = (
@@ -121,31 +182,82 @@ def annotate_student_balance_totals(
         .values("total")[:1]
     )
 
-    paid_subqueries = [Subquery(legacy_paid_subquery)]
+    accounting_paid_subquery = None
     if resolved_year is not None:
-        paid_subqueries.insert(
-            0,
-            build_effective_paid_subquery(
-                start_date=resolved_year.start_date,
-                end_date=resolved_year.end_date,
+        accounting_paid_subquery = build_effective_paid_subquery(
+            start_date=resolved_year.start_date,
+            end_date=resolved_year.end_date,
+        )
+
+    decimal_output = DecimalField(max_digits=12, decimal_places=2)
+
+    billed_total = Case(
+        When(
+            has_accounting_bills & has_active_concessions,
+            then=Greatest(
+                ExpressionWrapper(
+                    Coalesce(
+                        Subquery(accounting_gross_subquery),
+                        Value(0),
+                        output_field=decimal_output,
+                    )
+                    - Coalesce(
+                        Subquery(concession_total_subquery),
+                        Value(0),
+                        output_field=decimal_output,
+                    ),
+                    output_field=decimal_output,
+                ),
+                Value(0),
+                output_field=decimal_output,
             ),
+        ),
+        When(
+            has_accounting_bills,
+            then=Coalesce(
+                Subquery(accounting_net_subquery),
+                Value(0),
+                output_field=decimal_output,
+            ),
+        ),
+        default=Coalesce(
+            Subquery(legacy_billed_subquery),
+            Value(0),
+            output_field=decimal_output,
+        ),
+        output_field=decimal_output,
+    )
+
+    if accounting_paid_subquery is not None:
+        paid_total = Case(
+            When(
+                has_accounting_bills,
+                then=Coalesce(
+                    Subquery(accounting_paid_subquery),
+                    Value(0),
+                    output_field=decimal_output,
+                ),
+            ),
+            default=Coalesce(
+                Subquery(legacy_paid_subquery),
+                Value(0),
+                output_field=decimal_output,
+            ),
+            output_field=decimal_output,
+        )
+    else:
+        paid_total = Coalesce(
+            Subquery(legacy_paid_subquery),
+            Value(0),
+            output_field=decimal_output,
         )
 
     return students.annotate(
-        billed_total=Coalesce(
-            Subquery(accounting_billed_subquery),
-            Subquery(legacy_billed_subquery),
-            Value(0),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        ),
-        paid_total=Coalesce(
-            *paid_subqueries,
-            Value(0),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        ),
+        billed_total=billed_total,
+        paid_total=paid_total,
     ).annotate(
         balance_total=ExpressionWrapper(
             F("billed_total") - F("paid_total"),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
+            output_field=decimal_output,
         )
     )

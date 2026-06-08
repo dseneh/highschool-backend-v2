@@ -217,6 +217,20 @@ def _build_student_match_q(student) -> Q:
     )
 
 
+def build_student_match_q_outerref() -> Q:
+    """Same matching rules as ``_build_student_match_q`` for queryset annotations."""
+    from django.db.models import CharField, OuterRef
+    from django.db.models.functions import Cast
+
+    return (
+        Q(student=OuterRef("pk"))
+        | Q(source_reference=OuterRef("id_number"))
+        | Q(source_reference=OuterRef("prev_id_number"))
+        | Q(source_reference=Cast(OuterRef("pk"), CharField()))
+        | Q(bill_allocations__student_bill__student=OuterRef("pk"))
+    )
+
+
 def get_total_paid_for_student_year(student, academic_year) -> Decimal:
     """Sum of approved cash transactions a student paid in an academic year.
 
