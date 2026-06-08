@@ -525,7 +525,10 @@ def get_payment_summary(request):
         from accounting.models import AccountingStudentBill
 
         empty = {
+            'total_gross': 0,
+            'total_concession': 0,
             'total_expected': 0,
+            'total_net': 0,
             'total_paid': 0,
             'total_pending': 0,
             'collection_rate': 0,
@@ -553,6 +556,8 @@ def get_payment_summary(request):
         ).exclude(
             status=AccountingStudentBill.BillStatus.CANCELLED
         ).aggregate(
+            total_gross=Coalesce(Sum('gross_amount'), decimal_zero),
+            total_concession=Coalesce(Sum('concession_amount'), decimal_zero),
             total_expected=Coalesce(Sum('net_amount'), decimal_zero),
             total_paid=Coalesce(Sum('paid_amount'), decimal_zero),
             # Use the explicitly-maintained outstanding_amount field for accuracy
@@ -573,6 +578,8 @@ def get_payment_summary(request):
             total_count=Count('id'),
         )
 
+        total_gross = float(bill_totals.get('total_gross') or 0)
+        total_concession = float(bill_totals.get('total_concession') or 0)
         total_expected = float(bill_totals.get('total_expected') or 0)
         total_paid = float(bill_totals.get('total_paid') or 0)
         # Prefer the stored outstanding_amount; fall back to derived value
@@ -588,7 +595,10 @@ def get_payment_summary(request):
         )
 
         result = {
+            'total_gross': total_gross,
+            'total_concession': total_concession,
             'total_expected': total_expected,
+            'total_net': total_expected,
             'total_paid': total_paid,
             'total_pending': max(0, total_outstanding),
             'collection_rate': collection_rate,
@@ -606,7 +616,10 @@ def get_payment_summary(request):
         logger.error(f"Error in get_payment_summary: {str(e)}")
         return Response(
             {
+                'total_gross': 0,
+                'total_concession': 0,
                 'total_expected': 0,
+                'total_net': 0,
                 'total_paid': 0,
                 'total_pending': 0,
                 'collection_rate': 0,
