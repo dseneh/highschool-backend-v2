@@ -54,6 +54,18 @@ def _year_cache_suffix(academic_year):
     return f"_ay_{academic_year.id}" if academic_year else "_ay_none"
 
 
+def invalidate_dashboard_payment_summary_cache(request, academic_year) -> None:
+    """Drop cached payment summary so concession/billing changes show immediately."""
+    if not academic_year:
+        return
+
+    cache_key = DataCache._get_cache_key(
+        f"dashboard_payment_summary{_year_cache_suffix(academic_year)}",
+        request=request,
+    )
+    cache.delete(cache_key)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_grade_level_distribution(request):
@@ -522,7 +534,7 @@ def get_payment_summary(request):
             return Response(cached, status=status.HTTP_200_OK)
 
         from django.db.models import Sum, Count, Q
-        from accounting.models import AccountingStudentBill
+        from accounting.models import AccountingConcession, AccountingStudentBill
 
         empty = {
             'total_gross': 0,
@@ -578,14 +590,34 @@ def get_payment_summary(request):
             total_count=Count('id'),
         )
 
+        live_concession_totals = AccountingConcession.objects.filter(
+            academic_year=current_academic_year,
+            is_active=True,
+        ).aggregate(
+            total=Coalesce(Sum('computed_amount'), decimal_zero),
+            count=Count('id'),
+        )
+
         total_gross = float(bill_totals.get('total_gross') or 0)
-        total_concession = float(bill_totals.get('total_concession') or 0)
-        total_expected = float(bill_totals.get('total_expected') or 0)
         total_paid = float(bill_totals.get('total_paid') or 0)
-        # Prefer the stored outstanding_amount; fall back to derived value
-        total_outstanding = float(bill_totals.get('total_outstanding') or 0)
-        if total_outstanding == 0 and total_expected > total_paid:
+        cached_concession = float(bill_totals.get('total_concession') or 0)
+        cached_net = float(bill_totals.get('total_expected') or 0)
+        has_live_concessions = int(live_concession_totals.get('count') or 0) > 0
+
+        # Match concession page + student billing: prefer live concession records
+        # over denormalized bill.concession_amount, which can lag when bills sync late.
+        if has_live_concessions:
+            total_concession = float(live_concession_totals.get('total') or 0)
+            if total_gross > 0:
+                total_concession = min(total_concession, total_gross)
+            total_expected = max(0.0, total_gross - total_concession)
             total_outstanding = total_expected - total_paid
+        else:
+            total_concession = cached_concession
+            total_expected = cached_net
+            total_outstanding = float(bill_totals.get('total_outstanding') or 0)
+            if total_outstanding == 0 and total_expected > total_paid:
+                total_outstanding = total_expected - total_paid
 
         collection_rate = round((total_paid / total_expected * 100), 1) if total_expected > 0 else 0
 

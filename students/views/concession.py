@@ -15,6 +15,7 @@ from accounting.models import (
 )
 from accounting.services.student_billing import sync_accounting_bill_concession_totals
 from common.utils import get_object_by_uuid_or_fields
+from students.views.distributions import invalidate_dashboard_payment_summary_cache
 from students.models import Student
 from students.serializers.concession import StudentConcessionSerializer
 
@@ -172,6 +173,7 @@ class StudentConcessionListCreateView(APIView):
         )
 
         sync_accounting_bill_concession_totals(student=student, academic_year=academic_year)
+        invalidate_dashboard_payment_summary_cache(request, academic_year)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -215,6 +217,10 @@ class StudentConcessionDetailView(APIView):
             student=updated_concession.student,
             academic_year=updated_concession.academic_year,
         )
+        invalidate_dashboard_payment_summary_cache(
+            request,
+            updated_concession.academic_year,
+        )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):
@@ -229,6 +235,7 @@ class StudentConcessionDetailView(APIView):
         concession.delete()
 
         sync_accounting_bill_concession_totals(student=student, academic_year=academic_year)
+        invalidate_dashboard_payment_summary_cache(request, academic_year)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

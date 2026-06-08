@@ -234,7 +234,6 @@ def sync_accounting_bill_concession_totals(student, academic_year) -> int:
             student=student,
             academic_year=academic_year,
             is_active=True,
-            active=True,
         ).aggregate(total=Sum("computed_amount"))["total"]
     )
 
