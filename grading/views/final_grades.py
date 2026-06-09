@@ -28,14 +28,14 @@ class StudentFinalGradeView(APIView):
 
     Query Parameters:
         - marking_period: Optional marking period ID to filter grades
-        - status: Optional grade status to filter by (defaults to 'any' for all grades)
+        - status: Optional grade status to filter by (defaults to 'approved')
                   Valid values: 'any', 'draft', 'pending', 'reviewed', 'submitted', 'approved'
     """
 
     def get(self, request, student_id, gradebook_id):
         # Get query parameters
         marking_period_id = request.query_params.get("marking_period")
-        status = request.query_params.get("status", "any")
+        status = request.query_params.get("status", Grade.Status.APPROVED)
 
         # Validate status parameter
         valid_statuses = [choice[0] for choice in Grade.Status.choices] + ["any"]
@@ -127,7 +127,7 @@ class StudentFinalGradesView(APIView):
         - marking_period=<period_id>: Optional. Filter by specific marking period
         - include_average=<true|false>: Optional. Include averages (default: false)
         - include_assessment=<true|false>: Optional. Include assessments (default: true)
-        - status=<status>: Optional. Filter by grade status (default: 'any')
+        - status=<status>: Optional. Filter by grade status (default: 'approved')
                           Valid values: 'any', 'draft', 'pending', 'reviewed', 'submitted', 'approved'
 
     Response Structure:
@@ -182,7 +182,7 @@ class StudentFinalGradesView(APIView):
         # Extract query parameters
         gradebook_id = request.query_params.get("gradebook")
         marking_period_id = request.query_params.get("marking_period")
-        status = request.query_params.get("status", "any")
+        status = request.query_params.get("status", Grade.Status.APPROVED)
         include_average = (
             request.query_params.get("include_average", "false").lower() == "true"
         )
@@ -302,7 +302,7 @@ class SectionFinalGradesView(APIView):
         - data_by: 'subject' or 'all_subjects' (default: 'all_subjects')
         - subject: Required when data_by=subject. Subject ID to filter
         - marking_period: Optional. If provided, filters results to this marking period only (works with both data_by modes)
-        - status: Grade status filter (default: 'any')
+        - status: Grade status filter (default: 'approved')
                   Valid values: 'any', 'draft', 'pending', 'reviewed', 'submitted', 'approved'
         - include_average: 'true' or 'false' (default: 'false'). Include averages object in response
         - include_assessment: 'true' or 'false' (default: 'true'). Include assessments array in response
@@ -368,7 +368,7 @@ class SectionFinalGradesView(APIView):
         data_by = request.query_params.get("data_by", "all_subjects")
         subject_id = request.query_params.get("subject")
         marking_period_id = request.query_params.get("marking_period")
-        status = request.query_params.get("status", "any")
+        status = request.query_params.get("status", Grade.Status.APPROVED)
         include_average = (
             request.query_params.get("include_average", "false").lower() == "true"
         )
@@ -454,7 +454,7 @@ class SectionFinalGradesView(APIView):
         academic_year,
         subject_id,
         marking_period,
-        status="any",
+        status=Grade.Status.APPROVED,
         student_filter=None,
         context=None,
     ):
@@ -532,7 +532,7 @@ class SectionFinalGradesView(APIView):
         section,
         academic_year,
         marking_period=None,
-        status="any",
+        status=Grade.Status.APPROVED,
         student_filter=None,
         context=None,
     ):

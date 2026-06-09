@@ -1257,7 +1257,7 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                     gradebook,
                     student,
                     mp,
-                    status=self.context.get("status", "any"),
+                    status=self.context.get("status", Grade.Status.APPROVED),
                 )
 
                 if final_percentage is not None:
@@ -1922,9 +1922,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
 
                 # Calculate final percentage for this marking period
                 # Import the calculation function
-                from grading.views.final_grades import (
-                    calculate_marking_period_percentage,
-                )
+                from grading.utils import calculate_marking_period_percentage
 
                 final_percentage = None
                 letter_grade = "-"
@@ -1933,7 +1931,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                 # Calculate the final percentage using the gradebook's calculation method
                 if gradebook and student:
                     final_percentage = calculate_marking_period_percentage(
-                        gradebook, student, mp, status=self.context.get("status", "any")
+                        gradebook, student, mp, status=self.context.get("status", Grade.Status.APPROVED)
                     )
 
                     # Get letter grade if we have a percentage
@@ -2140,13 +2138,14 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
         ]
 
         # Use the standardized calculation utility
+        from grading.models import Grade
         from grading.utils import calculate_student_overall_average
 
         result = calculate_student_overall_average(
             student=student,
             academic_year=academic_year,
             gradebooks=gradebooks,
-            status=self.context.get("status", "any"),
+            status=self.context.get("status", Grade.Status.APPROVED),
         )
 
         # Return None for final_average if it's 0 and there are no semester averages

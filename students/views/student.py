@@ -32,7 +32,9 @@ from accounting.models import AccountingStudentBill
 from students.services.balance import annotate_student_balance_totals
 from students.models import Student, Enrollment, StudentEnrollmentBill, Attendance
 from students.serializers import StudentDetailSerializer, StudentSerializer
+from students.views.student_etag import student_detail_etag
 from students.views.utils import create_enrollment_for_student
+from common.http_etag import attach_etag, maybe_not_modified
 from finance.models import Transaction
 from grading.services.ranking import RankingService
 from common.status import EnrollmentStatus, StudentStatus
@@ -751,8 +753,16 @@ class StudentDetailView(APIView):
 
     def get(self, request, id):
         student = self.get_object(id)
+        etag = student_detail_etag(student)
+        not_modified = maybe_not_modified(request, etag)
+        if not_modified is not None:
+            return not_modified
+
         serializer = StudentDetailSerializer(student, context={"request": request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return attach_etag(
+            Response(serializer.data, status=status.HTTP_200_OK),
+            etag,
+        )
 
     def put(self, request, id):
         student = self.get_object(id)

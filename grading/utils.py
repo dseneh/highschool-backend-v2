@@ -7,6 +7,9 @@ from django.db.utils import ProgrammingError, OperationalError
 from .models import GradeBook, Grade, GradeLetter
 from students.models import Enrollment
 
+# Only approved grades count in official averages and rollups.
+CALCULATED_GRADE_STATUS = Grade.Status.APPROVED
+
 
 # ------------------------ Database-Driven Grade Letter System ------------------------
 
@@ -962,7 +965,7 @@ def get_workflow_settings():
 
 
 def calculate_marking_period_percentage(
-    gradebook, student, marking_period, status="any"
+    gradebook, student, marking_period, status=CALCULATED_GRADE_STATUS
 ):
     """
     Calculate final percentage for a specific marking period.
@@ -971,7 +974,7 @@ def calculate_marking_period_percentage(
         gradebook: GradeBook instance
         student: Student instance
         marking_period: MarkingPeriod instance
-        status: Grade status to filter by ('any' for all statuses, or specific status)
+        status: Grade status to filter by (defaults to approved; use 'any' for all statuses)
     """
     # Build the query
     query_filter = Q(
@@ -1041,7 +1044,7 @@ def calculate_marking_period_percentage(
 
 
 def calculate_student_overall_average(
-    student, academic_year, gradebooks=None, status="any"
+    student, academic_year, gradebooks=None, status=CALCULATED_GRADE_STATUS
 ):
     """
     Calculate a student's overall average across all gradebooks for an academic year.
@@ -1055,7 +1058,7 @@ def calculate_student_overall_average(
         student: Student instance
         academic_year: AcademicYear instance
         gradebooks: Optional list of GradeBook instances. If None, gets all for student's enrollment
-        status: Grade status to filter by ('any', 'approved', etc.)
+        status: Grade status to filter by (defaults to approved; use 'any' for all statuses)
 
     Returns:
         dict with:
