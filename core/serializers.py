@@ -132,6 +132,8 @@ class PublicTenantSerializer(BaseTenantSerializer):
     Includes basic tenant information needed for frontend routing and branding.
     Only active tenants are returned (filtered in get_queryset).
     """
+    billing_summary = serializers.SerializerMethodField()
+
     class Meta:
         model = Tenant
         fields = [
@@ -154,8 +156,21 @@ class PublicTenantSerializer(BaseTenantSerializer):
             "logo_shape",
             "theme_color",
             "theme_config",
+            "billing_summary",
         ]
         read_only_fields = fields
+
+    def get_billing_summary(self, obj):
+        from billing.services.state import billing_summary_dict
+
+        request = self.context.get("request")
+        for_admin = False
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            from billing.permissions import user_is_tenant_admin
+
+            for_admin = user_is_tenant_admin(request.user)
+        return billing_summary_dict(obj, for_admin=for_admin)
+
     def to_representation(self, instance):
         """
         Override to build full URLs for logo.
@@ -211,6 +226,19 @@ class TenantSerializer(BaseTenantSerializer):
             "disabled_access_allow_tenant_admins",
             "disabled_access_allowed_paths",
             "disabled_access_allowed_users",
+            # Billing (platform admin)
+            "complimentary_until",
+            "complimentary_note",
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "subscription_status",
+            "billing_interval",
+            "current_period_end",
+            "past_due_since",
+            "enabled_addons",
+            "promotion_code_redeemed",
+            "billing_enrollment_count",
+            "billing_employee_count",
             # Branding
             "logo",
             "logo_shape",
@@ -240,31 +268,6 @@ class TenantSerializer(BaseTenantSerializer):
         
         return response
 
-
-class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
-    """
-    Limited serializer for public tenant information.
-    Used for public pages like login, registration, etc.
-    """
-    domain = serializers.SerializerMethodField(method_name="get_domain")
-    
-    class Meta:
-        model = Tenant
-        fields = [
-            "id",
-            "name",
-            "schema_name",
-            "domain",
-            "logo",
-            "active",
-            "status",
-            "maintenance_mode",
-            "login_access_policy",
-            "disabled_access_allow_tenant_admins",
-            "disabled_access_allowed_paths",
-            "disabled_access_allowed_users",
-            "theme_config",
-        ]
 
 class CreateTenantSerializer(serializers.Serializer):
     """

@@ -151,6 +151,37 @@ class Tenant(TenantBase):
         blank=True,
         help_text="List of user identifiers (id_number/username/email) allowed on disabled workspace override paths."
     )
+
+    # SaaS billing (Stripe) — public schema fields
+    complimentary_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Pilot/partner grace: full access without Stripe billing until this datetime (UTC).",
+    )
+    complimentary_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Internal note for complimentary access (e.g. pilot partner thank-you period).",
+    )
+    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
+    stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
+    subscription_status = models.CharField(max_length=32, blank=True, default="")
+    billing_interval = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Stripe subscription interval: month or year.",
+    )
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    past_due_since = models.DateTimeField(null=True, blank=True)
+    enabled_addons = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Active paid add-ons, e.g. ["payroll", "sms"].',
+    )
+    promotion_code_redeemed = models.CharField(max_length=64, blank=True, default="")
+    billing_enrollment_count = models.PositiveIntegerField(default=0)
+    billing_employee_count = models.PositiveIntegerField(default=0)
     
     # Logo and Branding
     logo = models.ImageField(

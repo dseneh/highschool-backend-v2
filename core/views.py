@@ -65,6 +65,9 @@ def current_tenant(request):
 
     try:
         tenant = Tenant.objects.get(schema_name=connection.schema_name)
+        from billing.services.policy import apply_billing_access_policy
+
+        apply_billing_access_policy(tenant)
         serializer = PublicTenantSerializer(tenant, context={"request": request})
         return Response(serializer.data)
     except Tenant.DoesNotExist:
@@ -123,6 +126,9 @@ class TenantViewSet(ModelViewSet):
         "disabled_access_allow_tenant_admins",
         "disabled_access_allowed_paths",
         "disabled_access_allowed_users",
+        "complimentary_until",
+        "complimentary_note",
+        "enabled_addons",
     ]
     AUDITED_CONTROL_FIELDS = [
         "status",
