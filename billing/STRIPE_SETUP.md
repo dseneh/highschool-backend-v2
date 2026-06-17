@@ -70,7 +70,19 @@ In Django admin → Tenants, set **Complimentary access until** and optional **C
 
 Optionally set **Enabled add-ons** to `["payroll", "sms"]` as JSON for full feature access during the thank-you period.
 
-## 8. Install dependency
+## 8. Billing reminder emails
+
+Schedule daily (cron or Celery beat):
+
+```bash
+python manage.py send_billing_reminders
+```
+
+Emails tenant admins at **30, 14, 7, and 3 days** before complimentary access or subscription renewal ends, plus overdue payment notices.
+
+Optional Celery task: `billing.send_billing_reminders`
+
+## 9. Install dependency
 
 ```bash
 pip install stripe>=11.0.0

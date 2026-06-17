@@ -1,0 +1,9 @@
+Hello,
+
+{{ body_text }}
+
+Open billing settings: {{ billing_url }}
+
+Questions? Email {{ support_email }}
+
+— EzySchool · {{ school_name }}
