@@ -4,14 +4,17 @@ import logging
 
 from notifications.models import NotificationCampaign, NotificationRule, TenantNotificationSettings
 from notifications.services.campaign_send import create_and_send_campaign
+from notifications.services.rule_bootstrap import ensure_notification_rule
 
 logger = logging.getLogger(__name__)
 
 
 def dispatch_from_rule(event_type: str, context: dict | None = None) -> NotificationCampaign | None:
     context = context or {}
+    ensure_notification_rule(event_type)
     rule = NotificationRule.objects.filter(event_type=event_type, enabled=True).first()
     if not rule:
+        logger.warning("Notification rule missing or disabled: %s", event_type)
         return None
 
     settings = TenantNotificationSettings.get_solo()
@@ -48,6 +51,9 @@ def _default_title(event_type: str) -> str:
         NotificationRule.EventType.GRADE_PUBLISHED: "Grades published for {student_name}",
         NotificationRule.EventType.PAYMENT_DUE_REMINDER: "Payment reminder: due {due_date}",
         NotificationRule.EventType.ATTENDANCE_ABSENT: "Absence recorded for {student_name}",
+        NotificationRule.EventType.TRANSCRIPT_REQUESTED: "New transcript request from {student_name}",
+        NotificationRule.EventType.TRANSCRIPT_APPROVED: "Transcript access approved",
+        NotificationRule.EventType.TRANSCRIPT_DENIED: "Transcript request update",
     }
     return defaults.get(event_type, "School notification")
 
@@ -65,6 +71,15 @@ def _default_body(event_type: str) -> str:
         NotificationRule.EventType.ATTENDANCE_ABSENT: (
             "{student_name} was marked absent on {date}. "
             "Contact the school if you have questions."
+        ),
+        NotificationRule.EventType.TRANSCRIPT_REQUESTED: (
+            "{student_name} submitted an official transcript request."
+        ),
+        NotificationRule.EventType.TRANSCRIPT_APPROVED: (
+            "Your official transcript request has been approved."
+        ),
+        NotificationRule.EventType.TRANSCRIPT_DENIED: (
+            "Your official transcript request was not approved."
         ),
     }
     return defaults.get(event_type, "You have a new notification from your school.")

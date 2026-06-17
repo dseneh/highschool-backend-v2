@@ -17,6 +17,24 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "api.settings")
 # Get Django WSGI application
 django_app = get_wsgi_application()
 
+HEALTH_BODY = b'{"status":"ok","service":"backend"}'
+HEALTH_PATHS = ('/', '/health', '/health/')
+
+
+def _health_response_headers(environ):
+    headers = [
+        ('Content-Type', 'application/json'),
+        ('Content-Length', str(len(HEALTH_BODY))),
+    ]
+    origin = environ.get('HTTP_ORIGIN', '')
+    if origin:
+        headers.extend([
+            ('Access-Control-Allow-Origin', origin),
+            ('Access-Control-Allow-Credentials', 'true'),
+            ('Vary', 'Origin'),
+        ])
+    return headers
+
 
 def health_check_middleware(environ, start_response):
     """
@@ -25,17 +43,23 @@ def health_check_middleware(environ, start_response):
     database connections, or tenant resolution.
     """
     path = environ.get('PATH_INFO', '')
-    
-    # Handle health check requests at WSGI level
-    if path in ('/', '/health', '/health/'):
-        status = '200 OK'
-        headers = [
-            ('Content-Type', 'application/json'),
-            ('Content-Length', '37'),
-        ]
-        start_response(status, headers)
-        return [b'{"status":"ok","service":"backend"}']
-    
+
+    if path in HEALTH_PATHS:
+        method = environ.get('REQUEST_METHOD', 'GET')
+        headers = _health_response_headers(environ)
+
+        if method == 'OPTIONS':
+            headers.extend([
+                ('Access-Control-Allow-Methods', 'GET, OPTIONS'),
+                ('Access-Control-Allow-Headers', 'Accept, Content-Type'),
+                ('Access-Control-Max-Age', '86400'),
+            ])
+            start_response('200 OK', headers)
+            return [b'']
+
+        start_response('200 OK', headers)
+        return [HEALTH_BODY]
+
     # All other requests go to Django
     return django_app(environ, start_response)
 

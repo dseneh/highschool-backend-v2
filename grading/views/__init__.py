@@ -23,6 +23,7 @@ from .transcript import (
     OfficialTranscriptRequestView,
     OfficialTranscriptGrantView,
     OfficialTranscriptRequestReviewView,
+    OfficialTranscriptRequestDetailView,
     OfficialTranscriptRequestListView,
 )
 from .gradebook import GradeBookListCreateView, GradeBookDetailView, TeacherGradebookListView
@@ -61,6 +62,7 @@ __all__ = [
     "OfficialTranscriptRequestView",
     "OfficialTranscriptGrantView",
     "OfficialTranscriptRequestReviewView",
+    "OfficialTranscriptRequestDetailView",
     "OfficialTranscriptRequestListView",
     "GradeBookListCreateView",
     "GradeBookDetailView",

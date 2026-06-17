@@ -40,7 +40,48 @@ DEFAULT_RULES = [
         "channels": ["in_app", "email"],
         "enabled": False,
     },
+    {
+        "event_type": NotificationRule.EventType.TRANSCRIPT_REQUESTED,
+        "title_template": "New transcript request from {student_name}",
+        "body_template": (
+            "{student_name} ({student_id_number}) submitted an official transcript request."
+            "{student_note_suffix} Review it in the transcript queue."
+        ),
+        "category": NotificationCampaign.Category.GRADE,
+        "channels": ["in_app", "email"],
+        "enabled": True,
+    },
+    {
+        "event_type": NotificationRule.EventType.TRANSCRIPT_APPROVED,
+        "title_template": "Transcript access approved",
+        "body_template": (
+            "Your official transcript request has been approved. "
+            "You can {delivery_hint}."
+        ),
+        "category": NotificationCampaign.Category.GRADE,
+        "channels": ["in_app", "email"],
+        "enabled": True,
+    },
+    {
+        "event_type": NotificationRule.EventType.TRANSCRIPT_DENIED,
+        "title_template": "Transcript request update",
+        "body_template": (
+            "Your official transcript request was not approved."
+            "{admin_note_suffix} Contact the school office if you have questions."
+        ),
+        "category": NotificationCampaign.Category.GRADE,
+        "channels": ["in_app", "email"],
+        "enabled": True,
+    },
 ]
+
+TRANSCRIPT_RULE_SYNC_FIELDS = (
+    "title_template",
+    "body_template",
+    "category",
+    "channels",
+    "enabled",
+)
 
 
 class Command(BaseCommand):
@@ -143,10 +184,23 @@ class Command(BaseCommand):
         for spec in DEFAULT_RULES:
             event_type = spec["event_type"]
             defaults = {k: v for k, v in spec.items() if k != "event_type"}
-            _, was_created = NotificationRule.objects.get_or_create(
+            rule, was_created = NotificationRule.objects.get_or_create(
                 event_type=event_type,
                 defaults=defaults,
             )
             if was_created:
                 created += 1
+                continue
+
+            if not event_type.startswith("transcript_"):
+                continue
+
+            updates = {}
+            for field in TRANSCRIPT_RULE_SYNC_FIELDS:
+                if field in defaults and getattr(rule, field) != defaults[field]:
+                    updates[field] = defaults[field]
+            if updates:
+                for field, value in updates.items():
+                    setattr(rule, field, value)
+                rule.save(update_fields=[*updates.keys(), "updated_at"])
         return created

@@ -379,12 +379,9 @@ class AnnouncementListView(APIView):
 
 
 def _ensure_default_notification_rules():
-    from notifications.management.commands.seed_notification_rules import DEFAULT_RULES
+    from notifications.services.rule_bootstrap import ensure_all_default_notification_rules
 
-    for spec in DEFAULT_RULES:
-        event_type = spec["event_type"]
-        defaults = {k: v for k, v in spec.items() if k != "event_type"}
-        NotificationRule.objects.get_or_create(event_type=event_type, defaults=defaults)
+    ensure_all_default_notification_rules()
 
 
 class NotificationRuleViewSet(viewsets.ModelViewSet):

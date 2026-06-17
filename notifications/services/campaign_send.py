@@ -95,6 +95,13 @@ def create_and_send_campaign(
     campaign.sent_at = timezone.now()
     campaign.save(update_fields=["recipient_count", "status", "sent_at", "updated_at"])
 
+    if materialized == 0:
+        logger.warning(
+            "notifications.campaign_send produced zero inbox rows for campaign=%s audience=%s",
+            campaign.id,
+            audience,
+        )
+
     if "email" in channels:
         send_campaign_emails_async(str(campaign.id))
 

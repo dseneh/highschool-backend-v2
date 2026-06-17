@@ -16,6 +16,7 @@ from grading.views import (
     OfficialTranscriptRequestView,
     OfficialTranscriptGrantView,
     OfficialTranscriptRequestReviewView,
+    OfficialTranscriptRequestDetailView,
     OfficialTranscriptRequestListView,
     AssessmentTypeListCreateView,
     AssessmentTypeDetailView,
@@ -170,6 +171,11 @@ urlpatterns = [
         OfficialTranscriptRequestReviewView.as_view(),
         {"action": "deny"},
         name="student-official-transcript-deny",
+    ),
+    path(
+        "students/<str:student_id>/transcript/requests/<str:request_id>/",
+        OfficialTranscriptRequestDetailView.as_view(),
+        name="student-official-transcript-request-detail",
     ),
     path(
         "transcript-requests/",

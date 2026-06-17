@@ -193,6 +193,9 @@ class NotificationRule(BaseModel):
         GRADE_PUBLISHED = "grade_published", "Grade published"
         PAYMENT_DUE_REMINDER = "payment_due_reminder", "Payment due reminder"
         ATTENDANCE_ABSENT = "attendance_absent", "Attendance absent"
+        TRANSCRIPT_REQUESTED = "transcript_requested", "Transcript requested"
+        TRANSCRIPT_APPROVED = "transcript_approved", "Transcript approved"
+        TRANSCRIPT_DENIED = "transcript_denied", "Transcript denied"
 
     event_type = models.CharField(
         max_length=32,

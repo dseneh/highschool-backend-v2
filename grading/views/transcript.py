@@ -15,8 +15,10 @@ from grading.services.transcript_access import (
     build_access_status,
     can_download_transcript,
     create_student_request,
+    delete_transcript_request,
     deny_request,
     list_transcript_requests,
+    update_transcript_request_status,
 )
 from grading.tasks.transcript_worker import start_official_transcript_background_task
 from reports.tasks import TaskManager
@@ -195,6 +197,67 @@ class OfficialTranscriptRequestReviewView(APIView):
                 "download_expires_at": access.download_expires_at,
             }
         )
+
+
+class OfficialTranscriptRequestDetailView(APIView):
+    """
+    PATCH /grading/students/{student_id}/transcript/requests/{request_id}/
+    DELETE /grading/students/{student_id}/transcript/requests/{request_id}/
+    """
+
+    permission_classes = [GradebookAccessPolicy]
+
+    def _get_access(self, student_id: str, request_id: str):
+        try:
+            student = _get_student(student_id)
+        except Student.DoesNotExist:
+            return None, Response({"detail": "Student does not exist."}, status=404)
+
+        try:
+            access = TranscriptAccessRequest.objects.get(id=request_id, student=student)
+        except TranscriptAccessRequest.DoesNotExist:
+            return None, Response({"detail": "Transcript request not found."}, status=404)
+
+        return access, None
+
+    def patch(self, request, student_id, request_id):
+        access, error_response = self._get_access(student_id, request_id)
+        if error_response is not None:
+            return error_response
+
+        status_value = (request.data.get("status") or "").strip().lower()
+        if not status_value:
+            return Response({"detail": "status is required."}, status=400)
+
+        admin_note = request.data.get("admin_note")
+        if admin_note is not None:
+            admin_note = str(admin_note).strip()
+
+        try:
+            access = update_transcript_request_status(
+                access,
+                request.user,
+                status=status_value,
+                admin_note=admin_note,
+            )
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=403)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
+        return Response({"id": str(access.id), "status": access.status})
+
+    def delete(self, request, student_id, request_id):
+        access, error_response = self._get_access(student_id, request_id)
+        if error_response is not None:
+            return error_response
+
+        try:
+            delete_transcript_request(access, request.user)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=403)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class OfficialTranscriptRequestListView(APIView):

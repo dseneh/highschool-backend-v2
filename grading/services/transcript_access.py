@@ -155,7 +155,7 @@ def create_student_request(user, student: Student, student_note: str = "") -> Tr
     if settings_obj and _student_eligible_for_self_service(student, settings_obj):
         raise ValueError("Transcript download is already available for your account.")
 
-    return TranscriptAccessRequest.objects.create(
+    record = TranscriptAccessRequest.objects.create(
         student=student,
         status=TranscriptAccessRequest.Status.PENDING,
         source=TranscriptAccessRequest.Source.STUDENT_REQUEST,
@@ -164,6 +164,10 @@ def create_student_request(user, student: Student, student_note: str = "") -> Tr
         created_by=user,
         updated_by=user,
     )
+    from grading.services.transcript_notifications import notify_transcript_requested
+
+    notify_transcript_requested(record, student, user)
+    return record
 
 
 def approve_or_grant_access(
@@ -186,6 +190,11 @@ def approve_or_grant_access(
     settings_obj = get_grading_settings()
     days = download_days if download_days is not None else get_default_download_days(settings_obj)
     now = timezone.now()
+    was_pending_student_request = bool(
+        access_request
+        and access_request.status == TranscriptAccessRequest.Status.PENDING
+        and access_request.source == TranscriptAccessRequest.Source.STUDENT_REQUEST
+    )
 
     if access_request:
         record = access_request
@@ -225,22 +234,104 @@ def approve_or_grant_access(
             schema_name=getattr(connection, "schema_name", None),
         )
 
+    from grading.services.transcript_notifications import notify_transcript_approved
+
+    if was_pending_student_request or source == TranscriptAccessRequest.Source.ADMIN_GRANT:
+        notify_transcript_approved(record, student, reviewer)
+
     return record
 
 
 def deny_request(access_request: TranscriptAccessRequest, reviewer, admin_note: str = "") -> TranscriptAccessRequest:
     if not _is_transcript_admin(reviewer):
         raise PermissionError("Only staff can deny transcript requests.")
-    if access_request.status != TranscriptAccessRequest.Status.PENDING:
-        raise ValueError("Only pending requests can be denied.")
+    if access_request.status not in {
+        TranscriptAccessRequest.Status.PENDING,
+        TranscriptAccessRequest.Status.APPROVED,
+    }:
+        raise ValueError("Only pending or approved requests can be denied.")
 
     access_request.status = TranscriptAccessRequest.Status.DENIED
     access_request.admin_note = (admin_note or "").strip()
     access_request.reviewed_by = reviewer
     access_request.reviewed_at = timezone.now()
     access_request.updated_by = reviewer
+    access_request.allow_download = False
+    access_request.download_expires_at = None
     access_request.save()
+
+    from grading.services.transcript_notifications import notify_transcript_denied
+
+    if access_request.source == TranscriptAccessRequest.Source.STUDENT_REQUEST:
+        notify_transcript_denied(access_request, access_request.student, reviewer)
+
     return access_request
+
+
+def update_transcript_request_status(
+    access_request: TranscriptAccessRequest,
+    reviewer,
+    *,
+    status: str,
+    admin_note: str | None = None,
+) -> TranscriptAccessRequest:
+    if not _is_transcript_admin(reviewer):
+        raise PermissionError("Only staff can update transcript requests.")
+
+    valid_statuses = {choice.value for choice in TranscriptAccessRequest.Status}
+    if status not in valid_statuses:
+        raise ValueError("Invalid status.")
+
+    if status == TranscriptAccessRequest.Status.APPROVED:
+        raise ValueError("Use approve or grant to approve transcript access.")
+
+    if access_request.status == status:
+        if admin_note is not None:
+            access_request.admin_note = admin_note.strip()
+            access_request.updated_by = reviewer
+            access_request.save(update_fields=["admin_note", "updated_by", "updated_at"])
+        return access_request
+
+    previous_status = access_request.status
+    access_request.status = status
+    if admin_note is not None:
+        access_request.admin_note = admin_note.strip()
+
+    if status in {
+        TranscriptAccessRequest.Status.DENIED,
+        TranscriptAccessRequest.Status.EXPIRED,
+    }:
+        access_request.allow_download = False
+        access_request.download_expires_at = None
+
+    if status == TranscriptAccessRequest.Status.PENDING:
+        access_request.reviewed_by = None
+        access_request.reviewed_at = None
+        access_request.allow_download = False
+        access_request.download_expires_at = None
+    else:
+        access_request.reviewed_by = reviewer
+        access_request.reviewed_at = timezone.now()
+
+    access_request.updated_by = reviewer
+    access_request.save()
+
+    if (
+        status == TranscriptAccessRequest.Status.DENIED
+        and previous_status != TranscriptAccessRequest.Status.DENIED
+        and access_request.source == TranscriptAccessRequest.Source.STUDENT_REQUEST
+    ):
+        from grading.services.transcript_notifications import notify_transcript_denied
+
+        notify_transcript_denied(access_request, access_request.student, reviewer)
+
+    return access_request
+
+
+def delete_transcript_request(access_request: TranscriptAccessRequest, reviewer) -> None:
+    if not _is_transcript_admin(reviewer):
+        raise PermissionError("Only staff can delete transcript requests.")
+    access_request.delete()
 
 
 def _deliver_transcript_email_async(

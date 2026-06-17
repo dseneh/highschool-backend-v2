@@ -98,9 +98,14 @@ def resolve_user_ids(audience: dict, sender: User, *, category: str = "") -> Set
     if scope == "roles":
         roles = [r.lower() for r in (audience.get("roles") or [])]
         if roles:
+            from django.db.models import Q
+
+            role_filter = Q()
+            for role in roles:
+                role_filter |= Q(role__iexact=role)
             ids.update(
                 get_tenant_user_queryset()
-                .filter(role__in=roles)
+                .filter(role_filter)
                 .values_list("id", flat=True)
             )
         return ids

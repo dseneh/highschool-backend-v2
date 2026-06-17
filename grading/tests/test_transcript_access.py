@@ -1,15 +1,19 @@
 """Tests for transcript access authorization and workflow."""
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 from django.utils import timezone
 
+from grading.models import TranscriptAccessRequest
 from grading.services.transcript_access import (
     build_access_status,
     can_download_transcript,
+    delete_transcript_request,
+    deny_request,
     get_default_download_days,
+    update_transcript_request_status,
 )
 
 
@@ -64,6 +68,7 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
         self.assertTrue(allowed)
         self.assertEqual(reason, "admin")
 
+    @patch("grading.services.transcript_access.get_active_approved_access")
     @patch("grading.services.transcript_access.get_grading_settings")
     @patch("grading.services.transcript_access._student_eligible_for_self_service")
     @patch("grading.services.transcript_access._student_matches_user")
@@ -72,7 +77,9 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
         mock_matches,
         mock_eligible,
         mock_settings,
+        mock_active,
     ):
+        mock_active.return_value = None
         mock_settings.return_value = SimpleNamespace(
             allow_student_transcript_download=True,
             student_transcript_download_scope="enrolled",
@@ -228,3 +235,98 @@ class TranscriptAccessDefaultsTests(SimpleTestCase):
             get_default_download_days(SimpleNamespace(transcript_download_days=0)),
             3,
         )
+
+
+class TranscriptRequestAdminMutationTests(SimpleTestCase):
+    def _admin(self):
+        return SimpleNamespace(
+            is_authenticated=True,
+            is_superuser=False,
+            is_admin=True,
+            is_student_user=False,
+            role="ADMIN",
+            privileges=[],
+        )
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
+    def test_deny_request_from_approved_clears_download(self, _mock_admin):
+        access = MagicMock()
+        access.status = TranscriptAccessRequest.Status.APPROVED
+        access.allow_download = True
+        access.download_expires_at = timezone.now()
+
+        result = deny_request(access, self._admin(), admin_note="Revoked")
+
+        self.assertEqual(result.status, TranscriptAccessRequest.Status.DENIED)
+        self.assertFalse(result.allow_download)
+        self.assertIsNone(result.download_expires_at)
+        self.assertEqual(result.admin_note, "Revoked")
+        access.save.assert_called_once()
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
+    def test_update_status_to_expired_clears_download(self, _mock_admin):
+        access = MagicMock()
+        access.status = TranscriptAccessRequest.Status.APPROVED
+        access.allow_download = True
+        access.download_expires_at = timezone.now()
+
+        result = update_transcript_request_status(
+            access,
+            self._admin(),
+            status=TranscriptAccessRequest.Status.EXPIRED,
+            admin_note="Window closed",
+        )
+
+        self.assertEqual(result.status, TranscriptAccessRequest.Status.EXPIRED)
+        self.assertFalse(result.allow_download)
+        self.assertIsNone(result.download_expires_at)
+        access.save.assert_called_once()
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
+    def test_update_status_reopen_pending_clears_review(self, _mock_admin):
+        access = MagicMock()
+        access.status = TranscriptAccessRequest.Status.DENIED
+        access.reviewed_by = self._admin()
+        access.reviewed_at = timezone.now()
+        access.allow_download = False
+        access.download_expires_at = None
+
+        result = update_transcript_request_status(
+            access,
+            self._admin(),
+            status=TranscriptAccessRequest.Status.PENDING,
+        )
+
+        self.assertEqual(result.status, TranscriptAccessRequest.Status.PENDING)
+        self.assertIsNone(result.reviewed_by)
+        self.assertIsNone(result.reviewed_at)
+        access.save.assert_called_once()
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
+    def test_update_status_rejects_approved(self, _mock_admin):
+        access = MagicMock()
+        access.status = TranscriptAccessRequest.Status.PENDING
+
+        with self.assertRaises(ValueError):
+            update_transcript_request_status(
+                access,
+                self._admin(),
+                status=TranscriptAccessRequest.Status.APPROVED,
+            )
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=False)
+    def test_delete_requires_admin(self, _mock_admin):
+        access = MagicMock()
+
+        with self.assertRaises(PermissionError):
+            delete_transcript_request(access, SimpleNamespace(is_authenticated=True))
+
+        access.delete.assert_not_called()
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
+    def test_delete_removes_record(self, _mock_admin):
+        access = MagicMock()
+
+        delete_transcript_request(access, self._admin())
+
+        access.delete.assert_called_once()
