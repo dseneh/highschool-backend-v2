@@ -72,7 +72,7 @@ def count_instructional_days_for_year(
     *,
     end_cap: Optional[date] = None,
 ) -> int:
-    if not academic_year:
+    if not academic_year or not academic_year.start_date or not academic_year.end_date:
         return 0
 
     period_end = academic_year.end_date

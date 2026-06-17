@@ -62,6 +62,14 @@ from .views import (
     StudentListView,
 )
 from .views import DashboardUpcomingView
+from .views.historical_grade import (
+    HistoricalGradeRecordDetailView,
+    HistoricalGradeRecordListView,
+    HistoricalGradeRecordUnverifyView,
+    HistoricalGradeRecordVerifyView,
+    HistoricalGradeStudentSummaryListView,
+    StudentGradeHistoryView,
+)
 
 urlpatterns = [
     path(
@@ -333,6 +341,36 @@ urlpatterns = [
         "guardians/<str:id>/",
         StudentGuardianDetailView.as_view(),
         name="student_guardian_detail",
+    ),
+    path(
+        "historical-grades/students/",
+        HistoricalGradeStudentSummaryListView.as_view(),
+        name="historical_grade_student_list",
+    ),
+    path(
+        "students/<str:student_id>/historical-grades/",
+        HistoricalGradeRecordListView.as_view(),
+        name="historical_grade_list",
+    ),
+    path(
+        "students/<str:student_id>/historical-grades/<str:record_id>/",
+        HistoricalGradeRecordDetailView.as_view(),
+        name="historical_grade_detail",
+    ),
+    path(
+        "students/<str:student_id>/historical-grades/<str:record_id>/verify/",
+        HistoricalGradeRecordVerifyView.as_view(),
+        name="historical_grade_verify",
+    ),
+    path(
+        "students/<str:student_id>/historical-grades/<str:record_id>/unverify/",
+        HistoricalGradeRecordUnverifyView.as_view(),
+        name="historical_grade_unverify",
+    ),
+    path(
+        "students/<str:student_id>/grade-history/",
+        StudentGradeHistoryView.as_view(),
+        name="student_grade_history",
     ),
     # path(
     #     "academic-years/<str:academic_year_id>/sections/<str:section_id>/subjects/<str:subject_id>/gradebooks/",

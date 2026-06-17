@@ -169,13 +169,48 @@ class HonorRollReportView(APIView):
             )
         )
 
+        from students.services.historical_grade_aggregation import (
+            get_flagged_historical_subject_averages,
+        )
+
+        historical_by_student = get_flagged_historical_subject_averages(
+            student_ids,
+            academic_year_id=str(academic_year.id),
+            for_honor_roll=True,
+        )
+
+        averages_map = {
+            str(row["student_id"]): row for row in averages_qs
+        }
+
         results = []
-        for row in averages_qs:
-            average = round(float(row["average_score"] or 0), 2)
+        for student_id in student_ids:
+            sid = str(student_id)
+            row = averages_map.get(sid)
+            historical_values = [float(v) for v in historical_by_student.get(sid, [])]
+
+            if not row and not historical_values:
+                continue
+
+            in_system_avg = float(row["average_score"] or 0) if row else None
+            in_system_count = row["grade_count"] if row else 0
+
+            if in_system_count and historical_values:
+                average = (
+                    (in_system_avg * in_system_count) + sum(historical_values)
+                ) / (in_system_count + len(historical_values))
+                grade_count = in_system_count + len(historical_values)
+            elif historical_values:
+                average = sum(historical_values) / len(historical_values)
+                grade_count = len(historical_values)
+            else:
+                average = in_system_avg or 0
+                grade_count = in_system_count
+
+            average = round(float(average), 2)
             if average < min_average:
                 continue
-            student_id = str(row["student_id"])
-            enrollment = enrollment_map.get(student_id)
+            enrollment = enrollment_map.get(sid)
             if not enrollment:
                 continue
             results.append(
@@ -189,7 +224,7 @@ class HonorRollReportView(APIView):
                     ),
                     "section": enrollment.section.name if enrollment.section else "",
                     "average_score": average,
-                    "grade_count": row["grade_count"],
+                    "grade_count": grade_count,
                 }
             )
 

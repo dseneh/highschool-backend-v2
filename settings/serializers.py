@@ -50,6 +50,11 @@ class GradingSettingsOut(serializers.ModelSerializer):
             "year_closure_require_approved_grades",
             "allow_mid_year_promotion",
             "mid_year_promotion_min_overall_average",
+            "allow_student_transcript_download",
+            "student_transcript_download_scope",
+            "transcript_download_days",
+            "transcript_primary_signatory_position",
+            "transcript_secondary_signatory_position",
             "notes",
             "created_at",
             "updated_at",
@@ -103,6 +108,11 @@ class GradingSettingsIn(serializers.ModelSerializer):
             "year_closure_require_approved_grades",
             "allow_mid_year_promotion",
             "mid_year_promotion_min_overall_average",
+            "allow_student_transcript_download",
+            "student_transcript_download_scope",
+            "transcript_download_days",
+            "transcript_primary_signatory_position",
+            "transcript_secondary_signatory_position",
             "notes",
         ]
 

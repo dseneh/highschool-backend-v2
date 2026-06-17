@@ -90,6 +90,11 @@ class GradingSettingsView(APIView):
             "year_closure_require_approved_grades",
             "allow_mid_year_promotion",
             "mid_year_promotion_min_overall_average",
+            "allow_student_transcript_download",
+            "student_transcript_download_scope",
+            "transcript_download_days",
+            "transcript_primary_signatory_position",
+            "transcript_secondary_signatory_position",
         ]
 
         # Get or create settings (handle case where settings don't exist yet, tenant-filtered)

@@ -255,6 +255,16 @@ class RankingService:
             )
 
         # 4. Calculate Average for each student
+        from students.services.historical_grade_aggregation import (
+            get_flagged_historical_subject_averages,
+        )
+
+        historical_by_student = get_flagged_historical_subject_averages(
+            student_ids,
+            academic_year_id=academic_year_id,
+            for_rankings=True,
+        )
+
         results = []
 
         for student_id, gb_map in grades_by_student.items():
@@ -266,6 +276,9 @@ class RankingService:
                 )
                 if avg is not None:
                     gb_averages.append(avg)
+
+            historical_values = historical_by_student.get(str(student_id), [])
+            gb_averages.extend(float(v) for v in historical_values)
 
             if gb_averages:
                 # Overall Average = Average of Subject Averages

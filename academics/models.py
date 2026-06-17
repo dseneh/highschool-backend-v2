@@ -9,9 +9,19 @@ from django.db import models
 from common.models import BaseModel
 
 class AcademicYear(BaseModel):
-    start_date = models.DateField()
-    end_date = models.DateField()
+    class YearType(models.TextChoices):
+        REGULAR = "regular", "Regular"
+        HISTORICAL = "historical", "Historical"
+
+    start_date = models.DateField(blank=True, null=True)
+    end_date = models.DateField(blank=True, null=True)
     name = models.CharField(max_length=100, blank=True, null=True)
+    year_type = models.CharField(
+        max_length=16,
+        choices=YearType.choices,
+        default=YearType.REGULAR,
+        db_index=True,
+    )
     current = models.BooleanField(default=False)
     status = models.CharField(
         max_length=20,
@@ -20,21 +30,42 @@ class AcademicYear(BaseModel):
     )
 
     def __str__(self):
-        return self.name
+        return self.name or str(self.id)
 
     class Meta:
         db_table = 'academic_year'
         verbose_name = "Academic Year"
         verbose_name_plural = "Academic Years"
-        ordering = ["-start_date"]
+        ordering = ["-start_date", "-name"]
         indexes = [
             models.Index(fields=["name", "start_date"]),
+            models.Index(fields=["year_type", "name"]),
         ]
+
+    @property
+    def is_historical(self) -> bool:
+        return self.year_type == self.YearType.HISTORICAL
+
+    @property
+    def is_regular(self) -> bool:
+        return self.year_type == self.YearType.REGULAR
+
+    def clean(self):
+        super().clean()
+        if self.year_type == self.YearType.REGULAR:
+            if not self.start_date or not self.end_date:
+                raise ValidationError(
+                    "Regular academic years require start and end dates."
+                )
+            if self.start_date >= self.end_date:
+                raise ValidationError("Start date must be before end date.")
+        elif self.start_date and self.end_date and self.start_date >= self.end_date:
+            raise ValidationError("Start date must be before end date.")
 
     @classmethod
     def get_current_academic_year(cls):
         """Get the current academic year for the school."""
-        return cls.objects.filter(current=True).first()
+        return cls.objects.filter(current=True, year_type=cls.YearType.REGULAR).first()
     
     @classmethod
     def get_academic_year(cls, academic_year_id=None):

@@ -11,6 +11,12 @@ from grading.views import (
     StudentFinalGradesView,
     SectionFinalGradesView,
     StudentReportCardPDFView,
+    OfficialTranscriptGenerateView,
+    OfficialTranscriptAccessStatusView,
+    OfficialTranscriptRequestView,
+    OfficialTranscriptGrantView,
+    OfficialTranscriptRequestReviewView,
+    OfficialTranscriptRequestListView,
     AssessmentTypeListCreateView,
     AssessmentTypeDetailView,
     GradeBookListCreateView,
@@ -131,6 +137,44 @@ urlpatterns = [
         "students/<str:student_id>/final-grades/academic-years/<str:academic_year_id>/report-card/",
         StudentReportCardPDFView.as_view(),
         name="student-report-card-pdf",
+    ),
+
+    path(
+        "students/<str:student_id>/transcript/generate/",
+        OfficialTranscriptGenerateView.as_view(),
+        name="student-official-transcript-generate",
+    ),
+    path(
+        "students/<str:student_id>/transcript/access/",
+        OfficialTranscriptAccessStatusView.as_view(),
+        name="student-official-transcript-access",
+    ),
+    path(
+        "students/<str:student_id>/transcript/request/",
+        OfficialTranscriptRequestView.as_view(),
+        name="student-official-transcript-request",
+    ),
+    path(
+        "students/<str:student_id>/transcript/grant/",
+        OfficialTranscriptGrantView.as_view(),
+        name="student-official-transcript-grant",
+    ),
+    path(
+        "students/<str:student_id>/transcript/requests/<str:request_id>/approve/",
+        OfficialTranscriptRequestReviewView.as_view(),
+        {"action": "approve"},
+        name="student-official-transcript-approve",
+    ),
+    path(
+        "students/<str:student_id>/transcript/requests/<str:request_id>/deny/",
+        OfficialTranscriptRequestReviewView.as_view(),
+        {"action": "deny"},
+        name="student-official-transcript-deny",
+    ),
+    path(
+        "transcript-requests/",
+        OfficialTranscriptRequestListView.as_view(),
+        name="transcript-requests-list",
     ),
     # Section-based routes - consolidated endpoint
     path(

@@ -222,3 +222,53 @@ def can_delete_academic_year(is_current: bool, has_enrollments: bool = False) ->
         }
     
     return {"can_delete": True, "reason": None}
+
+
+def validate_historical_academic_year_creation(
+    name: Optional[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    existing_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    if not name or not str(name).strip():
+        return {"valid": False, "error": "Academic year name is required", "data": None}
+
+    normalized_name = str(name).strip()
+    if existing_names is not None:
+        if any(
+            (existing or "").strip().lower() == normalized_name.lower()
+            for existing in existing_names
+        ):
+            return {
+                "valid": False,
+                "error": f"Academic year named '{normalized_name}' already exists",
+                "data": None,
+            }
+
+    data: Dict[str, Any] = {
+        "name": normalized_name,
+        "year_type": "historical",
+        "status": "inactive",
+        "current": False,
+    }
+
+    if start_date:
+        validated_start = validate_date_format(start_date)
+        if not validated_start:
+            return {"valid": False, "error": "Invalid start date format. Use YYYY-MM-DD", "data": None}
+        data["start_date"] = datetime.strptime(validated_start, "%Y-%m-%d").date()
+    else:
+        data["start_date"] = None
+
+    if end_date:
+        validated_end = validate_date_format(end_date)
+        if not validated_end:
+            return {"valid": False, "error": "Invalid end date format. Use YYYY-MM-DD", "data": None}
+        data["end_date"] = datetime.strptime(validated_end, "%Y-%m-%d").date()
+    else:
+        data["end_date"] = None
+
+    if data["start_date"] and data["end_date"] and data["start_date"] >= data["end_date"]:
+        return {"valid": False, "error": "Start date must be before end date", "data": None}
+
+    return {"valid": True, "error": None, "data": data}

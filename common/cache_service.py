@@ -286,7 +286,7 @@ class DataCache:
             return list(
                 AcademicYear.objects.all()
                 .order_by('-start_date')
-                .values('id', 'name', 'start_date', 'end_date', 'current', 'status')
+                .values('id', 'name', 'start_date', 'end_date', 'year_type', 'current', 'status')
             )
         
         return DataCache._get_cached_data(
@@ -309,7 +309,7 @@ class DataCache:
             try:
                 from academics.serializers import AcademicYearSerializer
                 academic_year = AcademicYear.objects.filter(
-                    current=True
+                    current=True, year_type=AcademicYear.YearType.REGULAR
                 ).first()
                 if academic_year:
                     # Use serializer to include semesters, duration and stats
@@ -324,7 +324,9 @@ class DataCache:
             # Fallback: return data with duration calculation
             try:
                 from academics.serializers import AcademicYearSerializer
-                academic_year = AcademicYear.objects.filter(current=True).first()
+                academic_year = AcademicYear.objects.filter(
+                    current=True, year_type=AcademicYear.YearType.REGULAR
+                ).first()
                 if academic_year:
                     # Calculate duration
                     total_days = (academic_year.end_date - academic_year.start_date).days + 1

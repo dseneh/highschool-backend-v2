@@ -120,3 +120,45 @@ class StudentAccessPolicy(BaseSchoolAccessPolicy):
             "condition": "is_role_in:viewer",
         },
     ]
+
+
+class HistoricalGradeAccessPolicy(BaseSchoolAccessPolicy):
+    """Permissions for historical / transferred transcript grades."""
+
+    statements = [
+        {
+            "action": ["list", "retrieve", "get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+        },
+        {
+            "action": ["*"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:admin",
+        },
+        {
+            "action": [
+                "list",
+                "retrieve",
+                "get",
+                "head",
+                "options",
+                "create",
+                "update",
+                "partial_update",
+                "post",
+                "put",
+                "patch",
+            ],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:registrar,data_entry",
+        },
+        {
+            "action": ["destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:admin",
+        },
+    ]

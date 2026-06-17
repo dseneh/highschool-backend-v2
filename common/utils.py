@@ -110,6 +110,25 @@ def get_object_by_uuid_or_fields(model_class, lookup_value, fields=None):
         )
 
 
+def serializer_errors_to_detail(errors, prefix=""):
+    """Flatten DRF serializer errors into a single human-readable message."""
+    if isinstance(errors, dict):
+        parts = []
+        for field, messages in errors.items():
+            field_label = f"{prefix}{field}"
+            parts.append(serializer_errors_to_detail(messages, prefix=f"{field_label}: "))
+        return " ".join(part for part in parts if part)
+    if isinstance(errors, list):
+        parts = []
+        for message in errors:
+            if isinstance(message, (dict, list)):
+                parts.append(serializer_errors_to_detail(message, prefix=prefix))
+            else:
+                parts.append(f"{prefix}{message}".strip())
+        return " ".join(part for part in parts if part)
+    return f"{prefix}{errors}".strip()
+
+
 def get_tenant_from_request(request):
     if request:
         # Try request.headers first (Django 2.2+), fallback to META

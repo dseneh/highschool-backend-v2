@@ -25,6 +25,13 @@ from hr.views import (
 )
 
 
+class EmployeePositionPaginationTests(SimpleTestCase):
+    def test_employee_position_viewset_disables_pagination(self):
+        from hr.views import EmployeePositionViewSet
+
+        self.assertIsNone(EmployeePositionViewSet.pagination_class)
+
+
 class EmployeeHrModelSmokeTest(SimpleTestCase):
     def test_employee_model_wires_department_and_position(self):
         department = EmployeeDepartment(name="Administration", code="ADMIN")

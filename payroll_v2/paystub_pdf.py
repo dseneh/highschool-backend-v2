@@ -166,7 +166,7 @@ def _payroll_show_leave_on_paystub() -> bool:
 
 def _format_time_off_cell(value) -> str:
     if value is None or value == "":
-        return "—"
+        return "-"
     try:
         parsed = Decimal(str(value))
     except Exception:
@@ -209,7 +209,7 @@ def _format_employee_address(employee) -> str:
         (employee.country or "").strip(),
     ]
     cleaned = [part for part in parts if part]
-    return ", ".join(cleaned) if cleaned else "—"
+    return ", ".join(cleaned) if cleaned else "-"
 
 
 class PaystubV2PDF:
@@ -336,8 +336,8 @@ class PaystubV2PDF:
         if line.calculation_type == CalculationType.PERCENTAGE:
             metadata = line.metadata or {}
             pct = metadata.get("value", metadata.get("percentage"))
-            rate = f"{pct}%" if pct is not None else "—"
-            return rate, "—"
+            rate = f"{pct}%" if pct is not None else "-"
+            return rate, "-"
         return self._money(line.amount), "1"
 
     def _currency_note(self) -> str:
@@ -388,8 +388,8 @@ class PaystubV2PDF:
         return styles
 
     def _build_employee_period_grid(self) -> Table:
-        department = getattr(self.employee.department, "name", None) or "—"
-        position = getattr(self.employee.position, "title", None) or "—"
+        department = getattr(self.employee.department, "name", None) or "-"
+        position = getattr(self.employee.position, "title", None) or "-"
         address = _format_employee_address(self.employee)
         period_range = (
             f"{self.run.pay_period_start:%b} {self.run.pay_period_start.day}, {self.run.pay_period_start:%Y} "
@@ -523,8 +523,8 @@ class PaystubV2PDF:
             rows.append(
                 EarningRow(
                     label="Gross Earnings",
-                    rate_or_units="—",
-                    units="—",
+                    rate_or_units="-",
+                    units="-",
                     amount=self.item.gross_pay,
                     ytd=self.ytd.gross,
                 )
@@ -944,9 +944,9 @@ class PaystubV2SnapshotPDF:
 
         right_lines = [
             Paragraph(period.get("scheduleLabel") or "Pay Period", self.block_title_style),
-            Paragraph(period.get("periodRange") or "—", self.block_line_style),
-            Paragraph(period.get("paymentDateLabel") or "—", self.block_line_style),
-            Paragraph(f"Stub Number: {period.get('stubNumber') or '—'}", self.block_line_style),
+            Paragraph(period.get("periodRange") or "-", self.block_line_style),
+            Paragraph(period.get("paymentDateLabel") or "-", self.block_line_style),
+            Paragraph(f"Stub Number: {period.get('stubNumber') or '-'}", self.block_line_style),
         ]
 
         table = Table([[left_lines, right_lines]], colWidths=[CONTENT_WIDTH / 2, CONTENT_WIDTH / 2], hAlign="LEFT")

@@ -138,6 +138,38 @@ class GradingSettings(BaseModel):
         help_text="Minimum overall average (%) for mid-year promotion",
     )
 
+    # Official transcript access
+    allow_student_transcript_download = models.BooleanField(
+        default=False,
+        help_text=(
+            "When enabled, eligible students may download official transcripts "
+            "without submitting a request."
+        ),
+    )
+    student_transcript_download_scope = models.CharField(
+        max_length=20,
+        choices=[
+            ("enrolled", "Currently Enrolled Students"),
+            ("all_active", "All Active Students"),
+        ],
+        default="enrolled",
+        help_text="Which students qualify for self-service transcript download",
+    )
+    transcript_download_days = models.PositiveSmallIntegerField(
+        default=3,
+        help_text="Number of days a student may download after request approval or admin grant",
+    )
+    transcript_primary_signatory_position = models.CharField(
+        max_length=100,
+        default="Principal",
+        help_text="Employee position title used for the first transcript signatory",
+    )
+    transcript_secondary_signatory_position = models.CharField(
+        max_length=100,
+        default="Registrar",
+        help_text="Employee position title used for the second transcript signatory",
+    )
+
     # Metadata
     notes = models.TextField(
         blank=True, null=True, help_text="Additional notes about grading configuration"

@@ -17,6 +17,14 @@ from .final_grades import (
     SectionFinalGradesView,
     StudentReportCardPDFView,
 )
+from .transcript import (
+    OfficialTranscriptGenerateView,
+    OfficialTranscriptAccessStatusView,
+    OfficialTranscriptRequestView,
+    OfficialTranscriptGrantView,
+    OfficialTranscriptRequestReviewView,
+    OfficialTranscriptRequestListView,
+)
 from .gradebook import GradeBookListCreateView, GradeBookDetailView, TeacherGradebookListView
 from .grade_letter import GradeLetterListCreateView, GradeLetterDetailView, GenerateDefaultGradeLettersView
 from .honor_category import HonorCategoryListCreateView, HonorCategoryDetailView
@@ -48,6 +56,12 @@ __all__ = [
     "StudentFinalGradesView",
     "SectionFinalGradesView",
     "StudentReportCardPDFView",
+    "OfficialTranscriptGenerateView",
+    "OfficialTranscriptAccessStatusView",
+    "OfficialTranscriptRequestView",
+    "OfficialTranscriptGrantView",
+    "OfficialTranscriptRequestReviewView",
+    "OfficialTranscriptRequestListView",
     "GradeBookListCreateView",
     "GradeBookDetailView",
     "TeacherGradebookListView",

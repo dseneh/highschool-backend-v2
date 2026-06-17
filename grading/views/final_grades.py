@@ -220,6 +220,23 @@ class StudentFinalGradesView(APIView):
                 student=student, academic_year=academic_year
             )
         except Enrollment.DoesNotExist:
+            from students.services.unified_student_grades import (
+                build_historical_only_response,
+                student_has_historical_grades_for_year,
+            )
+
+            if student_has_historical_grades_for_year(
+                student, academic_year, verified_only=False
+            ):
+                include_average = (
+                    request.query_params.get("include_average", "true").lower() == "true"
+                )
+                payload = build_historical_only_response(
+                    student, academic_year, verified_only=False
+                )
+                if not include_average:
+                    payload.pop("overall_averages", None)
+                return Response(payload)
             return Response(
                 {"detail": "Student is not enrolled in this academic year."}, status=404
             )

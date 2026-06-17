@@ -19,17 +19,51 @@ class AcademicYearListView(APIView):
     permission_classes = [AcademicsAccessPolicy]
 
     def get(self, request):        
-        # Use cached data for better performance
         force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
+        include_historical = request.query_params.get('include_historical', 'false').lower() == 'true'
+        include_inactive = request.query_params.get('include_inactive', 'false').lower() == 'true'
         academic_years = DataCache.get_academic_years(force_refresh)
         
-        # Filter for active years only
-        active_years = [year for year in academic_years if year.get('status') == 'active']
+        filtered = academic_years
+        if not include_inactive:
+            filtered = [year for year in filtered if year.get('status') == 'active']
+        if not include_historical:
+            filtered = [
+                year for year in filtered
+                if year.get('year_type', 'regular') == 'regular'
+            ]
         
-        return Response(active_years)
+        return Response(filtered)
 
     def post(self, request):
         req_data: dict = request.data
+        year_type = req_data.get("year_type", "regular")
+
+        if year_type == "historical":
+            existing_names = list(
+                AcademicYear.objects.exclude(name__isnull=True)
+                .exclude(name="")
+                .values_list("name", flat=True)
+            )
+            validation_result = academic_year_service.validate_historical_academic_year_creation(
+                name=req_data.get("name"),
+                start_date=req_data.get("start_date"),
+                end_date=req_data.get("end_date"),
+                existing_names=existing_names,
+            )
+            if not validation_result["valid"]:
+                return Response({"detail": validation_result["error"]}, status=400)
+            try:
+                academic_year = academic_year_adapter.create_academic_year_in_db(
+                    data=validation_result["data"],
+                    user=request.user,
+                )
+                serializer = AcademicYearSerializer(
+                    academic_year, context={"request": request}
+                )
+                return Response(serializer.data, status=201)
+            except Exception as e:
+                return Response({"detail": str(e)}, status=400)
 
         # Validate using business logic
         validation_result = academic_year_service.validate_academic_year_creation(

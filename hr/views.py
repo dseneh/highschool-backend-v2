@@ -54,6 +54,7 @@ class EmployeePositionViewSet(viewsets.ModelViewSet):
     queryset = EmployeePosition.objects.select_related("department").all().order_by("title")
     serializer_class = EmployeePositionSerializer
     permission_classes = [HRAccessPolicy]
+    pagination_class = None
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)

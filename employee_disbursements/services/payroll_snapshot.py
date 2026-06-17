@@ -93,8 +93,8 @@ def _line_rate_units(line) -> tuple[str, str]:
     if line.calculation_type == CalculationType.PERCENTAGE:
         metadata = line.metadata or {}
         pct = metadata.get("value", metadata.get("percentage"))
-        rate = f"{pct}%" if pct is not None else "—"
-        return rate, "—"
+        rate = f"{pct}%" if pct is not None else "-"
+        return rate, "-"
     return _format_amount(line.amount or Decimal("0.00")), "1"
 
 
@@ -184,8 +184,8 @@ def _build_earnings(
         rows.append(
             {
                 "label": "Gross Earnings",
-                "rateOrUnits": "—",
-                "units": "—",
+                "rateOrUnits": "-",
+                "units": "-",
                 "amount": _format_amount(gross),
                 "periodAmount": _format_amount(gross),
                 "ytd": _format_ytd_amount(ytd.gross),

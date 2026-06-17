@@ -10,6 +10,7 @@ from typing import Optional
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.conf import settings
 from django.db import models
 from django.db.models import (
     Sum, F, ExpressionWrapper, FloatField, Count, CheckConstraint, Q, Index
@@ -327,7 +328,7 @@ class GradeBook(BaseModel):
         ]
 
     def __str__(self) -> str:
-        return f"{self.name} — {self.section_subject} [{self.academic_year}]"
+        return f"{self.name} - {self.section_subject} [{self.academic_year}]"
 
     # ---------- Final grade helpers (APPROVED only) ----------
 
@@ -810,7 +811,7 @@ class Grade(BaseModel):
         constraints = [CheckConstraint(check=Q(score__gte=0), name="grade_score_non_negative")]
 
     def __str__(self) -> str:
-        return f"{self.student} — {self.assessment.name}: {self.score} ({self.status})"
+        return f"{self.student} - {self.assessment.name}: {self.score} ({self.status})"
 
     def clean(self):
         """
@@ -1019,3 +1020,93 @@ class DefaultAssessmentTemplate(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.assessment_type.name})"
+
+
+class TranscriptAccessRequest(BaseModel):
+    """Student transcript request or admin-initiated access grant."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", _("Pending")
+        APPROVED = "approved", _("Approved")
+        DENIED = "denied", _("Denied")
+        EXPIRED = "expired", _("Expired")
+
+    class Source(models.TextChoices):
+        STUDENT_REQUEST = "student_request", _("Student Request")
+        ADMIN_GRANT = "admin_grant", _("Admin Grant")
+
+    student = models.ForeignKey(
+        "students.Student",
+        on_delete=models.CASCADE,
+        related_name="transcript_access_requests",
+        db_index=True,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.STUDENT_REQUEST,
+    )
+    allow_download = models.BooleanField(default=False)
+    send_email = models.BooleanField(default=False)
+    download_expires_at = models.DateTimeField(blank=True, null=True, default=None)
+    email_sent_at = models.DateTimeField(blank=True, null=True, default=None)
+    student_note = models.TextField(blank=True, default="")
+    admin_note = models.TextField(blank=True, default="")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="transcript_access_requests_created",
+        blank=True,
+        null=True,
+        default=None,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="transcript_access_requests_reviewed",
+        blank=True,
+        null=True,
+        default=None,
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True, default=None)
+
+    class Meta:
+        db_table = "transcript_access_request"
+        ordering = ["-created_at"]
+        indexes = [
+            Index(fields=["student", "status"]),
+            Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"TranscriptAccess({self.student_id}, {self.status})"
+
+    @property
+    def is_download_active(self) -> bool:
+        from django.utils import timezone
+
+        if self.status != self.Status.APPROVED or not self.allow_download:
+            return False
+        if self.download_expires_at and timezone.now() > self.download_expires_at:
+            return False
+        return True
+
+    def mark_expired_if_needed(self) -> bool:
+        from django.utils import timezone
+
+        if (
+            self.status == self.Status.APPROVED
+            and self.allow_download
+            and self.download_expires_at
+            and timezone.now() > self.download_expires_at
+        ):
+            self.status = self.Status.EXPIRED
+            self.save(update_fields=["status", "updated_at"])
+            return True
+        return False

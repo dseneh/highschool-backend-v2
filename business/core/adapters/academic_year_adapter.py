@@ -41,9 +41,10 @@ def create_academic_year_in_db(data: Dict[str, Any], user=None) -> AcademicYear:
         AcademicYear.objects.filter(current=True).update(current=False)
     
     academic_year = AcademicYear.objects.create(
-        start_date=data['start_date'],
-        end_date=data['end_date'],
+        start_date=data.get('start_date'),
+        end_date=data.get('end_date'),
         name=data.get('name', ''),
+        year_type=data.get('year_type', AcademicYear.YearType.REGULAR),
         current=data.get('current', False),
         status=data.get('status', 'active'),
         created_by=user,

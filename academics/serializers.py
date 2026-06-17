@@ -235,6 +235,7 @@ class AcademicYearSerializer(serializers.ModelSerializer):
             "name",
             "start_date",
             "end_date",
+            "year_type",
             "current",
             "status",
         ]
@@ -243,17 +244,25 @@ class AcademicYearSerializer(serializers.ModelSerializer):
     def to_representation(self, instance: AcademicYear):
         response = super().to_representation(instance)
 
-        today = date.today()
-        f = (
-            Q(start_date__gte=instance.start_date) & Q(end_date__lte=instance.end_date)
-        ) | Q(start_date__lte=today) & Q(end_date__gte=today)
-        semesters = instance.semesters.filter(f)
-        semester_serializer = SemesterSerializer(semesters, many=True, context=self.context)
-        response["semesters"] = semester_serializer.data
+        if not instance.start_date or not instance.end_date:
+            response["semesters"] = []
+            response["duration"] = {
+                "total_days": 0,
+                "days_elapsed": 0,
+                "completion_percentage": 0,
+            }
+        else:
+            today = date.today()
+            f = (
+                Q(start_date__gte=instance.start_date) & Q(end_date__lte=instance.end_date)
+            ) | Q(start_date__lte=today) & Q(end_date__gte=today)
+            semesters = instance.semesters.filter(f)
+            semester_serializer = SemesterSerializer(semesters, many=True, context=self.context)
+            response["semesters"] = semester_serializer.data
 
-        from academics.services.school_days import get_academic_year_duration
+            from academics.services.school_days import get_academic_year_duration
 
-        response["duration"] = get_academic_year_duration(instance)
+            response["duration"] = get_academic_year_duration(instance)
 
         # Include stats if requested
         include_stats = self.context.get('include_stats', False)
