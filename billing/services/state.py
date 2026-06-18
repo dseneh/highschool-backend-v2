@@ -181,9 +181,24 @@ def build_billing_snapshot(tenant, *, for_admin: bool = False) -> BillingSnapsho
     )
 
 
+_PUBLIC_BILLING_FIELDS = frozenset(
+    {
+        "billing_state",
+        "days_until_renewal",
+        "complimentary_until",
+        "is_write_allowed",
+        "is_admin_login_only",
+        "show_billing_banner",
+        "banner_variant",
+        "banner_message",
+        "banner_cta_label",
+    }
+)
+
+
 def billing_summary_dict(tenant, *, for_admin: bool = False) -> dict[str, Any]:
     snap = build_billing_snapshot(tenant, for_admin=for_admin)
-    return {
+    payload = {
         "billing_state": snap.billing_state,
         "days_until_renewal": snap.days_until_renewal,
         "days_past_due": snap.days_past_due,
@@ -199,3 +214,6 @@ def billing_summary_dict(tenant, *, for_admin: bool = False) -> dict[str, Any]:
         "banner_message": snap.banner_message,
         "banner_cta_label": snap.banner_cta_label,
     }
+    if for_admin:
+        return payload
+    return {key: payload[key] for key in _PUBLIC_BILLING_FIELDS if key in payload}

@@ -8,7 +8,8 @@ Configure these objects in the [Stripe Dashboard](https://dashboard.stripe.com) 
 |---------|---------------|-------------------|
 | EzySchool Standard | `base` | *(empty)* |
 | EzySchool Payroll | `addon` | `payroll` |
-| EzySchool SMS | `addon` | `sms` |
+
+*(SMS add-on is planned for a future release — skip for initial rollout.)*
 
 ## 2. Prices (lookup keys)
 
@@ -18,9 +19,8 @@ Configure these objects in the [Stripe Dashboard](https://dashboard.stripe.com) 
 | `ezyschool_standard_monthly` | $0.42 | month | licensed (students) |
 | `addon_payroll_annual` | $4.00 | year | licensed (employees) |
 | `addon_payroll_monthly` | $0.34 | month | licensed (employees) |
-| `addon_sms_metered` | $0.04 | — | metered (SMS) |
 
-Create a **Billing Meter** named `sms_sent` and link it to `addon_sms_metered`.
+*(SMS metered price `addon_sms_metered` — add when SMS notifications ship.)*
 
 ## 3. Webhook endpoint
 
@@ -38,13 +38,30 @@ Copy the signing secret to `STRIPE_WEBHOOK_SECRET`.
 
 ## 4. Environment variables
 
+Only **platform-wide** keys are required. Checkout/portal return URLs are built **per tenant** from `FRONTEND_DOMAIN` + the tenant `schema_name` (same helper as password-reset links). You do **not** configure `{workspace}` in env.
+
 ```env
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_PUBLISHABLE_KEY=pk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_CHECKOUT_SUCCESS_URL=https://{workspace}.ezyschool.app/settings/billing?checkout=success
-STRIPE_CHECKOUT_CANCEL_URL=https://{workspace}.ezyschool.app/settings/billing?checkout=cancel
-STRIPE_PORTAL_RETURN_URL=https://{workspace}.ezyschool.app/settings/billing
+
+# Used to build https://<schema_name>.<your-domain>/settings?tab=billing
+FRONTEND_DOMAIN=https://ezyschool.app
+FRONTEND_USE_SUBDOMAIN=true
+```
+
+**How redirect URLs are resolved**
+
+1. **Preferred:** the UI sends `success_url`, `cancel_url`, and `return_url` using `window.location.origin` (already includes the tenant subdomain).
+2. **Fallback:** the API builds them server-side, e.g. `https://ldtc.ezyschool.app/settings?tab=billing&checkout=success`.
+3. **Security:** if a client sends a URL whose host does not match that tenant's workspace, the server ignores it and uses the built-in default.
+
+Optional legacy overrides (single-tenant dev only — not needed in production):
+
+```env
+# STRIPE_CHECKOUT_SUCCESS_URL=
+# STRIPE_CHECKOUT_CANCEL_URL=
+# STRIPE_PORTAL_RETURN_URL=
 ```
 
 For local dev, use Stripe CLI:

@@ -16,7 +16,6 @@ from rest_framework.views import APIView
 from billing.constants import (
     PRICE_LOOKUP_PAYROLL_ANNUAL,
     PRICE_LOOKUP_PAYROLL_MONTHLY,
-    PRICE_LOOKUP_SMS_METERED,
     PRICE_LOOKUP_STANDARD_ANNUAL,
     PRICE_LOOKUP_STANDARD_MONTHLY,
 )
@@ -31,6 +30,7 @@ from billing.services.stripe_client import (
     stripe_configured,
 )
 from billing.services.stripe_sync import find_tenant_for_stripe_object, sync_tenant_from_subscription
+from billing.services.urls import resolve_checkout_urls, resolve_portal_return_url
 from core.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,6 @@ class BillingCheckoutView(APIView):
 
         interval = (request.data.get("interval") or "year").lower()
         include_payroll = bool(request.data.get("include_payroll", False))
-        include_sms = bool(request.data.get("include_sms", False))
         academic_year_id = request.data.get("academic_year_id")
 
         if interval not in {"year", "month"}:
@@ -109,23 +108,14 @@ class BillingCheckoutView(APIView):
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        if include_sms:
-            try:
-                sms_price = retrieve_price_by_lookup_key(PRICE_LOOKUP_SMS_METERED)
-                line_items.append({"price": sms_price["id"]})
-            except ValueError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
         customer_id = ensure_stripe_customer(tenant)
         client = get_stripe_client()
 
-        success_url = request.data.get("success_url") or settings.STRIPE_CHECKOUT_SUCCESS_URL
-        cancel_url = request.data.get("cancel_url") or settings.STRIPE_CHECKOUT_CANCEL_URL
-        if not success_url or not cancel_url:
-            return Response(
-                {"detail": "Checkout success/cancel URLs are not configured."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+        success_url, cancel_url = resolve_checkout_urls(
+            tenant,
+            success_url=request.data.get("success_url"),
+            cancel_url=request.data.get("cancel_url"),
+        )
 
         session = client.checkout.Session.create(
             mode="subscription",
@@ -163,9 +153,7 @@ class BillingPortalView(APIView):
         if not tenant.stripe_customer_id:
             return Response({"detail": "No Stripe customer for this workspace."}, status=status.HTTP_400_BAD_REQUEST)
 
-        return_url = request.data.get("return_url") or settings.STRIPE_PORTAL_RETURN_URL
-        if not return_url:
-            return Response({"detail": "Portal return URL is not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return_url = resolve_portal_return_url(tenant, return_url=request.data.get("return_url"))
 
         client = get_stripe_client()
         session = client.billing_portal.Session.create(
