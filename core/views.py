@@ -126,10 +126,23 @@ class TenantViewSet(ModelViewSet):
         "disabled_access_allow_tenant_admins",
         "disabled_access_allowed_paths",
         "disabled_access_allowed_users",
-        "complimentary_until",
-        "complimentary_note",
-        "enabled_addons",
     ]
+    PLATFORM_BILLING_UPDATE_FIELDS = frozenset(
+        {
+            "complimentary_until",
+            "complimentary_note",
+            "enabled_addons",
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "subscription_status",
+            "billing_interval",
+            "current_period_end",
+            "past_due_since",
+            "billing_enrollment_count",
+            "billing_employee_count",
+            "promotion_code_redeemed",
+        }
+    )
     AUDITED_CONTROL_FIELDS = [
         "status",
         "active",
@@ -282,6 +295,14 @@ class TenantViewSet(ModelViewSet):
         validate_tenant_is_in_public_schema()
         serializer.save()
 
+    def _allowed_update_fields(self, request):
+        from common.permissions import IsSuperAdmin
+
+        fields = list(self.ALLOWED_UPDATE_FIELDS)
+        if IsSuperAdmin().has_permission(request, self):
+            fields.extend(sorted(self.PLATFORM_BILLING_UPDATE_FIELDS))
+        return fields
+
     def update(self, request, *args, **kwargs):
         """
         Update tenant using field filtering for performance.
@@ -295,7 +316,7 @@ class TenantViewSet(ModelViewSet):
         response = update_model_fields(
             request,
             instance,
-            self.ALLOWED_UPDATE_FIELDS,
+            self._allowed_update_fields(request),
             TenantSerializer,
             context={"request": request},
         )
@@ -314,7 +335,7 @@ class TenantViewSet(ModelViewSet):
         response = update_model_fields(
             request,
             instance,
-            self.ALLOWED_UPDATE_FIELDS,
+            self._allowed_update_fields(request),
             TenantSerializer,
             context={"request": request},
         )

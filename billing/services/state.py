@@ -195,9 +195,31 @@ _PUBLIC_BILLING_FIELDS = frozenset(
     }
 )
 
+# Read-only subscription view for school tenant admins (Settings → Billing).
+_TENANT_ADMIN_BILLING_FIELDS = _PUBLIC_BILLING_FIELDS | frozenset(
+    {
+        "renewal_date",
+        "subscription_status",
+        "billing_interval",
+        "enabled_addons",
+        "days_past_due",
+    }
+)
 
-def billing_summary_dict(tenant, *, for_admin: bool = False) -> dict[str, Any]:
-    snap = build_billing_snapshot(tenant, for_admin=for_admin)
+
+def billing_summary_dict(
+    tenant,
+    *,
+    for_banner: bool = False,
+    scope: str = "public",
+) -> dict[str, Any]:
+    """
+    scope:
+      - public: unauthenticated / generic tenant discovery
+      - tenant_admin: school workspace admin (subscribe + read-only status)
+      - platform: platform superadmin (full operational fields)
+    """
+    snap = build_billing_snapshot(tenant, for_admin=for_banner)
     payload = {
         "billing_state": snap.billing_state,
         "days_until_renewal": snap.days_until_renewal,
@@ -214,6 +236,8 @@ def billing_summary_dict(tenant, *, for_admin: bool = False) -> dict[str, Any]:
         "banner_message": snap.banner_message,
         "banner_cta_label": snap.banner_cta_label,
     }
-    if for_admin:
+    if scope == "platform":
         return payload
+    if scope == "tenant_admin":
+        return {key: payload[key] for key in _TENANT_ADMIN_BILLING_FIELDS if key in payload}
     return {key: payload[key] for key in _PUBLIC_BILLING_FIELDS if key in payload}

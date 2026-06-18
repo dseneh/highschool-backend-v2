@@ -50,7 +50,13 @@ class BillingSummaryView(APIView):
         tenant = _resolve_tenant(request)
         if not tenant:
             return Response({"detail": "Tenant not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(billing_summary_dict(tenant, for_admin=True))
+        return Response(
+            billing_summary_dict(
+                tenant,
+                for_banner=True,
+                scope="tenant_admin",
+            )
+        )
 
 
 class BillingCheckoutView(APIView):

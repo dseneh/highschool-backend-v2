@@ -164,12 +164,20 @@ class PublicTenantSerializer(BaseTenantSerializer):
         from billing.services.state import billing_summary_dict
 
         request = self.context.get("request")
-        for_admin = False
-        if request and getattr(request, "user", None) and request.user.is_authenticated:
-            from billing.permissions import user_is_tenant_admin
+        user = getattr(request, "user", None) if request else None
+        authenticated = bool(user and getattr(user, "is_authenticated", False))
+        if not authenticated:
+            return billing_summary_dict(obj, for_banner=False, scope="public")
 
-            for_admin = user_is_tenant_admin(request.user)
-        return billing_summary_dict(obj, for_admin=for_admin)
+        from billing.permissions import user_is_platform_superadmin, user_is_tenant_admin
+
+        if user_is_platform_superadmin(user):
+            return billing_summary_dict(obj, for_banner=True, scope="platform")
+
+        if user_is_tenant_admin(user):
+            return billing_summary_dict(obj, for_banner=True, scope="tenant_admin")
+
+        return billing_summary_dict(obj, for_banner=False, scope="public")
 
     def to_representation(self, instance):
         """
