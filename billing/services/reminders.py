@@ -171,7 +171,7 @@ def send_all_billing_reminders(*, dry_run: bool = False) -> dict[str, int]:
     """Scan all active tenants and send due billing reminder emails."""
     totals = {"tenants_checked": 0, "emails_sent": 0, "skipped_dry_run": 0}
 
-    tenants = Tenant.objects.exclude(schema_name="public").filter(is_active=True)
+    tenants = Tenant.objects.exclude(schema_name="public").filter(active=True)
     for tenant in tenants.iterator():
         totals["tenants_checked"] += 1
         if dry_run:
