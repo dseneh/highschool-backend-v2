@@ -318,15 +318,12 @@ class BulkGradeUploadView(APIView):
         # Validate required columns
         if 'student_id' not in df.columns:
             raise ValueError(f"'Student ID' or 'id_number' column not found in row {header_row_index + 1}. Ensure the header row has one of these columns.")
-        
-        if 'student_name' not in df.columns:
-            raise ValueError(f"'Student Name' column not found in row {header_row_index + 1}. Ensure the header row has 'Student Name' or 'student_name' column.")
-        
-        # Get assessment columns (all columns except student_id and student_name)
+
+        # Get assessment columns (all columns except student_id and optional student_name)
         assessment_columns = [col for col in df.columns if col not in ['student_id', 'student_name']]
         
         if not assessment_columns:
-            raise ValueError("No assessment columns found. Please add at least one assessment column after 'Student Name'.")
+            raise ValueError("No assessment columns found. Please add at least one assessment column after the student identifier columns.")
 
         # Validate Subject using the current upload context instead of a global name lookup.
         subject_identifier = metadata['subject']
@@ -473,15 +470,6 @@ class BulkGradeUploadView(APIView):
                         'error': f'Student not found with ID: {student_id}'
                     })
                     continue
-                
-                # Verify student name (optional warning)
-                student_name_in_file = str(row['student_name']).strip() if not pd.isna(row['student_name']) else ''
-                if student_name_in_file and student.get_full_name().lower() != student_name_in_file.lower():
-                    stats['warnings'].append({
-                        'row': row_number,
-                        'student_id': student_id,
-                        'warning': f"Name mismatch. Expected: '{student.get_full_name()}', Found: '{student_name_in_file}'"
-                    })
                 
                 # Get enrollment
                 enrollment_id = enrollments_cache.get(student.id)
@@ -744,8 +732,6 @@ class BulkGradeUploadView(APIView):
 
         if 'student_id' not in df.columns:
             raise ValueError("'Student ID' column not found in header row.")
-        if 'student_name' not in df.columns:
-            raise ValueError("'Student Name' column not found in header row.")
 
         # Columns after student_id and student_name are marking period labels.
         # Skip average/summary columns (sem avg, yearly avg) — they are read-only in the template.
@@ -756,7 +742,7 @@ class BulkGradeUploadView(APIView):
             and 'average' not in str(col).strip().lower()
         ]
         if not mp_columns:
-            raise ValueError("No marking period columns found after Student Name.")
+            raise ValueError("No marking period columns found after the student identifier columns.")
 
         # =====================================================================
         # STEP 3: Resolve subject
@@ -906,14 +892,6 @@ class BulkGradeUploadView(APIView):
                         'error': f'Student not found with ID: {student_id}',
                     })
                     continue
-
-                # Optional name warning
-                student_name_in_file = _normalize_excel_text(row.get('student_name', ''))
-                if student_name_in_file and student.get_full_name().lower() != student_name_in_file.lower():
-                    stats['warnings'].append({
-                        'row': row_number, 'student_id': student_id,
-                        'warning': f"Name mismatch. Expected: '{student.get_full_name()}', Found: '{student_name_in_file}'",
-                    })
 
                 enrollment_id = enrollments_cache.get(student.id)
                 if not enrollment_id:
