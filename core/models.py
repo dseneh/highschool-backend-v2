@@ -212,6 +212,89 @@ class Tenant(TenantBase):
         help_text="Comprehensive theme configuration including colors, typography, spacing, shadows, etc."
     )
     
+    # Workspace provisioning (async background creation)
+    provisioning_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("completed", "Completed"),
+            ("queued", "Queued"),
+            ("running", "Running"),
+            ("failed", "Failed"),
+        ],
+        default="completed",
+        help_text="Background workspace setup status. 'completed' for fully provisioned tenants.",
+    )
+    provisioning_step = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Current provisioning step key (e.g. create_schema, provision_defaults).",
+    )
+    provisioning_progress = models.PositiveSmallIntegerField(
+        default=100,
+        help_text="Provisioning progress percentage (0-100).",
+    )
+    provisioning_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Last provisioning failure message, if any.",
+    )
+    provisioning_completed_steps = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of completed provisioning step keys (used for resume/retry).",
+    )
+    provisioning_payload = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Stored create payload (domain, desired active/status, etc.) for retry.",
+    )
+
+    # Workspace deletion (async background soft/hard delete)
+    deletion_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("none", "None"),
+            ("queued", "Queued"),
+            ("running", "Running"),
+            ("completed", "Completed"),
+            ("failed", "Failed"),
+        ],
+        default="none",
+        help_text="Background deletion job status.",
+    )
+    deletion_mode = models.CharField(
+        max_length=10,
+        choices=[
+            ("", "None"),
+            ("soft", "Soft"),
+            ("hard", "Hard"),
+        ],
+        default="",
+        blank=True,
+        help_text="Pending or last deletion mode: soft (retain data) or hard (drop schema).",
+    )
+    deletion_step = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Current deletion step key.",
+    )
+    deletion_progress = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Deletion progress percentage (0-100).",
+    )
+    deletion_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Last deletion failure message, if any.",
+    )
+    deletion_completed_steps = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Completed deletion step keys (used for resume/retry).",
+    )
+
     # Automatically create schema when tenant is created
     auto_create_schema = True
     # Don't auto-drop schema on delete (safety)

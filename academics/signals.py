@@ -70,6 +70,17 @@ def setup_tenant_defaults(sender, instance, created, **kwargs):
     if instance.schema_name == 'public':
         logger.info("Skipping default data creation for public tenant")
         return
+
+    if getattr(instance, "_skip_async_default_setup", False):
+        return
+
+    if getattr(instance, "provisioning_status", "completed") != "completed":
+        logger.info(
+            "Skipping default data signal for tenant %s (provisioning_status=%s)",
+            instance.schema_name,
+            instance.provisioning_status,
+        )
+        return
     
     # Import here to avoid circular imports
     from django_tenants.utils import schema_context

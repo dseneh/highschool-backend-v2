@@ -24,6 +24,14 @@ def custom_exception_handler(exc, context):
     
     # Normalize validation errors to use 'detail' field
     if response is not None:
+        if hasattr(exc, "error_code"):
+            payload = {"detail": response.data.get("detail", str(exc.detail))}
+            if isinstance(payload["detail"], list):
+                payload["detail"] = payload["detail"][0] if payload["detail"] else str(exc.detail)
+            payload["error_code"] = exc.error_code
+            response.data = payload
+            return response
+
         # Check if we have field errors or non_field_errors
         if isinstance(response.data, dict):
             # Handle field-specific validation errors

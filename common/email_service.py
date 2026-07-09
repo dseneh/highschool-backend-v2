@@ -558,6 +558,47 @@ def send_notification_email(
     )
 
 
+def send_tenant_onboarding_email(
+    user,
+    tenant,
+    temporary_password: str = "",
+    login_url: str = "",
+    workspace_url: str = "",
+    *,
+    existing_account: bool = False,
+) -> bool:
+    """Send onboarding email to the tenant admin after workspace provisioning completes."""
+    if not user.email or str(user.email).endswith("@local.user"):
+        logger.info(
+            "send_tenant_onboarding_email: skipping user %s due to missing/placeholder email",
+            user.username,
+        )
+        return False
+
+    context = _build_branding_context(user, tenant)
+    context["username"] = user.username
+    context["temporary_password"] = temporary_password
+    context["existing_account"] = existing_account
+    context["login_url"] = login_url or context.get("school_website", "")
+    context["workspace_name"] = getattr(tenant, "schema_name", "")
+    context["workspace_url"] = workspace_url or context["login_url"]
+
+    try:
+        html_body = render_to_string("emails/tenant_onboarding.html", context)
+        text_body = render_to_string("emails/tenant_onboarding.txt", context)
+    except Exception as exc:
+        logger.error("send_tenant_onboarding_email: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=f"Welcome to {context['school_name']} - Your Workspace Is Ready",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 def send_account_created_email(
     user,
     temporary_password: str,
