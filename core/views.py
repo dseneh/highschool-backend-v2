@@ -65,6 +65,9 @@ def current_tenant(request):
 
     try:
         tenant = Tenant.objects.get(schema_name=connection.schema_name)
+        from billing.services.policy import apply_billing_access_policy
+
+        apply_billing_access_policy(tenant)
         serializer = PublicTenantSerializer(tenant, context={"request": request})
         return Response(serializer.data)
     except Tenant.DoesNotExist:
@@ -124,6 +127,22 @@ class TenantViewSet(ModelViewSet):
         "disabled_access_allowed_paths",
         "disabled_access_allowed_users",
     ]
+    PLATFORM_BILLING_UPDATE_FIELDS = frozenset(
+        {
+            "complimentary_until",
+            "complimentary_note",
+            "enabled_addons",
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "subscription_status",
+            "billing_interval",
+            "current_period_end",
+            "past_due_since",
+            "billing_enrollment_count",
+            "billing_employee_count",
+            "promotion_code_redeemed",
+        }
+    )
     AUDITED_CONTROL_FIELDS = [
         "status",
         "active",
@@ -230,12 +249,15 @@ class TenantViewSet(ModelViewSet):
         if status_filter and status_filter != "all":
             queryset = queryset.filter(status=status_filter)
 
-        # For unauthenticated public endpoints, only show active tenants.
+        # For unauthenticated public endpoints, only show fully provisioned active tenants.
         if (
             self.action in ["list", "retrieve"]
             and not is_authed
         ):
-            queryset = queryset.filter(active=True)
+            queryset = queryset.filter(
+                active=True,
+                provisioning_status="completed",
+            )
 
         return queryset
 
@@ -272,9 +294,26 @@ class TenantViewSet(ModelViewSet):
         """
         Create tenant - custom logic is handled in CreateTenantSerializer.create().
         """
-        # Ensure we're in the public schema
         validate_tenant_is_in_public_schema()
         serializer.save()
+
+    def create(self, request, *args, **kwargs):
+        """Accept tenant create request and start background provisioning."""
+        validate_tenant_is_in_public_schema()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        tenant = serializer.save()
+        output = serializer.data
+        headers = self.get_success_headers(output)
+        return Response(output, status=status.HTTP_202_ACCEPTED, headers=headers)
+
+    def _allowed_update_fields(self, request):
+        from common.permissions import IsSuperAdmin
+
+        fields = list(self.ALLOWED_UPDATE_FIELDS)
+        if IsSuperAdmin().has_permission(request, self):
+            fields.extend(sorted(self.PLATFORM_BILLING_UPDATE_FIELDS))
+        return fields
 
     def update(self, request, *args, **kwargs):
         """
@@ -286,10 +325,15 @@ class TenantViewSet(ModelViewSet):
         instance = self.get_object()
         before_state = self._capture_control_state(instance)
 
+        from core.tenant_access import normalize_access_control_patch
+
+        normalized_data = normalize_access_control_patch(instance, dict(request.data))
+        request._full_data = normalized_data
+
         response = update_model_fields(
             request,
             instance,
-            self.ALLOWED_UPDATE_FIELDS,
+            self._allowed_update_fields(request),
             TenantSerializer,
             context={"request": request},
         )
@@ -305,39 +349,69 @@ class TenantViewSet(ModelViewSet):
         instance = self.get_object()
         before_state = self._capture_control_state(instance)
 
+        from core.tenant_access import normalize_access_control_patch
+
+        normalized_data = normalize_access_control_patch(instance, dict(request.data))
+        request._full_data = normalized_data
+
         response = update_model_fields(
             request,
             instance,
-            self.ALLOWED_UPDATE_FIELDS,
+            self._allowed_update_fields(request),
             TenantSerializer,
             context={"request": request},
         )
         return self._log_control_change_if_needed(request, instance, before_state, response)
 
-    def perform_destroy(self, instance):
+    def destroy(self, request, *args, **kwargs):
         """
-        Delete tenant - ensure we're in the public schema.
+        Delete a tenant workspace (background job).
 
-        Performs a soft delete: sets status to 'deleted' and active to False.
-        The tenant record and schema remain in the database but are marked as deleted.
+        Returns 202 immediately. Track progress via ``deletion_status`` /
+        ``deletion_progress`` on the tenant list.
 
-        A future cron / GC job will hard-delete tenants that have been in the
-        deleted state for longer than the retention period. In the meantime
-        the tenant can be brought back via the `reactivate` action.
+        Default (soft delete): marks tenant deleted while retaining schema/data.
+        Permanent delete: pass ``?hard_delete=true`` to drop schema and remove row.
         """
+        from core.tenant_deletion import (
+            parse_hard_delete_flag,
+            queue_tenant_deletion,
+        )
         from django_tenants.utils import get_public_schema_name
 
         validate_tenant_is_in_public_schema()
 
-        # Prevent public tenant deletion
+        schema_name = kwargs.get(self.lookup_field) or kwargs.get("pk")
+        try:
+            instance = Tenant.objects.get(**{self.lookup_field: schema_name})
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "Tenant not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         if instance.schema_name == get_public_schema_name():
             raise ValidationError({"detail": "Cannot delete public tenant"})
 
-        # Soft delete: Set status to 'deleted' and active to False
-        # The save() method will automatically sync active with status
-        instance.status = "deleted"
-        instance.active = False  # Explicitly set, but save() will sync it anyway
-        instance.save(update_fields=["status", "active"])
+        self.check_object_permissions(request, instance)
+
+        hard_delete = parse_hard_delete_flag(request.query_params.get("hard_delete"))
+        if not hard_delete and isinstance(request.data, dict):
+            hard_delete = parse_hard_delete_flag(request.data.get("hard_delete"))
+
+        try:
+            instance = queue_tenant_deletion(instance, hard_delete=hard_delete)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)})
+
+        serializer = TenantListSerializer(instance, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+
+    def perform_destroy(self, instance):
+        """Legacy hook — use ``destroy`` which queues background deletion."""
+        from core.tenant_deletion import queue_tenant_deletion
+
+        queue_tenant_deletion(instance, hard_delete=False)
 
     @action(
         detail=True,
@@ -378,11 +452,34 @@ class TenantViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if instance.deletion_status in ("queued", "running", "failed"):
+            return Response(
+                {"detail": "Cannot reactivate a tenant while deletion is in progress or failed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         before_state = self._capture_control_state(instance)
 
         instance.status = "active"
         instance.active = True
-        instance.save(update_fields=["status", "active"])
+        instance.deletion_status = "none"
+        instance.deletion_mode = ""
+        instance.deletion_step = ""
+        instance.deletion_progress = 0
+        instance.deletion_error = ""
+        instance.deletion_completed_steps = []
+        instance.save(
+            update_fields=[
+                "status",
+                "active",
+                "deletion_status",
+                "deletion_mode",
+                "deletion_step",
+                "deletion_progress",
+                "deletion_error",
+                "deletion_completed_steps",
+            ]
+        )
 
         after_state = self._capture_control_state(instance)
         try:
@@ -395,6 +492,78 @@ class TenantViewSet(ModelViewSet):
 
         serializer = TenantSerializer(instance, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="provisioning/retry",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def retry_provisioning(self, request, *args, **kwargs):
+        """Resume failed workspace provisioning from the last incomplete step."""
+        from core.tenant_provisioning import retry_tenant_provisioning
+
+        validate_tenant_is_in_public_schema()
+
+        schema_name = kwargs.get(self.lookup_field) or kwargs.get("pk")
+        try:
+            instance = Tenant.objects.get(**{self.lookup_field: schema_name})
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "Tenant not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if instance.provisioning_status == "completed":
+            return Response(
+                {"detail": "Workspace is already fully provisioned."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if instance.provisioning_status in ("queued", "running"):
+            serializer = TenantListSerializer(instance, context={"request": request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        try:
+            instance = retry_tenant_provisioning(instance.schema_name)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = TenantListSerializer(instance, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="deletion/retry",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def retry_deletion(self, request, *args, **kwargs):
+        """Resume failed tenant deletion from the last incomplete step."""
+        from core.tenant_deletion import retry_tenant_deletion
+
+        validate_tenant_is_in_public_schema()
+
+        schema_name = kwargs.get(self.lookup_field) or kwargs.get("pk")
+        try:
+            instance = Tenant.objects.get(**{self.lookup_field: schema_name})
+        except Tenant.DoesNotExist:
+            return Response(
+                {"detail": "Tenant not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if instance.deletion_status in ("queued", "running"):
+            serializer = TenantListSerializer(instance, context={"request": request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        try:
+            instance = retry_tenant_deletion(instance.schema_name)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = TenantListSerializer(instance, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
 
     @action(
         detail=True,

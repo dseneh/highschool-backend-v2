@@ -7,7 +7,6 @@ from django_tenants.utils import get_public_schema_name
 from django.http import Http404
 from core.models import Tenant
 from api.authentication import TenantAwareJWTAuthentication
-from users.tenant_access import is_global_superadmin
 
 
 class HeaderBasedTenantMiddleware(TenantMainMiddleware):
@@ -34,6 +33,7 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         '/api/v1/auth/password/forgot/',
         '/api/v1/auth/password/reset/',
         '/api/v1/tenants/current/',
+        '/api/v1/billing/webhooks/stripe/',
     }
 
     def _blocked_tenant_response(self, detail: str, error_code: str, status_code: int = 423):
@@ -95,40 +95,11 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         return user
 
     def _is_disabled_override_allowed(self, request, tenant) -> bool:
+        from core.tenant_access import is_access_override_allowed
+
         frontend_path = request.META.get('HTTP_X_APP_PATH', '')
-        allowed_paths = getattr(tenant, 'disabled_access_allowed_paths', []) or []
-
-        if not self._is_allowed_path(frontend_path, allowed_paths):
-            return False
-
         user = self._resolve_api_user(request)
-        if not user:
-            return False
-
-        role = str(getattr(user, 'role', '') or '').lower()
-        is_tenant_admin = (
-            is_global_superadmin(user)
-            or bool(getattr(user, 'is_superuser', False))
-            or role in {'admin', 'superadmin'}
-        )
-        allow_tenant_admins = bool(getattr(tenant, 'disabled_access_allow_tenant_admins', True))
-
-        allowed_users = {
-            str(value or '').strip().lower()
-            for value in (getattr(tenant, 'disabled_access_allowed_users', []) or [])
-            if str(value or '').strip()
-        }
-
-        candidates = {
-            str(getattr(user, 'id', '') or '').strip().lower(),
-            str(getattr(user, 'id_number', '') or '').strip().lower(),
-            str(getattr(user, 'username', '') or '').strip().lower(),
-            str(getattr(user, 'email', '') or '').strip().lower(),
-        }
-        candidates.discard('')
-
-        is_selected_user = bool(allowed_users.intersection(candidates))
-        return (allow_tenant_admins and is_tenant_admin) or is_selected_user
+        return is_access_override_allowed(tenant, user, frontend_path)
 
     def _ensure_superadmin_tenant_access(self, request):
         """Link global superadmins to the active tenant so tenant-scoped APIs succeed."""
@@ -163,54 +134,24 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if self._is_blocked_tenant_path_allowed(path):
             return None
 
-        is_disabled = not getattr(tenant, 'active', True)
-        tenant_status = str(getattr(tenant, 'status', 'active') or 'active').lower()
-        is_non_operational = tenant_status != 'active'
-        is_deleted = tenant_status == 'deleted'
+        from core.tenant_access import evaluate_tenant_api_access
 
-        # Soft-deleted tenants are a terminal state: no overrides, no admin
-        # escape hatch, no allow-list. Block every API call against them.
-        if is_deleted:
-            return self._blocked_tenant_response(
-                'This workspace has been deleted. Tenant operations are no longer available.',
-                'TENANT_DELETED',
-                status_code=410,
-            )
+        user = self._resolve_api_user(request)
+        frontend_path = request.META.get('HTTP_X_APP_PATH', '')
+        decision = evaluate_tenant_api_access(
+            tenant,
+            user,
+            frontend_path=frontend_path,
+        )
 
-        if is_disabled or is_non_operational:
-            if self._is_disabled_override_allowed(request, tenant):
-                return None
+        if decision.allowed:
+            return None
 
-        if is_disabled:
-            return self._blocked_tenant_response(
-                'This workspace is disabled. Tenant operations are currently blocked.',
-                'TENANT_DISABLED',
-            )
-
-        if is_non_operational:
-            return self._blocked_tenant_response(
-                f"This workspace is currently {tenant.status}. Tenant operations are currently blocked.",
-                'TENANT_STATUS_BLOCKED',
-            )
-
-        if getattr(tenant, 'maintenance_mode', False):
-            user = self._resolve_api_user(request)
-            if user:
-                role = str(getattr(user, 'role', '') or '').lower()
-                is_tenant_admin = (
-                    is_global_superadmin(user)
-                    or bool(getattr(user, 'is_superuser', False))
-                    or role in {'admin', 'superadmin'}
-                )
-                if is_tenant_admin:
-                    return None
-
-            return self._blocked_tenant_response(
-                'This workspace is currently in maintenance mode. Tenant operations are temporarily paused.',
-                'TENANT_MAINTENANCE_MODE',
-            )
-
-        return None
+        return self._blocked_tenant_response(
+            decision.detail or 'Workspace access is restricted.',
+            decision.error_code or 'TENANT_ACCESS_DENIED',
+            status_code=decision.status_code,
+        )
     
     def process_request(self, request):
         """

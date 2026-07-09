@@ -64,6 +64,7 @@ SHARED_APPS = [
     "common",  # Abstract base models (BaseModel, BasePersonModel) - no DB tables
     "users",  # User - lives in public schema (global users)
     "core",  # School model (TenantBase) - lives in public schema
+    "billing",  # Stripe billing, billing seats (public schema)
 ]
 
 TENANT_APPS = [
@@ -112,6 +113,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "billing.middleware.BillingAccessMiddleware",
     "common.audit_middleware.AuditlogDeviceMiddleware",  # Captures actor + IP + User-Agent for audit trail
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -285,3 +287,19 @@ if not DEBUG:
 
 # When True, live payroll/benefit line rows are deleted after mark-paid; revert rebuilds from snapshot.
 DELETE_PAID_LIVE_ROWS = config("DELETE_PAID_LIVE_ROWS", default=True, cast=bool)
+
+# Stripe billing
+STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
+STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
+STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_CHECKOUT_SUCCESS_URL = config("STRIPE_CHECKOUT_SUCCESS_URL", default="")
+STRIPE_CHECKOUT_CANCEL_URL = config("STRIPE_CHECKOUT_CANCEL_URL", default="")
+STRIPE_PORTAL_RETURN_URL = config("STRIPE_PORTAL_RETURN_URL", default="")
+STRIPE_METER_EVENT_NAME = config("STRIPE_METER_EVENT_NAME", default="sms_sent")
+
+BILLING_EXPIRING_SOON_DAYS = config("BILLING_EXPIRING_SOON_DAYS", default=30, cast=int)
+BILLING_PAST_DUE_FULL_ACCESS_DAYS = config("BILLING_PAST_DUE_FULL_ACCESS_DAYS", default=7, cast=int)
+BILLING_GRACE_DAYS = config("BILLING_GRACE_DAYS", default=7, cast=int)
+BILLING_SEAT_VOID_GRACE_DAYS = config("BILLING_SEAT_VOID_GRACE_DAYS", default=7, cast=int)
+BILLING_ANNUAL_MINIMUM_USD = config("BILLING_ANNUAL_MINIMUM_USD", default=450, cast=int)
+BILLING_MONTHLY_MINIMUM_USD = config("BILLING_MONTHLY_MINIMUM_USD", default=45, cast=int)

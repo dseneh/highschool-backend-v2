@@ -1,0 +1,22 @@
+ADDON_PAYROLL = "payroll"
+ADDON_SMS = "sms"
+
+ADDON_KEYS = frozenset({ADDON_PAYROLL, ADDON_SMS})
+
+BILLING_STATE_COMPLIMENTARY = "complimentary"
+BILLING_STATE_TRIALING = "trialing"
+BILLING_STATE_ACTIVE = "active"
+BILLING_STATE_EXPIRING_SOON = "expiring_soon"
+BILLING_STATE_PAST_DUE = "past_due"
+BILLING_STATE_GRACE = "grace"
+BILLING_STATE_EXPIRED = "expired"
+BILLING_STATE_NONE = "none"
+
+STRIPE_PRODUCT_TYPE_BASE = "base"
+STRIPE_PRODUCT_TYPE_ADDON = "addon"
+
+PRICE_LOOKUP_STANDARD_ANNUAL = "ezyschool_standard_annual"
+PRICE_LOOKUP_STANDARD_MONTHLY = "ezyschool_standard_monthly"
+PRICE_LOOKUP_PAYROLL_ANNUAL = "addon_payroll_annual"
+PRICE_LOOKUP_PAYROLL_MONTHLY = "addon_payroll_monthly"
+PRICE_LOOKUP_SMS_METERED = "addon_sms_metered"

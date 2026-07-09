@@ -10,9 +10,39 @@ from .models import Tenant, Domain, SignupRequest
 
 @admin.register(Tenant)
 class TenantAdmin(TenantAdminMixin, admin.ModelAdmin):
-    list_display = ("name", "short_name", "schema_name", "active", "created_at")
-    list_filter = ("active", "created_at")
-    search_fields = ("name", "short_name", "schema_name")
+    list_display = (
+        "name",
+        "short_name",
+        "schema_name",
+        "active",
+        "complimentary_until",
+        "subscription_status",
+        "created_at",
+    )
+    list_filter = ("active", "subscription_status", "created_at")
+    search_fields = ("name", "short_name", "schema_name", "stripe_customer_id")
+    fieldsets = (
+        (None, {"fields": ("name", "short_name", "schema_name", "owner", "active", "status")}),
+        (
+            "Billing",
+            {
+                "fields": (
+                    "complimentary_until",
+                    "complimentary_note",
+                    "enabled_addons",
+                    "stripe_customer_id",
+                    "stripe_subscription_id",
+                    "subscription_status",
+                    "billing_interval",
+                    "current_period_end",
+                    "past_due_since",
+                    "billing_enrollment_count",
+                    "billing_employee_count",
+                    "promotion_code_redeemed",
+                ),
+            },
+        ),
+    )
 
 
 @admin.register(Domain)

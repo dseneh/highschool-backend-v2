@@ -71,3 +71,6 @@ wheel==0.45.1
 # The application handles missing django-brotli gracefully via try/except in settings
 # Alternative: Use Django's built-in GZipMiddleware or WhiteNoise compression
 geoip2>=5.0.0
+
+# Billing
+stripe>=11.0.0

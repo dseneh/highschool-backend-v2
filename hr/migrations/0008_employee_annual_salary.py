@@ -3,27 +3,17 @@ from decimal import Decimal
 from django.db import migrations, models
 
 
-def _periods_per_year(schedule) -> Decimal:
-    if schedule is None:
-        return Decimal("12")
-    frequency = getattr(schedule, "frequency", None) or "monthly"
-    if frequency == "weekly":
-        return Decimal("52")
-    if frequency == "biweekly":
-        return Decimal("26")
-    return Decimal("12")
-
-
 def backfill_annual_salary(apps, schema_editor):
     Employee = apps.get_model("hr", "Employee")
     batch: list = []
-    for employee in Employee.objects.select_related("pay_schedule").iterator():
+    # pay_schedule is added in hr.0010, which runs after this migration.
+    # Use monthly periods for any pre-existing rows; new tenant schemas are empty here.
+    for employee in Employee.objects.iterator():
         if employee.salary_type == "hourly":
             employee.annual_salary = Decimal("0.00")
         else:
             employee.annual_salary = (
-                Decimal(employee.basic_salary or 0)
-                * _periods_per_year(employee.pay_schedule)
+                Decimal(employee.basic_salary or 0) * Decimal("12")
             ).quantize(Decimal("0.01"))
         batch.append(employee)
         if len(batch) >= 500:

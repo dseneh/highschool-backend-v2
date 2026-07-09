@@ -55,3 +55,24 @@ class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
             "condition": "has_privilege:CORE_VIEW",
         },
     ]
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        tenant = self._current_tenant()
+        if not tenant:
+            return True
+        from billing.services.access import tenant_has_payroll
+
+        return tenant_has_payroll(tenant)
+
+    @staticmethod
+    def _current_tenant():
+        from django.db import connection
+
+        from core.models import Tenant
+
+        schema = connection.schema_name
+        if not schema or schema == "public":
+            return None
+        return Tenant.objects.filter(schema_name=schema).first()

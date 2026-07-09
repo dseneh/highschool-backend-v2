@@ -4,7 +4,6 @@ Serializers for core models (Tenant)
 from rest_framework import serializers
 from core.models import Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
-from django_tenants.utils import schema_context
 
 
 class TenantDomainMixin:
@@ -93,7 +92,9 @@ class TenantListSerializer(BaseTenantSerializer):
     Used for both authenticated and unauthenticated endpoints.
     Includes logo with default fallback when null.
     """
-    
+    provisioning_step_label = serializers.SerializerMethodField()
+    deletion_step_label = serializers.SerializerMethodField()
+
     class Meta:
         model = Tenant
         fields = [
@@ -122,8 +123,36 @@ class TenantListSerializer(BaseTenantSerializer):
             "disabled_access_allow_tenant_admins",
             "disabled_access_allowed_paths",
             "disabled_access_allowed_users",
+            "provisioning_status",
+            "provisioning_step",
+            "provisioning_step_label",
+            "provisioning_progress",
+            "provisioning_error",
+            "deletion_status",
+            "deletion_mode",
+            "deletion_step",
+            "deletion_step_label",
+            "deletion_progress",
+            "deletion_error",
+            "created_at",
         ]
         read_only_fields = fields
+
+    def get_provisioning_step_label(self, obj):
+        from core.tenant_provisioning import get_provisioning_step_label
+
+        step = getattr(obj, "provisioning_step", "") or ""
+        if not step:
+            return None
+        return get_provisioning_step_label(step)
+
+    def get_deletion_step_label(self, obj):
+        from core.tenant_deletion import get_deletion_step_label
+
+        step = getattr(obj, "deletion_step", "") or ""
+        if not step:
+            return None
+        return get_deletion_step_label(step)
 
 class PublicTenantSerializer(BaseTenantSerializer):
     """
@@ -132,6 +161,8 @@ class PublicTenantSerializer(BaseTenantSerializer):
     Includes basic tenant information needed for frontend routing and branding.
     Only active tenants are returned (filtered in get_queryset).
     """
+    billing_summary = serializers.SerializerMethodField()
+
     class Meta:
         model = Tenant
         fields = [
@@ -154,8 +185,29 @@ class PublicTenantSerializer(BaseTenantSerializer):
             "logo_shape",
             "theme_color",
             "theme_config",
+            "billing_summary",
         ]
         read_only_fields = fields
+
+    def get_billing_summary(self, obj):
+        from billing.services.state import billing_summary_dict
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        authenticated = bool(user and getattr(user, "is_authenticated", False))
+        if not authenticated:
+            return billing_summary_dict(obj, for_banner=False, scope="public")
+
+        from billing.permissions import user_is_platform_superadmin, user_is_tenant_admin
+
+        if user_is_platform_superadmin(user):
+            return billing_summary_dict(obj, for_banner=True, scope="platform")
+
+        if user_is_tenant_admin(user):
+            return billing_summary_dict(obj, for_banner=True, scope="tenant_admin")
+
+        return billing_summary_dict(obj, for_banner=False, scope="public")
+
     def to_representation(self, instance):
         """
         Override to build full URLs for logo.
@@ -211,6 +263,19 @@ class TenantSerializer(BaseTenantSerializer):
             "disabled_access_allow_tenant_admins",
             "disabled_access_allowed_paths",
             "disabled_access_allowed_users",
+            # Billing (platform admin)
+            "complimentary_until",
+            "complimentary_note",
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "subscription_status",
+            "billing_interval",
+            "current_period_end",
+            "past_due_since",
+            "enabled_addons",
+            "promotion_code_redeemed",
+            "billing_enrollment_count",
+            "billing_employee_count",
             # Branding
             "logo",
             "logo_shape",
@@ -240,31 +305,6 @@ class TenantSerializer(BaseTenantSerializer):
         
         return response
 
-
-class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
-    """
-    Limited serializer for public tenant information.
-    Used for public pages like login, registration, etc.
-    """
-    domain = serializers.SerializerMethodField(method_name="get_domain")
-    
-    class Meta:
-        model = Tenant
-        fields = [
-            "id",
-            "name",
-            "schema_name",
-            "domain",
-            "logo",
-            "active",
-            "status",
-            "maintenance_mode",
-            "login_access_policy",
-            "disabled_access_allow_tenant_admins",
-            "disabled_access_allowed_paths",
-            "disabled_access_allowed_users",
-            "theme_config",
-        ]
 
 class CreateTenantSerializer(serializers.Serializer):
     """
@@ -311,6 +351,51 @@ class CreateTenantSerializer(serializers.Serializer):
         required=False,
         default=list,
     )
+    admin_first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    admin_last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    admin_email = serializers.EmailField(required=False, allow_blank=True)
+    admin_username = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    admin_password = serializers.CharField(
+        max_length=128,
+        required=False,
+        allow_blank=True,
+        write_only=True,
+        min_length=6,
+    )
+
+    def validate(self, attrs):
+        admin_fields = (
+            "admin_first_name",
+            "admin_last_name",
+            "admin_email",
+            "admin_username",
+            "admin_password",
+        )
+        provided = [attrs.get(field) for field in admin_fields]
+        if any(provided) and not all(provided):
+            raise serializers.ValidationError(
+                {
+                    field: "All admin account fields are required when creating a tenant."
+                    for field in admin_fields
+                    if not attrs.get(field)
+                }
+            )
+
+        admin_email = (attrs.get("admin_email") or "").strip()
+        admin_username = (attrs.get("admin_username") or "").strip()
+        if admin_email and admin_username:
+            from core.tenant_admin import validate_tenant_admin_account
+
+            validate_tenant_admin_account(email=admin_email, username=admin_username)
+
+        admin_password = attrs.get("admin_password") or ""
+        admin_confirm = self.initial_data.get("admin_confirm_password") or ""
+        if admin_password and admin_confirm and admin_password != admin_confirm:
+            raise serializers.ValidationError(
+                {"admin_confirm_password": "Passwords do not match."}
+            )
+
+        return attrs
 
     def validate_value(self, value, field_name):
         """Validate schema_name format and uniqueness"""
@@ -359,162 +444,161 @@ class CreateTenantSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         """
-        Create a new Tenant with domain.
-        
-        This should be called from a view that ensures we're in the public schema.
-        Accepts all tenant profile fields for complete tenant setup.
+        Create a tenant record and enqueue background workspace provisioning.
+
+        The tenant appears in the admin list immediately while schema
+        creation, migrations, and default data run asynchronously.
         """
-        from core.models import Tenant, Domain
+        from core.models import Tenant
+        from core.tenant_admin import resolve_or_create_tenant_admin_user
+        from core.tenant_provisioning import enqueue_tenant_provisioning
         from users.models import User
 
-        # Required fields
         name = validated_data["name"]
         short_name = validated_data.get("short_name") or name[:10]
-        workspace = validated_data.get("workspace")
         schema_name = validated_data.get("schema_name")
         domain = validated_data.get("domain")
-        owner_email = validated_data.get("owner_email")
-        
-        # Priority: workspace > schema_name > auto-generate from name
-        # Workspace is the preferred identifier that becomes the schema_name
-        if not schema_name:
-            # Auto-generate from name if neither workspace nor schema_name provided
-            schema_name = short_name.lower().replace(' ', '_').replace('-', '_')
-            # Remove any special characters
-            schema_name = ''.join(c for c in schema_name if c.isalnum() or c == '_')
-        
-        # Double-check uniqueness (in case validation was bypassed)
-        from core.models import Tenant
-        if Tenant.objects.filter(schema_name=schema_name).exists():
-            raise serializers.ValidationError({
-                "schema_name": f"A tenant with schema name '{schema_name}' already exists"
-            })
-        
-        # Use schema_name as domain if domain not provided
-        if not domain:
-            domain = f"{schema_name}.localhost"
-        
-        # Get owner user
-        request = self.context.get("request")
-        if owner_email:
-            try:
-                owner = User.objects.get(email=owner_email)
-            except User.DoesNotExist:
-                raise serializers.ValidationError(f"User with email '{owner_email}' does not exist")
-        elif request and request.user.is_authenticated:
-            owner = request.user
-        else:
-            # Try to get or create a default admin user
-            owner, _ = User.objects.get_or_create(
-                email='admin@example.com',
-                defaults={
-                    'id_number': 'admin001',
-                    'username': 'admin',
-                    'first_name': 'System',
-                    'last_name': 'Admin'
+
+        admin_first_name = (validated_data.get("admin_first_name") or "").strip()
+        admin_last_name = (validated_data.get("admin_last_name") or "").strip()
+        admin_email = (validated_data.get("admin_email") or "").strip()
+        admin_username = (validated_data.get("admin_username") or "").strip()
+        admin_password = validated_data.get("admin_password") or ""
+
+        if not all([admin_first_name, admin_last_name, admin_email, admin_username, admin_password]):
+            raise serializers.ValidationError(
+                {
+                    "admin_email": "Tenant admin account details are required.",
                 }
             )
-        
-        # Prepare tenant data with all profile fields
+
+        if not schema_name:
+            schema_name = short_name.lower().replace(" ", "_").replace("-", "_")
+            schema_name = "".join(c for c in schema_name if c.isalnum() or c == "_")
+
+        if Tenant.objects.filter(schema_name=schema_name).exists():
+            raise serializers.ValidationError(
+                {"schema_name": f"A tenant with schema name '{schema_name}' already exists"}
+            )
+
+        if not domain:
+            domain = f"{schema_name}.localhost"
+
+        request = self.context.get("request")
+        placeholder_owner = None
+        if request and request.user.is_authenticated:
+            placeholder_owner = request.user
+        else:
+            placeholder_owner = User.objects.filter(role="superadmin").first()
+        if placeholder_owner is None:
+            raise serializers.ValidationError(
+                {"detail": "Unable to determine platform owner for tenant record."}
+            )
+
+        desired_active = validated_data.get("active", True)
+        desired_status = validated_data.get("status", "active")
+
         tenant_data = {
             "name": name,
             "short_name": short_name,
             "schema_name": schema_name,
-            "owner": owner,
-            # Identity fields
+            "owner": placeholder_owner,
             "funding_type": validated_data.get("funding_type"),
             "school_type": validated_data.get("school_type"),
             "slogan": validated_data.get("slogan"),
             "emis_number": validated_data.get("emis_number"),
             "description": validated_data.get("description"),
             "date_est": validated_data.get("date_est"),
-            # Address fields
             "address": validated_data.get("address"),
             "city": validated_data.get("city"),
             "state": validated_data.get("state"),
             "country": validated_data.get("country"),
             "postal_code": validated_data.get("postal_code"),
-            # Contact fields
             "phone": validated_data.get("phone"),
             "email": validated_data.get("email"),
             "website": validated_data.get("website"),
-            # Status and configuration
-            "status": validated_data.get("status", "active"),
-            "active": validated_data.get("active", True),
+            "status": "inactive",
+            "active": False,
             "maintenance_mode": validated_data.get("maintenance_mode", False),
             "login_access_policy": validated_data.get("login_access_policy", "all_users"),
-            "disabled_access_allow_tenant_admins": validated_data.get("disabled_access_allow_tenant_admins", True),
-            "disabled_access_allowed_paths": validated_data.get("disabled_access_allowed_paths", []),
-            "disabled_access_allowed_users": validated_data.get("disabled_access_allowed_users", []),
-            # Branding
+            "disabled_access_allow_tenant_admins": validated_data.get(
+                "disabled_access_allow_tenant_admins", True
+            ),
+            "disabled_access_allowed_paths": validated_data.get(
+                "disabled_access_allowed_paths", []
+            ),
+            "disabled_access_allowed_users": validated_data.get(
+                "disabled_access_allowed_users", []
+            ),
             "logo_shape": validated_data.get("logo_shape", "square"),
             "theme_color": validated_data.get("theme_color"),
+            "provisioning_status": "queued",
+            "provisioning_step": "",
+            "provisioning_progress": 0,
+            "provisioning_error": "",
+            "provisioning_completed_steps": [],
+            "provisioning_payload": {
+                "domain": domain,
+                "desired_active": desired_active,
+                "desired_status": desired_status,
+            },
         }
-        
-        # Add id_number if provided
+
         if validated_data.get("id_number"):
             tenant_data["id_number"] = validated_data["id_number"]
-        
-        # Remove None values to use model defaults
+
         tenant_data = {k: v for k, v in tenant_data.items() if v is not None}
-        
-        # Create the tenant
-        tenant = Tenant.objects.create(**tenant_data)
-        
-        # Create domain for the tenant
-        domain_obj = Domain.objects.create(
-            domain=domain,
+
+        tenant = Tenant(**tenant_data)
+        tenant.auto_create_schema = False
+        tenant._skip_async_default_setup = True
+        tenant.save()
+
+        admin_user, admin_user_created = resolve_or_create_tenant_admin_user(
             tenant=tenant,
-            is_primary=True,
+            first_name=admin_first_name,
+            last_name=admin_last_name,
+            email=admin_email,
+            username=admin_username,
+            password=admin_password,
         )
-        
-        # Automatically add owner as superuser to the new tenant
-        with schema_context(tenant.schema_name):
-            tenant.add_user(owner, is_superuser=True, is_staff=True)
-        
-        # Add all superadmin users to the new tenant
-        # Superadmins should have access to all tenants
-        try:
-            from common.status import Roles
-            superadmin_users = User.objects.filter(role=Roles.SUPERADMIN)
-            with schema_context(tenant.schema_name):
-                for superadmin in superadmin_users:
-                    # Skip if already added (e.g., if owner is also a superadmin)
-                    if superadmin.id != owner.id:
-                        tenant.add_user(superadmin, is_superuser=True, is_staff=True)
-        except Exception as e:
-            # Log the error but don't fail tenant creation
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to add superadmin users to tenant {tenant.name}: {e}")
-        
-        # Initialize default data for the tenant (academic years, divisions, etc.)
-        try:
-            from defaults.utils import setup_tenant_defaults
-            setup_tenant_defaults(tenant, owner)
-        except Exception as e:
-            # Log the error but don't fail tenant creation
-            # The tenant is created but default data initialization failed
-            # This allows manual retry or fixing the issue
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to initialize default data for tenant {tenant.name}: {e}")
-            # Optionally, you could raise this exception to rollback tenant creation
-            # raise serializers.ValidationError(f"Tenant created but default data initialization failed: {e}")
-        
-        # Store domain for response
-        self._domain = domain_obj
-        
+        tenant.owner = admin_user
+        tenant.provisioning_payload = {
+            **(tenant.provisioning_payload or {}),
+            "admin_user_id": str(admin_user.pk),
+            "admin_user_created": admin_user_created,
+            "admin_password": admin_password if admin_user_created else "",
+        }
+        tenant.save(update_fields=["owner", "provisioning_payload", "updated_at"])
+
+        self._domain = domain
+        enqueue_tenant_provisioning(tenant.schema_name)
         return tenant
     
     def to_representation(self, instance):
         """Return tenant data with domain and workspace information"""
         data = TenantSerializer(instance, context=self.context).data
-        # Add workspace alias (same as schema_name)
-        data['workspace'] = instance.schema_name
-        if hasattr(self, '_domain'):
-            data['domain'] = self._domain.domain
-            data['domain_id'] = self._domain.id
+        data["workspace"] = instance.schema_name
+        payload = instance.provisioning_payload or {}
+        planned_domain = payload.get("domain")
+        if planned_domain and not data.get("domain"):
+            data["domain"] = planned_domain
+        if hasattr(self, "_domain"):
+            if isinstance(self._domain, str):
+                data["domain"] = self._domain
+            else:
+                data["domain"] = self._domain.domain
+                data["domain_id"] = self._domain.id
+        data["provisioning_status"] = instance.provisioning_status
+        data["provisioning_step"] = instance.provisioning_step
+        data["provisioning_progress"] = instance.provisioning_progress
+        data["provisioning_error"] = instance.provisioning_error
+        from core.tenant_provisioning import get_provisioning_step_label
+
+        if instance.provisioning_step:
+            data["provisioning_step_label"] = get_provisioning_step_label(
+                instance.provisioning_step
+            )
         return data
 
 

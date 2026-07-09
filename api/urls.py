@@ -50,6 +50,7 @@ urlpatterns = [
     path("health/", health_check, name="health-check"),
     path("admin/", admin.site.urls),
     path(api_base, include("core.urls")),
+    path(api_base, include("billing.urls")),
     path(f"{api_base}auth/", include("users.urls")),
     path(api_base, include("academics.urls")),
     path(api_base, include("students.urls")),

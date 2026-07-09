@@ -450,6 +450,75 @@ def send_signup_request_admin_notification_email(signup_request) -> bool:
     )
 
 
+def send_billing_reminder_email(
+    *,
+    to: list[str],
+    subject: str,
+    tenant,
+    context: dict,
+) -> bool:
+    """Email tenant admins about subscription billing milestones."""
+    if not to:
+        return False
+
+    reminder_type = context.get("reminder_type", "")
+    school_name = context.get("school_name") or getattr(tenant, "name", "your school")
+    billing_url = context.get("billing_url", "")
+
+    if reminder_type == "complimentary_ending":
+        days = context.get("days_remaining", "")
+        end_date = context.get("end_date", "")
+        headline = f"Complimentary access ends in {days} days"
+        body_text = (
+            f"Complimentary EzySchool access for {school_name} ends on {end_date} "
+            f"({days} days from now). Set up billing now to avoid interruption."
+        )
+    elif reminder_type == "subscription_renewal":
+        days = context.get("days_remaining", "")
+        end_date = context.get("end_date", "")
+        headline = f"Subscription renews in {days} days"
+        body_text = (
+            f"Your EzySchool subscription for {school_name} renews on {end_date}. "
+            "Review your plan and payment method before renewal."
+        )
+    elif reminder_type == "past_due":
+        days = context.get("days_overdue", 0)
+        if context.get("in_grace"):
+            headline = "Payment overdue — workspace is read-only"
+            body_text = (
+                f"Payment for {school_name} is {days} day(s) overdue. "
+                "Non-admin users currently have read-only access until billing is resolved."
+            )
+        else:
+            headline = "Payment failed — action required"
+            body_text = (
+                f"We could not process the latest payment for {school_name}. "
+                "Update your billing details to avoid service interruption."
+            )
+    else:
+        headline = "Billing reminder"
+        body_text = f"Your EzySchool billing for {school_name} needs attention."
+
+    email_context = {
+        "headline": headline,
+        "body_text": body_text,
+        "billing_url": billing_url,
+        "school_name": school_name,
+        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app"),
+        "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
+    }
+
+    try:
+        html_body = render_to_string("emails/billing_reminder.html", email_context)
+        text_body = render_to_string("emails/billing_reminder.txt", email_context)
+    except Exception as exc:
+        logger.error("send_billing_reminder_email: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(to=to, subject=subject, html_body=html_body, text_body=text_body)
+
+
 def send_notification_email(
     user,
     subject: str,
@@ -484,6 +553,47 @@ def send_notification_email(
     return service.send(
         to=[user.email],
         subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
+def send_tenant_onboarding_email(
+    user,
+    tenant,
+    temporary_password: str = "",
+    login_url: str = "",
+    workspace_url: str = "",
+    *,
+    existing_account: bool = False,
+) -> bool:
+    """Send onboarding email to the tenant admin after workspace provisioning completes."""
+    if not user.email or str(user.email).endswith("@local.user"):
+        logger.info(
+            "send_tenant_onboarding_email: skipping user %s due to missing/placeholder email",
+            user.username,
+        )
+        return False
+
+    context = _build_branding_context(user, tenant)
+    context["username"] = user.username
+    context["temporary_password"] = temporary_password
+    context["existing_account"] = existing_account
+    context["login_url"] = login_url or context.get("school_website", "")
+    context["workspace_name"] = getattr(tenant, "schema_name", "")
+    context["workspace_url"] = workspace_url or context["login_url"]
+
+    try:
+        html_body = render_to_string("emails/tenant_onboarding.html", context)
+        text_body = render_to_string("emails/tenant_onboarding.txt", context)
+    except Exception as exc:
+        logger.error("send_tenant_onboarding_email: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=f"Welcome to {context['school_name']} - Your Workspace Is Ready",
         html_body=html_body,
         text_body=text_body,
     )

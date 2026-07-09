@@ -1,0 +1,29 @@
+Welcome to {{ school_name|default:"EzySchool" }} - Your Workspace Is Ready
+
+Hi {{ user_name }},
+
+{% if existing_account %}You have been added as an administrator for {{ school_name|default:"EzySchool" }} and the workspace is ready.
+
+Sign in with your existing EzySchool credentials.
+{% else %}Your administrator account for {{ school_name|default:"EzySchool" }} has been created and your workspace is ready.
+{% endif %}
+
+Workspace: {{ workspace_name }}
+{% if workspace_url %}Sign in at:
+{{ workspace_url }}
+
+{% endif %}{% if temporary_password %}Use these credentials to sign in:
+
+  Username: {{ username }}
+  Password: {{ temporary_password }}
+
+{% else %}Your username: {{ username }}
+
+{% endif %}{% if login_url %}Log in here:
+{{ login_url }}
+
+{% endif %}Need help? Contact: {{ support_email }}
+
+--
+{{ school_name|default:"EzySchool" }}
+Powered by {{ dev_name|default:"DewX IT Solutions" }}
