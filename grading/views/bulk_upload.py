@@ -112,9 +112,12 @@ class BulkGradeUploadView(APIView):
             # grade_status lets the caller control what status newly created / updated grades receive.
             # Only a safe subset is accepted so callers cannot inject arbitrary values.
             _allowed_statuses = {
-                Grade.Status.DRAFT, Grade.Status.PENDING, Grade.Status.SUBMITTED,
+                Grade.Status.DRAFT,
+                Grade.Status.PENDING,
+                Grade.Status.SUBMITTED,
+                Grade.Status.APPROVED,
             }
-            raw_grade_status = request.data.get('grade_status', 'draft')
+            raw_grade_status = str(request.data.get('grade_status', 'draft')).strip().lower()
             grade_status = raw_grade_status if raw_grade_status in _allowed_statuses else Grade.Status.DRAFT
 
             result = self._process_excel_file(
