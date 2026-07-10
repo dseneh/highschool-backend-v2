@@ -10,6 +10,7 @@ from .grade import (
     GradeHistoryView,
     GradeCorrectionView,
     GradeMarkForCorrectionView,
+    AcademicYearCorrectionsQueueView,
 )
 from .final_grades import (
     StudentFinalGradeView,
@@ -53,6 +54,7 @@ __all__ = [
     "GradeHistoryView",
     "GradeCorrectionView",
     "GradeMarkForCorrectionView",
+    "AcademicYearCorrectionsQueueView",
     "StudentFinalGradeView",
     "StudentFinalGradesView",
     "SectionFinalGradesView",

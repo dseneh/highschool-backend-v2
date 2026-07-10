@@ -40,6 +40,7 @@ from grading.views import (
     GradeHistoryView,
     GradeCorrectionView,
     GradeMarkForCorrectionView,
+    AcademicYearCorrectionsQueueView,
 )
 
 urlpatterns = [
@@ -244,5 +245,10 @@ urlpatterns = [
         "academic-years/<str:academic_year_id>/generate-assessments/",
         GenerateAssessmentsForAcademicYearView.as_view(),
         name="generate-assessments-academic-year",
+    ),
+    path(
+        "academic-years/<str:academic_year_id>/corrections/",
+        AcademicYearCorrectionsQueueView.as_view(),
+        name="academic-year-corrections-queue",
     ),
 ]

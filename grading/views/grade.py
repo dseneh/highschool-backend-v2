@@ -23,6 +23,7 @@ from grading.serializers import GradeOut
 from grading.services.authorization import (
     enforce_teacher_grade_access,
     get_teacher_allowed_section_ids_for_subject,
+    get_teacher_gradebook_scope,
 )
 
 from students.models import Student
@@ -729,6 +730,11 @@ class GradeCorrectionView(APIView):
         # Store old values for history
         old_score = grade.score
         old_comment = grade.comment
+        old_status = grade.status
+
+        workflow_settings = get_workflow_settings()
+        require_review = workflow_settings["require_grade_review"]
+        require_approval = workflow_settings["require_grade_approval"]
         
         # Apply changes
         if new_score is not None:
@@ -736,6 +742,16 @@ class GradeCorrectionView(APIView):
         
         if new_comment is not None:
             grade.comment = new_comment
+
+        # Corrections to finalized grades should re-enter the workflow based on
+        # the configured review/approval lifecycle.
+        if grade.status in [Grade.Status.APPROVED, Grade.Status.SUBMITTED, Grade.Status.REVIEWED]:
+            if require_review:
+                grade.status = Grade.Status.PENDING
+            elif require_approval:
+                grade.status = Grade.Status.SUBMITTED
+            else:
+                grade.status = Grade.Status.APPROVED
         
         # Clear needs_correction flag since correction is being applied
         grade.needs_correction = False
@@ -754,6 +770,8 @@ class GradeCorrectionView(APIView):
             new_score=grade.score,
             old_comment=old_comment,
             new_comment=grade.comment,
+            old_status=old_status,
+            new_status=grade.status,
             changed_by=request.user,
             change_type="correction",
             change_reason=change_reason,
@@ -767,6 +785,8 @@ class GradeCorrectionView(APIView):
             correction={
                 "old_score": str(old_score) if old_score else None,
                 "new_score": str(grade.score) if grade.score else None,
+                "old_status": old_status,
+                "new_status": grade.status,
                 "reason": change_reason
             }
         )
@@ -838,4 +858,116 @@ class GradeMarkForCorrectionView(APIView):
         else:
             ip = request.META.get('REMOTE_ADDR')
         return ip
+
+
+class AcademicYearCorrectionsQueueView(APIView):
+    """
+    GET /api/v1/grading/academic-years/{academic_year_id}/corrections/
+
+    Returns all grades marked for correction within an academic year.
+    Optional query params: section, grade_level, subject, marking_period, status
+    """
+
+    permission_classes = [GradebookAccessPolicy]
+
+    def get(self, request, academic_year_id):
+        section_id = request.query_params.get("section")
+        grade_level_id = request.query_params.get("grade_level")
+        subject_id = request.query_params.get("subject")
+        marking_period_id = request.query_params.get("marking_period")
+        status = request.query_params.get("status", "any")
+
+        valid_statuses = [choice[0] for choice in Grade.Status.choices] + ["any"]
+        if status not in valid_statuses:
+            return Response(
+                {"detail": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"},
+                status=400,
+            )
+
+        grades = (
+            Grade.objects.filter(academic_year_id=academic_year_id, needs_correction=True)
+            .select_related(
+                "student",
+                "subject",
+                "section",
+                "section__grade_level",
+                "assessment",
+                "assessment__marking_period",
+                "assessment__marking_period__semester",
+                "academic_year",
+            )
+            .order_by(
+                "section__grade_level__name",
+                "section__name",
+                "subject__name",
+                "assessment__marking_period__start_date",
+                "student__last_name",
+                "student__first_name",
+            )
+        )
+
+        teacher_scope = get_teacher_gradebook_scope(request.user)
+        if teacher_scope is not None:
+            explicit_section_subject_ids = teacher_scope["explicit_section_subject_ids"]
+            general_subject_ids = teacher_scope["general_subject_ids"]
+            section_ids = teacher_scope["section_ids"]
+
+            explicit_q = Q(
+                section_id__in=section_ids,
+                subject_id__in=general_subject_ids,
+            )
+            if explicit_section_subject_ids:
+                explicit_q = explicit_q | Q(
+                    assessment__gradebook__section_subject_id__in=explicit_section_subject_ids,
+                )
+
+            grades = grades.filter(explicit_q).distinct()
+
+        if section_id:
+            grades = grades.filter(section_id=section_id)
+        if grade_level_id:
+            grades = grades.filter(section__grade_level_id=grade_level_id)
+        if subject_id:
+            grades = grades.filter(subject_id=subject_id)
+        if marking_period_id:
+            grades = grades.filter(assessment__marking_period_id=marking_period_id)
+        if status != "any":
+            grades = grades.filter(status=status)
+
+        def _num(value):
+            return float(value) if value is not None else None
+
+        results = [
+            {
+                "id": str(grade.id),
+                "student_id": str(grade.student_id),
+                "student_name": grade.student.get_full_name(),
+                "student_id_number": grade.student.id_number,
+                "subject_id": str(grade.subject_id),
+                "subject_name": grade.subject.name,
+                "section_id": str(grade.section_id),
+                "section_name": grade.section.name,
+                "grade_level_id": str(grade.section.grade_level_id) if getattr(grade.section, "grade_level_id", None) else None,
+                "grade_level_name": grade.section.grade_level.name if getattr(grade.section, "grade_level", None) else None,
+                "academic_year_id": str(grade.academic_year_id),
+                "academic_year_name": grade.academic_year.name,
+                "marking_period_id": str(grade.assessment.marking_period_id) if getattr(grade.assessment, "marking_period_id", None) else None,
+                "marking_period_name": grade.assessment.marking_period.name if getattr(grade.assessment, "marking_period", None) else None,
+                "marking_period_short_name": grade.assessment.marking_period.short_name if getattr(grade.assessment, "marking_period", None) else None,
+                "assessment_id": str(grade.assessment_id),
+                "assessment_name": grade.assessment.name,
+                "score": _num(grade.score),
+                "max_score": _num(grade.assessment.max_score),
+                "status": grade.status,
+                "needs_correction": grade.needs_correction,
+                "comment": grade.comment,
+            }
+            for grade in grades
+        ]
+
+        return Response({
+            "academic_year_id": academic_year_id,
+            "count": len(results),
+            "results": results,
+        })
 
