@@ -32,7 +32,7 @@ migrate_data_direct.py
 
 # Student data files
 students.xlsx
-*.xlsx
+# *.xlsx
 student_data.*
 backup_students.*
 enrollment_data.*
