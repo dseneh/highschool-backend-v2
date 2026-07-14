@@ -14,6 +14,8 @@ from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from openpyxl import load_workbook
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import Font
 from rest_framework import status as http_status
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
@@ -198,38 +200,65 @@ class BulkGradeUploadView(APIView):
         # Extract metadata from first 5 rows
         metadata = {}
         try:
-            # Find the row with "Grade Level:" - could be row 0, 1, or 2
-            grade_level_row = None
-            for i in range(min(5, len(df_raw))):
-                if len(df_raw.columns) > 0:
-                    first_col = str(df_raw.iloc[i, 0]).strip().lower()
-                    if 'grade level' in first_col:
-                        grade_level_row = i
-                        break
-            
-            if grade_level_row is None:
-                raise ValueError("Could not find 'Grade Level:' in the first 5 rows")
-            
-            # Extract metadata starting from grade_level_row
-            metadata['grade_level'] = str(df_raw.iloc[grade_level_row, 1]).strip() if len(df_raw.columns) > 1 else None
-            metadata['section'] = str(df_raw.iloc[grade_level_row + 1, 1]).strip() if len(df_raw) > grade_level_row + 1 and len(df_raw.columns) > 1 else None
-            metadata['subject'] = str(df_raw.iloc[grade_level_row + 2, 1]).strip() if len(df_raw) > grade_level_row + 2 and len(df_raw.columns) > 1 else None
-            metadata['academic_year'] = str(df_raw.iloc[grade_level_row + 3, 1]).strip() if len(df_raw) > grade_level_row + 3 and len(df_raw.columns) > 1 else None
+            # Parse metadata by labels so template layout can evolve safely.
+            max_scan_rows = min(20, len(df_raw))
+            label_to_row = {}
+            for i in range(max_scan_rows):
+                if len(df_raw.columns) == 0:
+                    continue
+                first_col = str(df_raw.iloc[i, 0]).strip().lower()
+                if first_col.startswith('grade level'):
+                    label_to_row['grade_level'] = i
+                elif first_col.startswith('section'):
+                    label_to_row['section'] = i
+                elif first_col.startswith('subject code'):
+                    label_to_row['subject'] = i
+                elif first_col.startswith('subject name'):
+                    label_to_row['subject_name'] = i
+                elif first_col.startswith('academic year'):
+                    label_to_row['academic_year'] = i
+                elif first_col.startswith('marking period code'):
+                    label_to_row['marking_period'] = i
 
-            # Row 4 is Academic Year (row5 is Marking Period Code for Template 1, or blank for Template 2)
+            if 'grade_level' not in label_to_row:
+                raise ValueError("Could not find 'Grade Level:' in the first 20 rows")
+
+            def _value_at(row_idx):
+                if row_idx is None or row_idx >= len(df_raw) or len(df_raw.columns) <= 1:
+                    return None
+                return str(df_raw.iloc[row_idx, 1]).strip()
+
+            metadata['grade_level'] = _value_at(label_to_row.get('grade_level'))
+            metadata['section'] = _value_at(label_to_row.get('section'))
+            metadata['subject'] = _value_at(label_to_row.get('subject'))
+            metadata['academic_year'] = _value_at(label_to_row.get('academic_year'))
+
             # Route based on the template_type parameter sent by the client.
             is_mp_columns = (template_type == 'marking_period_columns')
 
             if is_mp_columns:
                 metadata['template_type'] = 'marking_period_columns'
                 metadata['marking_period'] = None
-                # Template 2 has 4 metadata rows (no row5); layout: meta×4 + blank + instructions + blank + header
-                metadata['header_row'] = grade_level_row + 7
             else:
                 metadata['template_type'] = 'assessment_columns'
-                metadata['marking_period'] = str(df_raw.iloc[grade_level_row + 4, 1]).strip() if len(df_raw) > grade_level_row + 4 and len(df_raw.columns) > 1 else None
-                # Template 1 has 5 metadata rows; layout: meta×5 + blank + instructions + blank + header
-                metadata['header_row'] = grade_level_row + 8
+                metadata['marking_period'] = _value_at(label_to_row.get('marking_period'))
+
+            # Detect header row by labels to support templates with optional Subject Name row.
+            metadata['header_row'] = None
+            header_scan_start = label_to_row.get('grade_level', 0)
+            header_scan_end = min(header_scan_start + 25, len(df_raw))
+            for i in range(header_scan_start, header_scan_end):
+                row_values = [str(v).strip().lower() for v in df_raw.iloc[i].tolist()]
+                if any(v in {'student id', 'id', 'id_number', 'student_id'} for v in row_values) and any(
+                    v in {'student name', 'name', 'full_name', 'student_name'} for v in row_values
+                ):
+                    metadata['header_row'] = i
+                    break
+
+            if metadata['header_row'] is None:
+                raise ValueError(
+                    "Could not find a header row containing both Student ID and Student Name."
+                )
             
         except Exception as e:
             raise ValueError(f"Failed to extract metadata from Excel file. Ensure metadata format is correct. Error: {str(e)}")
@@ -1087,6 +1116,7 @@ class BulkGradeTemplateDownloadView(APIView):
         grade_level = str(request.data.get('grade_level', '')).strip()
         section_name = str(request.data.get('section') or section.name).strip()
         subject = str(request.data.get('subject', '')).strip()
+        subject_name = str(request.data.get('subject_name', '')).strip()
         academic_year = str(request.data.get('academic_year', '')).strip()
 
         if not isinstance(headers, list) or not all(isinstance(header, str) for header in headers):
@@ -1108,14 +1138,17 @@ class BulkGradeTemplateDownloadView(APIView):
             ('Grade Level:', grade_level),
             ('Section:', section_name),
             ('Subject Code:', subject),
+            ('Subject Name:', subject_name),
             ('Academic Year:', academic_year),
         ]
 
-        for row_index, (label, value) in enumerate(metadata_values, start=1):
+        # Metadata is written to rows 1-5 to match the template layout.
+        metadata_row_positions = [1, 2, 3, 4, 5]
+        for row_index, (label, value) in zip(metadata_row_positions, metadata_values):
             worksheet.cell(row_index, 1).value = label
             worksheet.cell(row_index, 2).value = value
 
-        header_row_index = 6
+        header_row_index = 7
         data_start_row_index = header_row_index + 1
 
         # Clone style/layout from the last pre-styled data row when appending
@@ -1154,6 +1187,23 @@ class BulkGradeTemplateDownloadView(APIView):
 
             for column_index, value in enumerate(row_values, start=1):
                 worksheet.cell(row_index, column_index).value = self._normalize_cell_value(value)
+
+        # Color-code grade values in all numeric grade columns:
+        # <70 => red, >=70 => blue.
+        if max_col >= 3 and rows:
+            last_data_row = data_start_row_index + len(rows) - 1
+            start_col_letter = worksheet.cell(data_start_row_index, 3).column_letter
+            end_col_letter = worksheet.cell(data_start_row_index, max_col).column_letter
+            grade_range = f"{start_col_letter}{data_start_row_index}:{end_col_letter}{last_data_row}"
+
+            worksheet.conditional_formatting.add(
+                grade_range,
+                CellIsRule(operator='lessThan', formula=['70'], font=Font(color='FFDC2626')),
+            )
+            worksheet.conditional_formatting.add(
+                grade_range,
+                CellIsRule(operator='greaterThanOrEqual', formula=['70'], font=Font(color='FF2563EB')),
+            )
 
         output = BytesIO()
         workbook.save(output)
