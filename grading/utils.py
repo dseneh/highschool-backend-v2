@@ -1,4 +1,5 @@
 from decimal import Decimal, ROUND_HALF_UP
+from math import ceil
 from typing import Optional
 from django.core.cache import cache
 from django.db.models import Q
@@ -1095,47 +1096,61 @@ def calculate_student_overall_average(
         .order_by("semester__start_date", "start_date")
     )
 
-    # Track grades across all gradebooks, aggregated by semester
-    semester_totals = defaultdict(lambda: {"sum": 0, "count": 0})
+    # Group marking periods by semester once (ordered by semester start / mp start)
+    semester_periods = defaultdict(list)
+    semester_names = {}
+    ordered_semester_ids = []
+    for mp in all_marking_periods:
+        sem_id = mp.semester.id
+        semester_periods[sem_id].append(mp)
+        semester_names[sem_id] = mp.semester.name
+        if sem_id not in ordered_semester_ids:
+            ordered_semester_ids.append(sem_id)
+
+    # Aggregate complete semester averages across gradebooks.
+    # A gradebook contributes to a semester only when ALL marking periods in
+    # that semester are graded for the student.
+    semester_totals = defaultdict(lambda: {"sum": 0.0, "count": 0})
 
     for gradebook in gradebooks:
-        # Calculate per marking period
-        for mp in all_marking_periods:
-            # Calculate the final percentage for this marking period
-            final_percentage = calculate_marking_period_percentage(
-                gradebook, student, mp, status=status
-            )
+        for sem_id in ordered_semester_ids:
+            sem_values = []
+            all_sem_mps_graded = True
 
-            if final_percentage is not None:
-                # Aggregate by semester
-                semester_totals[mp.semester.id]["sum"] += float(final_percentage)
-                semester_totals[mp.semester.id]["count"] += 1
+            for mp in semester_periods[sem_id]:
+                final_percentage = calculate_marking_period_percentage(
+                    gradebook, student, mp, status=status
+                )
+                if final_percentage is None:
+                    all_sem_mps_graded = False
+                    break
+                sem_values.append(float(final_percentage))
+
+            if all_sem_mps_graded and sem_values:
+                sem_avg = sum(sem_values) / len(sem_values)
+                semester_totals[sem_id]["sum"] += sem_avg
+                semester_totals[sem_id]["count"] += 1
 
     # Calculate semester averages
     semester_averages = []
-    total_sum = 0
-    total_count = 0
+    semester_average_values = []
+    for sem_id in ordered_semester_ids:
+        semester_data = semester_totals.get(sem_id)
+        if semester_data and semester_data["count"] > 0:
+            avg = semester_data["sum"] / semester_data["count"]
+            semester_averages.append(
+                {
+                    "id": str(sem_id),
+                    "name": semester_names.get(sem_id, "Semester"),
+                    "average": ceil(avg),
+                }
+            )
+            semester_average_values.append(avg)
 
-    # Get unique semesters (maintain order)
-    seen_semesters = set()
-    for mp in all_marking_periods:
-        if mp.semester.id not in seen_semesters:
-            seen_semesters.add(mp.semester.id)
-            semester_data = semester_totals.get(mp.semester.id)
-
-            if semester_data and semester_data["count"] > 0:
-                avg = semester_data["sum"] / semester_data["count"]
-                semester_averages.append(
-                    {
-                        "id": str(mp.semester.id),
-                        "name": mp.semester.name,
-                        "average": round(avg, 1),
-                    }
-                )
-                total_sum += avg
-                total_count += 1
-
-    final_average = round(total_sum / total_count, 1) if total_count > 0 else None
+    # Final average only when all semesters in the academic year are complete.
+    final_average = None
+    if ordered_semester_ids and len(semester_averages) == len(ordered_semester_ids):
+        final_average = ceil(sum(semester_average_values) / len(semester_average_values))
 
     return {
         "semester_averages": semester_averages,

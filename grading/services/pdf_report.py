@@ -6,6 +6,7 @@ with professional formatting and efficient data retrieval.
 """
 
 from io import BytesIO
+from math import ceil
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Union
@@ -215,7 +216,8 @@ class StudentReportCardPDF:
 
         try:
             float_val = float(value)
-            text_val = f"{float_val:.1f}"
+            rounded_up = ceil(float_val)
+            text_val = str(rounded_up)
 
             if float_val >= 90:
                 style = self.grade_style_blue
@@ -331,20 +333,13 @@ class StudentReportCardPDF:
                 if mp.id in mp_percentages and mp_percentages.get(mp.id) is not None
             ]
 
-            should_calculate_sem_avg = False
-            if self.cumulative_average_calculation:
-                # If cumulative is True, calculate if ANY grades exist
-                if sem_percentages:
-                    should_calculate_sem_avg = True
-            else:
-                # If cumulative is False, calculate only if ALL marking periods have grades
-                # Check if we have grades for ALL marking periods in this semester
-                all_mps_have_grades = all(
-                    mp.id in mp_percentages and mp_percentages.get(mp.id) is not None
-                    for mp in semester_mps
-                )
-                if all_mps_have_grades:
-                    should_calculate_sem_avg = True
+            # Always require complete grading for the semester before
+            # calculating semester averages.
+            all_mps_have_grades = all(
+                mp.id in mp_percentages and mp_percentages.get(mp.id) is not None
+                for mp in semester_mps
+            )
+            should_calculate_sem_avg = all_mps_have_grades
 
             if should_calculate_sem_avg:
                 sem_avg = sum(sem_percentages) / len(sem_percentages)

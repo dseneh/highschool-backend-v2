@@ -525,10 +525,9 @@ class BulkGradeUploadView(APIView):
                 
                 for assessment_col in assessment_columns:
                     score_value = row[assessment_col]
-                    
-                    # Skip if no score provided
-                    if pd.isna(score_value) or str(score_value).strip() == '':
-                        continue
+
+                    # Blank/null cells are treated as 0 for grade uploads.
+                    is_blank_score = pd.isna(score_value) or str(score_value).strip() == ''
                     
                     # Lookup assessment
                     assessment = assessments_cache.get(assessment_col)
@@ -544,7 +543,7 @@ class BulkGradeUploadView(APIView):
                     
                     # Validate and convert score
                     try:
-                        score = Decimal(str(score_value).strip())
+                        score = Decimal("0") if is_blank_score else Decimal(str(score_value).strip())
                         
                         if score < 0:
                             stats['errors'].append({
@@ -945,13 +944,11 @@ class BulkGradeUploadView(APIView):
                 for col_label, (mp, assessment) in mp_assessment_map.items():
                     score_value = row[col_label]
 
-                    # Skip blank cells
+                    # Blank/null cells are treated as 0 for grade uploads.
                     try:
                         is_blank = pd.isna(score_value) or str(score_value).strip() == ''
                     except Exception:
                         is_blank = not str(score_value).strip()
-                    if is_blank:
-                        continue
 
                     if assessment is None:
                         stats['errors'].append({
@@ -963,7 +960,7 @@ class BulkGradeUploadView(APIView):
 
                     # Parse score
                     try:
-                        score = Decimal(str(score_value).strip())
+                        score = Decimal('0') if is_blank else Decimal(str(score_value).strip())
                         if score < 0:
                             stats['errors'].append({
                                 'row': row_number, 'student_id': student_id,
@@ -1087,19 +1084,140 @@ class BulkGradeUploadView(APIView):
         }
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for marking-period template workbooks (single- and multi-sheet)
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / 'templates'
+    / 'grades_upload_marking_periods.xlsx'
+)
+
+
+def _normalize_cell_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        trimmed = value.strip()
+        return trimmed if trimmed else None
+    return value
+
+
+def _copy_row_style(worksheet, src_row: int, dest_row: int, col_count: int):
+    for col_idx in range(1, col_count + 1):
+        src_cell = worksheet.cell(src_row, col_idx)
+        dest_cell = worksheet.cell(dest_row, col_idx)
+        if src_cell.has_style:
+            dest_cell._style = copy(src_cell._style)
+        if src_cell.number_format:
+            dest_cell.number_format = src_cell.number_format
+        if src_cell.protection:
+            dest_cell.protection = copy(src_cell.protection)
+        if src_cell.alignment:
+            dest_cell.alignment = copy(src_cell.alignment)
+
+    src_dim = worksheet.row_dimensions.get(src_row)
+    if src_dim and src_dim.height is not None:
+        worksheet.row_dimensions[dest_row].height = src_dim.height
+
+
+def _populate_marking_period_sheet(
+    worksheet,
+    *,
+    grade_level: str,
+    section_name: str,
+    subject_code: str,
+    subject_name: str,
+    academic_year: str,
+    headers: list,
+    rows: list,
+):
+    """Populate a worksheet (pre-styled from the bundled template) with a
+    marking-period grade template payload.
+
+    Layout (aligned with the bundled template file):
+      rows 1-5 : metadata label/value pairs
+      row 7    : column headers
+      row 8+   : student data rows
+    """
+    metadata_values = [
+        ('Grade Level:', grade_level),
+        ('Section:', section_name),
+        ('Subject Code:', subject_code),
+        ('Subject Name:', subject_name),
+        ('Academic Year:', academic_year),
+    ]
+
+    for row_index, (label, value) in enumerate(metadata_values, start=1):
+        worksheet.cell(row_index, 1).value = label
+        worksheet.cell(row_index, 2).value = value
+
+    header_row_index = 7
+    data_start_row_index = header_row_index + 1
+
+    template_data_style_row = worksheet.max_row
+    if template_data_style_row < data_start_row_index:
+        template_data_style_row = data_start_row_index
+
+    for column_index, header in enumerate(headers, start=1):
+        worksheet.cell(header_row_index, column_index).value = header
+
+    max_col = max(len(headers), max((len(r) for r in rows), default=0))
+
+    for row_offset, row_values in enumerate(rows):
+        row_index = data_start_row_index + row_offset
+
+        if row_index > template_data_style_row and max_col > 0:
+            _copy_row_style(worksheet, template_data_style_row, row_index, max_col)
+
+        for column_index, value in enumerate(row_values, start=1):
+            worksheet.cell(row_index, column_index).value = _normalize_cell_value(value)
+
+    # Color-code grade values in all numeric grade columns:
+    # <70 => red, >=70 => blue.
+    if max_col >= 3 and rows:
+        last_data_row = data_start_row_index + len(rows) - 1
+        start_col_letter = worksheet.cell(data_start_row_index, 3).column_letter
+        end_col_letter = worksheet.cell(data_start_row_index, max_col).column_letter
+        grade_range = f"{start_col_letter}{data_start_row_index}:{end_col_letter}{last_data_row}"
+
+        worksheet.conditional_formatting.add(
+            grade_range,
+            CellIsRule(operator='lessThan', formula=['70'], font=Font(color='FFDC2626')),
+        )
+        worksheet.conditional_formatting.add(
+            grade_range,
+            CellIsRule(operator='greaterThanOrEqual', formula=['70'], font=Font(color='FF2563EB')),
+        )
+
+
+_INVALID_SHEET_CHARS = str.maketrans({c: '_' for c in r'[]:*?/\\'})
+
+
+def _sanitize_sheet_title(raw: str, used: set, fallback: str) -> str:
+    """Sanitize an Excel worksheet title (<=31 chars, no forbidden chars,
+    unique within *used*). *used* is updated in place with the returned title.
+    """
+    base = (raw or '').strip().translate(_INVALID_SHEET_CHARS)
+    if not base:
+        base = (fallback or 'Sheet').strip() or 'Sheet'
+    base = base[:31]
+
+    candidate = base
+    counter = 2
+    while candidate in used or not candidate:
+        suffix = f' ({counter})'
+        candidate = f'{base[: 31 - len(suffix)]}{suffix}'
+        counter += 1
+    used.add(candidate)
+    return candidate
+
+
 class BulkGradeTemplateDownloadView(APIView):
     """Download a styled bulk grade template using the bundled workbook file."""
 
     parser_classes = (JSONParser,)
-
-    @staticmethod
-    def _normalize_cell_value(value):
-        if value is None:
-            return None
-        if isinstance(value, str):
-            trimmed = value.strip()
-            return trimmed if trimmed else None
-        return value
 
     def post(self, request, section_id):
         section = get_object_or_404(Section, pk=section_id)
@@ -1124,86 +1242,25 @@ class BulkGradeTemplateDownloadView(APIView):
         if not isinstance(rows, list):
             return Response({'detail': 'rows must be an array.'}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'grades_upload_marking_periods.xlsx'
-        if not template_path.exists():
+        if not _TEMPLATE_PATH.exists():
             return Response(
                 {'detail': 'Workbook template file was not found on the server.'},
                 status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        workbook = load_workbook(template_path)
+        workbook = load_workbook(_TEMPLATE_PATH)
         worksheet = workbook[workbook.sheetnames[0]]
 
-        metadata_values = [
-            ('Grade Level:', grade_level),
-            ('Section:', section_name),
-            ('Subject Code:', subject),
-            ('Subject Name:', subject_name),
-            ('Academic Year:', academic_year),
-        ]
-
-        # Metadata is written to rows 1-5 to match the template layout.
-        metadata_row_positions = [1, 2, 3, 4, 5]
-        for row_index, (label, value) in zip(metadata_row_positions, metadata_values):
-            worksheet.cell(row_index, 1).value = label
-            worksheet.cell(row_index, 2).value = value
-
-        header_row_index = 7
-        data_start_row_index = header_row_index + 1
-
-        # Clone style/layout from the last pre-styled data row when appending
-        # beyond the template's designed area.
-        template_data_style_row = worksheet.max_row
-        if template_data_style_row < data_start_row_index:
-            template_data_style_row = data_start_row_index
-
-        for column_index, header in enumerate(headers, start=1):
-            worksheet.cell(header_row_index, column_index).value = header
-
-        max_col = max(len(headers), max((len(r) for r in rows), default=0))
-
-        def _copy_row_style(src_row: int, dest_row: int, col_count: int):
-            for col_idx in range(1, col_count + 1):
-                src_cell = worksheet.cell(src_row, col_idx)
-                dest_cell = worksheet.cell(dest_row, col_idx)
-                if src_cell.has_style:
-                    dest_cell._style = copy(src_cell._style)
-                if src_cell.number_format:
-                    dest_cell.number_format = src_cell.number_format
-                if src_cell.protection:
-                    dest_cell.protection = copy(src_cell.protection)
-                if src_cell.alignment:
-                    dest_cell.alignment = copy(src_cell.alignment)
-
-            src_dim = worksheet.row_dimensions.get(src_row)
-            if src_dim and src_dim.height is not None:
-                worksheet.row_dimensions[dest_row].height = src_dim.height
-
-        for row_offset, row_values in enumerate(rows):
-            row_index = data_start_row_index + row_offset
-
-            if row_index > template_data_style_row and max_col > 0:
-                _copy_row_style(template_data_style_row, row_index, max_col)
-
-            for column_index, value in enumerate(row_values, start=1):
-                worksheet.cell(row_index, column_index).value = self._normalize_cell_value(value)
-
-        # Color-code grade values in all numeric grade columns:
-        # <70 => red, >=70 => blue.
-        if max_col >= 3 and rows:
-            last_data_row = data_start_row_index + len(rows) - 1
-            start_col_letter = worksheet.cell(data_start_row_index, 3).column_letter
-            end_col_letter = worksheet.cell(data_start_row_index, max_col).column_letter
-            grade_range = f"{start_col_letter}{data_start_row_index}:{end_col_letter}{last_data_row}"
-
-            worksheet.conditional_formatting.add(
-                grade_range,
-                CellIsRule(operator='lessThan', formula=['70'], font=Font(color='FFDC2626')),
-            )
-            worksheet.conditional_formatting.add(
-                grade_range,
-                CellIsRule(operator='greaterThanOrEqual', formula=['70'], font=Font(color='FF2563EB')),
-            )
+        _populate_marking_period_sheet(
+            worksheet,
+            grade_level=grade_level,
+            section_name=section_name,
+            subject_code=subject,
+            subject_name=subject_name,
+            academic_year=academic_year,
+            headers=headers,
+            rows=rows,
+        )
 
         output = BytesIO()
         workbook.save(output)
@@ -1214,5 +1271,232 @@ class BulkGradeTemplateDownloadView(APIView):
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
         response['Content-Disposition'] = 'attachment; filename="grades_upload_marking_periods.xlsx"'
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
+class BulkGradeAllSubjectsTemplateDownloadView(APIView):
+    """
+    POST /sections/<section_id>/grades-upload/template/all/
+
+    Download a single Excel workbook that contains one pre-populated
+    marking-period template sheet **per subject** for the given section.
+
+    Body (all optional):
+      - academic_year_id      : UUID of the academic year (default: current year)
+      - include_grades        : bool. When true, populate each sheet with the
+                                approved / filtered marking-period grades.
+      - grade_status_filter   : Grade.status to include when include_grades is
+                                true. Use 'all' (or omit) to include every
+                                status.
+
+    Each sheet layout:
+      - metadata rows (grade level, section, subject code/name, academic year)
+      - header row: Student ID | Student Name | <MP short names...> | Sem_N Avg
+      - one row per enrolled student (id_number + "Last, First Middle" + grades)
+    """
+
+    parser_classes = (JSONParser,)
+
+    def post(self, request, section_id):
+        from students.models import Enrollment
+        from grading.models import GradeBook
+        from grading.utils import calculate_marking_period_percentage
+
+        section = get_object_or_404(
+            Section.objects.select_related('grade_level'),
+            pk=section_id,
+        )
+
+        # Resolve academic year (defaults to current).
+        academic_year_id = str(request.data.get('academic_year_id', '')).strip() or None
+        if academic_year_id:
+            try:
+                academic_year = AcademicYear.objects.get(pk=academic_year_id)
+            except AcademicYear.DoesNotExist:
+                return Response(
+                    {'detail': 'Academic year not found.'},
+                    status=http_status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            academic_year = AcademicYear.get_current_academic_year()
+            if academic_year is None:
+                return Response(
+                    {'detail': 'No current academic year is configured.'},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+        include_grades = bool(request.data.get('include_grades', False))
+        raw_status_filter = str(request.data.get('grade_status_filter', 'all')).strip().lower()
+        status_filter = 'any' if raw_status_filter in ('', 'all') else raw_status_filter
+
+        # All gradebooks for this section+year, ordered by subject.
+        gradebooks = list(
+            GradeBook.objects.filter(section=section, academic_year=academic_year)
+            .select_related('subject')
+            .order_by('subject__code', 'subject__name')
+        )
+
+        if not gradebooks:
+            return Response(
+                {'detail': 'No gradebooks found for this section and academic year.'},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        # Enrolled students in this section for the given year.
+        enrollments = (
+            Enrollment.objects.filter(section=section, academic_year=academic_year)
+            .select_related('student')
+            .order_by('student__last_name', 'student__first_name', 'student__middle_name')
+        )
+        students = [e.student for e in enrollments]
+
+        # Marking periods for the year, grouped by semester (start_date order).
+        marking_periods = list(
+            MarkingPeriod.objects
+            .filter(semester__academic_year=academic_year)
+            .select_related('semester')
+            .order_by('semester__start_date', 'start_date')
+        )
+
+        # Group marking periods by semester while preserving encounter order.
+        semester_groups = []  # list of (semester_id_or_None, semester_name, [periods])
+        seen = {}
+        for mp in marking_periods:
+            sem_id = mp.semester_id if mp.semester_id else None
+            key = sem_id if sem_id is not None else '__no_semester__'
+            if key not in seen:
+                seen[key] = len(semester_groups)
+                semester_groups.append((
+                    key,
+                    mp.semester.name if mp.semester else '',
+                    [],
+                ))
+            semester_groups[seen[key]][2].append(mp)
+
+        # Build the ordered column-header list (matches the frontend layout).
+        headers = ['Student ID', 'Student Name']
+        for idx, (_key, _name, periods) in enumerate(semester_groups, start=1):
+            for mp in periods:
+                headers.append(mp.short_name or mp.name)
+            headers.append(f'Sem{idx} Avg')
+        if len(semester_groups) > 1:
+            headers.append('Yrly Avg')
+
+        # Number of blank grade columns per student row.
+        blank_grade_cell_count = len(headers) - 2  # minus Student ID + Name
+
+        def _avg_if_complete(scores, expected_count):
+            if expected_count == 0:
+                return ''
+            numeric = [s for s in scores if s is not None]
+            if len(numeric) < expected_count:
+                return ''
+            return round(sum(numeric) / len(numeric))
+
+        def _build_rows_for_gradebook(gradebook):
+            rows = []
+            for student in students:
+                id_number = (student.id_number or '').strip()
+                first = (student.first_name or '').strip()
+                middle = (student.middle_name or '').strip()
+                last = (student.last_name or '').strip()
+                display_name = f"{last}, {first} {middle}".strip()
+                while '  ' in display_name:
+                    display_name = display_name.replace('  ', ' ')
+                display_name = display_name.rstrip(',').strip()
+
+                if not include_grades:
+                    rows.append(
+                        [id_number, display_name] + [''] * blank_grade_cell_count
+                    )
+                    continue
+
+                sem_scores = {key: [] for key, _n, _p in semester_groups}
+                sem_expected = {
+                    key: len(periods) for key, _n, periods in semester_groups
+                }
+                cells = [id_number, display_name]
+
+                for sem_idx, (sem_key, _sem_name, periods) in enumerate(
+                    semester_groups, start=1
+                ):
+                    for mp in periods:
+                        pct = calculate_marking_period_percentage(
+                            gradebook, student, mp, status=status_filter,
+                        )
+                        score = int(round(float(pct))) if pct is not None else None
+                        cells.append(score if score is not None else '')
+                        sem_scores[sem_key].append(score)
+                    cells.append(
+                        _avg_if_complete(sem_scores[sem_key], sem_expected[sem_key])
+                    )
+
+                if len(semester_groups) > 1:
+                    all_scores = [s for lst in sem_scores.values() for s in lst]
+                    total_expected = sum(sem_expected.values())
+                    cells.append(_avg_if_complete(all_scores, total_expected))
+
+                rows.append(cells)
+            return rows
+
+        # If there are no enrolled students, emit an empty template row per
+        # sheet so the workbook remains usable.
+        empty_row = ['', ''] + [''] * blank_grade_cell_count
+
+        if not _TEMPLATE_PATH.exists():
+            return Response(
+                {'detail': 'Workbook template file was not found on the server.'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        workbook = load_workbook(_TEMPLATE_PATH)
+        base_sheet = workbook[workbook.sheetnames[0]]
+
+        grade_level_name = section.grade_level.name if section.grade_level_id else ''
+        used_titles = set()
+
+        for gradebook in gradebooks:
+            subject = gradebook.subject
+            subject_code = (subject.code or '').strip() if subject else ''
+            subject_name = (subject.name or '').strip() if subject else ''
+
+            worksheet = workbook.copy_worksheet(base_sheet)
+            worksheet.title = _sanitize_sheet_title(
+                subject_code or subject_name,
+                used_titles,
+                fallback='Subject',
+            )
+
+            rows = _build_rows_for_gradebook(gradebook) if students else [empty_row]
+
+            _populate_marking_period_sheet(
+                worksheet,
+                grade_level=grade_level_name,
+                section_name=section.name,
+                subject_code=subject_code,
+                subject_name=subject_name,
+                academic_year=str(academic_year),
+                headers=headers,
+                rows=rows,
+            )
+
+        # Remove the untouched base sheet so only per-subject sheets remain.
+        workbook.remove(base_sheet)
+
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        section_part = ''.join(
+            ch if ch.isalnum() else '_' for ch in (section.name or '')
+        ).strip('_') or 'section'
+        filename = f'grades_upload_{section_part}_all_subjects.xlsx'
+
+        response = HttpResponse(
+            output.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
         response['Cache-Control'] = 'no-store'
         return response

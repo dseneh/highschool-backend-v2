@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from math import ceil
 from .models import (
     AssessmentType,
     GradeBook,
@@ -2066,33 +2067,40 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
             # Add averages if requested
             if include_average:
                 semester_averages = []
-                total_sum = 0
-                total_count = 0
+                semester_avgs_for_final = []
 
+                # Require complete grading per semester before showing averages.
+                ordered_semesters = []
+                semester_expected_counts = {}
                 for mp in all_marking_periods:
                     semester_id = mp.semester.id
+                    if semester_id not in semester_expected_counts:
+                        semester_expected_counts[semester_id] = 0
+                        ordered_semesters.append((semester_id, mp.semester.name))
+                    semester_expected_counts[semester_id] += 1
+
+                for semester_id, semester_name in ordered_semesters:
                     semester_data = semester_totals.get(semester_id)
+                    if not semester_data:
+                        continue
 
-                    if semester_data and semester_data["count"] > 0:
+                    if semester_data["count"] >= semester_expected_counts.get(semester_id, 0):
                         avg = semester_data["sum"] / semester_data["count"]
+                        semester_averages.append(
+                            {
+                                "id": semester_id,
+                                "name": semester_name,
+                                "average": ceil(avg),
+                            }
+                        )
+                        semester_avgs_for_final.append(avg)
 
-                        # Check if we already added this semester
-                        if not any(s["id"] == semester_id for s in semester_averages):
-                            semester_averages.append(
-                                {
-                                    "id": semester_id,
-                                    "name": mp.semester.name,
-                                    "average": format_numeric_value(avg),
-                                }
-                            )
-                            total_sum += avg
-                            total_count += 1
-
-                final_average = (
-                    format_numeric_value(total_sum / total_count)
-                    if total_count > 0
-                    else None
-                )
+                # Final average only when all semesters are complete.
+                final_average = None
+                if ordered_semesters and len(semester_averages) == len(ordered_semesters):
+                    final_average = ceil(
+                        sum(semester_avgs_for_final) / len(semester_avgs_for_final)
+                    )
 
                 gradebook_result["averages"] = {
                     "semester_averages": semester_averages,
