@@ -4,15 +4,22 @@ Bulk Grade Upload Views
 Handles uploading student grades from Excel files.
 """
 
+from decimal import Decimal, InvalidOperation
+from io import BytesIO
+from pathlib import Path
+from copy import copy
+
 from django.db import transaction
 from django.db.models import Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
-from rest_framework.views import APIView
-from ..access_policies import GradebookAccessPolicy
-from rest_framework.response import Response
-from rest_framework.parsers import MultiPartParser, FormParser
+from openpyxl import load_workbook
 from rest_framework import status as http_status
-from decimal import Decimal, InvalidOperation
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from ..access_policies import GradebookAccessPolicy
 
 from academics.models import Section, AcademicYear, MarkingPeriod
 from common.utils import get_object_by_uuid_or_fields
@@ -1049,3 +1056,113 @@ class BulkGradeUploadView(APIView):
             'warnings': stats['warnings'][:50],
             'errors': stats['errors'][:50],
         }
+
+
+class BulkGradeTemplateDownloadView(APIView):
+    """Download a styled bulk grade template using the bundled workbook file."""
+
+    parser_classes = (JSONParser,)
+
+    @staticmethod
+    def _normalize_cell_value(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            trimmed = value.strip()
+            return trimmed if trimmed else None
+        return value
+
+    def post(self, request, section_id):
+        section = get_object_or_404(Section, pk=section_id)
+
+        template_type = str(request.data.get('template_type', 'marking_period_columns')).strip()
+        if template_type != 'marking_period_columns':
+            return Response(
+                {'detail': 'Only marking_period_columns templates are supported by this endpoint.'},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        headers = request.data.get('headers') or []
+        rows = request.data.get('rows') or []
+        grade_level = str(request.data.get('grade_level', '')).strip()
+        section_name = str(request.data.get('section') or section.name).strip()
+        subject = str(request.data.get('subject', '')).strip()
+        academic_year = str(request.data.get('academic_year', '')).strip()
+
+        if not isinstance(headers, list) or not all(isinstance(header, str) for header in headers):
+            return Response({'detail': 'headers must be an array of strings.'}, status=http_status.HTTP_400_BAD_REQUEST)
+        if not isinstance(rows, list):
+            return Response({'detail': 'rows must be an array.'}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        template_path = Path(__file__).resolve().parent.parent / 'templates' / 'grades_upload_marking_periods.xlsx'
+        if not template_path.exists():
+            return Response(
+                {'detail': 'Workbook template file was not found on the server.'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        workbook = load_workbook(template_path)
+        worksheet = workbook[workbook.sheetnames[0]]
+
+        metadata_values = [
+            ('Grade Level:', grade_level),
+            ('Section:', section_name),
+            ('Subject Code:', subject),
+            ('Academic Year:', academic_year),
+        ]
+
+        for row_index, (label, value) in enumerate(metadata_values, start=1):
+            worksheet.cell(row_index, 1).value = label
+            worksheet.cell(row_index, 2).value = value
+
+        header_row_index = 6
+        data_start_row_index = header_row_index + 1
+
+        # Clone style/layout from the last pre-styled data row when appending
+        # beyond the template's designed area.
+        template_data_style_row = worksheet.max_row
+        if template_data_style_row < data_start_row_index:
+            template_data_style_row = data_start_row_index
+
+        for column_index, header in enumerate(headers, start=1):
+            worksheet.cell(header_row_index, column_index).value = header
+
+        max_col = max(len(headers), max((len(r) for r in rows), default=0))
+
+        def _copy_row_style(src_row: int, dest_row: int, col_count: int):
+            for col_idx in range(1, col_count + 1):
+                src_cell = worksheet.cell(src_row, col_idx)
+                dest_cell = worksheet.cell(dest_row, col_idx)
+                if src_cell.has_style:
+                    dest_cell._style = copy(src_cell._style)
+                if src_cell.number_format:
+                    dest_cell.number_format = src_cell.number_format
+                if src_cell.protection:
+                    dest_cell.protection = copy(src_cell.protection)
+                if src_cell.alignment:
+                    dest_cell.alignment = copy(src_cell.alignment)
+
+            src_dim = worksheet.row_dimensions.get(src_row)
+            if src_dim and src_dim.height is not None:
+                worksheet.row_dimensions[dest_row].height = src_dim.height
+
+        for row_offset, row_values in enumerate(rows):
+            row_index = data_start_row_index + row_offset
+
+            if row_index > template_data_style_row and max_col > 0:
+                _copy_row_style(template_data_style_row, row_index, max_col)
+
+            for column_index, value in enumerate(row_values, start=1):
+                worksheet.cell(row_index, column_index).value = self._normalize_cell_value(value)
+
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        response = HttpResponse(
+            output.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = 'attachment; filename="grades_upload_marking_periods.xlsx"'
+        response['Cache-Control'] = 'no-store'
+        return response

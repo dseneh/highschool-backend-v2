@@ -37,7 +37,7 @@ from .default_assessment_template import (
     GenerateAssessmentsForAcademicYearView,
     PreviewAssessmentsForGradebookView,
 )
-from .bulk_upload import BulkGradeUploadView
+from .bulk_upload import BulkGradeUploadView, BulkGradeTemplateDownloadView
 from .ranking import RankingView
 
 __all__ = [
@@ -80,5 +80,6 @@ __all__ = [
     "GenerateAssessmentsForAcademicYearView",
     "PreviewAssessmentsForGradebookView",
     "BulkGradeUploadView",
+    "BulkGradeTemplateDownloadView",
     "RankingView",
 ]
