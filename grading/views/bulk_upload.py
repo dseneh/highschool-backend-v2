@@ -990,7 +990,9 @@ class BulkGradeUploadView(APIView):
                     existing_grade = existing_grades_cache.get(grade_key)
 
                     if existing_grade:
-                        # Skip if score is identical (no change needed)
+                        # Preserve no-op optimization: skip if incoming score
+                        # matches existing. Blank/null inputs are normalized to
+                        # 0 before this comparison.
                         existing_score = existing_grade.score
                         try:
                             if existing_score is not None and Decimal(str(existing_score)) == score:

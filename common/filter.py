@@ -9,7 +9,6 @@ def get_student_queryparams(query_params, other_parms: None):
             if k == "status":
                 values = v.split(",")
                 v = [value.strip() for value in values if value.strip()]
-                print(f"Filtering by status: {v}")
                 if v:
                     f.add(Q(**{f"status__in": v}), Q.AND)
             if k == "enrollment_status":
