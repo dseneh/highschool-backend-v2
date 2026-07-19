@@ -29,6 +29,24 @@ from grading.services.authorization import (
 from students.models import Student
 
 
+def normalize_condition_status_input(raw_condition_status):
+    """Normalize incoming condition status values to backend enum values."""
+    if raw_condition_status in [None, ""]:
+        return None
+
+    normalized = str(raw_condition_status).strip().lower().replace(" ", "_")
+
+    # Backward-compatible alias: older clients can send "score".
+    if normalized == "score":
+        return Grade.ConditionStatus.GRADED
+
+    # Legacy statuses are consolidated under no_grade.
+    if normalized in {"missing", "excused", "absent", "not_submitted", "withdrawn"}:
+        return Grade.ConditionStatus.NO_GRADE
+
+    return normalized
+
+
 class GradeListCreateView(APIView):
     permission_classes = [GradebookAccessPolicy]
     """
@@ -83,6 +101,8 @@ class GradeListCreateView(APIView):
             "section",
             "subject",
             "score",
+            "condition_status",
+            "condition_reason",
             "status",
             "created_at",
             "updated_at",
@@ -181,6 +201,8 @@ def get_object(pk):
                 "enrollment",
                 "student",
                 "score",
+                "condition_status",
+                "condition_reason",
                 "status",
                 "created_at",
                 "updated_at",
@@ -214,6 +236,8 @@ class GradeDetailView(APIView):
         # Teachers can only edit grades for their assigned section/subject.
         enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
 
+        raw_condition_status = request.data.get("condition_status")
+        condition_reason = request.data.get("condition_reason")
         score = request.data.get("score")
 
         if not can_edit_grade_status(grade.status):
@@ -222,28 +246,63 @@ class GradeDetailView(APIView):
                 status=409,
             )
 
-        if not str(score):
-            return Response({"detail": "score is required."}, status=400)
+        condition_status = normalize_condition_status_input(raw_condition_status) or (
+            Grade.ConditionStatus.GRADED if score not in [None, ""] else None
+        )
 
-        try:
-            score = parse_decimal(score, "score")
-        except ValueError as e:
-            return Response({"detail": str(e)}, status=400)
+        if (
+            condition_status == Grade.ConditionStatus.PENDING
+            and (condition_reason or "").strip().lower() == "no_grade"
+        ):
+            condition_status = Grade.ConditionStatus.NO_GRADE
+            condition_reason = None
 
-        if score < 0:
-            return Response({"detail": "score cannot be negative."}, status=400)
+        if condition_status not in dict(Grade.ConditionStatus.choices):
+            return Response({"detail": "condition_status is invalid."}, status=400)
 
-        max_score = grade.assessment.max_score
-        if max_score is not None and score > max_score:
-            return Response(
-                {"detail": f"score cannot exceed of {max_score}."}, status=400
-            )
+        if condition_status == Grade.ConditionStatus.GRADED:
+            if score in [None, ""]:
+                return Response(
+                    {"detail": "score is required for graded entries."},
+                    status=400,
+                )
 
-        # allowed_fields = ["score"]
+            try:
+                score = parse_decimal(score, "score")
+            except ValueError as e:
+                return Response({"detail": str(e)}, status=400)
+
+            if score < 0:
+                return Response({"detail": "score cannot be negative."}, status=400)
+
+            max_score = grade.assessment.max_score
+            if max_score is not None and score > max_score:
+                return Response(
+                    {"detail": f"score cannot exceed of {max_score}."}, status=400
+                )
+        else:
+            if score not in [None, ""]:
+                return Response(
+                    {"detail": "non-graded conditions must not include a score."},
+                    status=400,
+                )
+            score = None
+
         grade.score = score
+        grade.condition_status = condition_status
+        grade.condition_reason = condition_reason or None
         grade.status = Grade.Status.DRAFT  # reset to draft on manual edit
         grade.updated_by = request.user
-        grade.save(update_fields=["score", "status", "updated_by", "updated_at"])
+        grade.save(
+            update_fields=[
+                "score",
+                "condition_status",
+                "condition_reason",
+                "status",
+                "updated_by",
+                "updated_at",
+            ]
+        )
         return Response(GradeOut(grade).data)
 
     # @transaction.atomic
@@ -271,6 +330,19 @@ def run_validation_checks(request, grade=None):
             raise ValidationError(
                 {"detail": f"Invalid transition {grade.status} → {target}."}
             )
+
+
+def has_submittable_grade_value(grade: Grade) -> bool:
+    if grade.score is not None:
+        return True
+
+    if grade.condition_status == Grade.ConditionStatus.NO_GRADE:
+        return True
+
+    if grade.condition_status == Grade.ConditionStatus.PENDING:
+        return (grade.condition_reason or "").strip().lower() == "no_grade"
+
+    return grade.condition_status != Grade.ConditionStatus.GRADED
 
 
 class GradeStatusTransitionView(APIView):
@@ -412,10 +484,10 @@ class SectionGradeStatusTransitionView(APIView):
                 skipped_count += 1
                 skip_reasons["approved"] += 1
                 continue  # skip locked grades
-            if grade.score is None:
+            if not has_submittable_grade_value(grade):
                 skipped_count += 1
                 skip_reasons["no_score"] += 1
-                continue  # skip grades without a score
+                continue  # skip grades without a submittable value
             if not is_valid_transition(grade.status, target, require_review, require_approval):
                 skipped_count += 1
                 skip_reasons["invalid_transition"] += 1
@@ -544,10 +616,10 @@ class StudentMarkingPeriodGradeStatusTransitionView(APIView):
                 skipped_count += 1
                 skip_reasons["approved"] += 1
                 continue  # skip locked grades
-            if grade.score is None:
+            if not has_submittable_grade_value(grade):
                 skipped_count += 1
                 skip_reasons["no_score"] += 1
-                continue  # skip grades without a score
+                continue  # skip grades without a submittable value
             if not is_valid_transition(grade.status, target, require_review, require_approval):
                 skipped_count += 1
                 skip_reasons["invalid_transition"] += 1
@@ -700,14 +772,38 @@ class GradeCorrectionView(APIView):
         
         # Extract correction data
         new_score = request.data.get('score')
+        raw_condition_status = request.data.get('condition_status')
+        condition_reason = request.data.get('condition_reason')
         new_comment = request.data.get('comment')
         change_reason = request.data.get('change_reason', '')
-        
-        # Validate score if provided
-        if new_score is not None:
+
+        condition_status = normalize_condition_status_input(raw_condition_status)
+        if condition_status in [None, ""]:
+            condition_status = Grade.ConditionStatus.GRADED if new_score not in [None, ""] else grade.condition_status
+
+        if condition_status not in dict(Grade.ConditionStatus.choices):
+            return GradingResponse.validation_error(
+                message="Invalid condition status",
+                field_errors={"condition_status": ["Must be a valid grade condition status"]}
+            )
+
+        if condition_status == Grade.ConditionStatus.GRADED:
+            if new_score in [None, ""]:
+                if (
+                    raw_condition_status in [None, ""]
+                    and grade.condition_status == Grade.ConditionStatus.GRADED
+                    and grade.score is not None
+                ):
+                    new_score = grade.score
+                else:
+                    return GradingResponse.validation_error(
+                        message="Score is required for graded entries",
+                        field_errors={"score": ["Provide a score when condition status is graded"]}
+                    )
+
             try:
                 new_score = parse_decimal(new_score, "score")
-                
+
                 # Validate against assessment max_score
                 if grade.assessment and new_score > grade.assessment.max_score:
                     return GradingResponse.validation_error(
@@ -726,6 +822,14 @@ class GradeCorrectionView(APIView):
                     message="Invalid score format",
                     field_errors={"score": ["Must be a valid number"]}
                 )
+        else:
+            if new_score not in [None, ""]:
+                return GradingResponse.validation_error(
+                    message="Non-graded conditions cannot include numeric scores",
+                    field_errors={"score": ["Leave score empty for non-graded condition statuses"]}
+                )
+            new_score = None
+            condition_reason = condition_reason or None
         
         # Store old values for history
         old_score = grade.score
@@ -739,6 +843,9 @@ class GradeCorrectionView(APIView):
         # Apply changes
         if new_score is not None:
             grade.score = new_score
+
+        grade.condition_status = condition_status
+        grade.condition_reason = condition_reason
         
         if new_comment is not None:
             grade.comment = new_comment
@@ -785,6 +892,7 @@ class GradeCorrectionView(APIView):
             correction={
                 "old_score": str(old_score) if old_score else None,
                 "new_score": str(grade.score) if grade.score else None,
+                "condition_status": grade.condition_status,
                 "old_status": old_status,
                 "new_status": grade.status,
                 "reason": change_reason

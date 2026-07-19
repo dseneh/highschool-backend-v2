@@ -765,6 +765,13 @@ class Grade(BaseModel):
       - reviewed : reviewed by reviewer/admin
       - approved : locked; counted in final grade
     """
+    class ConditionStatus(models.TextChoices):
+            GRADED = "graded", _("Graded")
+            NO_GRADE = "no_grade", _("No Grade")
+            INCOMPLETE = "incomplete", _("Incomplete")
+            PENDING = "pending", _("Pending")
+            EXEMPT = "exempt", _("Exempt")
+
     class Status(models.TextChoices):
         DRAFT = "draft", _("Draft")
         PENDING = "pending", _("Pending Review")
@@ -789,6 +796,15 @@ class Grade(BaseModel):
     subject = models.ForeignKey("academics.Subject", on_delete=models.CASCADE, related_name="grades_in_subject", db_index=True)
 
     score = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    condition_status = models.CharField(
+        max_length=20,
+        choices=ConditionStatus.choices,
+        default=None,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    condition_reason = models.TextField(blank=True, null=True, default=None)
     status = models.CharField(max_length=16, choices=Status.choices, db_index=True, blank=True, null=True)
     comment = models.TextField(blank=True, null=True, default=None)
     needs_correction = models.BooleanField(
@@ -802,13 +818,27 @@ class Grade(BaseModel):
         unique_together = ("assessment", "enrollment")
         indexes = [
             Index(fields=["student", "status"]),
+            Index(fields=["student", "condition_status"], name="grade_student_cond_idx"),
             Index(fields=["academic_year", "student"]),
             Index(fields=["assessment", "status"]),
+            Index(fields=["assessment", "condition_status"], name="grade_assess_cond_idx"),
             Index(fields=["subject", "academic_year", "student"]),
             Index(fields=["section", "subject", "status"]),
             Index(fields=["student", "status", "assessment"]),
         ]
-        constraints = [CheckConstraint(check=Q(score__gte=0), name="grade_score_non_negative")]
+        constraints = [
+            CheckConstraint(check=Q(score__gte=0), name="grade_score_non_negative"),
+            CheckConstraint(
+                check=Q(condition_status="graded", score__isnull=False)
+                | ~Q(condition_status="graded"),
+                name="grade_graded_condition_requires_score",
+            ),
+            CheckConstraint(
+                check=Q(condition_status="graded")
+                | Q(score__isnull=True),
+                name="grade_non_graded_condition_requires_null_score",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.student} - {self.assessment.name}: {self.score} ({self.status})"
@@ -827,6 +857,12 @@ class Grade(BaseModel):
             if self.score is not None and max_score is not None and self.score > max_score:
                 raise ValidationError(_("Score cannot exceed Assessment.max_score."))
 
+        if self.condition_status == self.ConditionStatus.GRADED:
+            if self.score is None:
+                raise ValidationError(_("A graded condition requires a score."))
+        elif self.score is not None:
+            raise ValidationError(_("Non-graded conditions must not store a numeric score."))
+
         # Alignment with GradeBook
         gb = self.assessment.gradebook if self.assessment_id else None
         if gb:
@@ -843,6 +879,24 @@ class Grade(BaseModel):
         Keep denormalized fields in sync automatically on every save.
         Invalidate final grade cache when approved grades change.
         """
+        # Backward-compatible aliases: normalize legacy condition values.
+        normalized_condition = (
+            str(self.condition_status).strip().lower().replace(" ", "_")
+            if self.condition_status is not None
+            else None
+        )
+        if normalized_condition == "score":
+            self.condition_status = self.ConditionStatus.GRADED
+        elif normalized_condition in {"missing", "excused", "absent", "not_submitted", "withdrawn"}:
+            self.condition_status = self.ConditionStatus.NO_GRADE
+
+        if (
+            self.condition_status == self.ConditionStatus.PENDING
+            and (self.condition_reason or "").strip().lower() == "no_grade"
+        ):
+            self.condition_status = self.ConditionStatus.NO_GRADE
+            self.condition_reason = None
+
         if self.enrollment_id:
             self.student_id = self.enrollment.student_id
             self.section_id = self.enrollment.section_id

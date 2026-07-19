@@ -74,6 +74,28 @@ class BulkGradeUploadView(APIView):
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_blank_condition_status(raw_value):
+        """Normalize blank-cell upload behavior to supported condition statuses."""
+        if raw_value in [None, ""]:
+            return Grade.ConditionStatus.NO_GRADE
+
+        normalized = str(raw_value).strip().lower().replace(" ", "_")
+
+        if normalized in {"ng", "no-grade", "nograde"}:
+            return Grade.ConditionStatus.NO_GRADE
+
+        if normalized in {"missing", "excused", "absent", "not_submitted", "withdrawn"}:
+            return Grade.ConditionStatus.NO_GRADE
+
+        allowed = {
+            Grade.ConditionStatus.NO_GRADE,
+            Grade.ConditionStatus.INCOMPLETE,
+            Grade.ConditionStatus.EXEMPT,
+            Grade.ConditionStatus.PENDING,
+        }
+        return normalized if normalized in allowed else Grade.ConditionStatus.NO_GRADE
     
     @transaction.atomic
     def post(self, request, section_id):
@@ -118,6 +140,12 @@ class BulkGradeUploadView(APIView):
             # Process the Excel file
             template_type = request.data.get('template_type', request.query_params.get('template_type', 'assessment_columns'))
 
+            raw_blank_condition_status = request.data.get(
+                'blank_condition_status',
+                request.query_params.get('blank_condition_status')
+            )
+            blank_condition_status = self._normalize_blank_condition_status(raw_blank_condition_status)
+
             # grade_status lets the caller control what status newly created / updated grades receive.
             # Only a safe subset is accepted so callers cannot inject arbitrary values.
             _allowed_statuses = {
@@ -136,6 +164,7 @@ class BulkGradeUploadView(APIView):
                 request.user,
                 template_type,
                 grade_status,
+                blank_condition_status,
             )
 
             if dry_run:
@@ -150,7 +179,16 @@ class BulkGradeUploadView(APIView):
                 'detail': f'Error processing file: {str(e)}'
             }, status=http_status.HTTP_400_BAD_REQUEST)
     
-    def _process_excel_file(self, file, section, override_grades, user, template_type='assessment_columns', grade_status='draft'):
+    def _process_excel_file(
+        self,
+        file,
+        section,
+        override_grades,
+        user,
+        template_type='assessment_columns',
+        grade_status='draft',
+        blank_condition_status=Grade.ConditionStatus.NO_GRADE,
+    ):
         """Process the uploaded Excel file and create/update grades"""
         import pandas as pd
         from academics.models import Subject, GradeLevel
@@ -279,7 +317,14 @@ class BulkGradeUploadView(APIView):
         # Route to appropriate handler based on template type
         if metadata.get('template_type') == 'marking_period_columns':
             return self._process_marking_period_columns(
-                file, df_raw, metadata, section, override_grades, user, grade_status
+                file,
+                df_raw,
+                metadata,
+                section,
+                override_grades,
+                user,
+                grade_status,
+                blank_condition_status,
             )
 
         # --- Original assessment_columns path ---
@@ -526,7 +571,7 @@ class BulkGradeUploadView(APIView):
                 for assessment_col in assessment_columns:
                     score_value = row[assessment_col]
 
-                    # Blank/null cells are treated as 0 for grade uploads.
+                    # Blank/null cells are treated as a configurable condition status.
                     is_blank_score = pd.isna(score_value) or str(score_value).strip() == ''
                     
                     # Lookup assessment
@@ -541,56 +586,73 @@ class BulkGradeUploadView(APIView):
                         })
                         continue
                     
-                    # Validate and convert score
-                    try:
-                        score = Decimal("0") if is_blank_score else Decimal(str(score_value).strip())
-                        
-                        if score < 0:
+                    # Validate and convert score/condition payload.
+                    if is_blank_score:
+                        score = None
+                        condition_status = blank_condition_status
+                        condition_reason = None
+                    else:
+                        try:
+                            score = Decimal(str(score_value).strip())
+
+                            if score < 0:
+                                stats['errors'].append({
+                                    'row': row_number,
+                                    'student_id': student_id,
+                                    'assessment': assessment_col,
+                                    'error': f'Score cannot be negative: {score}'
+                                })
+                                continue
+
+                            if assessment.max_score and score > assessment.max_score:
+                                stats['errors'].append({
+                                    'row': row_number,
+                                    'student_id': student_id,
+                                    'assessment': assessment_col,
+                                    'error': f'Score {score} exceeds maximum score of {assessment.max_score}'
+                                })
+                                continue
+
+                            if score.as_tuple().exponent < -2:
+                                stats['errors'].append({
+                                    'row': row_number,
+                                    'student_id': student_id,
+                                    'assessment': assessment_col,
+                                    'error': f'Score {score} has too many decimal places. Maximum 2 allowed.'
+                                })
+                                continue
+                        except (InvalidOperation, ValueError, AttributeError):
                             stats['errors'].append({
                                 'row': row_number,
                                 'student_id': student_id,
                                 'assessment': assessment_col,
-                                'error': f'Score cannot be negative: {score}'
+                                'error': f'Invalid score value: {score_value}. Must be a number.'
                             })
                             continue
-                        
-                        if assessment.max_score and score > assessment.max_score:
-                            stats['errors'].append({
-                                'row': row_number,
-                                'student_id': student_id,
-                                'assessment': assessment_col,
-                                'error': f'Score {score} exceeds maximum score of {assessment.max_score}'
-                            })
-                            continue
-                        
-                        if score.as_tuple().exponent < -2:
-                            stats['errors'].append({
-                                'row': row_number,
-                                'student_id': student_id,
-                                'assessment': assessment_col,
-                                'error': f'Score {score} has too many decimal places. Maximum 2 allowed.'
-                            })
-                            continue
-                            
-                    except (InvalidOperation, ValueError, AttributeError):
-                        stats['errors'].append({
-                            'row': row_number,
-                            'student_id': student_id,
-                            'assessment': assessment_col,
-                            'error': f'Invalid score value: {score_value}. Must be a number.'
-                        })
-                        continue
+
+                        condition_status = Grade.ConditionStatus.GRADED
+                        condition_reason = None
                     
                     # Check if grade exists
                     grade_key = (assessment.id, student.id)
                     existing_grade = existing_grades_cache.get(grade_key)
                     
                     if existing_grade:
+                        same_score = existing_grade.score == score
+                        same_condition = existing_grade.condition_status == condition_status
+
+                        if same_score and same_condition:
+                            stats['grades_skipped'] += 1
+                            student_processed = True
+                            continue
+
                         # Check if we can update
                         can_update = override_grades or existing_grade.status in [Grade.Status.DRAFT, None]
                         
                         if can_update:
                             existing_grade.score = score
+                            existing_grade.condition_status = condition_status
+                            existing_grade.condition_reason = condition_reason
                             existing_grade.status = grade_status
                             existing_grade.updated_by = user
                             grades_to_update.append(existing_grade)
@@ -609,6 +671,8 @@ class BulkGradeUploadView(APIView):
                             assessment=assessment,
                             student=student,
                             score=score,
+                            condition_status=condition_status,
+                            condition_reason=condition_reason,
                             status=grade_status,
                             enrollment_id=enrollment_id,
                             academic_year=academic_year,
@@ -644,7 +708,7 @@ class BulkGradeUploadView(APIView):
         if grades_to_update:
             Grade.objects.bulk_update(
                 grades_to_update, 
-                ['score', 'status', 'updated_by', 'updated_at'],
+                ['score', 'condition_status', 'condition_reason', 'status', 'updated_by', 'updated_at'],
                 batch_size=500
             )
         
@@ -665,7 +729,10 @@ class BulkGradeUploadView(APIView):
         
         return {
             'detail': message,
-            'metadata': metadata,
+            'metadata': {
+                **metadata,
+                'blank_condition_status': blank_condition_status,
+            },
             'statistics': {
                 'total_rows': stats['total_rows'],
                 'students_processed': stats['students_processed'],
@@ -680,7 +747,17 @@ class BulkGradeUploadView(APIView):
         }
 
     @transaction.atomic
-    def _process_marking_period_columns(self, file, df_raw, metadata, section, override_grades, user, grade_status='draft'):
+    def _process_marking_period_columns(
+        self,
+        file,
+        df_raw,
+        metadata,
+        section,
+        override_grades,
+        user,
+        grade_status='draft',
+        blank_condition_status=Grade.ConditionStatus.NO_GRADE,
+    ):
         """
         Process Template 2: Marking Period Columns format.
 
@@ -944,7 +1021,7 @@ class BulkGradeUploadView(APIView):
                 for col_label, (mp, assessment) in mp_assessment_map.items():
                     score_value = row[col_label]
 
-                    # Blank/null cells are treated as 0 for grade uploads.
+                    # Blank/null cells are treated as a configurable condition status.
                     try:
                         is_blank = pd.isna(score_value) or str(score_value).strip() == ''
                     except Exception:
@@ -958,53 +1035,61 @@ class BulkGradeUploadView(APIView):
                         })
                         continue
 
-                    # Parse score
-                    try:
-                        score = Decimal('0') if is_blank else Decimal(str(score_value).strip())
-                        if score < 0:
+                    if is_blank:
+                        score = None
+                        condition_status = blank_condition_status
+                        condition_reason = None
+                    else:
+                        # Parse score
+                        try:
+                            score = Decimal(str(score_value).strip())
+                            if score < 0:
+                                stats['errors'].append({
+                                    'row': row_number, 'student_id': student_id,
+                                    'error': f'[{col_label}] Score cannot be negative: {score}',
+                                })
+                                continue
+                            if assessment.max_score and score > assessment.max_score:
+                                stats['errors'].append({
+                                    'row': row_number, 'student_id': student_id,
+                                    'error': f'[{col_label}] Score {score} exceeds maximum of {assessment.max_score}',
+                                })
+                                continue
+                            if score.as_tuple().exponent < -2:
+                                stats['errors'].append({
+                                    'row': row_number, 'student_id': student_id,
+                                    'error': f'[{col_label}] Score {score} has too many decimal places (max 2).',
+                                })
+                                continue
+                        except (InvalidOperation, ValueError):
                             stats['errors'].append({
                                 'row': row_number, 'student_id': student_id,
-                                'error': f'[{col_label}] Score cannot be negative: {score}',
+                                'error': f'[{col_label}] Invalid score value: {score_value}',
                             })
                             continue
-                        if assessment.max_score and score > assessment.max_score:
-                            stats['errors'].append({
-                                'row': row_number, 'student_id': student_id,
-                                'error': f'[{col_label}] Score {score} exceeds maximum of {assessment.max_score}',
-                            })
-                            continue
-                        if score.as_tuple().exponent < -2:
-                            stats['errors'].append({
-                                'row': row_number, 'student_id': student_id,
-                                'error': f'[{col_label}] Score {score} has too many decimal places (max 2).',
-                            })
-                            continue
-                    except (InvalidOperation, ValueError):
-                        stats['errors'].append({
-                            'row': row_number, 'student_id': student_id,
-                            'error': f'[{col_label}] Invalid score value: {score_value}',
-                        })
-                        continue
+
+                        condition_status = Grade.ConditionStatus.GRADED
+                        condition_reason = None
 
                     grade_key = (assessment.id, student.id)
                     existing_grade = existing_grades_cache.get(grade_key)
 
                     if existing_grade:
                         # Preserve no-op optimization: skip if incoming score
-                        # matches existing. Blank/null inputs are normalized to
-                        # 0 before this comparison.
-                        existing_score = existing_grade.score
-                        try:
-                            if existing_score is not None and Decimal(str(existing_score)) == score:
-                                stats['grades_skipped'] += 1
-                                student_processed = True
-                                continue
-                        except Exception:
-                            pass
+                        # and condition status match existing grade.
+                        if (
+                            existing_grade.score == score
+                            and existing_grade.condition_status == condition_status
+                        ):
+                            stats['grades_skipped'] += 1
+                            student_processed = True
+                            continue
 
                         can_update = override_grades or existing_grade.status in [Grade.Status.DRAFT, None]
                         if can_update:
                             existing_grade.score = score
+                            existing_grade.condition_status = condition_status
+                            existing_grade.condition_reason = condition_reason
                             existing_grade.status = grade_status
                             existing_grade.updated_by = user
                             grades_to_update.append(existing_grade)
@@ -1020,6 +1105,8 @@ class BulkGradeUploadView(APIView):
                             assessment=assessment,
                             student=student,
                             score=score,
+                            condition_status=condition_status,
+                            condition_reason=condition_reason,
                             status=grade_status,
                             enrollment_id=enrollment_id,
                             academic_year=academic_year,
@@ -1049,7 +1136,7 @@ class BulkGradeUploadView(APIView):
         if grades_to_update:
             Grade.objects.bulk_update(
                 grades_to_update,
-                ['score', 'status', 'updated_by', 'updated_at'],
+                ['score', 'condition_status', 'condition_reason', 'status', 'updated_by', 'updated_at'],
                 batch_size=500,
             )
 
@@ -1070,7 +1157,11 @@ class BulkGradeUploadView(APIView):
 
         return {
             'detail': message,
-            'metadata': {**metadata, 'template_type': 'marking_period_columns'},
+            'metadata': {
+                **metadata,
+                'template_type': 'marking_period_columns',
+                'blank_condition_status': blank_condition_status,
+            },
             'statistics': {
                 'total_rows': stats['total_rows'],
                 'students_processed': stats['students_processed'],

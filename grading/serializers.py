@@ -40,6 +40,49 @@ def format_numeric_value(value):
         return value
 
 
+def normalize_condition_status_value(condition_status):
+    """Normalize legacy/raw condition status values to Grade.ConditionStatus values."""
+    if condition_status is None:
+        return None
+
+    normalized = str(condition_status).strip().lower().replace(" ", "_")
+    if normalized == "score":
+        return Grade.ConditionStatus.GRADED
+
+    if normalized in {"missing", "excused", "absent", "not_submitted", "withdrawn"}:
+        return Grade.ConditionStatus.NO_GRADE
+
+    if normalized in dict(Grade.ConditionStatus.choices):
+        return normalized
+
+    return condition_status
+
+
+def get_condition_status_code(condition_status, condition_reason=None):
+    """Return short condition codes for non-numeric grade displays."""
+    condition_status = normalize_condition_status_value(condition_status)
+
+    if condition_status == Grade.ConditionStatus.GRADED:
+        return None
+
+    if (
+        condition_status == Grade.ConditionStatus.PENDING
+        and (condition_reason or "").strip().lower() == "no_grade"
+    ):
+        return "NG"
+
+    if condition_status == Grade.ConditionStatus.NO_GRADE:
+        return "NG"
+
+    status_code_map = {
+        Grade.ConditionStatus.NO_GRADE: "NG",
+        Grade.ConditionStatus.INCOMPLETE: "I",
+        Grade.ConditionStatus.PENDING: "P",
+        Grade.ConditionStatus.EXEMPT: "E",
+    }
+    return status_code_map.get(condition_status, None)
+
+
 class AssessmentTypeOut(serializers.ModelSerializer):
     class Meta:
         model = AssessmentType
@@ -322,6 +365,7 @@ class GradeOut(serializers.ModelSerializer):
     student = serializers.SerializerMethodField()
     section = serializers.SerializerMethodField()
     subject = serializers.SerializerMethodField()
+    score_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Grade
@@ -333,6 +377,9 @@ class GradeOut(serializers.ModelSerializer):
             "section",
             "subject",
             "score",
+            "condition_status",
+            "condition_reason",
+            "score_display",
             "status",
             "comment",
             "created_at",
@@ -359,12 +406,20 @@ class GradeOut(serializers.ModelSerializer):
     def get_subject(self, obj):
         return {"id": obj.subject.id, "name": obj.subject.name}
 
+    def get_score_display(self, obj):
+        if obj.condition_status == Grade.ConditionStatus.GRADED:
+            return format_numeric_value(obj.score)
+        return get_condition_status_code(obj.condition_status, obj.condition_reason)
+
 
 class AssessmentsWithGradeOut(serializers.ModelSerializer):
     """Grade item serializer that includes student's grade and percentage"""
 
     student_grade = serializers.SerializerMethodField()
     score = serializers.SerializerMethodField()
+    condition_status = serializers.SerializerMethodField()
+    condition_reason = serializers.SerializerMethodField()
+    score_display = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     percentage = serializers.SerializerMethodField()
     gradebook = serializers.SerializerMethodField()
@@ -387,6 +442,9 @@ class AssessmentsWithGradeOut(serializers.ModelSerializer):
             "due_date",
             "is_calculated",
             "score",
+            "condition_status",
+            "condition_reason",
+            "score_display",
             "status",
             "student_grade",
             "percentage",
@@ -441,6 +499,41 @@ class AssessmentsWithGradeOut(serializers.ModelSerializer):
             return (
                 format_numeric_value(grade.score) if grade.score is not None else None
             )
+        except Grade.DoesNotExist:
+            return None
+
+    def get_condition_status(self, obj):
+        student_id = self.context.get("student_id")
+        if not student_id:
+            return None
+
+        try:
+            grade = Grade.objects.get(assessment=obj, student_id=student_id)
+            return normalize_condition_status_value(grade.condition_status)
+        except Grade.DoesNotExist:
+            return None
+
+    def get_condition_reason(self, obj):
+        student_id = self.context.get("student_id")
+        if not student_id:
+            return None
+
+        try:
+            grade = Grade.objects.get(assessment=obj, student_id=student_id)
+            return grade.condition_reason
+        except Grade.DoesNotExist:
+            return None
+
+    def get_score_display(self, obj):
+        student_id = self.context.get("student_id")
+        if not student_id:
+            return None
+
+        try:
+            grade = Grade.objects.get(assessment=obj, student_id=student_id)
+            if grade.condition_status == Grade.ConditionStatus.GRADED:
+                return format_numeric_value(grade.score) if grade.score is not None else None
+            return get_condition_status_code(grade.condition_status, grade.condition_reason)
         except Grade.DoesNotExist:
             return None
 
@@ -1245,6 +1338,26 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                                 "due_date": assessment.due_date,
                                 "is_calculated": assessment.is_calculated,
                                 "score": format_numeric_value(score),
+                                "condition_status": (
+                                    normalize_condition_status_value(student_grade.condition_status)
+                                    if student_grade
+                                    else None
+                                ),
+                                "condition_reason": (
+                                    student_grade.condition_reason if student_grade else None
+                                ),
+                                "score_display": (
+                                    format_numeric_value(score)
+                                    if score is not None
+                                    else (
+                                        get_condition_status_code(
+                                            student_grade.condition_status,
+                                            student_grade.condition_reason,
+                                        )
+                                        if student_grade
+                                        else None
+                                    )
+                                ),
                                 "status": status,
                                 "comment": comment,
                                 "grade_id": student_grade.id if student_grade else None,
@@ -1282,6 +1395,41 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                     None,
                 )
 
+                # Use first calculated conditional grade (non-graded) for MP-level display.
+                marking_period_condition_grade = next(
+                    (
+                        grade
+                        for grade in mp_grades
+                        if (
+                            grade.assessment
+                            and grade.assessment.is_calculated
+                            and grade.condition_status
+                            and grade.condition_status != Grade.ConditionStatus.GRADED
+                        )
+                    ),
+                    None,
+                )
+                marking_period_condition_status = (
+                    normalize_condition_status_value(
+                        marking_period_condition_grade.condition_status
+                    )
+                    if marking_period_condition_grade
+                    else None
+                )
+                marking_period_condition_reason = (
+                    marking_period_condition_grade.condition_reason
+                    if marking_period_condition_grade
+                    else None
+                )
+                marking_period_condition_code = (
+                    get_condition_status_code(
+                        marking_period_condition_status,
+                        marking_period_condition_reason,
+                    )
+                    if marking_period_condition_status
+                    else None
+                )
+
                 # Get letter grade
                 letter_grade = "-"
                 if final_percentage is not None and gradebook:
@@ -1299,6 +1447,9 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                     "final_percentage": format_numeric_value(final_percentage),
                     "letter_grade": letter_grade,
                     "status": marking_period_status,
+                    "condition_status": marking_period_condition_status,
+                    "condition_reason": marking_period_condition_reason,
+                    "condition_code": marking_period_condition_code,
                     "needs_correction": needs_correction,
                 }
 
@@ -1889,12 +2040,18 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
             # The selected marking period controls the visible score payload,
             # while gradebook averages remain cumulative across the academic year.
 
-            # Pre-fetch all grades for this student and gradebook
-            grades = Grade.objects.filter(
+            # Pre-fetch all grades for this student and gradebook, filtered by the
+            # requested status so individual grade rows only expose data at that
+            # workflow stage.
+            _status_filter = self.context.get("status", Grade.Status.APPROVED)
+            _grades_qs = Grade.objects.filter(
                 student=student, assessment__gradebook=gradebook
             ).select_related(
                 "assessment__marking_period", "assessment__assessment_type"
             )
+            if _status_filter and _status_filter != "any":
+                _grades_qs = _grades_qs.filter(status=_status_filter)
+            grades = _grades_qs
 
             # Build lookup dictionaries
             grades_dict = defaultdict(list)
@@ -2030,6 +2187,17 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                                 if grade_obj
                                 and grade_obj.score is not None
                                 and assessment.max_score
+                                else None
+                            ),
+                            "condition_status": (
+                                normalize_condition_status_value(grade_obj.condition_status)
+                                if grade_obj
+                                else None
+                            ),
+                            "condition_reason": grade_obj.condition_reason if grade_obj else None,
+                            "score_display": (
+                                format_numeric_value(grade_obj.score)
+                                if grade_obj and grade_obj.score is not None
                                 else None
                             ),
                         }

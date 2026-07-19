@@ -42,6 +42,49 @@ from grading.utils import (
 from common.services.pdf_components import append_pdf_document_header, resolve_tenant_school
 
 
+def normalize_condition_status_value(condition_status: Optional[str]) -> Optional[str]:
+    """Normalize legacy/raw condition status values to Grade.ConditionStatus values."""
+    if condition_status is None:
+        return None
+
+    normalized = str(condition_status).strip().lower().replace(" ", "_")
+    if normalized == "score":
+        return Grade.ConditionStatus.GRADED
+
+    if normalized in {"missing", "excused", "absent", "not_submitted", "withdrawn"}:
+        return Grade.ConditionStatus.NO_GRADE
+
+    if normalized in dict(Grade.ConditionStatus.choices):
+        return normalized
+
+    return condition_status
+
+
+def get_condition_status_code(condition_status: str, condition_reason: Optional[str] = None) -> Optional[str]:
+    """Return short condition codes for report display when numeric scores are unavailable."""
+    condition_status = normalize_condition_status_value(condition_status)
+
+    if not condition_status or condition_status == Grade.ConditionStatus.GRADED:
+        return None
+
+    if (
+        condition_status == Grade.ConditionStatus.PENDING
+        and (condition_reason or "").strip().lower() == "no_grade"
+    ):
+        return "NG"
+
+    if condition_status == Grade.ConditionStatus.NO_GRADE:
+        return "NG"
+
+    status_code_map = {
+        Grade.ConditionStatus.NO_GRADE: "NG",
+        Grade.ConditionStatus.INCOMPLETE: "I",
+        Grade.ConditionStatus.PENDING: "P",
+        Grade.ConditionStatus.EXEMPT: "E",
+    }
+    return status_code_map.get(condition_status)
+
+
 class StudentReportCardPDF:
     """
     Generate professional student report card PDFs.
@@ -228,6 +271,11 @@ class StudentReportCardPDF:
 
             return Paragraph(text_val, style)
         except (ValueError, TypeError):
+            code_text = str(value).strip().upper()
+            allowed_codes = {"NG", "I", "E", "P"}
+            parts = [part.strip() for part in code_text.split("/") if part.strip()]
+            if parts and all(part in allowed_codes for part in parts):
+                return Paragraph(code_text, self.grade_style_red)
             return str(value)
 
     def _get_school_logo(self) -> Optional[RLImage]:
@@ -310,6 +358,27 @@ class StudentReportCardPDF:
 
         # Calculate percentage for each marking period
         mp_percentages = {}
+        approved_grades = (
+            Grade.objects.filter(
+                assessment__gradebook=gradebook,
+                student=self.student,
+                status=Grade.Status.APPROVED,
+                assessment__marking_period__in=all_mps,
+            )
+            .select_related("assessment__marking_period")
+            .order_by("assessment__due_date", "assessment__created_at", "assessment__id")
+        )
+
+        mp_condition_codes: Dict[str, List[str]] = {}
+        for grade in approved_grades:
+            if grade.score is not None:
+                continue
+            code = get_condition_status_code(grade.condition_status, grade.condition_reason)
+            if not code:
+                continue
+            mp_id = grade.assessment.marking_period_id
+            mp_condition_codes.setdefault(mp_id, []).append(code)
+
         for mp in all_mps:
             percentage = calculate_marking_period_percentage(
                 gradebook, self.student, mp, status="approved"
@@ -320,6 +389,20 @@ class StudentReportCardPDF:
                     "percentage": float(percentage),
                     "letter": get_letter_grade(float(percentage)),
                 }
+            else:
+                condition_codes = mp_condition_codes.get(mp.id, [])
+                if condition_codes:
+                    ordered_unique_codes = list(dict.fromkeys(condition_codes))
+                    code_display = (
+                        ordered_unique_codes[0]
+                        if len(ordered_unique_codes) == 1
+                        else "/".join(ordered_unique_codes)
+                    )
+                    subject_data["marking_periods"][mp.id] = {
+                        "percentage": None,
+                        "letter": None,
+                        "code": code_display,
+                    }
 
         # Calculate semester averages (including exam periods)
         for sem_data in marking_periods_data:
@@ -548,7 +631,12 @@ class StudentReportCardPDF:
                 for mp in sorted(regular_mps, key=lambda x: x.start_date):
                     if mp.id in subject_data["marking_periods"]:
                         grade_info = subject_data["marking_periods"][mp.id]
-                        row.append(self._get_grade_paragraph(grade_info["percentage"]))
+                        mp_value = (
+                            grade_info["percentage"]
+                            if grade_info.get("percentage") is not None
+                            else grade_info.get("code")
+                        )
+                        row.append(self._get_grade_paragraph(mp_value))
                     else:
                         row.append("")
 
@@ -556,7 +644,12 @@ class StudentReportCardPDF:
                 if exam_mp:
                     if exam_mp.id in subject_data["marking_periods"]:
                         grade_info = subject_data["marking_periods"][exam_mp.id]
-                        row.append(self._get_grade_paragraph(grade_info["percentage"]))
+                        mp_value = (
+                            grade_info["percentage"]
+                            if grade_info.get("percentage") is not None
+                            else grade_info.get("code")
+                        )
+                        row.append(self._get_grade_paragraph(mp_value))
                     else:
                         row.append("")
 
@@ -785,6 +878,46 @@ class StudentReportCardPDF:
         footer = Paragraph(footer_text, self.footer_style)
         story.append(footer)
 
+    def _build_grade_status_legend(self, story: List) -> None:
+        """Build legend table for condition-grade acronyms shown in the report."""
+        title = Paragraph("<b>Grade Status Legend</b>", self.value_style)
+
+        legend_data = [
+            ["Acronym", "Status", "Meaning"],
+            ["NG", "No Grade", "No grade was submitted for this period."],
+            ["I", "Incomplete", "Grade entry is incomplete and needs completion."],
+            ["E", "Exempt", "Student is exempt from this assessment/period."],
+            ["P", "Pending", "Grade decision is pending and not yet finalized."],
+        ]
+
+        legend_table = Table(
+            legend_data,
+            colWidths=[0.8 * inch, 1.3 * inch, 7.4 * inch],
+            hAlign="LEFT",
+        )
+        legend_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f5f5f5")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                    ("ALIGN", (1, 0), (1, -1), "LEFT"),
+                    ("ALIGN", (2, 0), (2, -1), "LEFT"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d0d0d0")),
+                ]
+            )
+        )
+
+        story.append(title)
+        story.append(Spacer(1, 0.06 * inch))
+        story.append(legend_table)
+        story.append(Spacer(1, 0.12 * inch))
+
     def generate(self) -> BytesIO:
         """
         Generate the complete PDF report.
@@ -852,6 +985,9 @@ class StudentReportCardPDF:
 
         # Build grades table
         self._build_grades_table(story, subjects_data, marking_periods_data)
+
+        # Build acronym legend for condition-grade statuses.
+        self._build_grade_status_legend(story)
 
         # Build footer
         self._build_footer(story)
