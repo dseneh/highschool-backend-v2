@@ -1,6 +1,7 @@
 from .attendance import Attendance
 from .billing import StudentEnrollmentBill, StudentConcession
 from .contact import StudentContact
+from .discipline import DisciplinaryActionType, StudentDisciplinaryAction
 from .enrollment import Enrollment
 from .guardian import StudentGuardian
 from .historical_grade import HistoricalGradeRecord
@@ -18,5 +19,7 @@ __all__ = [
     "StudentPaymentSummary",
     "StudentContact",
     "StudentGuardian",
+    "DisciplinaryActionType",
+    "StudentDisciplinaryAction",
     "HistoricalGradeRecord",
 ]

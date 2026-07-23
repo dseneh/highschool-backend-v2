@@ -41,6 +41,7 @@ from .bulk_upload import (
     BulkGradeUploadView,
     BulkGradeTemplateDownloadView,
     BulkGradeAllSubjectsTemplateDownloadView,
+    GradebookTemplateBatchDownloadView,
 )
 from .ranking import RankingView
 
@@ -86,5 +87,6 @@ __all__ = [
     "BulkGradeUploadView",
     "BulkGradeTemplateDownloadView",
     "BulkGradeAllSubjectsTemplateDownloadView",
+    "GradebookTemplateBatchDownloadView",
     "RankingView",
 ]

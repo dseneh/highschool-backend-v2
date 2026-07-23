@@ -1,6 +1,7 @@
 from .attendance import *
 from .concession import *
 from .contact import *
+from .discipline import *
 from .enrollment import *
 from .guardian import *
 # Old grade_book serializers removed - use grading app serializers instead

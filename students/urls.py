@@ -70,8 +70,40 @@ from .views.historical_grade import (
     HistoricalGradeStudentSummaryListView,
     StudentGradeHistoryView,
 )
+from .views.discipline import (
+    StudentDisciplinaryActionListCreateView,
+    StudentDisciplinaryActionDetailView,
+    StudentDisciplinaryActionByStudentListCreateView,
+    DisciplinaryActionTypeListCreateView,
+    DisciplinaryActionTypeDetailView,
+)
 
 urlpatterns = [
+    path(
+        "students/discipline-action-types/",
+        DisciplinaryActionTypeListCreateView.as_view(),
+        name="discipline_action_type_list_create",
+    ),
+    path(
+        "students/discipline-action-types/<str:id>/",
+        DisciplinaryActionTypeDetailView.as_view(),
+        name="discipline_action_type_detail",
+    ),
+    path(
+        "students/discipline-actions/",
+        StudentDisciplinaryActionListCreateView.as_view(),
+        name="student_discipline_list_create",
+    ),
+    path(
+        "students/discipline-actions/<str:id>/",
+        StudentDisciplinaryActionDetailView.as_view(),
+        name="student_discipline_detail",
+    ),
+    path(
+        "students/<str:student_id>/discipline-actions/",
+        StudentDisciplinaryActionByStudentListCreateView.as_view(),
+        name="student_discipline_by_student_list_create",
+    ),
     path(
         "students/",
         StudentListView.as_view(),

@@ -5,7 +5,7 @@ All models are tenant-specific (live in tenant schemas).
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Optional
 
 from django.core.cache import cache
@@ -473,6 +473,14 @@ class GradeBook(BaseModel):
         ).select_related("assessment").only(
             "student_id", "score", "assessment__max_score", "assessment__weight"
         )
+
+        def _to_decimal(value):
+            if value is None:
+                return None
+            try:
+                return Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                return None
         
         # Group by student and calculate
         result = {}
@@ -490,10 +498,26 @@ class GradeBook(BaseModel):
             if not student_grades:
                 result[student_id] = None
                 continue
+
+            # Ignore incomplete or corrupt numeric rows to avoid Decimal conversion crashes.
+            valid_grades = []
+            for g in student_grades:
+                score_dec = _to_decimal(g.score)
+                max_score_dec = _to_decimal(g.assessment.max_score)
+                weight_dec = _to_decimal(g.assessment.weight)
+
+                if score_dec is None or max_score_dec is None or max_score_dec <= 0:
+                    continue
+
+                valid_grades.append((score_dec, max_score_dec, weight_dec))
+
+            if not valid_grades:
+                result[student_id] = None
+                continue
                 
             if self.calculation_method == self.CalculationMethod.CUMULATIVE:
-                total_earned = sum(Decimal(str(g.score)) for g in student_grades)
-                total_possible = sum(Decimal(str(g.assessment.max_score)) for g in student_grades)
+                total_earned = sum(score_dec for score_dec, _, _ in valid_grades)
+                total_possible = sum(max_score_dec for _, max_score_dec, _ in valid_grades)
                 if total_possible:
                     pct = (total_earned / total_possible) * Decimal('100')
                 else:
@@ -501,11 +525,13 @@ class GradeBook(BaseModel):
                     
             elif self.calculation_method == self.CalculationMethod.WEIGHTED:
                 weighted_sum = sum(
-                    (Decimal(str(g.score)) / Decimal(str(g.assessment.max_score))) * 
-                    Decimal('100') * Decimal(str(g.assessment.weight))
-                    for g in student_grades
+                    (score_dec / max_score_dec) * Decimal('100') * (weight_dec if weight_dec is not None else Decimal('0'))
+                    for score_dec, max_score_dec, weight_dec in valid_grades
                 )
-                total_weight = sum(Decimal(str(g.assessment.weight)) for g in student_grades)
+                total_weight = sum(
+                    weight_dec if weight_dec is not None else Decimal('0')
+                    for _, _, weight_dec in valid_grades
+                )
                 if total_weight:
                     pct = weighted_sum / total_weight
                 else:
@@ -513,8 +539,8 @@ class GradeBook(BaseModel):
                     
             else:  # Simple average
                 percentages = [
-                    (Decimal(str(g.score)) / Decimal(str(g.assessment.max_score))) * Decimal('100')
-                    for g in student_grades
+                    (score_dec / max_score_dec) * Decimal('100')
+                    for score_dec, max_score_dec, _ in valid_grades
                 ]
                 pct = sum(percentages) / len(percentages) if percentages else None
             

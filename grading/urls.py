@@ -38,6 +38,7 @@ from grading.views import (
     BulkGradeUploadView,
     BulkGradeTemplateDownloadView,
     BulkGradeAllSubjectsTemplateDownloadView,
+    GradebookTemplateBatchDownloadView,
     RankingView,
     GradeHistoryView,
     GradeCorrectionView,
@@ -129,6 +130,11 @@ urlpatterns = [
         "sections/<str:section_id>/grades-upload/template/all/",
         BulkGradeAllSubjectsTemplateDownloadView.as_view(),
         name="section-grades-bulk-upload-template-all",
+    ),
+    path(
+        "gradebooks/templates/download/",
+        GradebookTemplateBatchDownloadView.as_view(),
+        name="gradebook-templates-batch-download",
     ),
     path(
         "students/<str:student_id>/marking_periods/<str:marking_period_id>/grades-status/",

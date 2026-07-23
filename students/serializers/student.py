@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from academics.models import AcademicYear
+from django.utils import timezone
 
 from common.utils import get_enrollment_bill_summary
 from common.serializers import PhotoURLMixin
@@ -7,6 +8,7 @@ from common.serializers import PhotoURLMixin
 from ..models import Student
 from ..services.student_status import apply_status_fields_to_response
 from .enrollment import EnrollmentListSerializer
+from .discipline import ActiveStudentDisciplinaryActionSerializer
 
 
 class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
@@ -186,6 +188,23 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             except (TypeError, ValueError):
                 response["paid"] = None
         response["student_class"] = instance.student_class
+
+        today = timezone.localdate()
+        active_discipline_action = (
+            instance.disciplinary_actions.filter(
+                active=True,
+                status="active",
+                start_date__lte=today,
+                end_date__gte=today,
+            )
+            .order_by("start_date", "created_at")
+            .first()
+        )
+        response["active_discipline_action"] = (
+            ActiveStudentDisciplinaryActionSerializer(active_discipline_action).data
+            if active_discipline_action
+            else None
+        )
 
         return response
 

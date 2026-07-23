@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 from copy import copy
+import zipfile
 
 from django.db import transaction
 from django.db.models import Q
@@ -1392,204 +1393,311 @@ class BulkGradeAllSubjectsTemplateDownloadView(APIView):
     parser_classes = (JSONParser,)
 
     def post(self, request, section_id):
-        from students.models import Enrollment
-        from grading.models import GradeBook
-        from grading.utils import calculate_marking_period_percentage
-
         section = get_object_or_404(
             Section.objects.select_related('grade_level'),
             pk=section_id,
         )
 
-        # Resolve academic year (defaults to current).
-        academic_year_id = str(request.data.get('academic_year_id', '')).strip() or None
-        if academic_year_id:
-            try:
-                academic_year = AcademicYear.objects.get(pk=academic_year_id)
-            except AcademicYear.DoesNotExist:
-                return Response(
-                    {'detail': 'Academic year not found.'},
-                    status=http_status.HTTP_404_NOT_FOUND,
-                )
-        else:
-            academic_year = AcademicYear.get_current_academic_year()
-            if academic_year is None:
-                return Response(
-                    {'detail': 'No current academic year is configured.'},
-                    status=http_status.HTTP_400_BAD_REQUEST,
-                )
+        academic_year, error_response = _resolve_template_academic_year(request)
+        if error_response is not None:
+            return error_response
 
         include_grades = bool(request.data.get('include_grades', False))
         raw_status_filter = str(request.data.get('grade_status_filter', 'all')).strip().lower()
         status_filter = 'any' if raw_status_filter in ('', 'all') else raw_status_filter
 
-        # All gradebooks for this section+year, ordered by subject.
-        gradebooks = list(
-            GradeBook.objects.filter(section=section, academic_year=academic_year)
-            .select_related('subject')
-            .order_by('subject__code', 'subject__name')
-        )
-
-        if not gradebooks:
-            return Response(
-                {'detail': 'No gradebooks found for this section and academic year.'},
-                status=http_status.HTTP_404_NOT_FOUND,
+        try:
+            workbook_bytes, filename = _build_all_subjects_template_workbook(
+                section=section,
+                academic_year=academic_year,
+                include_grades=include_grades,
+                status_filter=status_filter,
             )
-
-        # Enrolled students in this section for the given year.
-        enrollments = (
-            Enrollment.objects.filter(section=section, academic_year=academic_year)
-            .select_related('student')
-            .order_by('student__last_name', 'student__first_name', 'student__middle_name')
-        )
-        students = [e.student for e in enrollments]
-
-        # Marking periods for the year, grouped by semester (start_date order).
-        marking_periods = list(
-            MarkingPeriod.objects
-            .filter(semester__academic_year=academic_year)
-            .select_related('semester')
-            .order_by('semester__start_date', 'start_date')
-        )
-
-        # Group marking periods by semester while preserving encounter order.
-        semester_groups = []  # list of (semester_id_or_None, semester_name, [periods])
-        seen = {}
-        for mp in marking_periods:
-            sem_id = mp.semester_id if mp.semester_id else None
-            key = sem_id if sem_id is not None else '__no_semester__'
-            if key not in seen:
-                seen[key] = len(semester_groups)
-                semester_groups.append((
-                    key,
-                    mp.semester.name if mp.semester else '',
-                    [],
-                ))
-            semester_groups[seen[key]][2].append(mp)
-
-        # Build the ordered column-header list (matches the frontend layout).
-        headers = ['Student ID', 'Student Name']
-        for idx, (_key, _name, periods) in enumerate(semester_groups, start=1):
-            for mp in periods:
-                headers.append(mp.short_name or mp.name)
-            headers.append(f'Sem{idx} Avg')
-        if len(semester_groups) > 1:
-            headers.append('Yrly Avg')
-
-        # Number of blank grade columns per student row.
-        blank_grade_cell_count = len(headers) - 2  # minus Student ID + Name
-
-        def _avg_if_complete(scores, expected_count):
-            if expected_count == 0:
-                return ''
-            numeric = [s for s in scores if s is not None]
-            if len(numeric) < expected_count:
-                return ''
-            return round(sum(numeric) / len(numeric))
-
-        def _build_rows_for_gradebook(gradebook):
-            rows = []
-            for student in students:
-                id_number = (student.id_number or '').strip()
-                first = (student.first_name or '').strip()
-                middle = (student.middle_name or '').strip()
-                last = (student.last_name or '').strip()
-                display_name = f"{last}, {first} {middle}".strip()
-                while '  ' in display_name:
-                    display_name = display_name.replace('  ', ' ')
-                display_name = display_name.rstrip(',').strip()
-
-                if not include_grades:
-                    rows.append(
-                        [id_number, display_name] + [''] * blank_grade_cell_count
-                    )
-                    continue
-
-                sem_scores = {key: [] for key, _n, _p in semester_groups}
-                sem_expected = {
-                    key: len(periods) for key, _n, periods in semester_groups
-                }
-                cells = [id_number, display_name]
-
-                for sem_idx, (sem_key, _sem_name, periods) in enumerate(
-                    semester_groups, start=1
-                ):
-                    for mp in periods:
-                        pct = calculate_marking_period_percentage(
-                            gradebook, student, mp, status=status_filter,
-                        )
-                        score = int(round(float(pct))) if pct is not None else None
-                        cells.append(score if score is not None else '')
-                        sem_scores[sem_key].append(score)
-                    cells.append(
-                        _avg_if_complete(sem_scores[sem_key], sem_expected[sem_key])
-                    )
-
-                if len(semester_groups) > 1:
-                    all_scores = [s for lst in sem_scores.values() for s in lst]
-                    total_expected = sum(sem_expected.values())
-                    cells.append(_avg_if_complete(all_scores, total_expected))
-
-                rows.append(cells)
-            return rows
-
-        # If there are no enrolled students, emit an empty template row per
-        # sheet so the workbook remains usable.
-        empty_row = ['', ''] + [''] * blank_grade_cell_count
-
-        if not _TEMPLATE_PATH.exists():
-            return Response(
-                {'detail': 'Workbook template file was not found on the server.'},
-                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        workbook = load_workbook(_TEMPLATE_PATH)
-        base_sheet = workbook[workbook.sheetnames[0]]
-
-        grade_level_name = section.grade_level.name if section.grade_level_id else ''
-        used_titles = set()
-
-        for gradebook in gradebooks:
-            subject = gradebook.subject
-            subject_code = (subject.code or '').strip() if subject else ''
-            subject_name = (subject.name or '').strip() if subject else ''
-
-            worksheet = workbook.copy_worksheet(base_sheet)
-            worksheet.title = _sanitize_sheet_title(
-                subject_code or subject_name,
-                used_titles,
-                fallback='Subject',
-            )
-
-            rows = _build_rows_for_gradebook(gradebook) if students else [empty_row]
-
-            _populate_marking_period_sheet(
-                worksheet,
-                grade_level=grade_level_name,
-                section_name=section.name,
-                subject_code=subject_code,
-                subject_name=subject_name,
-                academic_year=str(academic_year),
-                headers=headers,
-                rows=rows,
-            )
-
-        # Remove the untouched base sheet so only per-subject sheets remain.
-        workbook.remove(base_sheet)
-
-        output = BytesIO()
-        workbook.save(output)
-        output.seek(0)
-
-        section_part = ''.join(
-            ch if ch.isalnum() else '_' for ch in (section.name or '')
-        ).strip('_') or 'section'
-        filename = f'grades_upload_{section_part}_all_subjects.xlsx'
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=http_status.HTTP_404_NOT_FOUND)
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=http_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         response = HttpResponse(
-            output.getvalue(),
+            workbook_bytes,
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
+def _resolve_template_academic_year(request):
+    """Resolve academic year for template downloads.
+
+    Returns a tuple of (academic_year_or_none, error_response_or_none).
+    """
+    academic_year_id = str(request.data.get('academic_year_id', '')).strip() or None
+    if academic_year_id:
+        try:
+            return AcademicYear.objects.get(pk=academic_year_id), None
+        except AcademicYear.DoesNotExist:
+            return None, Response(
+                {'detail': 'Academic year not found.'},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+    academic_year = AcademicYear.get_current_academic_year()
+    if academic_year is None:
+        return None, Response(
+            {'detail': 'No current academic year is configured.'},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+    return academic_year, None
+
+
+def _build_all_subjects_template_workbook(*, section, academic_year, include_grades=False, status_filter='any'):
+    """Build a per-section grade template workbook (one sheet per subject).
+
+    Returns: (workbook_bytes, filename)
+    Raises ValueError when no gradebooks are found.
+    Raises RuntimeError when template file is missing.
+    """
+    from students.models import Enrollment
+    from grading.models import GradeBook
+    from grading.utils import calculate_marking_period_percentage
+
+    gradebooks = list(
+        GradeBook.objects.filter(section=section, academic_year=academic_year)
+        .select_related('subject')
+        .order_by('subject__code', 'subject__name')
+    )
+
+    if not gradebooks:
+        raise ValueError('No gradebooks found for this section and academic year.')
+
+    enrollments = (
+        Enrollment.objects.filter(section=section, academic_year=academic_year)
+        .select_related('student')
+        .order_by('student__last_name', 'student__first_name', 'student__middle_name')
+    )
+    students = [e.student for e in enrollments]
+
+    marking_periods = list(
+        MarkingPeriod.objects
+        .filter(semester__academic_year=academic_year)
+        .select_related('semester')
+        .order_by('semester__start_date', 'start_date')
+    )
+
+    semester_groups = []
+    seen = {}
+    for mp in marking_periods:
+        sem_id = mp.semester_id if mp.semester_id else None
+        key = sem_id if sem_id is not None else '__no_semester__'
+        if key not in seen:
+            seen[key] = len(semester_groups)
+            semester_groups.append((
+                key,
+                mp.semester.name if mp.semester else '',
+                [],
+            ))
+        semester_groups[seen[key]][2].append(mp)
+
+    headers = ['Student ID', 'Student Name']
+    for idx, (_key, _name, periods) in enumerate(semester_groups, start=1):
+        for mp in periods:
+            headers.append(mp.short_name or mp.name)
+        headers.append(f'Sem{idx} Avg')
+    if len(semester_groups) > 1:
+        headers.append('Yrly Avg')
+
+    blank_grade_cell_count = len(headers) - 2
+
+    def _avg_if_complete(scores, expected_count):
+        if expected_count == 0:
+            return ''
+        numeric = [s for s in scores if s is not None]
+        if len(numeric) < expected_count:
+            return ''
+        return round(sum(numeric) / len(numeric))
+
+    def _build_rows_for_gradebook(gradebook):
+        rows = []
+        for student in students:
+            id_number = (student.id_number or '').strip()
+            first = (student.first_name or '').strip()
+            middle = (student.middle_name or '').strip()
+            last = (student.last_name or '').strip()
+            display_name = f"{last}, {first} {middle}".strip()
+            while '  ' in display_name:
+                display_name = display_name.replace('  ', ' ')
+            display_name = display_name.rstrip(',').strip()
+
+            if not include_grades:
+                rows.append([id_number, display_name] + [''] * blank_grade_cell_count)
+                continue
+
+            sem_scores = {key: [] for key, _n, _p in semester_groups}
+            sem_expected = {
+                key: len(periods) for key, _n, periods in semester_groups
+            }
+            cells = [id_number, display_name]
+
+            for _sem_idx, (sem_key, _sem_name, periods) in enumerate(semester_groups, start=1):
+                for mp in periods:
+                    pct = calculate_marking_period_percentage(
+                        gradebook, student, mp, status=status_filter,
+                    )
+                    score = int(round(float(pct))) if pct is not None else None
+                    cells.append(score if score is not None else '')
+                    sem_scores[sem_key].append(score)
+                cells.append(_avg_if_complete(sem_scores[sem_key], sem_expected[sem_key]))
+
+            if len(semester_groups) > 1:
+                all_scores = [s for lst in sem_scores.values() for s in lst]
+                total_expected = sum(sem_expected.values())
+                cells.append(_avg_if_complete(all_scores, total_expected))
+
+            rows.append(cells)
+        return rows
+
+    empty_row = ['', ''] + [''] * blank_grade_cell_count
+
+    if not _TEMPLATE_PATH.exists():
+        raise RuntimeError('Workbook template file was not found on the server.')
+
+    workbook = load_workbook(_TEMPLATE_PATH)
+    base_sheet = workbook[workbook.sheetnames[0]]
+
+    grade_level_name = section.grade_level.name if section.grade_level_id else ''
+    used_titles = set()
+
+    for gradebook in gradebooks:
+        subject = gradebook.subject
+        subject_code = (subject.code or '').strip() if subject else ''
+        subject_name = (subject.name or '').strip() if subject else ''
+
+        worksheet = workbook.copy_worksheet(base_sheet)
+        worksheet.title = _sanitize_sheet_title(
+            subject_code or subject_name,
+            used_titles,
+            fallback='Subject',
+        )
+
+        rows = _build_rows_for_gradebook(gradebook) if students else [empty_row]
+
+        _populate_marking_period_sheet(
+            worksheet,
+            grade_level=grade_level_name,
+            section_name=section.name,
+            subject_code=subject_code,
+            subject_name=subject_name,
+            academic_year=str(academic_year),
+            headers=headers,
+            rows=rows,
+        )
+
+    workbook.remove(base_sheet)
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    section_part = ''.join(
+        ch if ch.isalnum() else '_' for ch in (section.name or '')
+    ).strip('_') or 'section'
+    filename = f'gradebook_template_{section_part}_all_subjects.xlsx'
+    return output.getvalue(), filename
+
+
+class GradebookTemplateBatchDownloadView(APIView):
+    """Download gradebook templates by filter.
+
+    POST /grading/gradebooks/templates/download/
+
+    Body (all optional):
+      - academic_year_id
+      - include_grades (bool)
+      - grade_status_filter (default: "all")
+      - grade_level_id
+      - section_id
+
+    Behavior:
+      - one matching section => return one .xlsx file
+      - multiple matching sections => return .zip containing one .xlsx per section
+    """
+
+    parser_classes = (JSONParser,)
+
+    def post(self, request):
+        from grading.models import GradeBook
+
+        academic_year, error_response = _resolve_template_academic_year(request)
+        if error_response is not None:
+            return error_response
+
+        include_grades = bool(request.data.get('include_grades', False))
+        raw_status_filter = str(request.data.get('grade_status_filter', 'all')).strip().lower()
+        status_filter = 'any' if raw_status_filter in ('', 'all') else raw_status_filter
+
+        grade_level_id = str(request.data.get('grade_level_id', '')).strip() or None
+        section_id = str(request.data.get('section_id', '')).strip() or None
+
+        sections_qs = Section.objects.select_related('grade_level').all()
+        if grade_level_id:
+            sections_qs = sections_qs.filter(grade_level_id=grade_level_id)
+        if section_id:
+            sections_qs = sections_qs.filter(pk=section_id)
+
+        section_ids_with_gradebooks = GradeBook.objects.filter(
+            academic_year=academic_year,
+            section_id__in=sections_qs.values_list('id', flat=True),
+        ).values_list('section_id', flat=True).distinct()
+
+        sections = list(sections_qs.filter(id__in=section_ids_with_gradebooks).order_by('grade_level__name', 'name'))
+        if not sections:
+            return Response(
+                {'detail': 'No sections with gradebooks found for the selected filters.'},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        workbook_files = []
+        for section in sections:
+            try:
+                workbook_bytes, filename = _build_all_subjects_template_workbook(
+                    section=section,
+                    academic_year=academic_year,
+                    include_grades=include_grades,
+                    status_filter=status_filter,
+                )
+            except ValueError:
+                continue
+            except RuntimeError as exc:
+                return Response({'detail': str(exc)}, status=http_status.HTTP_500_INTERNAL_SERVER_ERROR)
+            workbook_files.append((filename, workbook_bytes))
+
+        if not workbook_files:
+            return Response(
+                {'detail': 'No gradebook templates available for the selected filters.'},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        if len(workbook_files) == 1:
+            filename, file_bytes = workbook_files[0]
+            response = HttpResponse(
+                file_bytes,
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            )
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response['Cache-Control'] = 'no-store'
+            return response
+
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for filename, file_bytes in workbook_files:
+                zip_file.writestr(filename, file_bytes)
+
+        zip_buffer.seek(0)
+        year_part = ''.join(ch if ch.isalnum() else '_' for ch in str(academic_year)).strip('_') or 'year'
+        zip_name = f'gradebook_templates_{year_part}.zip'
+
+        response = HttpResponse(zip_buffer.getvalue(), content_type='application/zip')
+        response['Content-Disposition'] = f'attachment; filename="{zip_name}"'
         response['Cache-Control'] = 'no-store'
         return response

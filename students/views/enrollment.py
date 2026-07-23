@@ -12,11 +12,11 @@ from ..access_policies import StudentAccessPolicy
 from common.status import EnrollmentStatus, YearEndOutcome
 from common.status import StudentStatus
 from common.utils import (
-    update_model_fields,
+    update_model_fields_core,
     validate_required_fields,
     get_object_by_uuid_or_fields,
 )
-from academics.models import AcademicYear, GradeLevel
+from academics.models import AcademicYear, GradeLevel, Section
 from students.views.utils import create_enrollment_for_student
 
 from ..models import Enrollment, Student
@@ -239,13 +239,32 @@ class EnrollmentDetailView(APIView):
                     400,
                 )
 
-        serializer = update_model_fields(
-            request,
-            enrollment,
-            allowed_fields,
-            EnrollmentSerializer,
-            context={"request": request},
-        )
+        payload = request.data.copy()
+        section_id = payload.get("section")
+        if section_id is not None:
+            if not section_id:
+                return Response({"detail": "Section is required"}, status=400)
+
+            section = Section.objects.filter(id=section_id).select_related("grade_level").first()
+            if not section:
+                return Response({"detail": "Section does not exist with this id"}, status=400)
+
+            if (
+                enrollment.grade_level_id
+                and section.grade_level_id
+                and str(section.grade_level_id) != str(enrollment.grade_level_id)
+            ):
+                return Response(
+                    {
+                        "detail": "Selected section does not belong to the enrollment's grade level"
+                    },
+                    status=400,
+                )
+
+            payload["section"] = section
+
+        update_model_fields_core(enrollment, payload, allowed_fields, request.user)
+        serializer = EnrollmentSerializer(enrollment, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):

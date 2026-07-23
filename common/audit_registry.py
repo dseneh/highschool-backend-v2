@@ -66,6 +66,8 @@ def register_all_models():
         StudentPaymentSummary,
         StudentContact,
         StudentGuardian,
+        DisciplinaryActionType,
+        StudentDisciplinaryAction,
     )
 
     auditlog.register(Student, exclude_fields=COMMON_EXCLUDE)
@@ -76,6 +78,8 @@ def register_all_models():
     auditlog.register(StudentPaymentSummary, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(StudentContact, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(StudentGuardian, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(DisciplinaryActionType, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(StudentDisciplinaryAction, exclude_fields=COMMON_EXCLUDE)
 
     # ── Staff ──────────────────────────────────────────────────────────
     from staff.models import (

@@ -4,6 +4,7 @@ from .bill_summary import *
 from .bill_summary_helpers import *
 from .contact import *
 from .concession import *
+from .discipline import *
 from .distributions import *
 from .enrollment import *
 from .guardian import *
