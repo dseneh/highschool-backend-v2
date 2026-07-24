@@ -11,6 +11,12 @@ from core.views import (
     SignupRequestViewSet,
     ContactInquiryView,
 )
+from core.onboarding_views import (
+    get_onboarding,
+    save_onboarding_step,
+    apply_onboarding,
+    reset_onboarding,
+)
 from core.platform_banner_views import (
     DismissPlatformBannerView,
     MyPlatformBannersView,
@@ -34,6 +40,14 @@ urlpatterns = [
     # captures them as detail lookups and returns 404 (or worse, tries to
     # parse "me"/"current" as a UUID/schema name).
     path('tenants/current/', current_tenant, name='current-tenant'),
+
+    # Onboarding endpoints (must be before router so they aren't swallowed by
+    # the TenantViewSet detail lookup on schema_name)
+    path('tenants/<str:schema_name>/onboarding/', get_onboarding, name='tenant-onboarding-get'),
+    path('tenants/<str:schema_name>/onboarding/step/', save_onboarding_step, name='tenant-onboarding-step'),
+    path('tenants/<str:schema_name>/onboarding/apply/', apply_onboarding, name='tenant-onboarding-apply'),
+    path('tenants/<str:schema_name>/onboarding/reset/', reset_onboarding, name='tenant-onboarding-reset'),
+
     path(
         "platform-banners/me/",
         MyPlatformBannersView.as_view(),

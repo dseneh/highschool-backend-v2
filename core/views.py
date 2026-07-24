@@ -35,6 +35,7 @@ from core.serializers import (
 from common.utils import update_model_fields
 from common.audit_utils import log_tenant_control_change
 from common.permissions import IsSuperAdmin
+from core.services.tenant_deletion import hard_delete_tenant_workspace
 from students.models import Student
 from staff.models import Staff
 
@@ -318,8 +319,9 @@ class TenantViewSet(ModelViewSet):
         """
         Delete tenant - ensure we're in the public schema.
 
-        Performs a soft delete: sets status to 'deleted' and active to False.
-        The tenant record and schema remain in the database but are marked as deleted.
+        Default behavior is soft delete: sets status to 'deleted' and active to False.
+        If request query includes hard=true, performs a permanent delete by
+        dropping the tenant schema and deleting the tenant record.
 
         A future cron / GC job will hard-delete tenants that have been in the
         deleted state for longer than the retention period. In the meantime
@@ -332,6 +334,16 @@ class TenantViewSet(ModelViewSet):
         # Prevent public tenant deletion
         if instance.schema_name == get_public_schema_name():
             raise ValidationError({"detail": "Cannot delete public tenant"})
+
+        hard_param = str(self.request.query_params.get("hard", "")).strip().lower()
+        hard_delete = hard_param in {"1", "true", "yes"}
+
+        if hard_delete:
+            try:
+                hard_delete_tenant_workspace(instance)
+            except ValueError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+            return
 
         # Soft delete: Set status to 'deleted' and active to False
         # The save() method will automatically sync active with status

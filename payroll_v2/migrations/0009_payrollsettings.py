@@ -7,7 +7,12 @@ from django.db import migrations, models
 def ensure_payroll_settings_table(apps, schema_editor):
     if "payroll_settings" in schema_editor.connection.introspection.table_names():
         return
-    PayrollSettings = apps.get_model("payroll_v2", "PayrollSettings")
+
+    # PayrollSettings is introduced by this same SeparateDatabaseAndState
+    # migration, so it is not reliably available from the historical app
+    # registry passed to RunPython.
+    from payroll_v2.models import PayrollSettings
+
     schema_editor.create_model(PayrollSettings)
 
 

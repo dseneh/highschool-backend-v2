@@ -216,6 +216,10 @@ class TenantSerializer(BaseTenantSerializer):
             "logo_shape",
             "theme_color",
             "theme_config",
+            # Onboarding
+            "onboarding_plan",
+            "onboarding_started_at",
+            "onboarding_completed_at",
             # Timestamps
             "created_at",
             "updated_at",
@@ -264,6 +268,9 @@ class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
             "disabled_access_allowed_paths",
             "disabled_access_allowed_users",
             "theme_config",
+            # Expose onboarding status so frontend can enforce redirect
+            "onboarding_started_at",
+            "onboarding_completed_at",
         ]
 
 class CreateTenantSerializer(serializers.Serializer):
@@ -439,8 +446,10 @@ class CreateTenantSerializer(serializers.Serializer):
             "email": validated_data.get("email"),
             "website": validated_data.get("website"),
             # Status and configuration
-            "status": validated_data.get("status", "active"),
-            "active": validated_data.get("active", True),
+            # Always start in onboarding state; activation happens only
+            # after onboarding apply/provisioning completes.
+            "status": Tenant.STATUS_PENDING,
+            "active": False,
             "maintenance_mode": validated_data.get("maintenance_mode", False),
             "login_access_policy": validated_data.get("login_access_policy", "all_users"),
             "disabled_access_allow_tenant_admins": validated_data.get("disabled_access_allow_tenant_admins", True),
@@ -488,19 +497,17 @@ class CreateTenantSerializer(serializers.Serializer):
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to add superadmin users to tenant {tenant.name}: {e}")
         
-        # Initialize default data for the tenant (academic years, divisions, etc.)
+        # Generate the initial onboarding plan and set status to pending.
+        # Workspace provisioning (default data) now happens later via the
+        # onboarding wizard POST /onboarding/apply/ endpoint.
         try:
-            from defaults.utils import setup_tenant_defaults
-            setup_tenant_defaults(tenant, owner)
+            from defaults.services import build_initial_plan
+            tenant.onboarding_plan = build_initial_plan(tenant)
+            tenant.save(update_fields=["onboarding_plan"])
         except Exception as e:
-            # Log the error but don't fail tenant creation
-            # The tenant is created but default data initialization failed
-            # This allows manual retry or fixing the issue
             import logging
             logger = logging.getLogger(__name__)
-            logger.error(f"Failed to initialize default data for tenant {tenant.name}: {e}")
-            # Optionally, you could raise this exception to rollback tenant creation
-            # raise serializers.ValidationError(f"Tenant created but default data initialization failed: {e}")
+            logger.error(f"Failed to generate onboarding plan for tenant {tenant.name}: {e}")
         
         # Store domain for response
         self._domain = domain_obj

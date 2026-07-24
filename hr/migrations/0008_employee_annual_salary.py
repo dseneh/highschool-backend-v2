@@ -17,13 +17,13 @@ def _periods_per_year(schedule) -> Decimal:
 def backfill_annual_salary(apps, schema_editor):
     Employee = apps.get_model("hr", "Employee")
     batch: list = []
-    for employee in Employee.objects.select_related("pay_schedule").iterator():
+    for employee in Employee.objects.iterator():
         if employee.salary_type == "hourly":
             employee.annual_salary = Decimal("0.00")
         else:
             employee.annual_salary = (
                 Decimal(employee.basic_salary or 0)
-                * _periods_per_year(employee.pay_schedule)
+                * _periods_per_year(None)
             ).quantize(Decimal("0.01"))
         batch.append(employee)
         if len(batch) >= 500:

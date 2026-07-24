@@ -105,19 +105,158 @@ class Tenant(TenantBase):
     phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     website = models.URLField(blank=True, null=True)
+
+    # Billing configuration used by admin/workspace setup screens
+    billing_employee_count = models.IntegerField(
+        default=0,
+        help_text="Expected employee count used for billing defaults.",
+    )
+    billing_enrollment_count = models.IntegerField(
+        default=0,
+        help_text="Expected enrollment count used for billing defaults.",
+    )
+    billing_interval = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Billing interval label, if configured.",
+    )
+    enabled_addons = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Enabled tenant add-ons stored as a JSON array.",
+    )
+    current_period_end = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Current subscription period end, if applicable.",
+    )
+    past_due_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the tenant first became past due, if applicable.",
+    )
+    complimentary_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional complimentary billing note.",
+    )
+    complimentary_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When complimentary billing expires, if configured.",
+    )
+    promotion_code_redeemed = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Promotion code redeemed for the tenant, if any.",
+    )
+    stripe_customer_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Stripe customer identifier.",
+    )
+    stripe_subscription_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Stripe subscription identifier.",
+    )
+    subscription_status = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Stripe subscription status.",
+    )
+    provisioning_status = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Workspace provisioning status.",
+    )
+    provisioning_step = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Current provisioning step.",
+    )
+    provisioning_progress = models.SmallIntegerField(
+        default=0,
+        help_text="Provisioning progress percentage.",
+    )
+    provisioning_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Latest provisioning error message.",
+    )
+    provisioning_completed_steps = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of completed provisioning steps.",
+    )
+    provisioning_payload = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Payload captured for provisioning.",
+    )
+    deletion_status = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Deletion lifecycle status.",
+    )
+    deletion_mode = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Deletion mode for the tenant.",
+    )
+    deletion_step = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Current deletion step.",
+    )
+    deletion_progress = models.SmallIntegerField(
+        default=0,
+        help_text="Deletion progress percentage.",
+    )
+    deletion_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Latest deletion error message.",
+    )
+    deletion_completed_steps = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of completed deletion steps.",
+    )
     
+    # Onboarding status constants (used in status field)
+    STATUS_PENDING = "pending"          # Tenant created, onboarding not started
+    STATUS_IN_PROGRESS = "in_progress"  # Onboarding actively in progress
+    STATUS_ACTIVE = "active"            # Fully provisioned workspace
+    STATUS_ON_HOLD = "on_hold"          # Post-activation hold
+    STATUS_CLOSED = "closed"            # Closed workspace
+    STATUS_INACTIVE = "inactive"        # Temporarily paused
+    STATUS_DELETED = "deleted"          # Soft-deleted
+
     # Status and Configuration
     status = models.CharField(
         max_length=20,
         choices=[
-            ("active", "Active"),
-            ("on_hold", "On Hold"),
-            ("closed", "Closed"),
-            ("inactive", "Inactive"),
-            ("deleted", "Deleted"),
+            (STATUS_PENDING, "Pending"),
+            (STATUS_IN_PROGRESS, "In Progress"),
+            (STATUS_ACTIVE, "Active"),
+            (STATUS_ON_HOLD, "On Hold"),
+            (STATUS_CLOSED, "Closed"),
+            (STATUS_INACTIVE, "Inactive"),
+            (STATUS_DELETED, "Deleted"),
         ],
-        default="active",
-        help_text="Tenant status: active, on_hold, closed, inactive, deleted"
+        default=STATUS_PENDING,
+        help_text="Tenant lifecycle status. pending/in_progress are onboarding states; active/on_hold/etc are operational states."
     )
     active = models.BooleanField(
         default=True, 
@@ -180,7 +319,30 @@ class Tenant(TenantBase):
         null=True,
         help_text="Comprehensive theme configuration including colors, typography, spacing, shadows, etc."
     )
-    
+
+    # ------------------------------------------------------------------
+    # Onboarding / workspace setup tracking
+    # ------------------------------------------------------------------
+    onboarding_plan = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Onboarding configuration plan. Stores per-step payloads, status, "
+            "and the final apply result. Structure: {version, current_step, steps, "
+            "required_steps, optional_steps, started_at, completed_at, apply_result}."
+        ),
+    )
+    onboarding_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user first started the onboarding wizard.",
+    )
+    onboarding_completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the onboarding wizard was completed and workspace provisioned.",
+    )
+
     # Automatically create schema when tenant is created
     auto_create_schema = True
     # Don't auto-drop schema on delete (safety)
@@ -199,8 +361,13 @@ class Tenant(TenantBase):
         return self.name
     
     @property
+    def is_onboarding(self):
+        """True when workspace is in a pre-activation onboarding state."""
+        return self.status in (self.STATUS_PENDING, self.STATUS_IN_PROGRESS)
+
+    @property
     def is_operational(self):
-        return self.active and self.status == "active" and not self.maintenance_mode
+        return self.active and self.status == self.STATUS_ACTIVE and not self.maintenance_mode
 
 
 class Domain(DomainMixin):
