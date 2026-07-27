@@ -9,7 +9,11 @@ from rest_framework.response import Response
 from types import SimpleNamespace
 
 from accounting.services.posting import post_cash_transaction_to_ledger
-from accounting.services.student_billing import sync_accounting_bill_concession_totals
+from accounting.services.student_billing import (
+    build_billing_lines_for_enrollment,
+    get_enrollment_arrears_amount,
+    sync_accounting_bill_concession_totals,
+)
 from accounting.views.base import AccountingErrorFormattingMixin
 from accounting.views.cash_transaction import AccountingCashTransactionViewSet
 from accounting.models import AccountingCashTransaction
@@ -226,6 +230,73 @@ class AccountingBillConcessionSyncTests(TestCase):
 
         self.assertEqual(updated_count, 0)
         mock_concession_filter.assert_not_called()
+
+
+class EnrollmentBillingArrearsTests(SimpleTestCase):
+    @patch("accounting.services.student_billing.AccountingStudentBill.objects.filter")
+    def test_get_enrollment_arrears_amount_sums_prior_outstanding_balances(
+        self,
+        mock_filter,
+    ):
+        enrollment = SimpleNamespace(
+            student=MagicMock(),
+            academic_year_id="ay-current",
+        )
+
+        mock_qs = MagicMock()
+        mock_qs.exclude.return_value = mock_qs
+        mock_qs.aggregate.return_value = {"total": Decimal("125.50")}
+        mock_filter.return_value = mock_qs
+
+        arrears = get_enrollment_arrears_amount(enrollment)
+
+        self.assertEqual(arrears, Decimal("125.50"))
+        mock_filter.assert_called_once_with(student=enrollment.student)
+        self.assertEqual(mock_qs.exclude.call_count, 2)
+        mock_qs.aggregate.assert_called_once()
+
+    @patch("accounting.services.student_billing.get_enrollment_arrears_amount")
+    def test_build_billing_lines_prepends_arrears_line(
+        self,
+        mock_get_arrears,
+    ):
+        mock_get_arrears.return_value = Decimal("75.00")
+
+        section_fee = SimpleNamespace(
+            amount=Decimal("25.00"),
+            general_fee=SimpleNamespace(
+                name="Registration",
+                student_target="",
+                description="Registration fee",
+            ),
+        )
+        tuition_fee = SimpleNamespace(amount=Decimal("300.00"))
+        enrollment = SimpleNamespace(
+            enrolled_as="new",
+            section=SimpleNamespace(
+                section_fees=SimpleNamespace(
+                    select_related=MagicMock(
+                        return_value=SimpleNamespace(
+                            filter=MagicMock(return_value=[section_fee])
+                        )
+                    )
+                )
+            ),
+            grade_level=SimpleNamespace(
+                tuition_fees=SimpleNamespace(
+                    filter=MagicMock(
+                        return_value=SimpleNamespace(first=MagicMock(return_value=tuition_fee))
+                    )
+                )
+            ),
+        )
+
+        lines = build_billing_lines_for_enrollment(enrollment)
+
+        self.assertEqual(lines[0].name, "Arrears")
+        self.assertEqual(lines[0].amount, Decimal("75.00"))
+        self.assertEqual(lines[1].name, "Registration")
+        self.assertEqual(lines[2].name, "Tuition")
 
 
 class AccountingCashTransactionStatusFlowTests(SimpleTestCase):

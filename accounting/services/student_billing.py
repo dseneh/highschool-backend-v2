@@ -20,6 +20,10 @@ from accounting.models import (
 from students.models import Enrollment, StudentEnrollmentBill
 
 
+ARREARS_LINE_NAME = "Arrears"
+ARREARS_LINE_DESCRIPTION = "Outstanding balance carried forward from prior academic year(s)."
+
+
 @dataclass
 class BillingLineInput:
     name: str
@@ -82,10 +86,30 @@ def _get_or_create_fee_item(name: str, category: str, description: str = "") -> 
     )
 
 
+def get_enrollment_arrears_amount(enrollment: Enrollment) -> Decimal:
+    outstanding_qs = AccountingStudentBill.objects.filter(
+        student=enrollment.student,
+    ).exclude(status=AccountingStudentBill.BillStatus.CANCELLED)
+
+    academic_year_id = getattr(enrollment, "academic_year_id", None)
+    if academic_year_id:
+        outstanding_qs = outstanding_qs.exclude(academic_year_id=academic_year_id)
+
+    outstanding_total = outstanding_qs.aggregate(total=Sum("outstanding_amount"))["total"]
+    return max(Decimal("0"), _round_money(_to_decimal(outstanding_total)))
+
+
 def build_billing_lines_for_enrollment(enrollment: Enrollment) -> list[BillingLineInput]:
     student_category = _normalize_student_category(getattr(enrollment, "enrolled_as", None))
 
-    lines: list[BillingLineInput] = []
+    lines: list[BillingLineInput] = [
+        BillingLineInput(
+            name=ARREARS_LINE_NAME,
+            amount=get_enrollment_arrears_amount(enrollment),
+            category=AccountingFeeItem.FeeCategory.OTHER,
+            description=ARREARS_LINE_DESCRIPTION,
+        )
+    ]
 
     all_section_fees = enrollment.section.section_fees.select_related("general_fee").filter(active=True)
     for section_fee in all_section_fees:

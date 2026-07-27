@@ -6,6 +6,7 @@ from academics.models import Section, Semester
 from common.status import EnrollmentStatus, StudentStatus
 from students.services.student_status import normalize_enrollment_status
 from accounting.services import create_or_update_accounting_bill_for_enrollment
+from accounting.services.student_billing import get_enrollment_arrears_amount
 from finance.utils import disable_payment_summary_refresh
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,16 @@ def create_student_bill(enrollment, request):
         elif not target_type or target_type == "":
             section_fees.append(section_fee)
 
-    bills = []
+    bills = [
+        enrollment.student_bills.create(
+            amount=get_enrollment_arrears_amount(enrollment),
+            created_by=request.user,
+            updated_by=request.user,
+            type="other",
+            name="Arrears",
+            notes="Outstanding balance carried forward from prior academic year(s).",
+        )
+    ]
 
     # Create a bill for each section fee
     for section_fee in section_fees:
