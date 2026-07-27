@@ -6,9 +6,24 @@ Covers:
 - Frontend URL building
 """
 
+from ipaddress import ip_address
 from urllib.parse import urljoin, urlparse
 
 from django.conf import settings
+
+
+def _host_uses_path_based_tenants(hostname: str) -> bool:
+    """Match frontend routing for localhost/bare-IP tenant resolution."""
+    host = (hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1"}:
+        return True
+    try:
+        ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
 def build_frontend_url(school_workspace: str | None = None, path: str | None = None) -> str:
@@ -16,7 +31,7 @@ def build_frontend_url(school_workspace: str | None = None, path: str | None = N
     Construct a frontend URL based on environment configuration.
 
     Preferred mode    → https://<workspace>.domain.com<path>
-    Dev path mode     → http://localhost:3000/s/<workspace><path> (optional fallback)
+    Dev path mode     → http://localhost:3000/<workspace><path> (optional fallback)
 
     Settings consulted:
         FRONTEND_DOMAIN             Base URL of the frontend (default: http://localhost:3000)
@@ -25,17 +40,35 @@ def build_frontend_url(school_workspace: str | None = None, path: str | None = N
         FRONTEND_PASSWORD_RESET_PATH  Path used when *path* is None
     """
     frontend_domain: str = getattr(settings, "FRONTEND_DOMAIN", "http://localhost:3000")
+    frontend_subdomain_base: str = getattr(settings, "FRONTEND_SUBDOMAIN_BASE", "")
     use_subdomain: bool = getattr(settings, "FRONTEND_USE_SUBDOMAIN", True)
     is_dev_mode: bool = getattr(settings, "FRONTEND_DEV_MODE", True)
     default_path: str = getattr(settings, "FRONTEND_PASSWORD_RESET_PATH", "/reset-password")
 
     effective_path = path or default_path
 
-    # Preferred behavior: tenant subdomain URL (works for localhost too: tenant.localhost)
+    parsed = urlparse(frontend_domain)
+    hostname = parsed.hostname or ""
+
+    # On localhost/bare-IP environments, the frontend uses path-based tenants:
+    # /<workspace>/<path>. Keep URL generation aligned with that routing mode.
+    if school_workspace and _host_uses_path_based_tenants(hostname):
+        path_with_workspace = f"/{school_workspace}{effective_path if effective_path.startswith('/') else f'/{effective_path}'}"
+        return urljoin(frontend_domain, path_with_workspace.lstrip("/"))
+
+    # Preferred behavior: tenant subdomain URL (DNS-based environments)
     if school_workspace and use_subdomain:
-        parsed = urlparse(frontend_domain)
-        scheme = parsed.scheme or "http"
-        hostname = parsed.hostname or ""
+        subdomain_base = str(frontend_subdomain_base or "").strip()
+        if subdomain_base:
+            if "://" not in subdomain_base:
+                subdomain_base = f"{parsed.scheme or 'https'}://{subdomain_base}"
+            parsed_base = urlparse(subdomain_base)
+            scheme = parsed_base.scheme or parsed.scheme or "https"
+            hostname = parsed_base.hostname or hostname
+            port = parsed_base.port
+        else:
+            scheme = parsed.scheme or "http"
+            port = parsed.port
 
         if hostname and not hostname.startswith(f"{school_workspace}."):
             workspace_domain = f"{school_workspace}.{hostname}"
@@ -43,22 +76,21 @@ def build_frontend_url(school_workspace: str | None = None, path: str | None = N
             workspace_domain = hostname
 
         base = f"{scheme}://{workspace_domain}" if workspace_domain else frontend_domain
-        if parsed.port:
-            base += f":{parsed.port}"
+        if port:
+            base += f":{port}"
 
         return urljoin(base, effective_path.lstrip("/"))
 
-    # Optional fallback: dev path-style routing
+    # Optional fallback: explicit path-style routing when subdomain mode is disabled.
     if is_dev_mode:
         if school_workspace:
-            combined = f"/s/{school_workspace}{effective_path}"
+            combined = f"/{school_workspace}{effective_path}"
         else:
             combined = effective_path
         return urljoin(frontend_domain, combined.lstrip("/"))
 
     # Production: subdomain routing
     if school_workspace:
-        parsed = urlparse(frontend_domain)
         hostname = parsed.hostname or ""
         workspace_domain = f"{school_workspace}.{hostname}" if hostname else hostname
         base = f"{parsed.scheme}://{workspace_domain}"
@@ -85,3 +117,8 @@ def build_password_reset_url(school_workspace: str | None, uid: str, token: str)
     #     query_params += f"&workspace={school_workspace}"
 
     return base_url + query_params
+
+
+def build_activation_url(school_workspace: str | None) -> str:
+    """Build the tenant-aware activate-account URL."""
+    return build_frontend_url(school_workspace, "/activate-account")

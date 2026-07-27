@@ -10,6 +10,8 @@ from users.views import (
     GlobalUserCreateView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
+    TenantOwnerActivationResendCodeView,
+    TenantOwnerActivationVerifyCodeView,
 )
 from users.viewsets import UserViewSet
 
@@ -30,6 +32,8 @@ urlpatterns = [
     
     # Password reset endpoints (public – no auth required)
     path("password/forgot/", PasswordResetRequestView.as_view(), name="password_reset_request"),
+    path("account-activation/verify-code/", TenantOwnerActivationVerifyCodeView.as_view(), name="tenant_owner_activation_verify_code"),
+    path("account-activation/resend-code/", TenantOwnerActivationResendCodeView.as_view(), name="tenant_owner_activation_resend_code"),
     path("password/reset/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     
     # ViewSet routes (includes all user CRUD + custom actions)

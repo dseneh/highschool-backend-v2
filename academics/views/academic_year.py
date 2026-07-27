@@ -1,4 +1,6 @@
 
+from django.db import transaction
+from django.db.models.deletion import ProtectedError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -14,6 +16,28 @@ from ..serializers import AcademicYearSerializer
 # Business logic imports
 from business.core.services import academic_year_service
 from business.core.adapters import academic_year_adapter
+
+
+def _force_delete_instance(instance, visited: set[tuple[str, str, str]]) -> None:
+    """Recursively delete objects blocked by PROTECT constraints."""
+    if not instance or getattr(instance, "pk", None) is None:
+        return
+
+    key = (
+        instance._meta.app_label,
+        instance._meta.model_name,
+        str(instance.pk),
+    )
+    if key in visited:
+        return
+    visited.add(key)
+
+    try:
+        instance.delete()
+    except ProtectedError as exc:
+        for protected in list(exc.protected_objects):
+            _force_delete_instance(protected, visited)
+        instance.delete()
 
 class AcademicYearListView(APIView):
     permission_classes = [AcademicsAccessPolicy]
@@ -206,8 +230,109 @@ class AcademicYearDetailView(APIView):
             return Response(
                 {"detail": "Cannot delete current academic year."}, status=400
             )
-        academic_year.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+
+        force = request.query_params.get("force", "false").lower() == "true"
+
+        try:
+            if not force:
+                academic_year.delete()
+                return Response(status=status.HTTP_204_NO_CONTENT)
+
+            with transaction.atomic():
+                _force_delete_instance(academic_year, visited=set())
+
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ProtectedError as exc:
+            return Response(
+                {
+                    "detail": "Academic year has related data and cannot be deleted without force.",
+                    "can_force_delete": True,
+                    "protected_count": len(exc.protected_objects),
+                },
+                status=400,
+            )
+
+
+class AcademicYearDeleteImpactView(APIView):
+    permission_classes = [AcademicsAccessPolicy]
+
+    def get_object(self, id):
+        f = Q(id=id) | Q(name=id)
+        return get_object_or_404(AcademicYear, f)
+
+    def get(self, request, id):
+        academic_year = self.get_object(id)
+
+        from accounting.models import AccountingFeeRate, AccountingStudentBill
+        from finance.models import PaymentInstallment, Transaction
+        from grading.models import Grade, GradeBook
+        from students.models import Enrollment, StudentEnrollmentBill
+
+        semester_count = academic_year.semesters.count()
+        marking_period_count = academic_year.marking_periods.count()
+        enrollment_count = Enrollment.objects.filter(academic_year=academic_year).count()
+        gradebook_count = GradeBook.objects.filter(academic_year=academic_year).count()
+        grade_count = Grade.objects.filter(academic_year=academic_year).count()
+        installment_count = PaymentInstallment.objects.filter(academic_year=academic_year).count()
+        transaction_count = Transaction.objects.filter(academic_year=academic_year).count()
+        student_bill_count = StudentEnrollmentBill.objects.filter(
+            enrollment__academic_year=academic_year
+        ).count()
+        accounting_bill_count = AccountingStudentBill.objects.filter(
+            academic_year=academic_year
+        ).count()
+        accounting_fee_rates_count = AccountingFeeRate.objects.filter(
+            academic_year=academic_year
+        ).count()
+
+        has_related_data = any(
+            value > 0
+            for value in [
+                semester_count,
+                marking_period_count,
+                enrollment_count,
+                gradebook_count,
+                grade_count,
+                installment_count,
+                transaction_count,
+                student_bill_count,
+                accounting_bill_count,
+                accounting_fee_rates_count,
+            ]
+        )
+
+        reason = None
+        if academic_year.current:
+            reason = "Cannot delete current academic year."
+        elif has_related_data:
+            reason = "Academic year has related data. Use force delete to proceed."
+
+        return Response(
+            {
+                "academic_year": {
+                    "id": str(academic_year.id),
+                    "name": academic_year.name,
+                    "current": academic_year.current,
+                    "status": academic_year.status,
+                },
+                "can_delete_without_force": (not academic_year.current) and (not has_related_data),
+                "can_force_delete": not academic_year.current,
+                "reason": reason,
+                "counts": {
+                    "semesters": semester_count,
+                    "marking_periods": marking_period_count,
+                    "enrollments": enrollment_count,
+                    "gradebooks": gradebook_count,
+                    "grades": grade_count,
+                    "payment_installments": installment_count,
+                    "transactions": transaction_count,
+                    "student_bills": student_bill_count,
+                    "accounting_student_bills": accounting_bill_count,
+                    "accounting_fee_rates": accounting_fee_rates_count,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 # create an endpoint to get the current academic year for an institution
 class CurrentAcademicYearView(APIView):

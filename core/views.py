@@ -2,9 +2,15 @@
 Views for core models (Tenant management)
 """
 
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
 from django.db import connection
 from django.db.models import Q
 from django.core.cache import cache
+from django.contrib.auth.hashers import make_password
+from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.exceptions import ValidationError, NotFound
@@ -24,22 +30,32 @@ from django.core.files.base import ContentFile
 from PIL import Image
 from io import BytesIO
 
-from core.models import Tenant, SignupRequest
+from core.models import Tenant, SignupRequest, TenantOwnerActivationCode
 from core.serializers import (
     TenantSerializer,
     CreateTenantSerializer,
     PublicTenantSerializer,
     TenantListSerializer,
     TenantInfoSearchResultSerializer,
+    get_signup_request_linked_tenant,
+    get_signup_request_owner,
 )
 from common.utils import update_model_fields
 from common.audit_utils import log_tenant_control_change
 from common.permissions import IsSuperAdmin
 from core.services.tenant_deletion import hard_delete_tenant_workspace
+from common.email_service import send_tenant_owner_activation_email
+from users.utils import build_activation_url
 from students.models import Student
 from staff.models import Staff
 
 User = get_user_model()
+
+ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _generate_activation_code(length: int = 8) -> str:
+    return "".join(secrets.choice(ACTIVATION_CODE_ALPHABET) for _ in range(length))
 
 
 def validate_tenant_is_in_public_schema():
@@ -1107,6 +1123,63 @@ class SignupRequestViewSet(viewsets.ModelViewSet):
         validate_tenant_is_in_public_schema()
         count = SignupRequest.objects.filter(status=SignupRequest.STATUS_PENDING).count()
         return Response({"count": count})
+
+    @action(detail=True, methods=["post"], url_path="send-owner-activation")
+    def send_owner_activation(self, request, pk=None):
+        validate_tenant_is_in_public_schema()
+        signup_request = self.get_object()
+        tenant = get_signup_request_linked_tenant(signup_request)
+        if not tenant:
+            return Response({"detail": "Workspace has not been created yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+        owner = get_signup_request_owner(tenant, signup_request)
+        if not owner or not owner.email:
+            return Response({"detail": "No tenant owner email is available for this workspace."}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        TenantOwnerActivationCode.objects.filter(
+            tenant=tenant,
+            user=owner,
+            purpose=TenantOwnerActivationCode.PURPOSE_TENANT_OWNER_ACTIVATION,
+            used_at__isnull=True,
+        ).update(used_at=now)
+
+        code = _generate_activation_code()
+        expires_at = now + timedelta(hours=max(1, int(getattr(settings, "TENANT_OWNER_ACTIVATION_CODE_HOURS", 24))))
+
+        activation_code = TenantOwnerActivationCode.objects.create(
+            tenant=tenant,
+            user=owner,
+            signup_request=signup_request,
+            issued_by=request.user if getattr(request.user, "is_authenticated", False) else None,
+            code_hash=make_password(code),
+            delivered_to=owner.email,
+            expires_at=expires_at,
+        )
+
+        activate_url = build_activation_url(tenant.schema_name)
+        sent = send_tenant_owner_activation_email(
+            user=owner,
+            tenant=tenant,
+            activation_code=code,
+            activate_url=activate_url,
+        )
+        if not sent:
+            activation_code.delete()
+            return Response({"detail": "Workspace email could not be sent."}, status=status.HTTP_502_BAD_GATEWAY)
+
+        if signup_request.status == SignupRequest.STATUS_PENDING:
+            signup_request.status = SignupRequest.STATUS_CONTACTED
+            signup_request.save(update_fields=["status"])
+
+        return Response(
+            {
+                "detail": "Owner activation email sent successfully.",
+                "owner_email": owner.email,
+                "workspace": tenant.schema_name,
+                "expires_at": expires_at,
+            }
+        )
 
 
 class ContactInquiryView(APIView):

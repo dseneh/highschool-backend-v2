@@ -5,6 +5,122 @@ from rest_framework import serializers
 from core.models import Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
 from django_tenants.utils import schema_context
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+
+def get_signup_request_linked_tenant(instance: SignupRequest):
+    workspace_slug = (instance.workspace_slug or "").strip()
+    if not workspace_slug:
+        return None
+    return Tenant.objects.filter(schema_name=workspace_slug).first()
+
+
+def get_signup_request_owner(tenant: Tenant | None, signup_request: SignupRequest):
+    if tenant and getattr(tenant, "owner", None):
+        return tenant.owner
+    request_email = (signup_request.email or "").strip().lower()
+    if not request_email:
+        return None
+    from users.models import User
+
+    return User.objects.filter(email__iexact=request_email).first()
+
+
+def _sync_signup_request_after_tenant_create(
+    *,
+    tenant: Tenant,
+    owner,
+    signup_request_id: int | None = None,
+    request=None,
+    actor=None,
+):
+    """Link and refresh the most relevant signup request once workspace is created."""
+    queryset = SignupRequest.objects.all()
+    signup_request = None
+
+    if signup_request_id:
+        signup_request = queryset.filter(pk=signup_request_id).first()
+
+    if not signup_request and tenant.schema_name:
+        signup_request = queryset.filter(
+            workspace_slug__iexact=tenant.schema_name
+        ).order_by("-submitted_at").first()
+
+    owner_email = (getattr(owner, "email", "") or "").strip().lower()
+    if not signup_request and owner_email:
+        signup_request = queryset.filter(email__iexact=owner_email).order_by("-submitted_at").first()
+
+    if not signup_request and tenant.name:
+        signup_request = queryset.filter(school_name__iexact=tenant.name).order_by("-submitted_at").first()
+
+    if not signup_request:
+        return
+
+    update_fields = []
+    changed_values = {}
+
+    if tenant.schema_name and signup_request.workspace_slug != tenant.schema_name:
+        changed_values["workspace_slug"] = {
+            "from": signup_request.workspace_slug,
+            "to": tenant.schema_name,
+        }
+        signup_request.workspace_slug = tenant.schema_name
+        update_fields.append("workspace_slug")
+
+    if tenant.name and signup_request.school_name != tenant.name:
+        changed_values["school_name"] = {
+            "from": signup_request.school_name,
+            "to": tenant.name,
+        }
+        signup_request.school_name = tenant.name
+        update_fields.append("school_name")
+
+    if getattr(tenant, "phone", None) and not signup_request.phone:
+        changed_values["phone"] = {
+            "from": signup_request.phone,
+            "to": tenant.phone,
+        }
+        signup_request.phone = tenant.phone
+        update_fields.append("phone")
+
+    if owner_email and signup_request.email.lower() != owner_email:
+        changed_values["email"] = {
+            "from": signup_request.email,
+            "to": owner_email,
+        }
+        signup_request.email = owner_email
+        update_fields.append("email")
+
+    if getattr(tenant, "country", None) and not signup_request.country:
+        changed_values["country"] = {
+            "from": signup_request.country,
+            "to": tenant.country,
+        }
+        signup_request.country = tenant.country
+        update_fields.append("country")
+
+    if signup_request.status in (SignupRequest.STATUS_PENDING, SignupRequest.STATUS_CONTACTED):
+        changed_values["status"] = {
+            "from": signup_request.status,
+            "to": SignupRequest.STATUS_ONBOARDED,
+        }
+        signup_request.status = SignupRequest.STATUS_ONBOARDED
+        update_fields.append("status")
+
+    if update_fields:
+        signup_request.save(update_fields=update_fields)
+        from common.audit_utils import log_signup_request_workspace_sync
+
+        log_signup_request_workspace_sync(
+            request=request,
+            actor=actor,
+            signup_request=signup_request,
+            tenant=tenant,
+            changes=changed_values,
+        )
 
 
 class TenantDomainMixin:
@@ -300,6 +416,12 @@ class CreateTenantSerializer(serializers.Serializer):
         required=False,
         help_text="Email of the owner user (optional, uses request user if not provided)"
     )
+    signup_request_id = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        write_only=True,
+        help_text="Signup request ID to link/update automatically after workspace creation.",
+    )
     active = serializers.BooleanField(default=True)
     maintenance_mode = serializers.BooleanField(default=False, required=False)
     login_access_policy = serializers.ChoiceField(
@@ -381,6 +503,7 @@ class CreateTenantSerializer(serializers.Serializer):
         schema_name = validated_data.get("schema_name")
         domain = validated_data.get("domain")
         owner_email = validated_data.get("owner_email")
+        signup_request_id = validated_data.get("signup_request_id")
         
         # Priority: workspace > schema_name > auto-generate from name
         # Workspace is the preferred identifier that becomes the schema_name
@@ -394,7 +517,7 @@ class CreateTenantSerializer(serializers.Serializer):
         from core.models import Tenant
         if Tenant.objects.filter(schema_name=schema_name).exists():
             raise serializers.ValidationError({
-                "schema_name": f"A tenant with schema name '{schema_name}' already exists"
+                "workspace": f"A tenant with workspace name '{schema_name}' already exists"
             })
         
         # Use schema_name as domain if domain not provided
@@ -446,10 +569,10 @@ class CreateTenantSerializer(serializers.Serializer):
             "email": validated_data.get("email"),
             "website": validated_data.get("website"),
             # Status and configuration
-            # Always start in onboarding state; activation happens only
-            # after onboarding apply/provisioning completes.
+            # Always start in onboarding state; keep workspace active so
+            # owner activation/auth flows can run before full provisioning.
             "status": Tenant.STATUS_PENDING,
-            "active": False,
+            "active": True,
             "maintenance_mode": validated_data.get("maintenance_mode", False),
             "login_access_policy": validated_data.get("login_access_policy", "all_users"),
             "disabled_access_allow_tenant_admins": validated_data.get("disabled_access_allow_tenant_admins", True),
@@ -505,9 +628,23 @@ class CreateTenantSerializer(serializers.Serializer):
             tenant.onboarding_plan = build_initial_plan(tenant)
             tenant.save(update_fields=["onboarding_plan"])
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Failed to generate onboarding plan for tenant {tenant.name}: {e}")
+
+        # Keep CRM records in sync with newly created workspaces.
+        try:
+            _sync_signup_request_after_tenant_create(
+                tenant=tenant,
+                owner=owner,
+                signup_request_id=signup_request_id,
+                request=request,
+                actor=request.user if request and getattr(request.user, "is_authenticated", False) else None,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to sync signup request for workspace %s: %s",
+                tenant.schema_name,
+                e,
+            )
         
         # Store domain for response
         self._domain = domain_obj
@@ -552,6 +689,13 @@ class SignupRequestCreateSerializer(serializers.ModelSerializer):
 class SignupRequestAdminSerializer(serializers.ModelSerializer):
     """Admin list/detail/update for signup requests."""
 
+    linked_tenant_schema_name = serializers.SerializerMethodField()
+    linked_tenant_status = serializers.SerializerMethodField()
+    linked_tenant_active = serializers.SerializerMethodField()
+    can_email_owner = serializers.SerializerMethodField()
+    owner_email = serializers.SerializerMethodField()
+    owner_activation_ready_reason = serializers.SerializerMethodField()
+
     class Meta:
         model = SignupRequest
         fields = [
@@ -560,8 +704,41 @@ class SignupRequestAdminSerializer(serializers.ModelSerializer):
             "school_name", "role_title", "country", "students_count",
             "workspace_slug", "plan", "notes",
             "status", "submitted_at",
+            "linked_tenant_schema_name", "linked_tenant_status", "linked_tenant_active",
+            "can_email_owner", "owner_email", "owner_activation_ready_reason",
         ]
         read_only_fields = ["id", "submitted_at"]
+
+    def get_linked_tenant_schema_name(self, obj):
+        tenant = get_signup_request_linked_tenant(obj)
+        return tenant.schema_name if tenant else ""
+
+    def get_linked_tenant_status(self, obj):
+        tenant = get_signup_request_linked_tenant(obj)
+        return tenant.status if tenant else ""
+
+    def get_linked_tenant_active(self, obj):
+        tenant = get_signup_request_linked_tenant(obj)
+        return bool(getattr(tenant, "active", False)) if tenant else False
+
+    def get_can_email_owner(self, obj):
+        tenant = get_signup_request_linked_tenant(obj)
+        owner = get_signup_request_owner(tenant, obj)
+        return bool(tenant and owner and owner.email)
+
+    def get_owner_email(self, obj):
+        tenant = get_signup_request_linked_tenant(obj)
+        owner = get_signup_request_owner(tenant, obj)
+        return owner.email if owner and owner.email else ""
+
+    def get_owner_activation_ready_reason(self, obj):
+        tenant = get_signup_request_linked_tenant(obj)
+        if not tenant:
+            return "Workspace has not been created yet."
+        owner = get_signup_request_owner(tenant, obj)
+        if not owner or not owner.email:
+            return "No tenant owner account is linked yet."
+        return ""
 
 
 # Backwards-compatible alias

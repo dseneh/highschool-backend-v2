@@ -198,10 +198,10 @@ EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
-    default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else "noreply@ezyschool.app",
+    default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else "noreply@mail.ezyschool.app",
 )
-EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool")
-ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default="admin@dewx.tech")
+EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool Notify")
+ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default="admin@ezyschool.app")
 SUPPORT_EMAIL = config("SUPPORT_EMAIL", default="support@ezyschool.app")
 
 # Resend API key (production). Ignored in DEBUG when local SMTP is configured.
@@ -211,6 +211,7 @@ RESEND_API_KEY = config("RESEND_API_KEY", default="")
 FRONTEND_DOMAIN = config("FRONTEND_DOMAIN", default="http://localhost:3000")
 FRONTEND_USE_SUBDOMAIN = config("FRONTEND_USE_SUBDOMAIN", default=True, cast=bool)
 FRONTEND_DEV_MODE = config("FRONTEND_DEV_MODE", default=True, cast=bool)
+FRONTEND_SUBDOMAIN_BASE = config("FRONTEND_SUBDOMAIN_BASE", default="")
 FRONTEND_PASSWORD_RESET_PATH = config("FRONTEND_PASSWORD_RESET_PATH", default="/reset-password")
 
 # Branding for transactional emails

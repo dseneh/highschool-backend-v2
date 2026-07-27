@@ -1,0 +1,13 @@
+Hi {{ user_name }},
+
+Your {{ workspace_name }} workspace has been created and is ready for onboarding.
+
+Workspace: {{ workspace_slug }}
+Activate your account: {{ activate_url }}
+Activation code: {{ activation_code }}
+
+Use the activation code on the activate-account screen, then create your password to continue into onboarding.
+
+If you did not expect this email, contact {{ support_email }}.
+
+{{ product_name }}

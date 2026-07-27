@@ -544,3 +544,63 @@ class SignupRequest(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} – {self.school_name} ({self.status})"
+
+
+class TenantOwnerActivationCode(models.Model):
+    """One-time activation code for tenant owner account setup."""
+
+    PURPOSE_TENANT_OWNER_ACTIVATION = "tenant_owner_activation"
+    PURPOSE_CHOICES = [
+        (PURPOSE_TENANT_OWNER_ACTIVATION, "Tenant owner activation"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "core.Tenant",
+        on_delete=models.CASCADE,
+        related_name="owner_activation_codes",
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="tenant_activation_codes",
+    )
+    signup_request = models.ForeignKey(
+        "core.SignupRequest",
+        on_delete=models.SET_NULL,
+        related_name="activation_codes",
+        null=True,
+        blank=True,
+    )
+    issued_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        related_name="issued_tenant_activation_codes",
+        null=True,
+        blank=True,
+    )
+    purpose = models.CharField(
+        max_length=50,
+        choices=PURPOSE_CHOICES,
+        default=PURPOSE_TENANT_OWNER_ACTIVATION,
+    )
+    code_hash = models.CharField(max_length=255)
+    delivered_to = models.EmailField(blank=True, default="")
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    last_sent_at = models.DateTimeField(auto_now_add=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "tenant_owner_activation_code"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "user", "purpose"]),
+            models.Index(fields=["expires_at"]),
+            models.Index(fields=["used_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.tenant.schema_name} / {self.user.email or self.user.id_number} / {self.purpose}"

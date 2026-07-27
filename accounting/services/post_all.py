@@ -9,7 +9,7 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count, F, Q, Sum
+from django.db.models import Case, Count, F, IntegerField, Q, Sum, Value, When
 from django.db.models.functions import Abs
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
@@ -30,6 +30,7 @@ from accounting.services.posting import (
 FILTER_PARAM_KEYS = (
     "category",
     "status",
+    "posted",
     "bank_account",
     "transaction_type",
     "transaction_type_code",
@@ -132,9 +133,21 @@ def _build_bank_account_filter(bank_account: str) -> Q:
     return account_filter | Q(bank_account_id=bank_account_value)
 
 
+def _parse_bool_param(value) -> bool | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def apply_cash_transaction_list_filters(queryset, params) -> object:
     category = params.get("category")
     status_param = params.get("status")
+    posted_param = params.get("posted")
     bank_account = params.get("bank_account")
     transaction_type = params.get("transaction_type")
     start_date = params.get("start_date")
@@ -156,6 +169,9 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
         queryset = queryset.filter(transaction_type__transaction_category=category)
     if status_param:
         queryset = queryset.filter(status=status_param)
+    posted = _parse_bool_param(posted_param)
+    if posted is not None:
+        queryset = queryset.filter(journal_entry__isnull=not posted)
     if bank_account:
         bank_account_filter = _build_bank_account_filter(bank_account)
         if bank_account_filter:
@@ -189,6 +205,7 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
         queryset = queryset.filter(reference_number__icontains=reference)
 
     ordering = params.get("ordering")
+    ordering_value = str(ordering or "").strip()
     ordering_map = {
         "transaction_date": "transaction_date",
         "-transaction_date": "-transaction_date",
@@ -205,7 +222,18 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
         "created_at": "created_at",
         "-created_at": "-created_at",
     }
-    order_by = ordering_map.get(str(ordering or "").strip(), "-updated_at")
+    if ordering_value in {"posted", "-posted"}:
+        queryset = queryset.annotate(
+            _posted_sort=Case(
+                When(journal_entry__isnull=False, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+        posted_order = "_posted_sort" if ordering_value == "posted" else "-_posted_sort"
+        return queryset.order_by(posted_order, "-created_at")
+
+    order_by = ordering_map.get(ordering_value, "-updated_at")
     return queryset.order_by(order_by, "-created_at")
 
 

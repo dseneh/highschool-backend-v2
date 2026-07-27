@@ -1,6 +1,12 @@
 """
 Views for authentication and user management
 """
+import secrets
+from datetime import timedelta
+
+from django.contrib.auth.hashers import check_password
+from django.contrib.auth.hashers import make_password
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -10,10 +16,14 @@ from rest_framework_simplejwt.authentication import JWTStatelessUserAuthenticati
 from api.authentication import TenantAwareJWTAuthentication
 from rest_framework.pagination import PageNumberPagination
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q
 from django.db import connection
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from django_tenants.utils import schema_context
 
 from users.serializers import (
@@ -28,7 +38,16 @@ from users.serializers import (
 from users.models import User
 from users.access_policies import UserAccessPolicy
 from common.status import UserAccountType, Roles
-from core.models import Tenant
+from core.models import Tenant, TenantOwnerActivationCode
+from common.email_service import send_tenant_owner_activation_email
+from users.utils import build_activation_url
+
+
+ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _generate_activation_code(length: int = 8) -> str:
+    return "".join(secrets.choice(ACTIVATION_CODE_ALPHABET) for _ in range(length))
 
 
 def build_unique_username(base_username: str) -> str:
@@ -1085,6 +1104,173 @@ class PasswordResetRequestView(APIView):
                     {"detail": "An error occurred while processing your request."},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
+
+
+class TenantOwnerActivationVerifyCodeView(APIView):
+    """Verify a one-time owner activation code and return reset-password primitives."""
+
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, request):
+        user_identifier = (request.data.get("user_identifier") or "").strip()
+        code = (request.data.get("code") or "").strip().upper()
+        workspace = (
+            request.data.get("workspace")
+            or getattr(getattr(request, "tenant", None), "schema_name", "")
+        )
+        workspace = (workspace or "").strip()
+
+        if not workspace or not user_identifier or not code:
+            return Response(
+                {"detail": "workspace, user_identifier, and code are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with schema_context("public"):
+            tenant = Tenant.objects.filter(schema_name=workspace).first()
+            if not tenant:
+                return Response({"detail": "Invalid activation request."}, status=status.HTTP_400_BAD_REQUEST)
+
+            user = User.objects.filter(
+                Q(email__iexact=user_identifier) |
+                Q(id_number=user_identifier) |
+                Q(username=user_identifier)
+            ).first()
+            if not user or tenant.owner_id != user.id:
+                return Response({"detail": "Invalid activation request."}, status=status.HTTP_400_BAD_REQUEST)
+
+            activation = TenantOwnerActivationCode.objects.filter(
+                tenant=tenant,
+                user=user,
+                purpose=TenantOwnerActivationCode.PURPOSE_TENANT_OWNER_ACTIVATION,
+                used_at__isnull=True,
+            ).order_by("-created_at").first()
+
+            if not activation:
+                return Response({"detail": "Invalid or expired activation code."}, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+            if activation.expires_at <= now:
+                return Response({"detail": "This activation code has expired. Please request a new one."}, status=status.HTTP_400_BAD_REQUEST)
+
+            max_attempts = max(1, int(getattr(settings, "TENANT_OWNER_ACTIVATION_MAX_ATTEMPTS", 5)))
+            if activation.failed_attempts >= max_attempts:
+                return Response({"detail": "Too many failed attempts. Please request a new activation code."}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+            if not check_password(code, activation.code_hash):
+                activation.failed_attempts += 1
+                activation.save(update_fields=["failed_attempts", "updated_at"])
+                return Response({"detail": "Invalid or expired activation code."}, status=status.HTTP_400_BAD_REQUEST)
+
+            activation.used_at = now
+            activation.save(update_fields=["used_at", "updated_at"])
+
+            token_generator = PasswordResetTokenGenerator()
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = token_generator.make_token(user)
+
+            return Response(
+                {
+                    "detail": "Activation code verified.",
+                    "uid": uid,
+                    "token": token,
+                    "workspace": workspace,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+
+class TenantOwnerActivationResendCodeView(APIView):
+    """Issue and send a fresh owner activation code."""
+
+    permission_classes = []
+    authentication_classes = []
+
+    def post(self, request):
+        user_identifier = (request.data.get("user_identifier") or "").strip()
+        workspace = (
+            request.data.get("workspace")
+            or getattr(getattr(request, "tenant", None), "schema_name", "")
+        )
+        workspace = (workspace or "").strip()
+
+        if not workspace or not user_identifier:
+            return Response(
+                {"detail": "workspace and user_identifier are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with schema_context("public"):
+            tenant = Tenant.objects.filter(schema_name=workspace).first()
+            if not tenant:
+                return Response({"detail": "Invalid activation request."}, status=status.HTTP_400_BAD_REQUEST)
+
+            user = User.objects.filter(
+                Q(email__iexact=user_identifier) |
+                Q(id_number=user_identifier) |
+                Q(username=user_identifier)
+            ).first()
+            if not user or tenant.owner_id != user.id or not user.email:
+                return Response({"detail": "Invalid activation request."}, status=status.HTTP_400_BAD_REQUEST)
+
+            cooldown_seconds = max(
+                30,
+                int(getattr(settings, "TENANT_OWNER_ACTIVATION_RESEND_COOLDOWN_SECONDS", 60)),
+            )
+            rate_limit_key = f"tenant-activation-resend:{workspace}:{user.id}"
+            if not cache.add(rate_limit_key, "1", timeout=cooldown_seconds):
+                return Response(
+                    {
+                        "detail": f"Please wait {cooldown_seconds} seconds before requesting a new code.",
+                    },
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+
+            now = timezone.now()
+            TenantOwnerActivationCode.objects.filter(
+                tenant=tenant,
+                user=user,
+                purpose=TenantOwnerActivationCode.PURPOSE_TENANT_OWNER_ACTIVATION,
+                used_at__isnull=True,
+            ).update(used_at=now)
+
+            code = _generate_activation_code()
+            expires_at = now + timedelta(
+                hours=max(1, int(getattr(settings, "TENANT_OWNER_ACTIVATION_CODE_HOURS", 24)))
+            )
+            activation_code = TenantOwnerActivationCode.objects.create(
+                tenant=tenant,
+                user=user,
+                signup_request=None,
+                issued_by=None,
+                code_hash=make_password(code),
+                delivered_to=user.email,
+                expires_at=expires_at,
+            )
+
+            activate_url = build_activation_url(tenant.schema_name)
+            sent = send_tenant_owner_activation_email(
+                user=user,
+                tenant=tenant,
+                activation_code=code,
+                activate_url=activate_url,
+            )
+            if not sent:
+                activation_code.delete()
+                return Response(
+                    {"detail": "Activation email could not be sent."},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+            return Response(
+                {
+                    "detail": "A new activation code has been sent.",
+                    "workspace": workspace,
+                    "expires_at": expires_at,
+                },
+                status=status.HTTP_200_OK,
+            )
 
 
 class PasswordResetConfirmView(APIView):

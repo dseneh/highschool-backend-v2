@@ -25,7 +25,7 @@ from rest_framework import status
 
 from core.models import Tenant
 from common.permissions import IsAdminOrSuperAdmin
-from defaults.services import build_initial_plan, apply_onboarding_plan, get_completion_status, sync_plan_with_latest_template
+from defaults.services import build_initial_plan, apply_onboarding_plan, get_completion_status
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +81,6 @@ def get_onboarding(request: Request, schema_name: str) -> Response:
         if not tenant.onboarding_started_at:
             tenant.onboarding_started_at = datetime.now(tz=timezone.utc)
         tenant.save(update_fields=["onboarding_plan", "onboarding_started_at"])
-    else:
-        plan, changed = sync_plan_with_latest_template(tenant, plan)
-        if changed:
-            tenant.onboarding_plan = plan
-            tenant.save(update_fields=["onboarding_plan"])
 
     completion = get_completion_status(plan)
 
@@ -129,10 +124,6 @@ def save_onboarding_step(request: Request, schema_name: str) -> Response:
     # Initialise plan if empty
     if not plan:
         plan = build_initial_plan(tenant)
-    else:
-        plan, changed = sync_plan_with_latest_template(tenant, plan)
-        if changed:
-            tenant.onboarding_plan = plan
 
     # Ensure steps dict exists
     if "steps" not in plan:
@@ -206,11 +197,6 @@ def apply_onboarding(request: Request, schema_name: str) -> Response:
     plan = tenant.onboarding_plan
     if not plan:
         return Response({"detail": "No onboarding plan found. Start onboarding first."}, status=status.HTTP_400_BAD_REQUEST)
-
-    plan, changed = sync_plan_with_latest_template(tenant, plan)
-    if changed:
-        tenant.onboarding_plan = plan
-        tenant.save(update_fields=["onboarding_plan"])
 
     # Validate required steps are completed
     completion = get_completion_status(plan)

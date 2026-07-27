@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 STEP_ORDER = [
     "school_profile",
-    "branding",
     "academic_calendar",
     "grade_structure",
     "subjects",
@@ -41,7 +40,6 @@ STEP_ORDER = [
 
 REQUIRED_STEPS = [
     "school_profile",
-    "branding",
     "academic_calendar",
     "grade_structure",
     "subjects",
@@ -60,11 +58,6 @@ STEP_META = {
         "label": "School Profile",
         "description": "Basic school identity, contact details, and branding.",
         "icon": "Building02Icon",
-    },
-    "branding": {
-        "label": "Branding",
-        "description": "School logo, logo presentation, and theme configuration.",
-        "icon": "PaintBoardIcon",
     },
     "academic_calendar": {
         "label": "Academic Calendar",
@@ -188,25 +181,6 @@ def build_initial_plan(tenant) -> dict:
             "phone": tenant.phone or "",
             "email": tenant.email or "",
             "website": tenant.website or "",
-        },
-    )
-
-    # Step: branding — pre-filled from tenant branding/theme
-    steps["branding"] = _build_step_entry(
-        status="pending",
-        payload={
-            "logo": tenant.logo.url if getattr(tenant, "logo", None) else "",
-            "logo_shape": tenant.logo_shape or "square",
-            "theme_config": {
-                "border_radius": (tenant.theme_config or {}).get("border_radius", "medium"),
-                "color_theme": (tenant.theme_config or {}).get("color_theme", "ocean"),
-                "background_style": (tenant.theme_config or {}).get("background_style", "clean"),
-                "font_family": (tenant.theme_config or {}).get("font_family", "sans"),
-                "font_size": (tenant.theme_config or {}).get("font_size", "normal"),
-                "shadow_intensity": (tenant.theme_config or {}).get("shadow_intensity", "medium"),
-                "spacing_scale": (tenant.theme_config or {}).get("spacing_scale", "comfortable"),
-                "animation_speed": (tenant.theme_config or {}).get("animation_speed", "normal"),
-            },
         },
     )
 
@@ -398,56 +372,6 @@ def build_initial_plan(tenant) -> dict:
     })
 
 
-def sync_plan_with_latest_template(tenant, plan: dict) -> tuple[dict, bool]:
-    """Merge missing onboarding steps/meta from the latest template.
-
-    Keeps existing payloads/statuses for known steps while injecting any newly
-    introduced steps (for example when onboarding evolves after a tenant has
-    already started).
-    """
-    template = build_initial_plan(tenant)
-    changed = False
-
-    merged_steps: dict[str, dict] = {}
-    existing_steps = plan.get("steps", {}) if isinstance(plan, dict) else {}
-
-    for key in template["step_order"]:
-      template_entry = template["steps"][key]
-      if key in existing_steps:
-          existing_entry = existing_steps[key] or {}
-          merged_steps[key] = {
-              "status": existing_entry.get("status", template_entry["status"]),
-              "saved_at": existing_entry.get("saved_at", template_entry["saved_at"]),
-              "payload": _json_safe(existing_entry.get("payload", template_entry["payload"])),
-              "apply_result": existing_entry.get("apply_result", template_entry["apply_result"]),
-          }
-      else:
-          merged_steps[key] = template_entry
-          changed = True
-
-    merged_plan = {
-        **template,
-        **plan,
-        "steps": merged_steps,
-        "step_order": template["step_order"],
-        "step_meta": template["step_meta"],
-        "required_steps": template["required_steps"],
-        "optional_steps": template["optional_steps"],
-        "current_step": plan.get("current_step") if plan.get("current_step") in template["step_order"] else template["current_step"],
-    }
-
-    if merged_plan["step_order"] != plan.get("step_order"):
-        changed = True
-    if merged_plan["required_steps"] != plan.get("required_steps"):
-        changed = True
-    if merged_plan["optional_steps"] != plan.get("optional_steps"):
-        changed = True
-    if merged_plan["step_meta"] != plan.get("step_meta"):
-        changed = True
-
-    return _json_safe(merged_plan), changed
-
-
 # ---------------------------------------------------------------------------
 # Completion check
 # ---------------------------------------------------------------------------
@@ -500,7 +424,6 @@ def apply_onboarding_plan(tenant, user, plan: dict) -> dict:
         with transaction.atomic():
             # Step 1: Update school profile on the tenant itself
             results["school_profile"] = _apply_school_profile(tenant, steps.get("school_profile", {}).get("payload", {}))
-            results["branding"] = _apply_branding(tenant, steps.get("branding", {}).get("payload", {}))
 
             # All remaining steps execute inside the tenant schema
             with schema_context(tenant.schema_name):
@@ -587,28 +510,6 @@ def _apply_school_profile(tenant, payload: dict) -> dict:
         return _ok("school_profile", records_updated=1 if updated else 0)
     except Exception as exc:
         return _fail("school_profile", str(exc))
-
-
-def _apply_branding(tenant, payload: dict) -> dict:
-    try:
-        updated_fields: list[str] = []
-
-        logo_shape = payload.get("logo_shape")
-        if logo_shape:
-            tenant.logo_shape = logo_shape
-            updated_fields.append("logo_shape")
-
-        theme_config = payload.get("theme_config")
-        if isinstance(theme_config, dict):
-            tenant.theme_config = theme_config
-            updated_fields.append("theme_config")
-
-        if updated_fields:
-            tenant.save(update_fields=updated_fields + ["updated_at"])
-
-        return _ok("branding", records_updated=1 if updated_fields else 0)
-    except Exception as exc:
-        return _fail("branding", str(exc))
 
 
 def _apply_academic_calendar(tenant, user, payload: dict) -> dict:

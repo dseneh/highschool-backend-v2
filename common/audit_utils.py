@@ -119,6 +119,39 @@ def log_tenant_control_change(request, actor, tenant, before, after):
         logger.error("Failed to create tenant control audit log: %s", exc, exc_info=True)
 
 
+def log_signup_request_workspace_sync(request, actor, signup_request, tenant, changes):
+    """Create an audit entry when signup request data is auto-synced after workspace creation."""
+    try:
+        from core.models import SignupRequest
+
+        if not changes:
+            return
+
+        content_type = ContentType.objects.get_for_model(SignupRequest)
+        remote_addr = get_client_ip(request) if request else ""
+        additional = {
+            "event_type": "signup_request_workspace_synced",
+            "signup_request_id": signup_request.pk,
+            "tenant_schema": tenant.schema_name,
+            "tenant_name": tenant.name,
+            "changes": changes,
+        }
+        additional.update(extract_device_metadata(request))
+
+        LogEntry.objects.create(
+            content_type=content_type,
+            object_pk=str(signup_request.pk),
+            object_repr=str(signup_request),
+            action=LogEntry.Action.UPDATE,
+            changes=str(changes),
+            actor=actor if actor and hasattr(actor, "pk") else None,
+            remote_addr=remote_addr,
+            additional_data=additional,
+        )
+    except Exception as exc:
+        logger.error("Failed to create signup request workspace sync audit log: %s", exc, exc_info=True)
+
+
 def get_client_ip(request):
     """Extract client IP address from the request.
 

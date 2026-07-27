@@ -168,7 +168,7 @@ Use a [Google App Password](https://myaccount.google.com/apppasswords), not your
 ```bash
 # Recommended: Resend REST API
 RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
-DEFAULT_FROM_EMAIL=noreply@dewx.tech
+DEFAULT_FROM_EMAIL=noreply@mail.ezyschool.app
 EMAIL_FROM_NAME=EzySchool
 
 # Optional SMTP fallback only if you are not using RESEND_API_KEY
@@ -181,6 +181,22 @@ EMAIL_HOST_PASSWORD=<your-smtp-password>
 ```
 
 Important: if RESEND_API_KEY is not set in Railway, the backend falls back to Django's configured email backend. If that backend is SMTP, you must also provide EMAIL_HOST_USER and EMAIL_HOST_PASSWORD or password-reset emails will fail with SMTP authentication errors.
+
+### Frontend Link Generation (activation/reset emails)
+
+```bash
+# Base frontend URL used for tenant/auth links
+FRONTEND_DOMAIN=https://app.ezyschool.app
+FRONTEND_USE_SUBDOMAIN=True
+
+# Optional: force direct tenant subdomain links in emails
+# Example output: https://<workspace>.ezyschool.app/activate-account
+FRONTEND_SUBDOMAIN_BASE=ezyschool.app
+
+# Keep False for production subdomain routing
+FRONTEND_DEV_MODE=False
+FRONTEND_PASSWORD_RESET_PATH=/reset-password
+```
 
 ### Gunicorn (Web Server)
 

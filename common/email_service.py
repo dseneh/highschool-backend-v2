@@ -47,7 +47,7 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
         "current_year": datetime.now().year,
         "product_name": "EzySchool System",
         "dev_name": "DewX IT Solutions",
-        "dev_website": "https://www.dewx.tech",
+        "dev_website": "https://dewx.tech",
         "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app"),
         "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
     }
@@ -104,8 +104,8 @@ class ResendEmailService:
 
     def __init__(self):
         self.resend_api_key: str = getattr(settings, "RESEND_API_KEY", "").strip()
-        self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@ezyschool.app")
-        self.from_name: str = getattr(settings, "EMAIL_FROM_NAME", "EzySchool")
+        self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@mail.ezyschool.app")
+        self.from_name: str = getattr(settings, "EMAIL_FROM_NAME", "EzySchool Notify")
         self.email_backend: str = getattr(settings, "EMAIL_BACKEND", "")
         self.email_host: str = getattr(settings, "EMAIL_HOST", "")
         self.email_host_user: str = getattr(settings, "EMAIL_HOST_USER", "").strip()
@@ -391,7 +391,7 @@ def send_signup_request_confirmation_email(signup_request) -> bool:
 
 def send_contact_inquiry_emails(*, name: str, email: str, school_name: str, topic: str, message: str) -> bool:
     """Notify admin and send receipt for a marketing contact form submission."""
-    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")
+    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@ezyschool.app")
     support_email = getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app")
     topic_labels = {
         "general": "General question",
@@ -435,7 +435,7 @@ def send_contact_inquiry_emails(*, name: str, email: str, school_name: str, topi
 
 def send_signup_request_admin_notification_email(signup_request) -> bool:
     """Notify the platform admin team about a new marketing signup request."""
-    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@dewx.tech")
+    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@ezyschool.app")
     if not admin_email:
         logger.warning("send_signup_request_admin_notification_email: ADMIN_NOTIFICATION_EMAIL is not set")
         return False
@@ -519,6 +519,37 @@ def send_account_created_email(
     return service.send(
         to=[user.email],
         subject=f"Welcome to {context['school_name']} - Your Account Is Ready",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
+def send_tenant_owner_activation_email(*, user, tenant, activation_code: str, activate_url: str) -> bool:
+    """Send a workspace-ready activation email to the tenant owner."""
+    if not user.email or user.email.endswith("@local.user"):
+        logger.info(
+            "send_tenant_owner_activation_email: skipping user %s due to missing/placeholder email",
+            getattr(user, "username", user.pk),
+        )
+        return False
+
+    context = _build_branding_context(user, tenant)
+    context["activation_code"] = activation_code
+    context["activate_url"] = activate_url
+    context["workspace_name"] = tenant.name
+    context["workspace_slug"] = tenant.schema_name
+
+    try:
+        html_body = render_to_string("emails/tenant_owner_activation.html", context)
+        text_body = render_to_string("emails/tenant_owner_activation.txt", context)
+    except Exception as exc:
+        logger.error("send_tenant_owner_activation_email: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=f"Your {tenant.name} workspace is ready to activate",
         html_body=html_body,
         text_body=text_body,
     )

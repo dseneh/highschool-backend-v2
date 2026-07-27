@@ -31,6 +31,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         '/api/v1/auth/token/refresh/',
         '/api/v1/auth/verify/',
         '/api/v1/auth/users/current/',
+        '/api/v1/auth/account-activation/verify-code/',
+        '/api/v1/auth/account-activation/resend-code/',
         '/api/v1/auth/password/forgot/',
         '/api/v1/auth/password/reset/',
         '/api/v1/tenants/current/',
