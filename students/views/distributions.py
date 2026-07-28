@@ -434,25 +434,31 @@ def _trend_pct(current: float, previous: float) -> dict:
 def _build_payment_summary_trends(academic_year, decimal_zero) -> dict | None:
     """Month-over-month trends for dashboard finance stats."""
     from django.db.models import Sum
-    from accounting.models.receivables import (
-        AccountingStudentBill,
-        AccountingStudentPaymentAllocation,
-    )
+    from accounting.models import AccountingCashTransaction
+    from accounting.models.receivables import AccountingStudentBill
+    from accounting.services.post_all import build_student_payment_list_filter
 
     today = timezone.now().date()
     this_month_start = today.replace(day=1)
     prev_month_end = this_month_start - timedelta(days=1)
     prev_month_start = prev_month_end.replace(day=1)
 
-    def allocation_total(start, end):
-        return float(
-            AccountingStudentPaymentAllocation.objects.filter(
-                student_bill__academic_year=academic_year,
-                allocation_date__gte=start,
-                allocation_date__lte=end,
-            ).aggregate(total=Coalesce(Sum("allocated_amount"), decimal_zero))["total"]
-            or 0
+    def payment_total(start, end):
+        transactions = (
+            AccountingCashTransaction.objects.filter(
+                build_student_payment_list_filter(),
+                status=AccountingCashTransaction.TransactionStatus.APPROVED,
+                transaction_date__gte=start,
+                transaction_date__lte=end,
+            )
+            .distinct()
+            .only("base_amount", "amount")
         )
+        total = 0.0
+        for tx in transactions:
+            value = tx.base_amount if tx.base_amount is not None else tx.amount
+            total += float(value or 0)
+        return total
 
     def billed_total(start, end):
         return float(
@@ -466,8 +472,8 @@ def _build_payment_summary_trends(academic_year, decimal_zero) -> dict | None:
             or 0
         )
 
-    this_paid = allocation_total(this_month_start, today)
-    prev_paid = allocation_total(prev_month_start, prev_month_end)
+    this_paid = payment_total(this_month_start, today)
+    prev_paid = payment_total(prev_month_start, prev_month_end)
     this_billed = billed_total(this_month_start, today)
     prev_billed = billed_total(prev_month_start, prev_month_end)
 
@@ -534,7 +540,8 @@ def get_payment_summary(request):
             return Response(cached, status=status.HTTP_200_OK)
 
         from django.db.models import Sum, Count, Q
-        from accounting.models import AccountingConcession, AccountingStudentBill
+        from accounting.models import AccountingCashTransaction, AccountingConcession, AccountingStudentBill
+        from accounting.services.post_all import build_student_payment_list_filter
 
         empty = {
             'total_gross': 0,
@@ -553,6 +560,28 @@ def get_payment_summary(request):
         }
         if not current_academic_year:
             return Response(empty, status=status.HTTP_200_OK)
+
+        def approved_student_payment_total_for_year() -> float:
+            transactions = (
+                AccountingCashTransaction.objects.filter(
+                    build_student_payment_list_filter(),
+                    status=AccountingCashTransaction.TransactionStatus.APPROVED,
+                )
+                .filter(
+                    Q(
+                        transaction_date__gte=current_academic_year.start_date,
+                        transaction_date__lte=current_academic_year.end_date,
+                    )
+                    | Q(bill_allocations__student_bill__academic_year=current_academic_year)
+                )
+                .distinct()
+                .only("base_amount", "amount")
+            )
+            total = 0.0
+            for tx in transactions:
+                value = tx.base_amount if tx.base_amount is not None else tx.amount
+                total += float(value or 0)
+            return total
 
         enrollments_count = Enrollment.objects.filter(
             academic_year=current_academic_year
@@ -599,7 +628,7 @@ def get_payment_summary(request):
         )
 
         total_gross = float(bill_totals.get('total_gross') or 0)
-        total_paid = float(bill_totals.get('total_paid') or 0)
+        total_paid = approved_student_payment_total_for_year()
         cached_concession = float(bill_totals.get('total_concession') or 0)
         cached_net = float(bill_totals.get('total_expected') or 0)
         has_live_concessions = int(live_concession_totals.get('count') or 0) > 0
