@@ -9,7 +9,8 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Case, Count, F, IntegerField, Q, Sum, Value, When
+from django.db.models import Case, Count, DecimalField, F, IntegerField, Q, Sum, Value, When
+from django.db.models.functions import Coalesce
 from django.db.models.functions import Abs
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
@@ -337,6 +338,13 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
     signed_base_amount = approved_signed_base_amount_expression()
     approved_filter = Q(status=approved_status)
 
+    amount_expr = Coalesce(
+        F("base_amount"),
+        F("amount"),
+        Value(Decimal("0")),
+        output_field=DecimalField(max_digits=20, decimal_places=2),
+    )
+
     agg = queryset.aggregate(
         pending_count=Count("id", filter=Q(status=AccountingCashTransaction.TransactionStatus.PENDING)),
         approved_count=Count("id", filter=Q(status=approved_status)),
@@ -352,11 +360,11 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
             filter=approved_filter,
         ),
         approved_income_total=Sum(
-            Abs(F("base_amount")),
+            Abs(amount_expr),
             filter=approved_filter & _inflow_filter(),
         ),
         approved_expense_total=Sum(
-            Abs(F("base_amount")),
+            Abs(amount_expr),
             filter=approved_filter & _outflow_filter(),
         ),
     )

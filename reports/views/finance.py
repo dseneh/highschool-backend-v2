@@ -153,6 +153,7 @@ class FinanceReportView(APIView):
         academic year even when transaction_date falls outside year bounds.
         """
         from accounting.models import AccountingCashTransaction
+        from accounting.services.post_all import build_student_payment_list_filter
 
         if not bills_list:
             return {}
@@ -176,6 +177,7 @@ class FinanceReportView(APIView):
 
         transactions = (
             AccountingCashTransaction.objects.filter(
+                build_student_payment_list_filter(),
                 status=AccountingCashTransaction.TransactionStatus.APPROVED,
             )
             .filter(
@@ -224,6 +226,35 @@ class FinanceReportView(APIView):
             paid_map[student_key] = paid_map.get(student_key, 0.0) + float(paid_value or 0)
 
         return paid_map
+
+    @staticmethod
+    def _compute_student_payment_total(academic_year) -> float:
+        """Approved student-payment total in base currency for the academic year."""
+        from accounting.models import AccountingCashTransaction
+        from accounting.services.post_all import build_student_payment_list_filter
+
+        transactions = (
+            AccountingCashTransaction.objects.filter(
+                build_student_payment_list_filter(),
+                status=AccountingCashTransaction.TransactionStatus.APPROVED,
+            )
+            .filter(
+                Q(
+                    transaction_date__gte=academic_year.start_date,
+                    transaction_date__lte=academic_year.end_date,
+                )
+                | Q(bill_allocations__student_bill__academic_year=academic_year)
+            )
+            .distinct()
+            .only("base_amount", "amount")
+        )
+
+        total = 0.0
+        for tx in transactions:
+            paid_value = tx.base_amount if tx.base_amount is not None else tx.amount
+            total += float(paid_value or 0)
+
+        return total
 
     def get(self, request):
         from academics.models import AcademicYear
@@ -511,6 +542,10 @@ class FinanceReportView(APIView):
             "overpaid_count": status_counts.get("Overpaid", 0),
             "status_counts": status_counts,
         }
+        if not grade_level_ids and not section_ids and not student_query:
+            # Keep top-level paid total aligned with the student-payment
+            # transaction source used by the cash-transactions module.
+            totals["total_paid"] = self._compute_student_payment_total(academic_year)
         totals["balance"] = round(totals["net_bill"] - totals["total_paid"], 2)
         totals["outstanding_balance"] = max(0.0, totals["balance"])
         total_net = totals["net_bill"]

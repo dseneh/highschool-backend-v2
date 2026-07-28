@@ -240,7 +240,9 @@ class StudentPaymentDetailReportView(APIView):
                     "net": net_total,
                     "balance": balance_total,
                     "amount": float(txn.amount or 0),
-                    "base_amount": float(txn.base_amount or 0),
+                    "base_amount": float(
+                        txn.base_amount if txn.base_amount is not None else (txn.amount or 0)
+                    ),
                     "currency": txn.currency.symbol if txn.currency else "$",
                     "currency_code": txn.currency.code if txn.currency else "",
                     "payment_method": txn.payment_method.name if txn.payment_method else "",
