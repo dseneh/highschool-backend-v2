@@ -6,7 +6,7 @@ import io
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch, Q, Sum
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.response import Response
@@ -44,6 +44,7 @@ class StudentPaymentDetailReportView(APIView):
     def get(self, request):
         from academics.models import AcademicYear
         from accounting.models import (
+            AccountingConcession,
             AccountingCashTransaction,
             AccountingStudentPaymentAllocation,
         )
@@ -153,9 +154,39 @@ class StudentPaymentDetailReportView(APIView):
             academic_year=academic_year,
             student_id__in=student_ids,
         )
-        bill_map = {bill.student_id: bill for bill in student_bills}
-        student_balance_map = FinanceReportView._build_student_balance_map(
-            student_ids,
+        bill_totals_map: dict[str, dict[str, float]] = {}
+        for bill in student_bills:
+            gross_amount = float(bill.gross_amount or 0)
+            net_amount = float(bill.net_amount or 0)
+            student_key = str(bill.student_id)
+            info = bill_totals_map.setdefault(
+                student_key,
+                {
+                    "gross": 0.0,
+                    "concession": 0.0,
+                    "net": 0.0,
+                    "concession_fallback": 0.0,
+                },
+            )
+            info["gross"] += gross_amount
+            info["concession"] += round(gross_amount - net_amount, 2)
+            info["net"] += net_amount
+            info["concession_fallback"] += float(bill.concession_amount or 0)
+
+        live_concession_qs = AccountingConcession.objects.filter(
+            academic_year=academic_year,
+            is_active=True,
+        )
+        if student_ids:
+            live_concession_qs = live_concession_qs.filter(student_id__in=student_ids)
+        live_concession_map = {
+            str(row["student_id"]): float(row["total"] or 0)
+            for row in live_concession_qs.values("student_id").annotate(total=Sum("computed_amount"))
+        }
+        use_live_concessions = bool(live_concession_map)
+
+        student_paid_map = FinanceReportView._build_student_paid_map(
+            list(student_bills),
             academic_year,
         )
 
@@ -163,8 +194,21 @@ class StudentPaymentDetailReportView(APIView):
         for txn in transactions:
             student = self._resolve_student_for_transaction(txn, enrollment_map)
             enrollment = enrollment_map.get(student.id) if student else None
-            bill = bill_map.get(student.id) if student else None
-            balance_info = student_balance_map.get(str(student.id), {}) if student else {}
+            bill_totals = bill_totals_map.get(str(student.id), {}) if student else {}
+
+            gross_total = float(bill_totals.get("gross", 0.0))
+            if use_live_concessions:
+                concession_total = min(
+                    gross_total,
+                    max(0.0, float(live_concession_map.get(str(student.id), 0.0))) if student else 0.0,
+                )
+                net_total = round(max(0.0, gross_total - concession_total), 2)
+            else:
+                concession_total = float(bill_totals.get("concession_fallback", 0.0))
+                net_total = float(bill_totals.get("net", 0.0))
+
+            paid_total = float(student_paid_map.get(str(student.id), 0.0)) if student else 0.0
+            balance_total = round(net_total - paid_total, 2)
 
             results.append(
                 {
@@ -191,13 +235,10 @@ class StudentPaymentDetailReportView(APIView):
                     "section": (
                         enrollment.section.name if enrollment and enrollment.section else ""
                     ),
-                    "gross": float(bill.gross_amount) if bill else 0,
-                    "concession": float(bill.concession_amount) if bill else 0,
-                    "net": float(bill.net_amount) if bill else 0,
-                    "balance": balance_info.get(
-                        "balance_total",
-                        float(bill.outstanding_amount) if bill else 0,
-                    ),
+                    "gross": gross_total,
+                    "concession": concession_total,
+                    "net": net_total,
+                    "balance": balance_total,
                     "amount": float(txn.amount or 0),
                     "base_amount": float(txn.base_amount or 0),
                     "currency": txn.currency.symbol if txn.currency else "$",
@@ -235,9 +276,7 @@ class StudentPaymentDetailReportView(APIView):
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
-        from ..utils.export_helpers import apply_xlsx_cell_style, resolve_export_currency
-
-        currency = resolve_export_currency()
+        number_fmt = "#,##0.00"
 
         today = date.today()
         wb = Workbook()
@@ -317,7 +356,8 @@ class StudentPaymentDetailReportView(APIView):
                 cell.border = thin_border
                 cell.font = Font(size=9)
                 if col_idx in currency_columns:
-                    apply_xlsx_cell_style(cell, "Amount", value, currency)
+                    cell.number_format = number_fmt
+                    cell.alignment = Alignment(horizontal="right")
 
         total_row = data_start + len(results)
         label_cell = ws.cell(
@@ -337,7 +377,8 @@ class StudentPaymentDetailReportView(APIView):
             cell.border = thin_border
 
         amount_cell = ws.cell(row=total_row, column=currency_col, value=totals["total_amount"])
-        apply_xlsx_cell_style(amount_cell, "Amount", totals["total_amount"], currency)
+        amount_cell.number_format = number_fmt
+        amount_cell.alignment = Alignment(horizontal="right")
 
         col_widths = [16, 12, 12, 28, 14, 14, 12, 12, 12, 12, 12, 16, 18, 16, 12, 28]
         for col_idx, width in enumerate(col_widths, 1):

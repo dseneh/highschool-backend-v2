@@ -8,7 +8,7 @@ import io
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch, Q, Sum
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.response import Response
@@ -57,12 +57,18 @@ class FinanceReportView(APIView):
         return labels
 
     @staticmethod
-    def _derive_payment_status_label(balance: float, bill, amt_due_todate: float, total_paid: float) -> str:
+    def _derive_payment_status_label(
+        balance: float,
+        *,
+        has_overdue_bill: bool,
+        amt_due_todate: float,
+        total_paid: float,
+    ) -> str:
         if balance < 0:
             return "Overpaid"
         if balance == 0:
             return "Fully Paid"
-        if bill.status == bill.BillStatus.OVERDUE:
+        if has_overdue_bill:
             return "Delinquent"
         if amt_due_todate > 0 and total_paid < amt_due_todate:
             return "Delinquent"
@@ -138,9 +144,91 @@ class FinanceReportView(APIView):
         # Preserve order while removing duplicates
         return list(dict.fromkeys(values))
 
+    @staticmethod
+    def _build_student_paid_map(bills_list, academic_year) -> dict[str, float]:
+        """Approved paid amount per student for the selected academic year.
+
+        Includes transactions matched directly by student, source_reference fallback,
+        and bill allocations. Allocation-linked rows are counted for the selected
+        academic year even when transaction_date falls outside year bounds.
+        """
+        from accounting.models import AccountingCashTransaction
+
+        if not bills_list:
+            return {}
+
+        student_ids = {bill.student_id for bill in bills_list if bill.student_id}
+        if not student_ids:
+            return {}
+
+        # Resolve source_reference fallbacks to student IDs.
+        reference_to_student: dict[str, str] = {}
+        for bill in bills_list:
+            student = bill.student
+            if not student:
+                continue
+            student_key = str(student.id)
+            reference_to_student[str(student.id)] = student_key
+            if getattr(student, "id_number", None):
+                reference_to_student[str(student.id_number)] = student_key
+            if getattr(student, "prev_id_number", None):
+                reference_to_student[str(student.prev_id_number)] = student_key
+
+        transactions = (
+            AccountingCashTransaction.objects.filter(
+                status=AccountingCashTransaction.TransactionStatus.APPROVED,
+            )
+            .filter(
+                Q(
+                    transaction_date__gte=academic_year.start_date,
+                    transaction_date__lte=academic_year.end_date,
+                )
+                | Q(bill_allocations__student_bill__academic_year=academic_year)
+            )
+            .filter(
+                Q(student_id__in=student_ids)
+                | Q(source_reference__in=list(reference_to_student.keys()))
+                | Q(bill_allocations__student_bill__student_id__in=student_ids)
+            )
+            .select_related("student")
+            .prefetch_related("bill_allocations__student_bill")
+            .distinct()
+        )
+
+        paid_map: dict[str, float] = {str(student_id): 0.0 for student_id in student_ids}
+        for tx in transactions:
+            student_key = None
+
+            if tx.student_id and tx.student_id in student_ids:
+                student_key = str(tx.student_id)
+            elif tx.source_reference:
+                student_key = reference_to_student.get(str(tx.source_reference))
+
+            if not student_key:
+                for allocation in tx.bill_allocations.all():
+                    bill = allocation.student_bill
+                    if (
+                        bill
+                        and bill.academic_year_id == academic_year.id
+                        and bill.student_id in student_ids
+                    ):
+                        student_key = str(bill.student_id)
+                        break
+
+            if not student_key:
+                continue
+
+            # Always aggregate in base currency so mixed-currency payments
+            # are comparable with billing totals.
+            paid_value = tx.base_amount if tx.base_amount is not None else tx.amount
+            paid_map[student_key] = paid_map.get(student_key, 0.0) + float(paid_value or 0)
+
+        return paid_map
+
     def get(self, request):
         from academics.models import AcademicYear
         from accounting.models import (
+            AccountingConcession,
             AccountingInstallmentLine,
             AccountingInstallmentPlan,
             AccountingStudentBill,
@@ -235,13 +323,32 @@ class FinanceReportView(APIView):
             )
 
         bills_list = list(bills)
+        scoped_student_ids = {bill.student_id for bill in bills_list if bill.student_id}
+
+        live_concession_qs = AccountingConcession.objects.filter(
+            academic_year=academic_year,
+            is_active=True,
+        )
+        if scoped_student_ids:
+            live_concession_qs = live_concession_qs.filter(student_id__in=scoped_student_ids)
+
+        live_concession_map = {
+            str(row["student_id"]): float(row["total"] or 0)
+            for row in live_concession_qs.values("student_id").annotate(total=Sum("computed_amount"))
+        }
+        use_live_concessions = bool(live_concession_map)
+
         student_balance_map = self._build_student_balance_map(
-            {bill.student_id for bill in bills_list},
+            scoped_student_ids,
             academic_year,
         )
+        student_paid_map = self._build_student_paid_map(bills_list, academic_year)
 
-        results = []
+        student_rows = {}
         for bill in bills_list:
+            gross_amount = float(bill.gross_amount or 0)
+            net_amount = float(bill.net_amount or 0)
+            derived_concession = round(gross_amount - net_amount, 2)
             tuition = sum(
                 float(line.line_amount)
                 for line in bill.lines.all()
@@ -253,39 +360,20 @@ class FinanceReportView(APIView):
                 if line.fee_item.category != "tuition"
             )
 
-            net_bill = float(bill.net_amount)
-            balance_info = student_balance_map.get(str(bill.student_id), {})
-            paid = balance_info.get("paid_total", float(bill.paid_amount))
-            balance = balance_info.get(
-                "balance_total",
-                round(net_bill - paid, 2),
-            )
-            credit_amount = round(abs(min(0.0, balance)), 2)
+            student_key = str(bill.student_id)
+            if student_key not in student_rows:
+                enrolled_as = ""
+                enrolled_as_display = ""
+                if bill.enrollment:
+                    enrolled_as = bill.enrollment.enrolled_as or ""
+                    enrolled_as_display = (
+                        bill.enrollment.get_enrolled_as_display()
+                        if hasattr(bill.enrollment, "get_enrolled_as_display")
+                        else enrolled_as.capitalize()
+                    )
 
-            amt_due_todate = round(net_bill * cumulative_pct, 2) if cumulative_pct > 0 else 0
-            pct_paid_due = round((paid / amt_due_todate * 100), 1) if amt_due_todate > 0 else 0
-            pct_paid_net = round((paid / net_bill * 100), 1) if net_bill > 0 else 0
-
-            status_label = self._derive_payment_status_label(
-                balance,
-                bill,
-                amt_due_todate,
-                paid,
-            )
-
-            enrolled_as = ""
-            enrolled_as_display = ""
-            if bill.enrollment:
-                enrolled_as = bill.enrollment.enrolled_as or ""
-                enrolled_as_display = (
-                    bill.enrollment.get_enrolled_as_display()
-                    if hasattr(bill.enrollment, "get_enrolled_as_display")
-                    else enrolled_as.capitalize()
-                )
-
-            results.append(
-                {
-                    "id": str(bill.id),
+                student_rows[student_key] = {
+                    "id": student_key,
                     "student_id": bill.student.id_number,
                     "student_name": bill.student.get_full_name(),
                     "grade_level_id": str(bill.grade_level_id) if bill.grade_level_id else "",
@@ -302,12 +390,75 @@ class FinanceReportView(APIView):
                     ),
                     "enrolled_as": enrolled_as,
                     "enrolled_as_display": enrolled_as_display,
-                    "tuition": tuition,
-                    "adm_fees": adm_fees,
-                    "total_bill": float(bill.gross_amount),
-                    "concession": float(bill.concession_amount),
-                    "net_bill": net_bill,
+                    "tuition": 0.0,
+                    "adm_fees": 0.0,
+                    "total_bill": 0.0,
+                    "concession": 0.0,
+                    "net_bill": 0.0,
                     "current_installment": current_installment_name,
+                    "currency": bill.currency.symbol if bill.currency else "$",
+                    "_paid_fallback": 0.0,
+                    "_concession_fallback": 0.0,
+                    "_has_overdue_bill": False,
+                }
+
+            row = student_rows[student_key]
+            row["tuition"] += tuition
+            row["adm_fees"] += adm_fees
+            row["total_bill"] += gross_amount
+            row["net_bill"] += net_amount
+            row["_paid_fallback"] += float(bill.paid_amount or 0)
+            row["_concession_fallback"] += float(bill.concession_amount or 0)
+            row["_has_overdue_bill"] = row["_has_overdue_bill"] or (
+                bill.status == bill.BillStatus.OVERDUE
+            )
+
+        results = []
+        for student_key, row in student_rows.items():
+            total_bill = float(row["total_bill"])
+            if use_live_concessions:
+                concession = min(total_bill, max(0.0, float(live_concession_map.get(student_key, 0.0))))
+                net_bill = round(max(0.0, total_bill - concession), 2)
+            else:
+                concession = float(row.get("_concession_fallback", 0.0))
+                net_bill = float(row["net_bill"])
+
+            balance_info = student_balance_map.get(student_key, {})
+            paid = student_paid_map.get(
+                student_key,
+                balance_info.get("paid_total", float(row["_paid_fallback"])),
+            )
+            balance = round(net_bill - paid, 2)
+            credit_amount = round(abs(min(0.0, balance)), 2)
+
+            amt_due_todate = round(net_bill * cumulative_pct, 2) if cumulative_pct > 0 else 0
+            pct_paid_due = round((paid / amt_due_todate * 100), 1) if amt_due_todate > 0 else 0
+            pct_paid_net = round((paid / net_bill * 100), 1) if net_bill > 0 else 0
+
+            status_label = self._derive_payment_status_label(
+                balance,
+                has_overdue_bill=bool(row.get("_has_overdue_bill")),
+                amt_due_todate=amt_due_todate,
+                total_paid=paid,
+            )
+
+            results.append(
+                {
+                    "id": row["id"],
+                    "student_id": row["student_id"],
+                    "student_name": row["student_name"],
+                    "grade_level_id": row["grade_level_id"],
+                    "grade_level": row["grade_level"],
+                    "section_id": row["section_id"],
+                    "section": row["section"],
+                    "enrolled_as": row["enrolled_as"],
+                    "enrolled_as_display": row["enrolled_as_display"],
+                    "tuition": row["tuition"],
+                    "adm_fees": row["adm_fees"],
+                    "total_bill": total_bill,
+                    "concession": concession,
+                    "net_bill": net_bill,
+                    "current_installment": row["current_installment"],
                     "amt_due_todate": amt_due_todate,
                     "total_paid": paid,
                     "balance": balance,
@@ -315,7 +466,7 @@ class FinanceReportView(APIView):
                     "pct_paid_due": pct_paid_due,
                     "pct_paid_net": pct_paid_net,
                     "status": status_label,
-                    "currency": bill.currency.symbol if bill.currency else "$",
+                    "currency": row["currency"],
                 }
             )
 
@@ -354,12 +505,14 @@ class FinanceReportView(APIView):
             "net_bill": sum(r["net_bill"] for r in results),
             "amt_due_todate": sum(r["amt_due_todate"] for r in results),
             "total_paid": sum(r["total_paid"] for r in results),
-            "balance": sum(r["balance"] for r in results),
-            "outstanding_balance": sum(max(0.0, r["balance"]) for r in results),
+            "balance": 0.0,
+            "outstanding_balance": 0.0,
             "credit_total": sum(r["credit_amount"] for r in results),
             "overpaid_count": status_counts.get("Overpaid", 0),
             "status_counts": status_counts,
         }
+        totals["balance"] = round(totals["net_bill"] - totals["total_paid"], 2)
+        totals["outstanding_balance"] = max(0.0, totals["balance"])
         total_net = totals["net_bill"]
         total_paid_sum = totals["total_paid"]
         totals["pct_paid_net"] = round((total_paid_sum / total_net * 100), 1) if total_net > 0 else 0
@@ -388,10 +541,7 @@ class FinanceReportView(APIView):
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
-        from ..utils.export_helpers import excel_currency_number_format, resolve_export_currency
-
-        currency = resolve_export_currency()
-        money_fmt = excel_currency_number_format(currency)
+        money_fmt = "#,##0.00"
 
         today = date.today()
 
