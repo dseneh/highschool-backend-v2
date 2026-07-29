@@ -229,11 +229,16 @@ class StudentDisciplinaryActionSerializer(serializers.ModelSerializer):
 
 
 class ActiveStudentDisciplinaryActionSerializer(serializers.ModelSerializer):
+    action_type_detail = DisciplinaryActionTypeSerializer(source="action_type", read_only=True)
+    action_outcome = serializers.CharField(source="action_type.action_outcome", read_only=True)
+
     class Meta:
         model = StudentDisciplinaryAction
         fields = [
             "id",
             "action_type",
+            "action_type_detail",
+            "action_outcome",
             "title",
             "action_taken",
             "start_date",
