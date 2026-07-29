@@ -7,11 +7,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..access_policies import StudentAccessPolicy
-from common.status import EnrollmentStatus, StudentStatus
+from ..services.discipline_attendance import (
+    ALLOWED_RESOLUTIONS,
+    apply_attendance_effect_for_discipline,
+    count_unresolved_attendance_impacts_after,
+    resolve_attendance_impacts_after,
+)
 from ..models import (
     Student,
     StudentDisciplinaryAction,
-    Enrollment,
     DisciplinaryActionType,
 )
 from ..serializers import (
@@ -80,63 +84,50 @@ class DisciplinaryActionTypeDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-ALLOWED_STUDENT_STATUS_UPDATES = {
-    StudentStatus.ACTIVE,
-    StudentStatus.SUSPENDED,
-    StudentStatus.WITHDRAWN,
-}
-
-ALLOWED_ENROLLMENT_STATUS_UPDATES = {
-    EnrollmentStatus.ENROLLED,
-    EnrollmentStatus.PENDING,
-    EnrollmentStatus.COMPLETED,
-    EnrollmentStatus.CANCELED,
-    EnrollmentStatus.WITHDRAWN,
-}
-
-
 def _extract_status_updates(payload):
     data = dict(payload)
     student_status_update = (data.pop("student_status_update", "") or "").strip().lower()
     enrollment_status_update = (data.pop("enrollment_status_update", "") or "").strip().lower()
 
-    if student_status_update and student_status_update not in ALLOWED_STUDENT_STATUS_UPDATES:
-        return None, None, None, Response(
-            {"detail": "Invalid student_status_update value."},
+    if student_status_update:
+        return None, None, Response(
+            {
+                "detail": (
+                    "student_status_update is no longer supported in discipline actions. "
+                    "Use dedicated student lifecycle endpoints for student status changes."
+                )
+            },
             status=status.HTTP_400_BAD_REQUEST,
         )
-
-    if enrollment_status_update and enrollment_status_update not in ALLOWED_ENROLLMENT_STATUS_UPDATES:
-        return None, None, None, Response(
-            {"detail": "Invalid enrollment_status_update value."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    return data, student_status_update, enrollment_status_update, None
-
-
-def _apply_status_updates(student, student_status_update, enrollment_status_update, user):
-    updates = {}
-
-    if student_status_update and student.status != student_status_update:
-        student.status = student_status_update
-        student.updated_by = user
-        student.save(update_fields=["status", "updated_by", "updated_at"])
-        updates["student_status"] = student_status_update
 
     if enrollment_status_update:
-        current_enrollment = (
-            Enrollment.objects.filter(student=student, academic_year__current=True)
-            .order_by("-created_at")
-            .first()
+        return None, None, Response(
+            {
+                "detail": (
+                    "enrollment_status_update is no longer supported in discipline actions. "
+                    "Use enrollment lifecycle endpoints for enrollment status changes."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
-        if current_enrollment and current_enrollment.status != enrollment_status_update:
-            current_enrollment.status = enrollment_status_update
-            current_enrollment.updated_by = user
-            current_enrollment.save(update_fields=["status", "updated_by", "updated_at"])
-            updates["enrollment_status"] = enrollment_status_update
 
-    return updates
+    return data, (student_status_update or None), None
+
+
+def _extract_attendance_resolution(payload):
+    data = dict(payload)
+    attendance_resolution = (data.pop("attendance_resolution", "") or "").strip().lower()
+
+    if attendance_resolution and attendance_resolution not in ALLOWED_RESOLUTIONS:
+        return None, None, Response(
+            {
+                "detail": "Invalid attendance_resolution value.",
+                "allowed_values": sorted(ALLOWED_RESOLUTIONS),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return data, (attendance_resolution or None), None
 
 
 def _ensure_action_text_from_type(serializer):
@@ -209,26 +200,37 @@ class StudentDisciplinaryActionListCreateView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
-        payload, student_status_update, enrollment_status_update, error_response = _extract_status_updates(
+        payload, _student_status_update, error_response = _extract_status_updates(
             request.data
         )
         if error_response:
             return error_response
+
+        payload, attendance_resolution, error_response = _extract_attendance_resolution(
+            payload
+        )
+        if error_response:
+            return error_response
+        if attendance_resolution:
+            return Response(
+                {"detail": "attendance_resolution is only supported when ending a discipline action."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         serializer = StudentDisciplinaryActionSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         _ensure_action_text_from_type(serializer)
         record = serializer.save(created_by=request.user, updated_by=request.user)
 
-        updates = _apply_status_updates(
-            record.student,
-            student_status_update,
-            enrollment_status_update,
+        updates = {}
+        attendance_effect_updates = apply_attendance_effect_for_discipline(
+            record,
             request.user,
         )
 
         response_data = StudentDisciplinaryActionSerializer(record).data
         response_data["status_updates_applied"] = updates
+        response_data["attendance_effect_updates"] = attendance_effect_updates
         return Response(response_data, status=status.HTTP_201_CREATED)
 
 
@@ -252,14 +254,66 @@ class StudentDisciplinaryActionDetailView(APIView):
 
     def put(self, request, id):
         record = self.get_object(id)
+        payload, _student_status_update, error_response = _extract_status_updates(
+            request.data
+        )
+        if error_response:
+            return error_response
+
+        payload, attendance_resolution, error_response = _extract_attendance_resolution(
+            payload
+        )
+        if error_response:
+            return error_response
+
         serializer = StudentDisciplinaryActionSerializer(
             record,
-            data=request.data,
+            data=payload,
             partial=True,
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save(updated_by=request.user)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+
+        next_end_date = serializer.validated_data.get("end_date", record.end_date)
+        is_early_end = next_end_date < record.end_date
+        unresolved_impacts = 0
+        attendance_resolution_applied = 0
+
+        if record.action_type and record.action_type.attendance_effect_enabled and is_early_end:
+            unresolved_impacts = count_unresolved_attendance_impacts_after(record, next_end_date)
+            if unresolved_impacts > 0 and not attendance_resolution:
+                return Response(
+                    {
+                        "detail": (
+                            "Ending this discipline action now will affect attendance rows that were auto-updated "
+                            "for future school days. Choose how to treat those attendance records."
+                        ),
+                        "code": "attendance_resolution_required",
+                        "affected_attendance_rows": unresolved_impacts,
+                        "allowed_resolutions": sorted(ALLOWED_RESOLUTIONS),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if unresolved_impacts > 0 and attendance_resolution:
+                attendance_resolution_applied = resolve_attendance_impacts_after(
+                    record,
+                    next_end_date,
+                    resolution=attendance_resolution,
+                    user=request.user,
+                )
+
+        updated_record = serializer.save(updated_by=request.user)
+
+        updates = {}
+        attendance_effect_updates = {
+            "unresolved_impacts_detected": unresolved_impacts,
+            "resolved_impacts": attendance_resolution_applied,
+        }
+
+        response_data = StudentDisciplinaryActionSerializer(updated_record).data
+        response_data["status_updates_applied"] = updates
+        response_data["attendance_effect_updates"] = attendance_effect_updates
+        return Response(response_data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):
         record = self.get_object(id)
@@ -315,11 +369,22 @@ class StudentDisciplinaryActionByStudentListCreateView(APIView):
 
     def post(self, request, student_id):
         student = self.get_student(student_id)
-        request_payload, student_status_update, enrollment_status_update, error_response = _extract_status_updates(
+        request_payload, _student_status_update, error_response = _extract_status_updates(
             request.data
         )
         if error_response:
             return error_response
+
+        request_payload, attendance_resolution, error_response = _extract_attendance_resolution(
+            request_payload
+        )
+        if error_response:
+            return error_response
+        if attendance_resolution:
+            return Response(
+                {"detail": "attendance_resolution is only supported when ending a discipline action."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         payload = {**request_payload, "student": str(student.id)}
         serializer = StudentDisciplinaryActionSerializer(data=payload)
@@ -327,13 +392,13 @@ class StudentDisciplinaryActionByStudentListCreateView(APIView):
         _ensure_action_text_from_type(serializer)
         record = serializer.save(created_by=request.user, updated_by=request.user)
 
-        updates = _apply_status_updates(
-            student,
-            student_status_update,
-            enrollment_status_update,
+        updates = {}
+        attendance_effect_updates = apply_attendance_effect_for_discipline(
+            record,
             request.user,
         )
 
         response_data = StudentDisciplinaryActionSerializer(record).data
         response_data["status_updates_applied"] = updates
+        response_data["attendance_effect_updates"] = attendance_effect_updates
         return Response(response_data, status=status.HTTP_201_CREATED)

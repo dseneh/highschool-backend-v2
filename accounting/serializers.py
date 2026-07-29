@@ -3,6 +3,7 @@ from typing import Any
 from datetime import datetime
 import uuid
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import F, Q, Sum, Max
 from django.db.models.functions import Abs, TruncMonth
 
@@ -42,6 +43,7 @@ from accounting.services.posting import (
     aggregate_bank_account_approved_totals,
     compute_bank_account_balance,
 )
+from accounting.services.settings_services import resolve_student_refund_transaction_type
 from students.models import Student
 
 
@@ -793,6 +795,17 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
     transaction_type_id = serializers.PrimaryKeyRelatedField(
         source="transaction_type",
         queryset=AccountingTransactionType.objects.all(),
+        required=False,
+        write_only=True,
+    )
+    transaction_type_code = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        write_only=True,
+    )
+    use_student_refund_mapping = serializers.BooleanField(
+        required=False,
+        default=False,
         write_only=True,
     )
     payment_method_id = serializers.PrimaryKeyRelatedField(
@@ -848,6 +861,8 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             "transaction_date",
             "reference_number",
             "transaction_type_id",
+            "transaction_type_code",
+            "use_student_refund_mapping",
             "transaction_type",
             "payment_method_id",
             "payment_method",
@@ -879,6 +894,8 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
+        validated_data.pop("transaction_type_code", None)
+        validated_data.pop("use_student_refund_mapping", None)
         transaction_date = validated_data.get("transaction_date")
         
         # Auto-generate reference_number if empty or not provided
@@ -887,6 +904,11 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             validated_data["reference_number"] = self._generate_reference_number(transaction_date)
         
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("transaction_type_code", None)
+        validated_data.pop("use_student_refund_mapping", None)
+        return super().update(instance, validated_data)
 
     def get_bank_account(self, obj):
         if obj.bank_account_id is None:
@@ -1106,6 +1128,22 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         return super().to_internal_value(payload)
 
     def validate(self, attrs):
+        transaction_type = attrs.get("transaction_type")
+        transaction_type_code = str(attrs.get("transaction_type_code") or "").strip().upper()
+        use_student_refund_mapping = bool(attrs.get("use_student_refund_mapping"))
+
+        if transaction_type is None and (use_student_refund_mapping or transaction_type_code == "REFUND"):
+            try:
+                transaction_type = resolve_student_refund_transaction_type()
+            except DjangoValidationError as exc:
+                message = "; ".join(getattr(exc, "messages", []) or [str(exc)])
+                raise serializers.ValidationError({"transaction_type": message}) from exc
+
+            attrs["transaction_type"] = transaction_type
+
+        if attrs.get("transaction_type") is None:
+            raise serializers.ValidationError({"transaction_type": "This field is required."})
+
         exchange_rate = attrs.get("exchange_rate")
         amount = attrs.get("amount")
         base_amount = attrs.get("base_amount")
@@ -1432,6 +1470,14 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
         source="payroll_deductions_payable_account.code",
         read_only=True,
     )
+    student_refund_account_name = serializers.CharField(
+        source="student_refund_account.name",
+        read_only=True,
+    )
+    student_refund_account_code = serializers.CharField(
+        source="student_refund_account.code",
+        read_only=True,
+    )
 
     class Meta:
         model = AccountingSettings
@@ -1452,6 +1498,9 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             "payroll_deductions_payable_account",
             "payroll_deductions_payable_account_name",
             "payroll_deductions_payable_account_code",
+            "student_refund_account",
+            "student_refund_account_name",
+            "student_refund_account_code",
             "created_at",
             "updated_at",
         ]
@@ -1467,6 +1516,8 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             "payroll_tax_payable_account_code",
             "payroll_deductions_payable_account_name",
             "payroll_deductions_payable_account_code",
+            "student_refund_account_name",
+            "student_refund_account_code",
             "created_at",
             "updated_at",
         ]
@@ -1515,4 +1566,11 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             value,
             expected_type=AccountingLedgerAccount.AccountType.LIABILITY,
             label="Payroll deductions payable account",
+        )
+
+    def validate_student_refund_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=AccountingLedgerAccount.AccountType.EXPENSE,
+            label="Student refund account",
         )

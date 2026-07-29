@@ -1,6 +1,7 @@
 from django.utils import timezone
 from rest_framework import serializers
 
+from common.status import AttendanceStatus
 from ..models import DisciplinaryActionType, StudentDisciplinaryAction
 
 
@@ -29,6 +30,8 @@ class DisciplinaryActionTypeSerializer(serializers.ModelSerializer):
             "max_duration_days",
             "default_severity",
             "allow_manual_override",
+            "attendance_effect_enabled",
+            "attendance_effect_status",
             "active",
         ]
 
@@ -92,6 +95,30 @@ class DisciplinaryActionTypeSerializer(serializers.ModelSerializer):
         if default_severity is not None and (default_severity < 1 or default_severity > 5):
             raise serializers.ValidationError(
                 {"default_severity": "Default severity must be between 1 and 5."}
+            )
+
+        attendance_effect_enabled = attrs.get("attendance_effect_enabled")
+        attendance_effect_status = attrs.get("attendance_effect_status")
+
+        if self.instance:
+            attendance_effect_enabled = (
+                attendance_effect_enabled
+                if attendance_effect_enabled is not None
+                else self.instance.attendance_effect_enabled
+            )
+            attendance_effect_status = (
+                attendance_effect_status
+                if attendance_effect_status is not None
+                else self.instance.attendance_effect_status
+            )
+
+        if attendance_effect_enabled and attendance_effect_status not in AttendanceStatus.all():
+            raise serializers.ValidationError(
+                {
+                    "attendance_effect_status": (
+                        "Select a valid attendance status for attendance impact."
+                    )
+                }
             )
 
         return attrs

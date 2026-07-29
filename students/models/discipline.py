@@ -2,6 +2,7 @@ from django.db import models
 from django.utils import timezone
 from datetime import timedelta
 
+from common.status import AttendanceStatus
 from .base import BaseModel
 
 
@@ -44,6 +45,12 @@ class DisciplinaryActionType(BaseModel):
     max_duration_days = models.PositiveSmallIntegerField(default=30)
     default_severity = models.PositiveSmallIntegerField(default=1)
     allow_manual_override = models.BooleanField(default=True)
+    attendance_effect_enabled = models.BooleanField(default=False)
+    attendance_effect_status = models.CharField(
+        max_length=20,
+        choices=AttendanceStatus.choices(),
+        default=AttendanceStatus.ABSENT.value,
+    )
 
     class Meta:
         db_table = "disciplinary_action_type"
@@ -160,3 +167,49 @@ class StudentDisciplinaryAction(BaseModel):
             and self.status == self.Status.ACTIVE
             and self.start_date <= today <= self.end_date
         )
+
+
+class DisciplinaryAttendanceImpact(BaseModel):
+    class Resolution(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RESTORED = "restored", "Restored"
+        KEPT = "kept", "Kept"
+        DELETED = "deleted", "Deleted"
+
+    discipline_action = models.ForeignKey(
+        "students.StudentDisciplinaryAction",
+        on_delete=models.CASCADE,
+        related_name="attendance_impacts",
+    )
+    attendance = models.ForeignKey(
+        "students.Attendance",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        default=None,
+        related_name="discipline_impacts",
+    )
+    effective_date = models.DateField()
+    original_status = models.CharField(max_length=20, blank=True, null=True, default=None)
+    applied_status = models.CharField(max_length=20, choices=AttendanceStatus.choices())
+    was_created = models.BooleanField(default=False)
+    resolution = models.CharField(
+        max_length=12,
+        choices=Resolution.choices,
+        default=Resolution.PENDING,
+    )
+    resolved_at = models.DateTimeField(blank=True, null=True, default=None)
+
+    class Meta:
+        db_table = "disciplinary_attendance_impact"
+        verbose_name = "Disciplinary Attendance Impact"
+        verbose_name_plural = "Disciplinary Attendance Impacts"
+        ordering = ["effective_date", "created_at"]
+        unique_together = ["discipline_action", "effective_date"]
+        indexes = [
+            models.Index(fields=["discipline_action", "effective_date"]),
+            models.Index(fields=["resolution"]),
+        ]
+
+    def __str__(self):
+        return f"{self.discipline_action_id} | {self.effective_date} | {self.applied_status}"

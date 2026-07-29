@@ -48,6 +48,14 @@ class AccountingSettings(BaseModel):
         blank=True,
         help_text="Liability account credited for non-tax payroll deductions.",
     )
+    student_refund_account = models.ForeignKey(
+        "AccountingLedgerAccount",
+        on_delete=models.PROTECT,
+        related_name="accounting_settings_student_refund",
+        null=True,
+        blank=True,
+        help_text="Expense account debited when student refunds are issued.",
+    )
 
     class Meta:
         db_table = "accounting_settings"

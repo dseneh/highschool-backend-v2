@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 
 from accounting.models import (
     AccountingBankAccount,
@@ -22,6 +23,7 @@ DEFAULT_LEDGER_CODES = {
     "salary_expense": "5001",
     "payroll_tax_payable": "2002",
     "payroll_deductions_payable": "2003",
+    "student_refund": "5006",
 }
 
 GL_ACCOUNT_META = {
@@ -59,6 +61,13 @@ GL_ACCOUNT_META = {
         "name": "Salaries Payable",
         "type": "liability",
         "setting_field": "payroll deductions payable",
+    },
+    "student_refund": {
+        "label": "Student refund",
+        "code": "5006",
+        "name": "Refunds",
+        "type": "expense",
+        "setting_field": "student refund",
     },
 }
 
@@ -134,6 +143,7 @@ def get_tenant_accounting_settings(*, user=None) -> AccountingSettings:
             "salary_expense_account",
             "payroll_tax_payable_account",
             "payroll_deductions_payable_account",
+            "student_refund_account",
         )
         .order_by("created_at")
         .first()
@@ -203,6 +213,48 @@ def resolve_transfer_out_account() -> AccountingLedgerAccount:
 def resolve_transfer_clearing_account() -> AccountingLedgerAccount:
     """Backward-compatible alias; prefer resolve_transfer_in/out_account."""
     return resolve_transfer_in_account()
+
+
+def resolve_student_refund_account() -> AccountingLedgerAccount:
+    settings = get_tenant_accounting_settings()
+    return _resolve_configured_gl_account(
+        key="student_refund",
+        configured_account=settings.student_refund_account,
+    )
+
+
+def resolve_student_refund_transaction_type() -> AccountingTransactionType:
+    """Resolve the active expense transaction type linked to Student Refund GL."""
+
+    refund_ledger = resolve_student_refund_account()
+
+    linked_active_expense = (
+        AccountingTransactionType.objects.filter(
+            Q(default_ledger_account=refund_ledger)
+            | Q(managed_ledger_account=refund_ledger),
+            transaction_category="expense",
+            is_active=True,
+        )
+        .order_by("name")
+        .first()
+    )
+    if linked_active_expense is not None:
+        return linked_active_expense
+
+    linked_any_count = AccountingTransactionType.objects.filter(
+        Q(default_ledger_account=refund_ledger)
+        | Q(managed_ledger_account=refund_ledger)
+    ).count()
+    raise ValidationError(
+        " ".join(
+            [
+                "No active expense transaction type is linked to the Student Refund account in settings.",
+                f"Refund ledger: {refund_ledger.code} - {refund_ledger.name} ({refund_ledger.pk}).",
+                f"Linked types found (active or inactive): {linked_any_count}.",
+                "Create or reactivate an expense transaction type and link it to this ledger in Transaction Types.",
+            ]
+        )
+    )
 
 
 def ensure_system_payment_method() -> AccountingPaymentMethod:

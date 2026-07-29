@@ -38,8 +38,10 @@ from accounting.services import (
 )
 from accounting.services.settings_services import (
     ensure_system_payment_method,
+    resolve_student_refund_transaction_type,
     ensure_transfer_transaction_types,
     bank_accounts_missing_ledger_message,
+    resolve_student_refund_account,
     validation_error_detail,
 )
 from accounting.services.transfer_posting import post_account_transfer_to_ledger
@@ -393,11 +395,118 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 }
             )
 
+    def _refund_ledger_account_override(self, data, *, existing_instance=None):
+        transaction_type = data.get("transaction_type")
+        if transaction_type is None and existing_instance is not None:
+            transaction_type = existing_instance.transaction_type
+
+        if not transaction_type:
+            return None
+
+        try:
+            mapped_refund_type = resolve_student_refund_transaction_type()
+            is_refund_type = str(transaction_type.pk) == str(mapped_refund_type.pk)
+        except ValidationError:
+            is_refund_type = str(transaction_type.code or "").upper() == "REFUND"
+
+        if not is_refund_type:
+            return None
+
+        student = data.get("student")
+        if student is None and existing_instance is not None:
+            student = existing_instance.student
+        if student is None:
+            raise serializers.ValidationError(
+                {"detail": "Student is required when creating a refund transaction."}
+            )
+
+        try:
+            return resolve_student_refund_account()
+        except ValidationError as exc:
+            raise serializers.ValidationError(
+                {"detail": validation_error_detail(exc)}
+            ) from exc
+
+    def _validate_student_refund(self, data, *, existing_instance=None):
+        from academics.models import AcademicYear
+        from accounting.services.payment_allocation import get_total_paid_for_student_year
+
+        transaction_type = data.get("transaction_type")
+        if transaction_type is None and existing_instance is not None:
+            transaction_type = existing_instance.transaction_type
+
+        if not transaction_type:
+            return
+
+        try:
+            mapped_refund_type = resolve_student_refund_transaction_type()
+            is_refund_type = str(transaction_type.pk) == str(mapped_refund_type.pk)
+        except ValidationError:
+            is_refund_type = str(transaction_type.code or "").upper() == "REFUND"
+
+        if not is_refund_type:
+            return
+
+        student = data.get("student")
+        if student is None and existing_instance is not None:
+            student = existing_instance.student
+        if student is None:
+            raise serializers.ValidationError(
+                {"detail": "Student is required when creating a refund transaction."}
+            )
+
+        amount = data.get("amount")
+        if amount is None and existing_instance is not None:
+            amount = existing_instance.amount
+        if amount is None or amount <= 0:
+            raise serializers.ValidationError(
+                {"detail": "Refund amount must be greater than zero."}
+            )
+
+        tx_date = data.get("transaction_date")
+        if tx_date is None and existing_instance is not None:
+            tx_date = existing_instance.transaction_date
+
+        academic_year = (
+            AcademicYear.objects.filter(
+                Q(start_date__lte=tx_date) & Q(end_date__gte=tx_date)
+            ).first()
+            if tx_date
+            else None
+        ) or AcademicYear.objects.filter(current=True).first()
+
+        if not academic_year:
+            raise serializers.ValidationError(
+                {"detail": "No academic year found for this refund date."}
+            )
+
+        refundable_paid_total = get_total_paid_for_student_year(student, academic_year)
+        if refundable_paid_total <= 0:
+            raise serializers.ValidationError(
+                {"detail": "Student has no refundable paid amount for this academic year."}
+            )
+
+        if amount > refundable_paid_total:
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        f"Refund amount of {amount:,.2f} exceeds refundable paid total "
+                        f"of {refundable_paid_total:,.2f}."
+                    )
+                }
+            )
+
     def perform_create(self, serializer):
         """Validate student balance before creating an income transaction linked to a student."""
         self._validate_student_income_payment(serializer.validated_data)
+        self._validate_student_refund(serializer.validated_data)
 
-        cash_transaction = serializer.save()
+        save_kwargs = {}
+        refund_ledger_account = self._refund_ledger_account_override(serializer.validated_data)
+        if refund_ledger_account is not None:
+            save_kwargs["ledger_account"] = refund_ledger_account
+
+        cash_transaction = serializer.save(**save_kwargs)
         if cash_transaction.status == AccountingCashTransaction.TransactionStatus.APPROVED:
             post_cash_transaction_to_ledger(cash_transaction, actor=self.request.user)
             recalculate_bank_account_current_balance(cash_transaction.bank_account)
@@ -448,9 +557,21 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             serializer.validated_data,
             existing_instance=cash_transaction,
         )
+        self._validate_student_refund(
+            serializer.validated_data,
+            existing_instance=cash_transaction,
+        )
+
+        save_kwargs = {}
+        refund_ledger_account = self._refund_ledger_account_override(
+            serializer.validated_data,
+            existing_instance=cash_transaction,
+        )
+        if refund_ledger_account is not None:
+            save_kwargs["ledger_account"] = refund_ledger_account
 
         with transaction.atomic():
-            cash_transaction = serializer.save()
+            cash_transaction = serializer.save(**save_kwargs)
 
             if cash_transaction.journal_entry_id:
                 try:

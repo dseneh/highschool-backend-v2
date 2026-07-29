@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import Optional, Tuple
 
 from django.db import transaction as db_transaction
-from django.db.models import Q, Sum
+from django.db.models import Case, DecimalField, F, Q, Sum, Value, When
 from django.utils import timezone
 
 from accounting.models import (
@@ -266,7 +266,22 @@ def get_total_paid_for_student_year(student, academic_year) -> Decimal:
 
     total = (
         AccountingCashTransaction.objects.filter(id__in=matched_ids)
-        .aggregate(total=Sum("amount"))["total"]
+        .aggregate(
+            total=Sum(
+                Case(
+                    When(
+                        transaction_type__transaction_category="income",
+                        then=F("amount"),
+                    ),
+                    When(
+                        transaction_type__transaction_category="expense",
+                        then=-F("amount"),
+                    ),
+                    default=Value(Decimal("0")),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
+        )["total"]
     )
     return Decimal(str(total or 0))
 

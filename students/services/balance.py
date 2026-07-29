@@ -51,7 +51,22 @@ def build_effective_paid_subquery(*, start_date, end_date) -> Subquery:
         .order_by()
         .annotate(_grp=Value(1))
         .values("_grp")
-        .annotate(total=Sum("amount"))
+        .annotate(
+            total=Sum(
+                Case(
+                    When(
+                        transaction_type__transaction_category="income",
+                        then=F("amount"),
+                    ),
+                    When(
+                        transaction_type__transaction_category="expense",
+                        then=-F("amount"),
+                    ),
+                    default=Value(0),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                )
+            )
+        )
         .values("total")[:1],
         output_field=DecimalField(max_digits=12, decimal_places=2),
     )
