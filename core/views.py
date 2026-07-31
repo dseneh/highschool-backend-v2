@@ -368,6 +368,46 @@ class TenantViewSet(ModelViewSet):
         instance.save(update_fields=["status", "active"])
 
     @action(
+        detail=False,
+        methods=["get"],
+        url_path="summary",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def summary(self, request, *args, **kwargs):
+        """Return aggregate tenant + signup pipeline metrics for the admin dashboard."""
+        from django_tenants.utils import get_public_schema_name
+
+        validate_tenant_is_in_public_schema()
+
+        public_schema = get_public_schema_name()
+        tenant_qs = Tenant.objects.exclude(schema_name=public_schema)
+        non_deleted_tenant_qs = tenant_qs.exclude(status="deleted")
+
+        signup_qs = SignupRequest.objects.all()
+        recent_cutoff = timezone.now() - timedelta(days=7)
+
+        return Response(
+            {
+                "tenants": {
+                    "total": tenant_qs.count(),
+                    "active": non_deleted_tenant_qs.filter(active=True).count(),
+                    "inactive": non_deleted_tenant_qs.filter(active=False).count(),
+                    "maintenance": non_deleted_tenant_qs.filter(maintenance_mode=True).count(),
+                    "deleted": tenant_qs.filter(status="deleted").count(),
+                },
+                "signup_requests": {
+                    "total": signup_qs.count(),
+                    "pending": signup_qs.filter(status=SignupRequest.STATUS_PENDING).count(),
+                    "contacted": signup_qs.filter(status=SignupRequest.STATUS_CONTACTED).count(),
+                    "onboarded": signup_qs.filter(status=SignupRequest.STATUS_ONBOARDED).count(),
+                    "declined": signup_qs.filter(status=SignupRequest.STATUS_DECLINED).count(),
+                    "recent_7d": signup_qs.filter(submitted_at__gte=recent_cutoff).count(),
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(
         detail=True,
         methods=["post"],
         url_path="reactivate",
@@ -1061,7 +1101,7 @@ class SignupRequestViewSet(viewsets.ModelViewSet):
 
     queryset = SignupRequest.objects.all().order_by("-submitted_at")
     lookup_field = "pk"
-    http_method_names = ["get", "post", "patch", "head", "options"]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
         validate_tenant_is_in_public_schema()
