@@ -30,7 +30,9 @@ from accounting.serializers import (
     AccountingTransactionTypeSerializer,
 )
 from accounting.services import (
+    aggregate_bank_account_balances,
     post_cash_transaction_to_ledger,
+    recalculate_bank_accounts_current_balances,
     recalculate_bank_account_current_balance,
     reverse_cash_transaction_journal_entry,
     sync_cash_transaction_journal_entry,
@@ -149,14 +151,13 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        for account in queryset:
-            recalculate_bank_account_current_balance(account)
-        serializer = self.get_serializer(queryset, many=True)
-
-        from accounting.services.posting import compute_bank_account_native_balance
+        accounts = list(queryset)
+        recalculate_bank_accounts_current_balances(accounts)
+        balance_lookup = aggregate_bank_account_balances(accounts)
+        serializer = self.get_serializer(accounts, many=True)
 
         balances_by_currency: dict[str, dict[str, object]] = {}
-        for account in queryset:
+        for account in accounts:
             currency = account.currency
             key = str(currency.id)
             if key not in balances_by_currency:
@@ -166,7 +167,7 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
                     "currency_symbol": currency.symbol,
                     "total_balance": Decimal("0"),
                 }
-            native_balance = compute_bank_account_native_balance(account)
+            native_balance = balance_lookup.get(account.id, {}).get("native", Decimal("0"))
             if account.opening_balance:
                 native_balance += Decimal(str(account.opening_balance or 0))
             balances_by_currency[key]["total_balance"] = (
@@ -175,9 +176,9 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
             )
 
         summary = {
-            "total_accounts": len(queryset),
-            "active_accounts": sum(1 for account in queryset if account.status == AccountingBankAccount.AccountStatus.ACTIVE),
-            "cash_accounts": sum(1 for account in queryset if account.account_type == "cash"),
+            "total_accounts": len(accounts),
+            "active_accounts": sum(1 for account in accounts if account.status == AccountingBankAccount.AccountStatus.ACTIVE),
+            "cash_accounts": sum(1 for account in accounts if account.account_type == "cash"),
             "balances_by_currency": [
                 {
                     **item,

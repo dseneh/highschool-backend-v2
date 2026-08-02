@@ -1,9 +1,10 @@
 
 import logging
+from django.utils import timezone
 
 from django.core.cache import cache
 from django.db import transaction, router, connection
-from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When
+from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When, Prefetch
 from django.db.models.functions import Coalesce
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
@@ -91,9 +92,27 @@ class StudentListView(APIView):
         show_paid = _to_bool(request.query_params.get("show_paid"), default=False)
         include_stats = _to_bool(request.query_params.get("include_stats"), default=False)
 
+        today = timezone.localdate()
+        current_enrollment_prefetch = Prefetch(
+            "enrollments",
+            queryset=Enrollment.objects.filter(academic_year__current=True)
+            .select_related("academic_year", "section", "grade_level", "next_grade_level"),
+            to_attr="current_year_enrollments",
+        )
+        active_discipline_prefetch = Prefetch(
+            "disciplinary_actions",
+            queryset=Student.disciplinary_actions.rel.related_model.objects.filter(
+                active=True,
+                status="active",
+                start_date__lte=today,
+                end_date__gte=today,
+            ).order_by("start_date", "created_at"),
+            to_attr="active_disciplinary_actions",
+        )
+
         students = Student.objects.select_related(
             "grade_level"
-        ).prefetch_related("enrollments__academic_year")
+        ).prefetch_related(current_enrollment_prefetch, active_discipline_prefetch)
 
         # # Apply query string filters
         filter_fields = [
@@ -131,8 +150,6 @@ class StudentListView(APIView):
         if query:
             students = students.filter(query)
 
-        students = annotate_student_balance_totals(students)
-
         balance_owed = str(query_params.get("balance_owed", "")).strip().lower()
         balance_condition = str(query_params.get("balance_condition", "")).strip().lower()
         balance_min = query_params.get("balance_min")
@@ -140,6 +157,23 @@ class StudentListView(APIView):
         paid_condition = str(query_params.get("paid_condition", "")).strip().lower()
         paid_min = query_params.get("paid_min")
         paid_max = query_params.get("paid_max")
+
+        needs_balance_annotations = any(
+            [
+                include_billing,
+                show_balance,
+                show_paid,
+                bool(balance_owed),
+                bool(balance_condition),
+                balance_min not in (None, ""),
+                balance_max not in (None, ""),
+                bool(paid_condition),
+                paid_min not in (None, ""),
+                paid_max not in (None, ""),
+            ]
+        )
+        if needs_balance_annotations:
+            students = annotate_student_balance_totals(students)
 
         if balance_owed == "owed":
             students = students.filter(balance_total__gt=0)
@@ -252,6 +286,8 @@ class StudentListView(APIView):
         stats_data: dict = {}
         if include_stats:
             stats_data = build_student_list_stats(students)
+
+        students = students.annotate(enrollment_count=Count("enrollments", distinct=True))
 
         # Apply status filtering with OR semantics across lifecycle, presence, and row status.
         if presence_statuses or enrollment_row_statuses or lifecycle_statuses:

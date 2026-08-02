@@ -2,12 +2,20 @@
 Custom middleware for multi-tenant application
 """
 
+import logging
+import time
+
+from django.conf import settings
+from django.db import connection, reset_queries
 from django_tenants.middleware.main import TenantMainMiddleware
 from django_tenants.utils import get_public_schema_name
 from django.http import Http404
 from core.models import Tenant
 from api.authentication import TenantAwareJWTAuthentication
 from users.tenant_access import is_global_superadmin
+
+
+logger = logging.getLogger(__name__)
 
 
 class HeaderBasedTenantMiddleware(TenantMainMiddleware):
@@ -456,4 +464,45 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         
         # Let other exceptions be handled normally (will go to DRF exception handler)
         return None
+
+
+class ApiPerformanceMetricsMiddleware:
+    """Opt-in request timing and query-count metrics for selected API paths."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def _is_enabled(self) -> bool:
+        return bool(getattr(settings, "API_PERF_METRICS_ENABLED", False))
+
+    def _is_tracked_path(self, path: str) -> bool:
+        prefixes = getattr(settings, "API_PERF_METRICS_PATH_PREFIXES", []) or []
+        return any(path.startswith(prefix) for prefix in prefixes)
+
+    def __call__(self, request):
+        if not self._is_enabled() or not self._is_tracked_path(request.path):
+            return self.get_response(request)
+
+        reset_queries()
+        start = time.perf_counter()
+
+        response = self.get_response(request)
+
+        duration_ms = (time.perf_counter() - start) * 1000
+        query_count = len(getattr(connection, "queries", []))
+        threshold_ms = int(getattr(settings, "API_PERF_METRICS_LOG_THRESHOLD_MS", 400))
+
+        if duration_ms >= threshold_ms:
+            logger.warning(
+                "Slow API request: method=%s path=%s status=%s duration_ms=%.2f queries=%s",
+                request.method,
+                request.path,
+                response.status_code,
+                duration_ms,
+                query_count,
+            )
+
+        response["X-Response-Time-Ms"] = f"{duration_ms:.2f}"
+        response["X-Query-Count"] = str(query_count)
+        return response
 

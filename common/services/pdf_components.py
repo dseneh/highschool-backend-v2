@@ -8,6 +8,7 @@ import logging
 import os
 
 from django.conf import settings
+from django.core.cache import cache
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.lib.styles import ParagraphStyle
@@ -23,6 +24,8 @@ from reportlab.platypus import (
 )
 
 logger = logging.getLogger(__name__)
+
+PDF_LOGO_CACHE_TTL_SECONDS = 60 * 60
 
 
 def format_tenant_address(school) -> str:
@@ -280,14 +283,25 @@ def get_school_logo(school, width: float = 1.0, height: float = 1.0) -> Optional
         return deduped_candidates
 
     try:
+        schema_name = (getattr(school, "schema_name", "") or "").strip() or "public"
+        logo_name = (getattr(school.logo, "name", "") or "").strip()
+        logo_updated = getattr(school, "updated_at", None)
+        logo_version = int(logo_updated.timestamp()) if logo_updated else 0
+        logo_cache_key = f"pdf_logo_bytes:{schema_name}:{logo_name}:{logo_version}"
+
         logo_data = None
 
+        cached_logo_data = cache.get(logo_cache_key)
+        if cached_logo_data:
+            logo_data = cached_logo_data
+
         # Strategy 1: Try opening via storage backend (handles S3/Local)
-        try:
-            with school.logo.open("rb") as f:
-                logo_data = f.read()
-        except Exception:
-            pass
+        if not logo_data:
+            try:
+                with school.logo.open("rb") as f:
+                    logo_data = f.read()
+            except Exception:
+                pass
 
         # Strategy 2: Try fetching from URL if open failed (e.g. S3 signed URL issue)
         if not logo_data and hasattr(school.logo, "url"):
@@ -312,6 +326,7 @@ def get_school_logo(school, width: float = 1.0, height: float = 1.0) -> Optional
                     continue
 
         if logo_data:
+            cache.set(logo_cache_key, logo_data, PDF_LOGO_CACHE_TTL_SECONDS)
             image_buffer = BytesIO(logo_data)
             logo = RLImage(
                 image_buffer,

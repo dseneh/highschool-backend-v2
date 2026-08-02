@@ -106,6 +106,7 @@ TENANT_DOMAIN_MODEL = "core.Domain"  # Domain model for routing
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",  # Must be before tenant middleware to handle OPTIONS requests
     "api.middleware.HeaderBasedTenantMiddleware",  # Handles schema switching via X-Tenant header (skips OPTIONS)
+    "api.middleware.ApiPerformanceMetricsMiddleware",  # Optional endpoint performance metrics headers/logging
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -286,3 +287,22 @@ if not DEBUG:
 
 # When True, live payroll/benefit line rows are deleted after mark-paid; revert rebuilds from snapshot.
 DELETE_PAID_LIVE_ROWS = config("DELETE_PAID_LIVE_ROWS", default=True, cast=bool)
+
+# Optional API performance instrumentation (disabled by default).
+API_PERF_METRICS_ENABLED = config("API_PERF_METRICS_ENABLED", default=False, cast=bool)
+API_PERF_METRICS_PATH_PREFIXES = config(
+    "API_PERF_METRICS_PATH_PREFIXES",
+    default=(
+        "/api/v1/students/,"
+        "/api/v1/grading/,"
+        "/api/v1/reports/,"
+        "/api/v1/accounting/,"
+        "/api/v1/finance/"
+    ),
+    cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
+)
+API_PERF_METRICS_LOG_THRESHOLD_MS = config(
+    "API_PERF_METRICS_LOG_THRESHOLD_MS",
+    default=400,
+    cast=int,
+)

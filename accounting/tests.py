@@ -15,7 +15,10 @@ from accounting.services.student_billing import (
     sync_accounting_bill_concession_totals,
 )
 from accounting.views.base import AccountingErrorFormattingMixin
-from accounting.views.cash_transaction import AccountingCashTransactionViewSet
+from accounting.views.cash_transaction import (
+    AccountingBankAccountViewSet,
+    AccountingCashTransactionViewSet,
+)
 from accounting.models import AccountingCashTransaction
 
 
@@ -409,6 +412,62 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
 
         mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
+
+
+class AccountingBankAccountListOptimizationTests(SimpleTestCase):
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.aggregate_bank_account_balances")
+    @patch("accounting.views.cash_transaction.recalculate_bank_accounts_current_balances")
+    def test_list_uses_batched_balance_recalculation(
+        self,
+        mock_recalculate_batch,
+        mock_aggregate_balances,
+        mock_recalculate_single,
+    ):
+        viewset = AccountingBankAccountViewSet()
+        viewset.request = SimpleNamespace(query_params={})
+        viewset.format_kwarg = None
+
+        currency = SimpleNamespace(id=1, code="USD", symbol="$")
+        account_one = SimpleNamespace(
+            id=1,
+            currency=currency,
+            opening_balance=Decimal("10.00"),
+            status="active",
+            account_type="cash",
+        )
+        account_two = SimpleNamespace(
+            id=2,
+            currency=currency,
+            opening_balance=Decimal("5.00"),
+            status="inactive",
+            account_type="checking",
+        )
+        accounts = [account_one, account_two]
+
+        mock_aggregate_balances.return_value = {
+            1: {"base": Decimal("100.00"), "native": Decimal("40.00")},
+            2: {"base": Decimal("90.00"), "native": Decimal("-2.00")},
+        }
+
+        serializer = SimpleNamespace(data=[{"id": 1}, {"id": 2}])
+        with patch.object(viewset, "get_queryset", return_value=MagicMock()), patch.object(
+            viewset, "filter_queryset", return_value=accounts
+        ), patch.object(viewset, "get_serializer", return_value=serializer):
+            response = viewset.list(SimpleNamespace())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["total_accounts"], 2)
+        self.assertEqual(response.data["summary"]["active_accounts"], 1)
+        self.assertEqual(response.data["summary"]["cash_accounts"], 1)
+        self.assertEqual(
+            response.data["summary"]["balances_by_currency"][0]["total_balance"],
+            "53.00",
+        )
+
+        mock_recalculate_batch.assert_called_once_with(accounts)
+        mock_aggregate_balances.assert_called_once_with(accounts)
+        mock_recalculate_single.assert_not_called()
 
 
 class AccountingCashTransactionExportTests(SimpleTestCase):

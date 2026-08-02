@@ -73,15 +73,34 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
                     id=selected_academic_year_id
                 ).first()
 
+        prefetched_current_enrollments = getattr(
+            instance,
+            "current_year_enrollments",
+            None,
+        )
+
         # Resolve the enrollment for the selected academic year when provided.
         if selected_academic_year:
-            current_enrollment = instance.enrollments.filter(
-                academic_year=selected_academic_year
-            ).first()
+            if prefetched_current_enrollments is not None:
+                current_enrollment = next(
+                    (
+                        enrollment
+                        for enrollment in prefetched_current_enrollments
+                        if enrollment.academic_year_id == selected_academic_year.id
+                    ),
+                    None,
+                )
+            else:
+                current_enrollment = instance.enrollments.filter(
+                    academic_year=selected_academic_year
+                ).first()
         else:
-            current_enrollment = instance.enrollments.filter(
-                academic_year__current=True
-            ).first()
+            if prefetched_current_enrollments is not None:
+                current_enrollment = prefetched_current_enrollments[0] if prefetched_current_enrollments else None
+            else:
+                current_enrollment = instance.enrollments.filter(
+                    academic_year__current=True
+                ).first()
 
         # Determine current grade level based on priority
         current_grade_level = None
@@ -136,9 +155,9 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             current_enrollment=current_enrollment,
             academic_year=selected_academic_year,
         )
-        enrollment_count = (
-            instance.enrollments.count()
-        )  # 🔥 MEMORY FIX: Use count() instead of len(.all())
+        enrollment_count = getattr(instance, "enrollment_count", None)
+        if enrollment_count is None:
+            enrollment_count = instance.enrollments.count()
         # response["enrollment_bill_summary"] = instance.get_balance_summary()
         response["number_of_enrollments"] = enrollment_count
         response["can_delete"] = enrollment_count == 0
@@ -190,16 +209,28 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         response["student_class"] = instance.student_class
 
         today = timezone.localdate()
-        active_discipline_action = (
-            instance.disciplinary_actions.filter(
-                active=True,
-                status="active",
-                start_date__lte=today,
-                end_date__gte=today,
-            )
-            .order_by("start_date", "created_at")
-            .first()
+        prefetched_active_discipline_actions = getattr(
+            instance,
+            "active_disciplinary_actions",
+            None,
         )
+        if prefetched_active_discipline_actions is not None:
+            active_discipline_action = (
+                prefetched_active_discipline_actions[0]
+                if prefetched_active_discipline_actions
+                else None
+            )
+        else:
+            active_discipline_action = (
+                instance.disciplinary_actions.filter(
+                    active=True,
+                    status="active",
+                    start_date__lte=today,
+                    end_date__gte=today,
+                )
+                .order_by("start_date", "created_at")
+                .first()
+            )
         response["active_discipline_action"] = (
             ActiveStudentDisciplinaryActionSerializer(active_discipline_action).data
             if active_discipline_action

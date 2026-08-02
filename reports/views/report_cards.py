@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import zipfile
 from io import BytesIO
 
@@ -19,6 +20,8 @@ from grading.services.pdf_report import build_student_report_card_pdf_bytes
 from grading.utils import calculate_student_overall_average, get_letter_grade
 from common.status import EnrollmentStatus
 from students.models import Enrollment
+from reports.tasks import TaskManager
+from reports.settings import get_reports_setting
 
 from ..utils.export_helpers import read_multi_query_values, resolve_academic_year
 from ..utils.pdf_merge import merge_pdf_bytes
@@ -159,6 +162,114 @@ def _build_download_filename(academic_year, grade_level_ids, section_ids, extens
     )
 
 
+def _start_report_card_background_task(
+    task_id: str,
+    *,
+    cache_key: str,
+    enrollment_ids: list[str],
+    grade_level_ids: list[str],
+    section_ids: list[str],
+    bundle_mode: str,
+    exclude_no_grades: bool,
+):
+    def background_work():
+        try:
+            TaskManager.update_task(task_id, status="processing", progress=10)
+
+            enrollments = list(
+                Enrollment.objects.filter(id__in=enrollment_ids)
+                .select_related("student", "section", "grade_level", "section__grade_level")
+                .order_by("section__name", "student__last_name", "student__first_name")
+            )
+
+            if not enrollments:
+                TaskManager.update_task(
+                    task_id,
+                    status="failed",
+                    error="No enrolled students were found for this export.",
+                )
+                return
+
+            academic_year = enrollments[0].academic_year
+            TaskManager.update_task(task_id, progress=45)
+
+            pdf_documents, failures = _generate_report_card_documents(enrollments, academic_year)
+            if not pdf_documents:
+                TaskManager.update_task(
+                    task_id,
+                    status="failed",
+                    error="Could not generate any report cards.",
+                )
+                return
+
+            TaskManager.update_task(task_id, progress=80)
+
+            manifest = {
+                "academic_year": str(academic_year),
+                "bundle": bundle_mode,
+                "exclude_no_grades": exclude_no_grades,
+                "generated": len(pdf_documents),
+                "failed": len(failures),
+                "failures": failures,
+            }
+
+            if bundle_mode == BUNDLE_COMBINED:
+                content = merge_pdf_bytes([doc[1] for doc in pdf_documents])
+                filename = _build_download_filename(
+                    academic_year,
+                    grade_level_ids,
+                    section_ids,
+                    "pdf",
+                )
+                payload = {
+                    "kind": "file",
+                    "content_type": "application/pdf",
+                    "filename": filename,
+                    "content": content,
+                }
+            else:
+                zip_buffer = BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for filename, pdf_bytes in pdf_documents:
+                        archive.writestr(filename, pdf_bytes)
+                    archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+                zip_buffer.seek(0)
+                payload = {
+                    "kind": "file",
+                    "content_type": "application/zip",
+                    "filename": _build_download_filename(
+                        academic_year,
+                        grade_level_ids,
+                        section_ids,
+                        "zip",
+                    ),
+                    "content": zip_buffer.getvalue(),
+                }
+
+            task_timeout = int(get_reports_setting("TASK_CACHE_TIMEOUT", 3600) or 3600)
+            TaskManager.cache_result(cache_key, payload, timeout=task_timeout)
+            TaskManager.update_task(
+                task_id,
+                status="completed",
+                progress=100,
+                total_processed=len(pdf_documents),
+                result_url=f"/api/v1/reports/download/{task_id}/",
+                failures=len(failures),
+            )
+        except Exception as exc:
+            logger.exception("Background report card task failed: %s", task_id)
+            TaskManager.update_task(
+                task_id,
+                status="failed",
+                error=str(exc),
+            )
+
+    thread = threading.Thread(target=background_work)
+    thread.daemon = True
+    thread.start()
+
+
 class BulkReportCardsExportView(APIView):
     """
     Preview or download report cards for students in a grade level and/or section.
@@ -215,6 +326,8 @@ class BulkReportCardsExportView(APIView):
 
         bundle_mode = _resolve_bundle_mode(request)
         preview = _is_truthy_param(request.query_params.get("preview"))
+        use_background = _is_truthy_param(request.query_params.get("background"))
+        force_sync = _is_truthy_param(request.query_params.get("force_sync"))
 
         with_grades = sum(1 for row in student_rows if row["has_grades"])
         without_grades = len(student_rows) - with_grades
@@ -257,12 +370,64 @@ class BulkReportCardsExportView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if len(export_enrollments) > MAX_BULK_REPORT_CARDS:
+        large_export = len(export_enrollments) > MAX_BULK_REPORT_CARDS
+        should_background = bundle_mode is not None and (use_background or (large_export and not force_sync))
+
+        if should_background:
+            cache_key = TaskManager.generate_cache_key(
+                {
+                    "type": "report_card_export",
+                    "academic_year_id": str(academic_year.id),
+                    "grade_level_ids": grade_level_ids,
+                    "section_ids": section_ids,
+                    "bundle_mode": bundle_mode,
+                    "exclude_no_grades": exclude_no_grades,
+                    "enrollment_ids": [str(enrollment.id) for enrollment in export_enrollments],
+                }
+            )
+            task_id = TaskManager.create_task(
+                task_type="report_card_export",
+                query_params={
+                    "cache_key": cache_key,
+                    "bundle_mode": bundle_mode,
+                },
+                user_id=getattr(request.user, "id", 0) or 0,
+                estimated_count=len(export_enrollments),
+            )
+
+            _start_report_card_background_task(
+                task_id,
+                cache_key=cache_key,
+                enrollment_ids=[str(enrollment.id) for enrollment in export_enrollments],
+                grade_level_ids=grade_level_ids,
+                section_ids=section_ids,
+                bundle_mode=bundle_mode,
+                exclude_no_grades=exclude_no_grades,
+            )
+
+            return Response(
+                {
+                    "task_id": task_id,
+                    "status": "pending",
+                    "processing_mode": "background",
+                    "estimated_records": len(export_enrollments),
+                    "message": (
+                        "Report card export is processing in background. "
+                        "Poll the export status endpoint for completion."
+                    ),
+                    "check_status_url": f"/api/v1/reports/export-status/{task_id}/",
+                    "auto_background": large_export and not use_background,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        if large_export:
             return Response(
                 {
                     "detail": (
                         f"Too many students ({len(export_enrollments)}) for a single download. "
-                        f"Maximum is {MAX_BULK_REPORT_CARDS}. Narrow filters or export in smaller groups."
+                        f"Maximum sync export is {MAX_BULK_REPORT_CARDS}. "
+                        "Use background=true or narrow filters."
                     ),
                     "count": len(export_enrollments),
                     "max_export": MAX_BULK_REPORT_CARDS,

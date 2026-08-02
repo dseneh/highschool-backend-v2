@@ -8,6 +8,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from academics.models import AcademicYear
 
 from common.status import Roles
 from notifications.access_policies import NotificationAccessPolicy
@@ -24,12 +25,14 @@ from notifications.serializers import (
     NotificationCampaignCreateSerializer,
     NotificationCampaignSerializer,
     NotificationMarkReadSerializer,
+    PaymentReminderSendSerializer,
     NotificationRuleSerializer,
     NotificationSerializer,
     TenantNotificationSettingsSerializer,
     UserNotificationPreferenceSerializer,
 )
 from notifications.services.campaign_send import create_and_send_campaign
+from notifications.services.payment_reminders import send_payment_reminders
 from notifications.services.teacher_scope import assert_teacher_can_target_audience
 
 
@@ -376,6 +379,48 @@ class AnnouncementListView(APIView):
             Q(is_pinned=True) | Q(category=NotificationCampaign.Category.ANNOUNCEMENT)
         ).order_by("-sent_at")[:10]
         return Response(AnnouncementSerializer(qs, many=True).data)
+
+
+class PaymentReminderSendView(APIView):
+    permission_classes = [NotificationAccessPolicy, IsAuthenticated]
+
+    def post(self, request):
+        serializer = PaymentReminderSendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        academic_year_id = data.get("academic_year_id")
+        if academic_year_id:
+            try:
+                academic_year = AcademicYear.objects.get(id=academic_year_id)
+            except AcademicYear.DoesNotExist:
+                return Response(
+                    {"detail": "Academic year not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            academic_year = AcademicYear.objects.filter(current=True).first()
+            if not academic_year:
+                return Response(
+                    {"detail": "No current academic year found."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        result = send_payment_reminders(
+            created_by=request.user,
+            academic_year=academic_year,
+            student_ids=[str(student_id) for student_id in (data.get("student_ids") or [])],
+            audience=data["audience"],
+            basis=data["basis"],
+            channels=data.get("channels") or ["in_app", "email"],
+            title_template=data["title_template"],
+            body_template=data["body_template"],
+            parent_title_template=data.get("parent_title_template", ""),
+            parent_body_template=data.get("parent_body_template", ""),
+            student_title_template=data.get("student_title_template", ""),
+            student_body_template=data.get("student_body_template", ""),
+        )
+        return Response(result, status=status.HTTP_201_CREATED)
 
 
 def _ensure_default_notification_rules():

@@ -83,6 +83,32 @@ def get_condition_status_code(condition_status, condition_reason=None):
     return status_code_map.get(condition_status, None)
 
 
+def get_latest_active_teacher_assignment(section_subject):
+    """Return the latest active teacher assignment using prefetched data when available."""
+    prefetched_cache = getattr(section_subject, "_prefetched_objects_cache", {})
+    prefetched_assignments = prefetched_cache.get("employee_teacher_subjects")
+
+    if prefetched_assignments is not None:
+        active_assignments = [assignment for assignment in prefetched_assignments if assignment.active]
+        if not active_assignments:
+            return None
+
+        return max(
+            active_assignments,
+            key=lambda assignment: (
+                assignment.updated_at or assignment.created_at,
+                assignment.created_at,
+            ),
+        )
+
+    return (
+        EmployeeTeacherSubject.objects.select_related("teacher")
+        .filter(section_subject=section_subject, active=True)
+        .order_by("-updated_at", "-created_at")
+        .first()
+    )
+
+
 class AssessmentTypeOut(serializers.ModelSerializer):
     class Meta:
         model = AssessmentType
@@ -139,12 +165,7 @@ class GradeBookOut(serializers.ModelSerializer):
 
         # Resolve teacher assignment for this section-subject from HR assignments.
         # If multiple assignments exist, return the most recently updated one.
-        teacher_assignment = (
-            EmployeeTeacherSubject.objects.select_related("teacher")
-            .filter(section_subject=instance.section_subject, active=True)
-            .order_by("-updated_at", "-created_at")
-            .first()
-        )
+        teacher_assignment = get_latest_active_teacher_assignment(instance.section_subject)
         teacher = teacher_assignment.teacher if teacher_assignment else None
         response["teacher"] = (
             {
@@ -2213,12 +2234,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                     semester_totals[mp.semester.id]["count"] += 1
 
             # Resolve teacher assignment for this section-subject
-            teacher_assignment = (
-                EmployeeTeacherSubject.objects.select_related("teacher")
-                .filter(section_subject=gradebook.section_subject, active=True)
-                .order_by("-updated_at", "-created_at")
-                .first()
-            )
+            teacher_assignment = get_latest_active_teacher_assignment(gradebook.section_subject)
             teacher = teacher_assignment.teacher if teacher_assignment else None
 
             # Build gradebook result data

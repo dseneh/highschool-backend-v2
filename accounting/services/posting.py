@@ -108,6 +108,78 @@ def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount
     return new_balance
 
 
+def aggregate_bank_account_balances(
+    bank_accounts,
+    *,
+    end_date=None,
+) -> dict[int, dict[str, Decimal]]:
+    """Return base/native approved balances for a collection of bank accounts."""
+    bank_account_ids = [account.id for account in bank_accounts if getattr(account, "id", None)]
+    if not bank_account_ids:
+        return {}
+
+    from accounting.services.currency_totals import approved_signed_native_amount_expression
+
+    signed_base = approved_signed_base_amount_expression()
+    signed_native = approved_signed_native_amount_expression()
+
+    transactions = AccountingCashTransaction.objects.filter(
+        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        bank_account_id__in=bank_account_ids,
+    )
+    if end_date:
+        transactions = transactions.filter(transaction_date__lte=end_date)
+
+    rows = transactions.values("bank_account_id").annotate(
+        net_base=Sum(signed_base),
+        net_native=Sum(signed_native),
+    )
+
+    balances: dict[int, dict[str, Decimal]] = {}
+    for row in rows:
+        account_id = row["bank_account_id"]
+        balances[account_id] = {
+            "base": row.get("net_base") or Decimal("0"),
+            "native": row.get("net_native") or Decimal("0"),
+        }
+
+    return balances
+
+
+def recalculate_bank_accounts_current_balances(
+    bank_accounts,
+    *,
+    end_date=None,
+) -> dict[int, Decimal]:
+    """Bulk-recalculate and persist current balances for many bank accounts."""
+    bank_accounts = list(bank_accounts)
+    if not bank_accounts:
+        return {}
+
+    balances = aggregate_bank_account_balances(bank_accounts, end_date=end_date)
+    now = timezone.now()
+    dirty_accounts: list[AccountingBankAccount] = []
+    resolved: dict[int, Decimal] = {}
+
+    for account in bank_accounts:
+        new_balance = balances.get(account.id, {}).get("base", Decimal("0"))
+        resolved[account.id] = new_balance
+
+        if account.current_balance != new_balance:
+            account.current_balance = new_balance
+            account.updated_at = now
+            dirty_accounts.append(account)
+
+    if dirty_accounts:
+        AccountingBankAccount.objects.bulk_update(
+            dirty_accounts,
+            ["current_balance", "updated_at"],
+            batch_size=200,
+        )
+
+    return resolved
+
+
 def _resolve_academic_year(posting_date):
     """
     Resolve accounting posting period from the academic year that contains the date.

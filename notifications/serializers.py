@@ -144,6 +144,62 @@ class NotificationCampaignCreateSerializer(serializers.Serializer):
     banner_ends_at = serializers.DateTimeField(required=False, allow_null=True)
 
 
+class PaymentReminderSendSerializer(serializers.Serializer):
+    academic_year_id = serializers.UUIDField(required=False, allow_null=True)
+    student_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+    )
+    audience = serializers.ChoiceField(choices=["parents", "students", "both"])
+    basis = serializers.ChoiceField(choices=["installment", "total"])
+    channels = serializers.ListField(
+        child=serializers.ChoiceField(choices=["in_app", "email"]),
+        required=False,
+        allow_empty=False,
+        default=["in_app", "email"],
+    )
+    title_template = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    body_template = serializers.CharField(required=False, allow_blank=True)
+    parent_title_template = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    parent_body_template = serializers.CharField(required=False, allow_blank=True)
+    student_title_template = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    student_body_template = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        audience = attrs.get("audience")
+        channels = attrs.get("channels") or []
+        generic_title = (attrs.get("title_template") or "").strip()
+        generic_body = (attrs.get("body_template") or "").strip()
+
+        if not channels:
+            raise serializers.ValidationError(
+                "Select at least one delivery channel."
+            )
+
+        def pick(title_key, body_key):
+            return (
+                (attrs.get(title_key) or generic_title).strip(),
+                (attrs.get(body_key) or generic_body).strip(),
+            )
+
+        if audience in ("parents", "both"):
+            parent_title, parent_body = pick("parent_title_template", "parent_body_template")
+            if not parent_title or not parent_body:
+                raise serializers.ValidationError(
+                    "Parent reminder title and body are required for the selected audience."
+                )
+
+        if audience in ("students", "both"):
+            student_title, student_body = pick("student_title_template", "student_body_template")
+            if not student_title or not student_body:
+                raise serializers.ValidationError(
+                    "Student reminder title and body are required for the selected audience."
+                )
+
+        return attrs
+
+
 class BannerNotificationSerializer(serializers.ModelSerializer):
     """Compact representation tailored to the header banner host."""
 

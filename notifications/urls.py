@@ -5,6 +5,7 @@ from notifications.views import (
     AnnouncementListView,
     CampaignViewSet,
     InboxViewSet,
+    PaymentReminderSendView,
     NotificationRuleViewSet,
     TenantNotificationSettingsView,
     UserPreferenceView,
@@ -18,6 +19,7 @@ router.register(r"rules", NotificationRuleViewSet, basename="notification-rule")
 urlpatterns = [
     path("", include(router.urls)),
     path("announcements/", AnnouncementListView.as_view(), name="notification-announcements"),
+    path("payment-reminders/send/", PaymentReminderSendView.as_view(), name="notification-payment-reminders-send"),
     path("preferences/me/", UserPreferenceView.as_view(), name="notification-preferences-me"),
     path(
         "settings/",

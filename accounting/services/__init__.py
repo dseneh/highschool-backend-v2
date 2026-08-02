@@ -1,5 +1,7 @@
 from .posting import (
+	aggregate_bank_account_balances,
 	post_cash_transaction_to_ledger,
+	recalculate_bank_accounts_current_balances,
 	recalculate_bank_account_current_balance,
 	reverse_cash_transaction_journal_entry,
 	sync_cash_transaction_journal_entry,
@@ -26,7 +28,9 @@ from .transaction_type_sync import (
 )
 
 __all__ = [
+	"aggregate_bank_account_balances",
 	"post_cash_transaction_to_ledger",
+	"recalculate_bank_accounts_current_balances",
 	"recalculate_bank_account_current_balance",
 	"reverse_cash_transaction_journal_entry",
 	"sync_cash_transaction_journal_entry",
