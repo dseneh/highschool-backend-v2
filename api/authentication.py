@@ -8,8 +8,12 @@ in the public schema, then ensures global superadmins are linked to the tenant.
 """
 
 from django_tenants.utils import get_public_schema_name, schema_context
+from django.utils import timezone
+from rest_framework import authentication
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
+from users.models import TenantSession
+from users.sso_utils import hash_value
 from users.tenant_access import ensure_global_superadmin_tenant_membership
 
 
@@ -37,3 +41,31 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         if tenant:
             ensure_global_superadmin_tenant_membership(user, tenant)
         return user, token
+
+
+class TenantSessionAuthentication(authentication.BaseAuthentication):
+    """Authenticate requests using a server-side tenant session identifier."""
+
+    def authenticate(self, request):
+        raw_session_id = request.META.get("HTTP_X_TENANT_SESSION")
+        if not raw_session_id:
+            return None
+
+        now = timezone.now()
+        session_obj = (
+            TenantSession.objects.select_related("user", "tenant")
+            .filter(
+                session_key_hash=hash_value(raw_session_id),
+                revoked_at__isnull=True,
+                expires_at__gt=now,
+            )
+            .first()
+        )
+        if not session_obj:
+            return None
+
+        header_tenant = request.META.get("HTTP_X_TENANT") or request.META.get("HTTP_X_WORKSPACE")
+        if header_tenant and header_tenant != getattr(session_obj.tenant, "schema_name", ""):
+            return None
+
+        return session_obj.user, None

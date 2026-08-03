@@ -8,6 +8,7 @@ from decouple import config
 # REST Framework configuration
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
+        "api.authentication.TenantSessionAuthentication",
         "api.authentication.TenantAwareJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ),

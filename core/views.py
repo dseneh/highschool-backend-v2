@@ -30,7 +30,7 @@ from django.core.files.base import ContentFile
 from PIL import Image
 from io import BytesIO
 
-from core.models import Tenant, SignupRequest, TenantOwnerActivationCode
+from core.models import Domain, Tenant, SignupRequest, TenantOwnerActivationCode
 from core.serializers import (
     TenantSerializer,
     CreateTenantSerializer,
@@ -53,6 +53,8 @@ User = get_user_model()
 
 ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
+_RESERVED_WORKSPACES = {"www", "app", "api", "cdn", "auth", "portal", "admin", "public"}
+
 
 def _generate_activation_code(length: int = 8) -> str:
     return "".join(secrets.choice(ACTIVATION_CODE_ALPHABET) for _ in range(length))
@@ -69,23 +71,85 @@ def validate_tenant_is_in_public_schema():
     return True
 
 
+def _resolve_tenant_from_workspace_key(workspace_key: str):
+    """Resolve tenant by schema_name first, then by domain prefix."""
+    key = (workspace_key or "").strip().lower()
+    if not key or key in _RESERVED_WORKSPACES:
+        return None
+
+    tenant = Tenant.objects.filter(schema_name=key).first()
+    if tenant:
+        return tenant
+
+    domain_match = (
+        Domain.objects.select_related("tenant")
+        .filter(domain__istartswith=f"{key}.")
+        .order_by("-is_primary")
+        .first()
+    )
+    return getattr(domain_match, "tenant", None)
+
+
+def _workspace_from_host(host: str) -> str | None:
+    hostname = (host or "").split(":")[0].strip().lower()
+    if not hostname:
+        return None
+
+    if hostname == "localhost" or hostname == "127.0.0.1":
+        return None
+
+    if hostname.endswith(".localhost"):
+        parts = hostname.split(".")
+        if len(parts) > 1:
+            return parts[0]
+        return None
+
+    parts = hostname.split(".")
+    if len(parts) <= 2:
+        return None
+
+    return parts[0]
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def current_tenant(request):
     """
-    Get the current tenant information based on the request schema.
-    """
-    if connection.schema_name == "public":
-        return Response(
-            {"detail": "No tenant context found (public schema)"}, status=400
-        )
+    Get current tenant information for this request.
 
-    try:
-        tenant = Tenant.objects.get(schema_name=connection.schema_name)
+    Resolution order:
+    1) Active DB schema (when already in tenant context)
+    2) X-Tenant / X-Workspace header
+    3) Host-derived workspace prefix (subdomain)
+    """
+    # 1) Tenant context already switched by middleware
+    if connection.schema_name and connection.schema_name != "public":
+        tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+        if tenant:
+            serializer = PublicTenantSerializer(tenant, context={"request": request})
+            return Response(serializer.data)
+
+    # 2) Explicit tenant/workspace header
+    header_workspace = request.META.get("HTTP_X_TENANT") or request.META.get("HTTP_X_WORKSPACE")
+    tenant = _resolve_tenant_from_workspace_key(header_workspace or "")
+    if tenant:
         serializer = PublicTenantSerializer(tenant, context={"request": request})
         return Response(serializer.data)
-    except Tenant.DoesNotExist:
-        return Response({"detail": "Tenant not found"}, status=404)
+
+    # 3) Host-derived workspace fallback
+    host_workspace = _workspace_from_host(request.get_host())
+    tenant = _resolve_tenant_from_workspace_key(host_workspace or "")
+    if tenant:
+        serializer = PublicTenantSerializer(tenant, context={"request": request})
+        return Response(serializer.data)
+
+    return Response(
+        {
+            "detail": "No tenant context found. Provide a valid X-Tenant header or tenant host.",
+            "error_code": "tenant_context_missing",
+        },
+        status=400,
+    )
 
 
 class TenantViewSet(ModelViewSet):
@@ -282,6 +346,21 @@ class TenantViewSet(ModelViewSet):
 
             self.check_object_permissions(self.request, obj)
             return obj
+
+        if self.action == "retrieve" and isinstance(lookup_value, str):
+            # Fallback: allow retrieving tenant by domain prefix when host slug
+            # differs from schema_name (common in local/dev vanity domains).
+            domain_match = (
+                Domain.objects.select_related("tenant")
+                .filter(domain__istartswith=f"{lookup_value.lower()}.")
+                .order_by("-is_primary")
+                .first()
+            )
+            if domain_match and getattr(domain_match, "tenant", None):
+                obj = self.get_queryset().filter(pk=domain_match.tenant_id).first()
+                if obj:
+                    self.check_object_permissions(self.request, obj)
+                    return obj
 
         return super().get_object()
 
