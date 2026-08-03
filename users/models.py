@@ -14,6 +14,18 @@ from django.contrib.auth.models import Group, Permission
 from tenant_users.tenants.models import UserProfile
 from core.validators import ValidateImageFile
 from common.status import Roles, UserAccountType, PersonStatus
+from .sso_models import (  # noqa: F401
+    AuthenticationAuditEvent,
+    AuthorizationCode,
+    AuthorizationRequest,
+    CentralAuthSession,
+    OAuthClient,
+    OAuthRedirectURI,
+    RefreshToken,
+    RefreshTokenFamily,
+    SessionRevocation,
+    TenantSession,
+)
 
 
 class User(UserProfile):

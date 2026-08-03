@@ -51,6 +51,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path(api_base, include("core.urls")),
     path(f"{api_base}auth/", include("users.urls")),
+    path(f"{api_base}sso/", include("users.sso_urls")),
     path(api_base, include("academics.urls")),
     path(api_base, include("students.urls")),
     path(api_base, include("finance.urls")),
