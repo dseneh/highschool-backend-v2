@@ -418,7 +418,7 @@ def create_model_data(request, data, model, serializer):
         return Response({"detail": str(e)}, status=400)
 
 
-def update_model_fields(request, model, allowed_fields, serializer_class, context=None):
+def update_model_fields(request, model, allowed_fields, serializer_class, context=None, data=None):
     """
     Updates the fields of a given model instance based on the provided request data.
     Args:
@@ -430,15 +430,14 @@ def update_model_fields(request, model, allowed_fields, serializer_class, contex
         Serializer: An instance of the serializer class containing the updated model data.
     """
     # Use the core update function
+    source_data = data if data is not None else request.data
     update_fields = update_model_fields_core(
-        model, request.data, allowed_fields, request.user
+        model, source_data, allowed_fields, request.user
     )
 
     try:
         # Only serialize fields that were updated
-        data = {
-            key: request.data.get(key) for key in update_fields if key in request.data
-        }
+        data = {key: source_data.get(key) for key in update_fields if key in source_data}
 
         # Use provided context or default to request context
         serializer_context = context if context is not None else {"request": request}

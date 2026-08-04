@@ -7,6 +7,29 @@ Pure Python business logic for sections - no Django dependencies.
 from typing import Dict, Any, Optional
 
 
+def resolve_section_capacity(
+    capacity: Optional[int],
+    default_capacity: int = 25,
+) -> int:
+    """
+    Resolve a section capacity value using the configured default.
+
+    A null or zero value means the caller wants the system default.
+    """
+    if capacity is None:
+        return default_capacity
+
+    try:
+        resolved = int(capacity)
+    except (ValueError, TypeError):
+        return default_capacity
+
+    if resolved <= 0:
+        return default_capacity
+
+    return resolved
+
+
 def validate_section_creation(
     name: Optional[str],
     max_capacity: Optional[int] = None,
@@ -48,7 +71,7 @@ def validate_section_creation(
 
 def validate_section_capacity(capacity: int) -> Dict[str, Any]:
     """
-    Validate section capacity (1-1000)
+    Validate section capacity (0-1000)
     
     Args:
         capacity: Section capacity
@@ -61,8 +84,8 @@ def validate_section_capacity(capacity: int) -> Dict[str, Any]:
     except (ValueError, TypeError):
         return {"valid": False, "error": "Capacity must be a number"}
     
-    if capacity_int < 1:
-        return {"valid": False, "error": "Capacity must be at least 1"}
+    if capacity_int < 0:
+        return {"valid": False, "error": "Capacity cannot be negative"}
     
     if capacity_int > 1000:
         return {"valid": False, "error": "Capacity cannot exceed 1000"}

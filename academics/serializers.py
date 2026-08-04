@@ -28,6 +28,8 @@ from academics.models import (
     Semester,
     Subject,
 )
+from business.core.services.section_service import resolve_section_capacity
+from settings.models import GradingSettings
 from staff.models import TeacherSchedule, TeacherSubject
 
 
@@ -474,9 +476,15 @@ class SectionSubjectSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         response = super().to_representation(instance)
+        grading_settings = GradingSettings.objects.first()
+        default_capacity = getattr(grading_settings, "default_section_capacity", 25)
         response["section"] = {
             "id": instance.section.id,
             "name": instance.section.name,
+            "max_capacity": resolve_section_capacity(
+                instance.section.max_capacity,
+                default_capacity=default_capacity,
+            ),
         }
         response["grade_level"] = {
             "id": instance.section.grade_level.id,
@@ -497,6 +505,8 @@ class SectionSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
+            "max_capacity",
+            "room_number",
             "grade_level",
             "active",
             # "tuition_fee",
@@ -506,11 +516,18 @@ class SectionSerializer(serializers.ModelSerializer):
         # Import here to avoid circular imports
         from finance.serializers import SectionFeeSerializer
 
+        grading_settings = GradingSettings.objects.first()
+        default_capacity = getattr(grading_settings, "default_section_capacity", 25)
+
         # count the number of students in the section for the current academic year
         count_students = Enrollment.objects.filter(
             section=instance, academic_year__current=True
         ).count()
         response = super().to_representation(instance)
+        response["max_capacity"] = resolve_section_capacity(
+            instance.max_capacity,
+            default_capacity=default_capacity,
+        )
         response["students"] = count_students
         response["grade_level"] = {
             "id": str(instance.grade_level.id),
@@ -528,6 +545,10 @@ class SectionSerializer(serializers.ModelSerializer):
                 "section": {
                     "id": str(instance.id),
                     "name": instance.name,
+                    "max_capacity": resolve_section_capacity(
+                        instance.max_capacity,
+                        default_capacity=default_capacity,
+                    ),
                 },
                 "subject": {
                     "id": str(ss.subject.id),

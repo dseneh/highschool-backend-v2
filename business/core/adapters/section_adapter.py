@@ -11,6 +11,8 @@ import json
 
 from academics.models import Section, GradeLevel, Period, SectionTimeSlot, SectionSubject
 from business.core.core_models import SectionData
+from business.core.services.section_service import resolve_section_capacity
+from settings.models import GradingSettings
 
 
 def django_section_to_data(section: Section) -> SectionData:
@@ -44,11 +46,20 @@ def create_section_in_db(data: Dict[str, Any],
     grade_level = None
     if grade_level_id:
         grade_level = GradeLevel.objects.filter(id=grade_level_id).first()
+
+    settings = GradingSettings.objects.first()
+    default_capacity = getattr(settings, "default_section_capacity", None)
+    if not default_capacity or default_capacity <= 0:
+        default_capacity = 25
+    resolved_capacity = resolve_section_capacity(
+        data.get("max_capacity"),
+        default_capacity=default_capacity,
+    )
     
     section = Section.objects.create(
         name=data['name'],
         grade_level=grade_level,
-        max_capacity=data.get('max_capacity'),
+        max_capacity=resolved_capacity,
         room_number=data.get('room_number'),
         description=data.get('description'),
         created_by=user,

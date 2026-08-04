@@ -72,6 +72,7 @@ class GradingSettingsView(APIView):
             "grading_style",
             "single_entry_assessment_name",
             "use_default_templates",
+            "default_section_capacity",
             "auto_calculate_final_grade",
             "default_calculation_method",
             "require_grade_approval",

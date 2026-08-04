@@ -22,7 +22,9 @@ from django.db.models import QuerySet, Q
 import logging
 
 from business.core.adapters.supporting_adapter import section_subject_has_grades
+from business.core.services.section_service import resolve_section_capacity
 from common.utils import get_tenant_from_request
+from settings.models import GradingSettings
 
 logger = logging.getLogger(__name__)
 
@@ -195,14 +197,22 @@ class DataCache:
             student_count=Count('enrollments', distinct=True)
         )
 
+        grading_settings = GradingSettings.objects.first()
+        default_capacity = getattr(grading_settings, "default_section_capacity", 25)
+
         sections = []
         for section in queryset:
+            resolved_capacity = resolve_section_capacity(
+                section.max_capacity,
+                default_capacity=default_capacity,
+            )
             subjects = [
                 {
                     'id': str(ss.id),
                     'section': {
                         'id': str(section.id),
                         'name': section.name,
+                        'max_capacity': resolved_capacity,
                     },
                     'subject': {
                         'id': str(ss.subject.id),
@@ -242,7 +252,7 @@ class DataCache:
                 'id': str(section.id),
                 'name': section.name,
                 'description': section.description or '',
-                'max_capacity': section.max_capacity,
+                'max_capacity': resolved_capacity,
                 'active': section.active,
                 'students': section.student_count,
                 'grade_level_id': str(section.grade_level.id),

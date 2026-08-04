@@ -45,6 +45,11 @@ class GradingSettings(BaseModel):
         help_text="Auto-generate assessments from default templates (multiple entry mode only)",
     )
 
+    default_section_capacity = models.PositiveIntegerField(
+        default=25,
+        help_text="Default maximum number of students in a section when no capacity is set",
+    )
+
     auto_calculate_final_grade = models.BooleanField(
         default=True, help_text="Automatically calculate final grades from assessments"
     )

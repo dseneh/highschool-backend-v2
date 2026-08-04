@@ -16,6 +16,7 @@ from ..serializers import SectionSerializer
 # Business logic imports
 from business.core.services import section_service
 from business.core.adapters import section_adapter
+from settings.models import GradingSettings
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,17 @@ class SectionListView(APIView):
     def post(self, request, grade_level_id):
         grade_level = self.get_grade_level_object(grade_level_id)
         req_data: dict = request.data
+        default_capacity = self._get_default_section_capacity()
+        requested_capacity = req_data.get("max_capacity")
+        resolved_capacity = section_service.resolve_section_capacity(
+            requested_capacity,
+            default_capacity=default_capacity,
+        )
 
         # Validate using business logic
         validation_result = section_service.validate_section_creation(
             name=req_data.get("name"),
-            max_capacity=req_data.get("max_capacity")
+            max_capacity=resolved_capacity,
         )
         
         if not validation_result["valid"]:
@@ -65,7 +72,7 @@ class SectionListView(APIView):
         data = {
             "name": validation_result["data"]["name"],
             "description": validation_result["data"].get("description"),
-            "max_capacity": validation_result["data"].get("capacity"),
+            "max_capacity": validation_result["data"].get("max_capacity"),
             "room_number": req_data.get("room_number"),
         }
 
@@ -94,6 +101,11 @@ class SectionListView(APIView):
             django_cache.delete(f"grade_levels:{tenant}")
         logger.debug(f"Invalidated section + grade_levels cache for tenant {tenant}")
 
+    def _get_default_section_capacity(self) -> int:
+        settings = GradingSettings.objects.first()
+        default_capacity = getattr(settings, "default_section_capacity", None)
+        return default_capacity if default_capacity and default_capacity > 0 else 25
+
 class SectionDetailView(APIView):
     permission_classes = [AcademicsAccessPolicy]
     # permission_classes = [IsAuthenticatedOrReadOnly, IsAdminOrSystemAdmin]
@@ -110,15 +122,28 @@ class SectionDetailView(APIView):
 
     def put(self, request, id):
         section = self.get_object(id)
+        req_data = request.data.copy()
+
+        if "max_capacity" in req_data:
+            req_data["max_capacity"] = section_service.resolve_section_capacity(
+                req_data.get("max_capacity"),
+                default_capacity=self._get_default_section_capacity(),
+            )
 
         allowed_fields = [
             "name",
             "description",
             "active",
+            "max_capacity",
+            "room_number",
         ]
 
         serializer = update_model_fields(
-            request, section, allowed_fields, SectionSerializer
+            request,
+            section,
+            allowed_fields,
+            SectionSerializer,
+            data=req_data,
         )
         
         # Invalidate sections and grade_levels cache after update
@@ -160,3 +185,8 @@ class SectionDetailView(APIView):
         if tenant:
             django_cache.delete(f"grade_levels:{tenant}")
         logger.debug(f"Invalidated section + grade_levels cache for tenant {tenant}")
+
+    def _get_default_section_capacity(self) -> int:
+        settings = GradingSettings.objects.first()
+        default_capacity = getattr(settings, "default_section_capacity", None)
+        return default_capacity if default_capacity and default_capacity > 0 else 25

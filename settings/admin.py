@@ -12,6 +12,7 @@ class GradingSettingsAdmin(admin.ModelAdmin):
     
     list_display = [
         'grading_style',
+        'default_section_capacity',
         'use_default_templates',
         'default_calculation_method',
         'use_letter_grades',
@@ -21,6 +22,7 @@ class GradingSettingsAdmin(admin.ModelAdmin):
     
     list_filter = [
         'grading_style',
+        'default_section_capacity',
         'use_default_templates',
         'default_calculation_method',
         'use_letter_grades',
@@ -42,6 +44,7 @@ class GradingSettingsAdmin(admin.ModelAdmin):
         ('Multiple Entry Settings', {
             'fields': (
                 'use_default_templates',
+                'default_section_capacity',
                 'auto_calculate_final_grade',
                 'default_calculation_method',
             ),

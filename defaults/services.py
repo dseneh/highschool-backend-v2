@@ -315,9 +315,37 @@ def build_initial_plan(tenant) -> dict:
                 "symbol": accounting_currency["symbol"],
             },
             "ledger_accounts_count": len(accounting_ledger_accounts),
+            "gl_accounts": [
+                {
+                    "code": a["code"],
+                    "name": a["name"],
+                    "account_type": a["account_type"],
+                    "normal_balance": a["normal_balance"],
+                    "category": a.get("category", ""),
+                    "parent_code": a.get("parent_code", ""),
+                }
+                for a in accounting_ledger_accounts
+            ],
+            "transaction_types": [
+                {
+                    "name": t["name"],
+                    "code": t["code"],
+                    "transaction_category": t["transaction_category"],
+                    "description": t.get("description", ""),
+                    "default_ledger_account_code": t.get("default_ledger_account_code", ""),
+                }
+                for t in accounting_transaction_types
+            ],
             "payment_methods": [m["name"] for m in accounting_payment_methods],
             "bank_accounts": [
-                {"account_name": b["account_name"], "account_number": b["account_number"]}
+                {
+                    "account_name": b["account_name"],
+                    "account_number": b["account_number"],
+                    "bank_name": b.get("bank_name", ""),
+                    "account_type": b.get("account_type", "savings"),
+                    "ledger_account_code": b.get("ledger_account_code", ""),
+                    "currency_code": accounting_currency["code"],
+                }
                 for b in accounting_bank_accounts
             ],
         }
@@ -726,10 +754,22 @@ def _apply_finance(tenant, user, payload: dict) -> dict:
     created = 0
 
     # Currency
-    cur = payload.get("currency", {})
-    if cur.get("code"):
+    currencies_payload = payload.get("currencies")
+    if isinstance(currencies_payload, list) and currencies_payload:
+        currencies = currencies_payload
+    else:
+        currencies = [payload.get("currency", {})]
+
+    for cur in currencies:
+        if not isinstance(cur, dict):
+            continue
+
+        code = cur.get("code")
+        if not code:
+            continue
+
         _, c = Currency.objects.get_or_create(
-            code=cur["code"],
+            code=code,
             defaults={
                 "name": cur.get("name", ""),
                 "symbol": cur.get("symbol", ""),
@@ -800,39 +840,350 @@ def _apply_finance(tenant, user, payload: dict) -> dict:
 
 
 def _apply_accounting(tenant, user, payload: dict) -> dict:
+    from django_tenants.utils import schema_context
+    from accounting.models import (
+        AccountingBankAccount,
+        AccountingCurrency,
+        AccountingFeeItem,
+        AccountingLedgerAccount,
+        AccountingPaymentMethod,
+        AccountingTransactionType,
+    )
     from defaults.data.accounting import (
         accounting_currency,
+        accounting_fee_items,
         accounting_ledger_accounts,
         accounting_payment_methods,
         accounting_transaction_types,
-        accounting_fee_items,
         accounting_bank_accounts,
     )
     from defaults import run as default_run
 
     try:
-        currency_obj = default_run.create_accounting_currency(tenant, user)
-        default_run.create_accounting_ledger_accounts(tenant, user)
-        default_run.create_accounting_payment_methods(tenant, user)
-        default_run.create_accounting_transaction_types(tenant, user)
-        default_run.create_accounting_fee_items(tenant, user)
-        default_run.create_accounting_bank_accounts(tenant, user, currency_obj)
-        return _ok("accounting", records_created=len(accounting_ledger_accounts))
+        created = 0
+
+        currency_payload = payload.get("currency") or {
+            "name": accounting_currency["name"],
+            "code": accounting_currency["code"],
+            "symbol": accounting_currency["symbol"],
+        }
+
+        gl_accounts_payload = payload.get("gl_accounts") or [
+            {
+                "code": a["code"],
+                "name": a["name"],
+                "account_type": a["account_type"],
+                "normal_balance": a["normal_balance"],
+                "category": a.get("category", ""),
+                "parent_code": a.get("parent_code", ""),
+            }
+            for a in accounting_ledger_accounts
+        ]
+
+        transaction_types_payload = payload.get("transaction_types") or [
+            {
+                "name": t["name"],
+                "code": t["code"],
+                "transaction_category": t["transaction_category"],
+                "description": t.get("description", ""),
+                "default_ledger_account_code": t.get("default_ledger_account_code", ""),
+            }
+            for t in accounting_transaction_types
+        ]
+
+        existing_tx_codes = {str(item.get("code", "")).strip().upper() for item in transaction_types_payload}
+        if "TRANSFER_IN" not in existing_tx_codes:
+            transaction_types_payload.append(
+                {
+                    "name": "Transfer In",
+                    "code": "TRANSFER_IN",
+                    "transaction_category": "transfer",
+                    "description": "Funds received into a bank/cash account",
+                    "default_ledger_account_code": "1901",
+                    "is_system_managed": True,
+                }
+            )
+        if "TRANSFER_OUT" not in existing_tx_codes:
+            transaction_types_payload.append(
+                {
+                    "name": "Transfer Out",
+                    "code": "TRANSFER_OUT",
+                    "transaction_category": "transfer",
+                    "description": "Funds sent out of a bank/cash account",
+                    "default_ledger_account_code": "1901",
+                    "is_system_managed": True,
+                }
+            )
+
+        bank_accounts_payload = payload.get("bank_accounts") or [
+            {
+                "account_name": b["account_name"],
+                "account_number": b["account_number"],
+                "bank_name": b.get("bank_name", ""),
+                "account_type": b.get("account_type", "savings"),
+                "ledger_account_code": b.get("ledger_account_code", ""),
+                "currency_code": accounting_currency["code"],
+            }
+            for b in accounting_bank_accounts
+        ]
+
+        with schema_context(tenant.schema_name):
+            currency_obj, was_created = AccountingCurrency.objects.get_or_create(
+                code=str(currency_payload.get("code", accounting_currency["code"])).upper(),
+                defaults={
+                    "name": currency_payload.get("name", accounting_currency["name"]),
+                    "symbol": currency_payload.get("symbol", accounting_currency["symbol"]),
+                    "is_base_currency": True,
+                    "decimal_places": accounting_currency.get("decimal_places", 2),
+                    "is_active": True,
+                    "created_by": user,
+                    "updated_by": user,
+                },
+            )
+            if was_created:
+                created += 1
+
+            # Ensure only one base currency is marked true.
+            AccountingCurrency.objects.exclude(id=currency_obj.id).filter(is_base_currency=True).update(is_base_currency=False)
+            if not currency_obj.is_base_currency:
+                currency_obj.is_base_currency = True
+                currency_obj.save(update_fields=["is_base_currency", "updated_by", "updated_at"])
+
+            parents = [a for a in gl_accounts_payload if not a.get("parent_code")]
+            children = [a for a in gl_accounts_payload if a.get("parent_code")]
+
+            for account_data in parents + children:
+                code = str(account_data.get("code", "")).strip()
+                if not code:
+                    continue
+                parent_account = None
+                parent_code = str(account_data.get("parent_code", "")).strip()
+                if parent_code:
+                    parent_account = AccountingLedgerAccount.objects.filter(code=parent_code).first()
+
+                _, was_created = AccountingLedgerAccount.objects.get_or_create(
+                    code=code,
+                    defaults={
+                        "name": account_data.get("name", ""),
+                        "account_type": account_data.get("account_type", "asset"),
+                        "category": account_data.get("category", ""),
+                        "normal_balance": account_data.get("normal_balance", "debit"),
+                        "is_active": True,
+                        "is_header": bool(account_data.get("is_header", False)),
+                        "is_system_managed": bool(account_data.get("is_system_managed", False)),
+                        "parent_account": parent_account,
+                        "description": account_data.get("description"),
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+            for method_data in accounting_payment_methods:
+                _, was_created = AccountingPaymentMethod.objects.get_or_create(
+                    code=method_data["code"],
+                    defaults={
+                        "name": method_data["name"],
+                        "description": method_data.get("description"),
+                        "is_active": True,
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+            for type_data in transaction_types_payload:
+                code = str(type_data.get("code", "")).strip()
+                if not code:
+                    continue
+                default_gl_code = str(type_data.get("default_ledger_account_code", "")).strip()
+                default_gl = AccountingLedgerAccount.objects.filter(code=default_gl_code).first() if default_gl_code else None
+
+                _, was_created = AccountingTransactionType.objects.get_or_create(
+                    code=code,
+                    defaults={
+                        "name": type_data.get("name", ""),
+                        "transaction_category": type_data.get("transaction_category", "income"),
+                        "description": type_data.get("description", ""),
+                        "default_ledger_account": default_gl,
+                        "is_system_managed": bool(type_data.get("is_system_managed", False)),
+                        "is_active": True,
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+            for fee_data in accounting_fee_items:
+                _, was_created = AccountingFeeItem.objects.get_or_create(
+                    code=fee_data["code"],
+                    defaults={
+                        "name": fee_data["name"],
+                        "category": fee_data["category"],
+                        "description": fee_data.get("description"),
+                        "is_active": True,
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+            for bank_data in bank_accounts_payload:
+                account_number = str(bank_data.get("account_number", "")).strip()
+                if not account_number:
+                    continue
+
+                currency_code = str(bank_data.get("currency_code", "")).strip().upper()
+                bank_currency = AccountingCurrency.objects.filter(code=currency_code).first() if currency_code else currency_obj
+                if bank_currency is None:
+                    bank_currency = currency_obj
+
+                ledger_code = str(bank_data.get("ledger_account_code", "")).strip()
+                ledger_account = AccountingLedgerAccount.objects.filter(code=ledger_code).first() if ledger_code else None
+
+                if ledger_account is None or ledger_account.account_type != "asset":
+                    ledger_account = AccountingLedgerAccount.objects.filter(code="1002", account_type="asset").first()
+                if ledger_account is None:
+                    ledger_account = AccountingLedgerAccount.objects.filter(account_type="asset").order_by("code").first()
+
+                _, was_created = AccountingBankAccount.objects.get_or_create(
+                    account_number=account_number,
+                    defaults={
+                        "account_name": bank_data.get("account_name", ""),
+                        "bank_name": bank_data.get("bank_name", ""),
+                        "account_type": bank_data.get("account_type", "savings"),
+                        "currency": bank_currency,
+                        "ledger_account": ledger_account,
+                        "opening_balance": bank_data.get("opening_balance", 0),
+                        "status": bank_data.get("status", "active"),
+                        "description": bank_data.get("description"),
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+        return _ok("accounting", records_created=created)
     except Exception as exc:
         return _fail("accounting", str(exc))
 
 
 def _apply_hr_staff(tenant, user, payload: dict) -> dict:
+    from django_tenants.utils import schema_context
+    from hr.models import EmployeeDepartment, EmployeePosition, LeaveType
+    from defaults.data.hr import employee_departments, employee_positions, leave_types
     from defaults import run as default_run
 
     try:
+        departments_payload = payload.get("departments") or [
+            {"name": d["name"], "code": d.get("code", ""), "description": d.get("description", "")}
+            for d in employee_departments
+        ]
+        positions_payload = payload.get("positions") or [
+            {
+                "title": p["title"],
+                "code": p.get("code", ""),
+                "department_code": p.get("department_code", ""),
+                "employment_type": p.get("employment_type", "full_time"),
+                "description": p.get("description", ""),
+                "can_teach": p.get("can_teach", False),
+            }
+            for p in employee_positions
+        ]
+        leave_types_payload = payload.get("leave_types") or [
+            {
+                "name": lt["name"],
+                "code": lt.get("code", ""),
+                "default_days": lt.get("default_days", 1),
+                "description": lt.get("description", ""),
+                "requires_approval": lt.get("requires_approval", True),
+                "accrual_frequency": lt.get("accrual_frequency", "upfront"),
+                "allow_carryover": lt.get("allow_carryover", False),
+                "max_carryover_days": lt.get("max_carryover_days", 0),
+            }
+            for lt in leave_types
+        ]
+
+        created = 0
+        with schema_context(tenant.schema_name):
+            department_by_code = {}
+
+            for department_data in departments_payload:
+                name = str(department_data.get("name", "")).strip()
+                if not name:
+                    continue
+                code = str(department_data.get("code", "")).strip().upper()
+                department, was_created = EmployeeDepartment.objects.get_or_create(
+                    name=name,
+                    defaults={
+                        "code": code,
+                        "description": department_data.get("description", ""),
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+                department_by_code[code] = department
+
+            for position_data in positions_payload:
+                title = str(position_data.get("title", "")).strip()
+                if not title:
+                    continue
+
+                department_code = str(position_data.get("department_code", "")).strip().upper()
+                department = department_by_code.get(department_code)
+                if department is None and department_code:
+                    department = EmployeeDepartment.objects.filter(code=department_code).first()
+
+                _, was_created = EmployeePosition.objects.get_or_create(
+                    title=title,
+                    department=department,
+                    defaults={
+                        "code": str(position_data.get("code", "")).strip().upper(),
+                        "description": position_data.get("description", ""),
+                        "employment_type": position_data.get("employment_type", "full_time"),
+                        "can_teach": bool(position_data.get("can_teach", False)),
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+            for leave_data in leave_types_payload:
+                name = str(leave_data.get("name", "")).strip()
+                if not name:
+                    continue
+
+                _, was_created = LeaveType.objects.get_or_create(
+                    name=name,
+                    defaults={
+                        "code": str(leave_data.get("code", "")).strip().upper(),
+                        "description": leave_data.get("description", ""),
+                        "default_days": int(leave_data.get("default_days", 1) or 1),
+                        "requires_approval": bool(leave_data.get("requires_approval", True)),
+                        "accrual_frequency": leave_data.get("accrual_frequency", "upfront"),
+                        "allow_carryover": bool(leave_data.get("allow_carryover", False)),
+                        "max_carryover_days": int(leave_data.get("max_carryover_days", 0) or 0),
+                        "created_by": user,
+                        "updated_by": user,
+                    },
+                )
+                if was_created:
+                    created += 1
+
+        # Keep legacy staff entities in sync with defaults.
         default_run.create_departments(tenant, user)
         default_run.create_position_categories(tenant, user)
         default_run.create_positions(tenant, user)
-        default_run.create_employee_departments(tenant, user)
-        default_run.create_employee_positions(tenant, user)
-        default_run.create_leave_types(tenant, user)
-        return _ok("hr_staff", records_created=10)
+
+        return _ok("hr_staff", records_created=created)
     except Exception as exc:
         return _fail("hr_staff", str(exc))
 
