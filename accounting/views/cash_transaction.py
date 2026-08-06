@@ -3,6 +3,8 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
@@ -54,6 +56,7 @@ from accounting.services.post_all import (
     extract_filter_params,
     get_eligible_post_all_queryset,
 )
+from accounting.services.cash_transaction_pdf import build_cash_transaction_pdf_bytes
 from accounting.views.base import AccountingErrorFormattingMixin
 
 
@@ -241,6 +244,10 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             return value == 1
         return False
 
+    def _can_complete_transaction(self, user):
+        role = str(getattr(user, "role", "") or "").strip().lower()
+        return role in {"admin", "superadmin"}
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
@@ -269,10 +276,16 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         new_status,
         rejection_reason=None,
         prevent_journal_posting=False,
+        via_complete_action=False,
     ):
+        new_status = str(new_status or "").strip().lower()
+        if new_status in {"canceled", "cancelled"}:
+            new_status = AccountingCashTransaction.TransactionStatus.REJECTED
+
         valid_statuses = {
             AccountingCashTransaction.TransactionStatus.PENDING,
             AccountingCashTransaction.TransactionStatus.APPROVED,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
             AccountingCashTransaction.TransactionStatus.REJECTED,
         }
 
@@ -282,37 +295,149 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if (
+            new_status == AccountingCashTransaction.TransactionStatus.COMPLETED
+            and not via_complete_action
+        ):
+            return Response(
+                {"detail": "Use the dedicated complete endpoint to finalize this transaction."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         previous_status = cash_transaction.status
+        actor_name = (
+            getattr(self.request.user, "username", None)
+            or getattr(self.request.user, "email", None)
+            or str(self.request.user)
+        )
+
+        if (
+            previous_status == AccountingCashTransaction.TransactionStatus.COMPLETED
+            and new_status == AccountingCashTransaction.TransactionStatus.COMPLETED
+        ):
+            return Response(
+                {"detail": "Transaction is already completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        transition_map = {
+            AccountingCashTransaction.TransactionStatus.PENDING: {
+                AccountingCashTransaction.TransactionStatus.PENDING,
+                AccountingCashTransaction.TransactionStatus.APPROVED,
+                AccountingCashTransaction.TransactionStatus.REJECTED,
+            },
+            AccountingCashTransaction.TransactionStatus.APPROVED: {
+                AccountingCashTransaction.TransactionStatus.PENDING,
+                AccountingCashTransaction.TransactionStatus.APPROVED,
+                AccountingCashTransaction.TransactionStatus.COMPLETED,
+                AccountingCashTransaction.TransactionStatus.REJECTED,
+            },
+            AccountingCashTransaction.TransactionStatus.REJECTED: {
+                AccountingCashTransaction.TransactionStatus.PENDING,
+                AccountingCashTransaction.TransactionStatus.APPROVED,
+                AccountingCashTransaction.TransactionStatus.REJECTED,
+            },
+            AccountingCashTransaction.TransactionStatus.COMPLETED: {
+                AccountingCashTransaction.TransactionStatus.PENDING,
+                AccountingCashTransaction.TransactionStatus.REJECTED,
+                AccountingCashTransaction.TransactionStatus.COMPLETED,
+            },
+        }
+
+        allowed_next = transition_map.get(previous_status, set())
+        if new_status not in allowed_next:
+            return Response(
+                {
+                    "detail": (
+                        f"Invalid status transition from '{previous_status}' to '{new_status}'."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             with transaction.atomic():
                 cash_transaction.status = new_status
+                cash_transaction.updated_by = self.request.user
                 if new_status == AccountingCashTransaction.TransactionStatus.REJECTED:
                     cash_transaction.rejection_reason = rejection_reason or cash_transaction.rejection_reason
+                    cash_transaction.rejected_by = actor_name
+                    cash_transaction.rejected_at = timezone.now()
                 else:
                     cash_transaction.rejection_reason = None
+                    cash_transaction.rejected_by = None
+                    cash_transaction.rejected_at = None
 
-                cash_transaction.save(update_fields=["status", "rejection_reason", "updated_at"])
+                if new_status == AccountingCashTransaction.TransactionStatus.PENDING:
+                    cash_transaction.approved_by = None
+                    cash_transaction.approved_at = None
+                    cash_transaction.completed_by = None
+                    cash_transaction.completed_at = None
 
-                # Auto-post on approval.
+                if new_status == AccountingCashTransaction.TransactionStatus.APPROVED:
+                    cash_transaction.approved_by = actor_name
+                    cash_transaction.approved_at = timezone.now()
+                    cash_transaction.completed_by = None
+                    cash_transaction.completed_at = None
+
+                if new_status == AccountingCashTransaction.TransactionStatus.COMPLETED:
+                    cash_transaction.completed_by = actor_name
+                    cash_transaction.completed_at = timezone.now()
+
+                cash_transaction.save(
+                    update_fields=[
+                        "status",
+                        "rejection_reason",
+                        "rejected_by",
+                        "rejected_at",
+                        "approved_by",
+                        "approved_at",
+                        "completed_by",
+                        "completed_at",
+                        "updated_by",
+                        "updated_at",
+                    ]
+                )
+
+                # Finalization happens only on completion.
+                if new_status == AccountingCashTransaction.TransactionStatus.COMPLETED:
+                    linked_journal = cash_transaction.journal_entry
+                    if (
+                        linked_journal is not None
+                        and linked_journal.status == AccountingJournalEntry.EntryStatus.REVERSED
+                    ):
+                        cash_transaction.journal_entry = None
+                        cash_transaction.save(update_fields=["journal_entry", "updated_at"])
+                        linked_journal = None
+
+                    if linked_journal is None:
+                        post_cash_transaction_to_ledger(cash_transaction, actor=self.request.user)
+                    else:
+                        sync_cash_transaction_journal_entry(cash_transaction, actor=self.request.user)
+
+                # Reverse and unlink journal entry if a posted transaction moves
+                # away from completed/finalized state.
                 if (
-                    previous_status != AccountingCashTransaction.TransactionStatus.APPROVED
-                    and new_status == AccountingCashTransaction.TransactionStatus.APPROVED
-                    and not prevent_journal_posting
-                ):
-                    post_cash_transaction_to_ledger(cash_transaction, actor=self.request.user)
-
-                # Reverse and unlink journal entry if status moves away from approved.
-                if (
-                    previous_status == AccountingCashTransaction.TransactionStatus.APPROVED
-                    and new_status != AccountingCashTransaction.TransactionStatus.APPROVED
+                    previous_status != new_status
+                    and new_status != AccountingCashTransaction.TransactionStatus.COMPLETED
+                    and previous_status
+                    in {
+                        AccountingCashTransaction.TransactionStatus.APPROVED,
+                        AccountingCashTransaction.TransactionStatus.COMPLETED,
+                    }
+                    and cash_transaction.journal_entry_id
                 ):
                     reverse_cash_transaction_journal_entry(cash_transaction, actor=self.request.user)
         except ValidationError as exc:
             message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
             return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
 
-        approved_status = AccountingCashTransaction.TransactionStatus.APPROVED
-        if previous_status != new_status and (previous_status == approved_status or new_status == approved_status):
+        completed_status = AccountingCashTransaction.TransactionStatus.COMPLETED
+        if previous_status != new_status and (
+            previous_status == completed_status
+            or new_status == completed_status
+            or bool(cash_transaction.journal_entry_id)
+        ):
             recalculate_bank_account_current_balance(cash_transaction.bank_account)
 
         return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
@@ -507,23 +632,16 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if refund_ledger_account is not None:
             save_kwargs["ledger_account"] = refund_ledger_account
 
-        cash_transaction = serializer.save(**save_kwargs)
-        if cash_transaction.status == AccountingCashTransaction.TransactionStatus.APPROVED:
+        cash_transaction = serializer.save(
+            created_by=self.request.user,
+            updated_by=self.request.user,
+            **save_kwargs,
+        )
+        if cash_transaction.status == AccountingCashTransaction.TransactionStatus.COMPLETED:
             post_cash_transaction_to_ledger(cash_transaction, actor=self.request.user)
             recalculate_bank_account_current_balance(cash_transaction.bank_account)
 
     def _validate_editable(self, cash_transaction):
-        if cash_transaction.status == AccountingCashTransaction.TransactionStatus.REJECTED:
-            return Response(
-                {
-                    "detail": (
-                        "Rejected transactions cannot be edited. "
-                        "Create a new transaction if corrections are needed."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         if cash_transaction.source_reference:
             if AccountingAccountTransfer.objects.filter(
                 reference_number=cash_transaction.source_reference
@@ -538,21 +656,22 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             journal_entry is not None
             and journal_entry.status == AccountingJournalEntry.EntryStatus.REVERSED
         ):
-            return Response(
-                {
-                    "detail": (
-                        "This transaction's journal entry was reversed and "
-                        "cannot be edited in place."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            # Self-heal stale links left by older flows/manual edits: once a
+            # journal is reversed, this transaction should no longer point to it.
+            cash_transaction.journal_entry = None
+            if hasattr(cash_transaction, "updated_by"):
+                cash_transaction.updated_by = getattr(self.request, "user", None)
+                cash_transaction.save(update_fields=["journal_entry", "updated_by", "updated_at"])
+            else:
+                cash_transaction.save(update_fields=["journal_entry", "updated_at"])
 
         return None
 
     def perform_update(self, serializer):
         cash_transaction = self.get_object()
+        previous_status = cash_transaction.status
         previous_bank_account_id = cash_transaction.bank_account_id
+        had_posted_journal = bool(cash_transaction.journal_entry_id)
 
         self._validate_student_income_payment(
             serializer.validated_data,
@@ -571,31 +690,52 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if refund_ledger_account is not None:
             save_kwargs["ledger_account"] = refund_ledger_account
 
+        did_reverse_posting = False
         with transaction.atomic():
+            if had_posted_journal:
+                reverse_cash_transaction_journal_entry(
+                    cash_transaction,
+                    actor=self.request.user,
+                )
+                did_reverse_posting = True
+
             cash_transaction = serializer.save(**save_kwargs)
 
-            if cash_transaction.journal_entry_id:
-                try:
-                    sync_cash_transaction_journal_entry(
-                        cash_transaction, actor=self.request.user
-                    )
-                except ValidationError as exc:
-                    message = (
-                        exc.messages[0]
-                        if hasattr(exc, "messages") and exc.messages
-                        else str(exc)
-                    )
-                    raise serializers.ValidationError({"detail": message}) from exc
+            # Any edit re-opens workflow and requires re-approval.
+            cash_transaction.status = AccountingCashTransaction.TransactionStatus.PENDING
+            cash_transaction.rejection_reason = None
+            cash_transaction.rejected_by = None
+            cash_transaction.rejected_at = None
+            cash_transaction.approved_by = None
+            cash_transaction.approved_at = None
+            cash_transaction.completed_by = None
+            cash_transaction.completed_at = None
+            cash_transaction.updated_by = self.request.user
+            cash_transaction.save(
+                update_fields=[
+                    "status",
+                    "rejection_reason",
+                    "rejected_by",
+                    "rejected_at",
+                    "approved_by",
+                    "approved_at",
+                    "completed_by",
+                    "completed_at",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
 
         bank_account_ids = {
             account_id
             for account_id in (previous_bank_account_id, cash_transaction.bank_account_id)
             if account_id
         }
-        if (
-            cash_transaction.status
-            == AccountingCashTransaction.TransactionStatus.APPROVED
-            and bank_account_ids
+        if bank_account_ids and (
+            previous_status == AccountingCashTransaction.TransactionStatus.COMPLETED
+            or did_reverse_posting
+            or cash_transaction.status
+            == AccountingCashTransaction.TransactionStatus.COMPLETED
         ):
             for bank_account in AccountingBankAccount.objects.filter(
                 id__in=bank_account_ids
@@ -607,14 +747,26 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         error_response = self._validate_editable(cash_transaction)
         if error_response:
             return error_response
-        return super().update(request, *args, **kwargs)
+
+        serializer = self.get_serializer(cash_transaction, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        cash_transaction.refresh_from_db()
+        return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
 
     def partial_update(self, request, *args, **kwargs):
         cash_transaction = self.get_object()
         error_response = self._validate_editable(cash_transaction)
         if error_response:
             return error_response
-        return super().partial_update(request, *args, **kwargs)
+
+        serializer = self.get_serializer(cash_transaction, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        cash_transaction.refresh_from_db()
+        return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
         cash_transaction = self.get_object()
@@ -667,6 +819,20 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             prevent_journal_posting=prevent_journal_posting,
         )
 
+    @action(detail=True, methods=["put"], url_path="complete")
+    def complete(self, request, pk=None):
+        if not self._can_complete_transaction(request.user):
+            return Response(
+                {"detail": "Only superadmin/admin can complete transactions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        cash_transaction = self.get_object()
+        return self._update_status(
+            cash_transaction,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+            via_complete_action=True,
+        )
+
     @action(detail=True, methods=["put"], url_path="reject")
     def reject(self, request, pk=None):
         rejection_reason = request.data.get("rejection_reason")
@@ -682,23 +848,97 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             rejection_reason=rejection_reason,
         )
 
-    @action(detail=True, methods=["post"], url_path="post")
-    def post_transaction(self, request, pk=None):
+    @action(detail=True, methods=["patch"], url_path="notes")
+    def update_notes(self, request, pk=None):
+        cash_transaction = self.get_object()
+        if "notes" not in request.data:
+            return Response(
+                {"detail": "notes is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_notes = request.data.get("notes")
+        notes = (str(raw_notes).strip() if raw_notes is not None else "") or None
+
+        with transaction.atomic():
+            cash_transaction.notes = notes
+            if hasattr(cash_transaction, "updated_by"):
+                cash_transaction.updated_by = request.user
+                cash_transaction.save(update_fields=["notes", "updated_by", "updated_at"])
+            else:
+                cash_transaction.save(update_fields=["notes", "updated_at"])
+
+            journals_to_sync = []
+            linked_journal = cash_transaction.journal_entry
+            if (
+                linked_journal is not None
+                and linked_journal.status != AccountingJournalEntry.EntryStatus.REVERSED
+            ):
+                journals_to_sync.append(linked_journal)
+
+            # Legacy/imported rows can lose the direct FK while still keeping
+            # a reliable source_reference link in journal entries.
+            fallback_journals = AccountingJournalEntry.objects.filter(
+                source_reference=cash_transaction.reference_number,
+            ).exclude(status=AccountingJournalEntry.EntryStatus.REVERSED)
+
+            synced_ids = {entry.id for entry in journals_to_sync}
+            for entry in fallback_journals:
+                if entry.id not in synced_ids:
+                    journals_to_sync.append(entry)
+                    synced_ids.add(entry.id)
+
+            for journal_entry in journals_to_sync:
+                journal_entry.notes = notes
+                journal_entry.save(update_fields=["notes", "updated_at"])
+
+        cash_transaction.refresh_from_db()
+        return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="download-pdf")
+    def download_pdf(self, request, pk=None):
         cash_transaction = self.get_object()
 
         try:
-            journal_entry = post_cash_transaction_to_ledger(cash_transaction, actor=request.user)
-        except ValidationError as exc:
-            message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
-            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+            pdf_bytes = build_cash_transaction_pdf_bytes(cash_transaction)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Could not generate PDF for this transaction: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-        recalculate_bank_account_current_balance(cash_transaction.bank_account)
+        safe_reference = (cash_transaction.reference_number or str(cash_transaction.id)).replace(" ", "_")
+        filename = f"cash_transaction_{safe_reference}.pdf"
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["post"], url_path="post")
+    def post_transaction(self, request, pk=None):
+        if not self._can_complete_transaction(request.user):
+            return Response(
+                {"detail": "Only superadmin/admin can complete transactions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        cash_transaction = self.get_object()
+        response = self._update_status(
+            cash_transaction,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+            via_complete_action=True,
+        )
+        if response.status_code != status.HTTP_200_OK:
+            return response
 
         serializer = self.get_serializer(cash_transaction)
+        journal_entry_id = None
+        if cash_transaction.journal_entry_id:
+            journal_entry_id = str(cash_transaction.journal_entry_id)
+
         return Response(
             {
-                "detail": "Transaction posted successfully",
-                "journal_entry_id": str(journal_entry.id),
+                "detail": "Transaction completed successfully",
+                "journal_entry_id": journal_entry_id,
                 "transaction": serializer.data,
             },
             status=status.HTTP_200_OK,

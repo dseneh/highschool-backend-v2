@@ -3,6 +3,7 @@ from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.http import HttpResponse
 from django.test import SimpleTestCase, TestCase
 from rest_framework.response import Response
@@ -19,7 +20,7 @@ from accounting.views.cash_transaction import (
     AccountingBankAccountViewSet,
     AccountingCashTransactionViewSet,
 )
-from accounting.models import AccountingCashTransaction
+from accounting.models import AccountingCashTransaction, AccountingJournalEntry
 
 
 class AccountingPostingServiceTests(SimpleTestCase):
@@ -66,6 +67,27 @@ class AccountingPostingServiceTests(SimpleTestCase):
 
         with self.assertRaises(ValidationError):
             post_cash_transaction_to_ledger(cash_tx)
+
+    @patch("accounting.services.posting.AccountingJournalLine.objects.create")
+    @patch("accounting.services.posting.AccountingJournalEntry.objects.create")
+    @patch("accounting.services.posting._resolve_academic_year")
+    @patch("accounting.services.posting.db_transaction.atomic")
+    def test_allows_completed_transactions_to_post(
+        self,
+        mock_atomic,
+        mock_resolve_academic_year,
+        mock_journal_entry_create,
+        mock_journal_line_create,
+    ):
+        cash_tx, _, _ = self._build_cash_transaction(status="completed")
+        mock_atomic.return_value = nullcontext()
+        mock_resolve_academic_year.return_value = MagicMock(name="academic_year")
+        mock_journal_entry_create.return_value = MagicMock(name="journal_entry")
+
+        result = post_cash_transaction_to_ledger(cash_tx)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(mock_journal_line_create.call_count, 2)
 
     @patch("accounting.services.posting.AccountingJournalLine.objects.create")
     @patch("accounting.services.posting.AccountingJournalEntry.objects.create")
@@ -125,6 +147,41 @@ class AccountingPostingServiceTests(SimpleTestCase):
         self.assertEqual(first_call["debit_amount"], Decimal("100.00"))
         self.assertIs(second_call["ledger_account"], bank_ledger)
         self.assertEqual(second_call["credit_amount"], Decimal("100.00"))
+
+    @patch("accounting.services.posting.AccountingJournalLine.objects.create")
+    @patch("accounting.services.posting.AccountingJournalEntry.objects.create")
+    @patch("accounting.services.posting._resolve_academic_year")
+    @patch("accounting.services.posting.db_transaction.atomic")
+    def test_post_retries_with_unique_reference_on_duplicate_key(
+        self,
+        mock_atomic,
+        mock_resolve_academic_year,
+        mock_journal_entry_create,
+        mock_journal_line_create,
+    ):
+        cash_tx, _, _ = self._build_cash_transaction(category="income")
+        cash_tx.reference_number = "123"
+        mock_atomic.return_value = nullcontext()
+        mock_resolve_academic_year.return_value = MagicMock(name="academic_year")
+
+        created_entry = MagicMock(name="journal_entry")
+        created_entry.id = "je-1"
+        mock_journal_entry_create.side_effect = [
+            IntegrityError(
+                'duplicate key value violates unique constraint "accounting_journal_entry_reference_number_key"'
+            ),
+            created_entry,
+        ]
+
+        result = post_cash_transaction_to_ledger(cash_tx)
+
+        self.assertIs(result, created_entry)
+        self.assertEqual(mock_journal_entry_create.call_count, 2)
+        first_call = mock_journal_entry_create.call_args_list[0].kwargs
+        second_call = mock_journal_entry_create.call_args_list[1].kwargs
+        self.assertEqual(first_call["reference_number"], "123")
+        self.assertEqual(second_call["reference_number"], "123-2")
+        self.assertEqual(mock_journal_line_create.call_count, 2)
 
     def test_rejects_missing_posting_mapping(self):
         cash_tx, _, _ = self._build_cash_transaction()
@@ -303,10 +360,50 @@ class EnrollmentBillingArrearsTests(SimpleTestCase):
 
 
 class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
+    def test_validate_editable_unlinks_reversed_journal_instead_of_blocking(self):
+        request_user = MagicMock()
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=request_user)
+
+        reversed_journal = SimpleNamespace(status=AccountingJournalEntry.EntryStatus.REVERSED)
+        cash_tx = MagicMock()
+        cash_tx.source_reference = None
+        cash_tx.journal_entry = reversed_journal
+
+        response = viewset._validate_editable(cash_tx)
+
+        self.assertIsNone(response)
+        self.assertIsNone(cash_tx.journal_entry)
+        self.assertEqual(cash_tx.updated_by, request_user)
+        cash_tx.save.assert_called_once_with(update_fields=["journal_entry", "updated_by", "updated_at"])
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    def test_update_status_maps_canceled_alias_to_rejected(self, _mock_atomic):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=SimpleNamespace(username="auditor", email="auditor@example.com"))
+        viewset.format_kwarg = None
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+        cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
+
+        with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})):
+            response = viewset._update_status(
+                cash_tx,
+                "canceled",
+                rejection_reason="Canceled by user",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(cash_tx.status, AccountingCashTransaction.TransactionStatus.REJECTED)
+        self.assertEqual(cash_tx.rejected_by, "auditor")
+        self.assertIsNotNone(cash_tx.rejected_at)
+
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
-    def test_update_status_auto_posts_when_approved(
+    def test_update_status_does_not_post_when_approved(
         self,
         mock_post,
         mock_recalc,
@@ -319,6 +416,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         cash_tx = MagicMock()
         cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
         cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
 
         with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})):
             response = viewset._update_status(
@@ -327,13 +425,13 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
-        mock_recalc.assert_called_once_with(cash_tx.bank_account)
+        mock_post.assert_not_called()
+        mock_recalc.assert_not_called()
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
-    def test_update_status_can_skip_auto_post_on_approve(
+    def test_update_status_approve_ignores_prevent_journal_posting_flag(
         self,
         mock_post,
         mock_recalc,
@@ -346,6 +444,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         cash_tx = MagicMock()
         cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
         cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
 
         with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})):
             response = viewset._update_status(
@@ -356,12 +455,12 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_post.assert_not_called()
-        mock_recalc.assert_called_once_with(cash_tx.bank_account)
+        mock_recalc.assert_not_called()
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.reverse_cash_transaction_journal_entry")
-    def test_update_status_reverses_journal_when_leaving_approved(
+    def test_update_status_reverses_when_moving_from_approved_to_rejected_if_posted(
         self,
         mock_reverse,
         mock_recalc,
@@ -374,6 +473,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         cash_tx = MagicMock()
         cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
         cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = "je-1"
 
         with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})):
             response = viewset._update_status(
@@ -386,6 +486,154 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_reverse.assert_called_once_with(cash_tx, actor=viewset.request.user)
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
 
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
+    def test_update_status_completes_approved_transaction_and_recalculates_balance(
+        self,
+        mock_post,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.format_kwarg = None
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
+        cash_tx.journal_entry = None
+
+        with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})):
+            response = viewset._update_status(
+                cash_tx,
+                AccountingCashTransaction.TransactionStatus.COMPLETED,
+                via_complete_action=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
+        mock_recalc.assert_called_once_with(cash_tx.bank_account)
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
+    @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
+    def test_update_status_complete_unlinks_stale_reversed_journal_then_posts(
+        self,
+        mock_post,
+        mock_sync,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.format_kwarg = None
+
+        reversed_journal = SimpleNamespace(status=AccountingJournalEntry.EntryStatus.REVERSED)
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = "je-reversed"
+        cash_tx.journal_entry = reversed_journal
+
+        with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})):
+            response = viewset._update_status(
+                cash_tx,
+                AccountingCashTransaction.TransactionStatus.COMPLETED,
+                via_complete_action=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(cash_tx.journal_entry)
+        mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
+        mock_sync.assert_not_called()
+        mock_recalc.assert_called_once_with(cash_tx.bank_account)
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
+    def test_update_status_rejects_completed_via_generic_status_endpoint(
+        self,
+        mock_post,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.format_kwarg = None
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.bank_account = MagicMock()
+
+        response = viewset._update_status(
+            cash_tx,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("dedicated complete endpoint", response.data["detail"])
+        mock_post.assert_not_called()
+        mock_recalc.assert_not_called()
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
+    def test_update_status_rejects_complete_from_non_approved_status(
+        self,
+        mock_post,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.format_kwarg = None
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+        cash_tx.bank_account = MagicMock()
+
+        response = viewset._update_status(
+            cash_tx,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+            via_complete_action=True,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid status transition", response.data["detail"])
+        mock_post.assert_not_called()
+        mock_recalc.assert_not_called()
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
+    def test_update_status_rejects_duplicate_completion(
+        self,
+        mock_post,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.format_kwarg = None
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.COMPLETED
+        cash_tx.bank_account = MagicMock()
+
+        response = viewset._update_status(
+            cash_tx,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+            via_complete_action=True,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "Transaction is already completed.")
+        mock_post.assert_not_called()
+        mock_recalc.assert_not_called()
+
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
     def test_perform_create_posts_if_created_as_approved(
@@ -394,7 +642,8 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_recalc,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        request_user = MagicMock()
+        viewset.request = SimpleNamespace(user=request_user)
 
         serializer = MagicMock()
         serializer.validated_data = {
@@ -404,14 +653,218 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         }
 
         cash_tx = MagicMock()
-        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.COMPLETED
         cash_tx.bank_account = MagicMock()
         serializer.save.return_value = cash_tx
 
-        viewset.perform_create(serializer)
+        with patch.object(viewset, "_validate_student_income_payment"), patch.object(
+            viewset, "_validate_student_refund"
+        ), patch.object(viewset, "_refund_ledger_account_override", return_value=None):
+            viewset.perform_create(serializer)
 
+        serializer.save.assert_called_once_with(created_by=request_user, updated_by=request_user)
         mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.reverse_cash_transaction_journal_entry")
+    @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
+    def test_perform_update_resets_completed_transaction_to_pending(
+        self,
+        mock_sync,
+        mock_reverse,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+
+        bank_account = MagicMock()
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.COMPLETED
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.bank_account = bank_account
+        cash_tx.journal_entry_id = "je-1"
+
+        serializer = MagicMock()
+        serializer.validated_data = {}
+        serializer.save.return_value = cash_tx
+
+        with patch.object(viewset, "get_object", return_value=cash_tx), patch.object(
+            viewset, "_validate_student_income_payment"
+        ), patch.object(viewset, "_validate_student_refund"), patch.object(
+            viewset, "_refund_ledger_account_override", return_value=None
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.filter",
+            return_value=[bank_account],
+        ):
+            viewset.perform_update(serializer)
+
+        self.assertEqual(
+            cash_tx.status,
+            AccountingCashTransaction.TransactionStatus.PENDING,
+        )
+        self.assertIsNone(cash_tx.completed_by)
+        self.assertIsNone(cash_tx.completed_at)
+        self.assertIsNone(cash_tx.approved_by)
+        self.assertIsNone(cash_tx.approved_at)
+        self.assertIsNone(cash_tx.rejection_reason)
+        mock_reverse.assert_called_once_with(cash_tx, actor=viewset.request.user)
+        mock_sync.assert_not_called()
+        mock_recalc.assert_called_once_with(bank_account)
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
+    def test_perform_update_resets_rejected_transaction_to_pending(
+        self,
+        mock_sync,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.REJECTED
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
+
+        serializer = MagicMock()
+        serializer.validated_data = {}
+        serializer.save.return_value = cash_tx
+
+        with patch.object(viewset, "get_object", return_value=cash_tx), patch.object(
+            viewset, "_validate_student_income_payment"
+        ), patch.object(viewset, "_validate_student_refund"), patch.object(
+            viewset, "_refund_ledger_account_override", return_value=None
+        ):
+            viewset.perform_update(serializer)
+
+        self.assertEqual(
+            cash_tx.status,
+            AccountingCashTransaction.TransactionStatus.PENDING,
+        )
+        mock_sync.assert_not_called()
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
+    def test_perform_update_resets_approved_transaction_to_pending(
+        self,
+        mock_sync,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
+
+        serializer = MagicMock()
+        serializer.validated_data = {}
+        serializer.save.return_value = cash_tx
+
+        with patch.object(viewset, "get_object", return_value=cash_tx), patch.object(
+            viewset, "_validate_student_income_payment"
+        ), patch.object(viewset, "_validate_student_refund"), patch.object(
+            viewset, "_refund_ledger_account_override", return_value=None
+        ):
+            viewset.perform_update(serializer)
+
+        self.assertEqual(
+            cash_tx.status,
+            AccountingCashTransaction.TransactionStatus.PENDING,
+        )
+        mock_sync.assert_not_called()
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.reverse_cash_transaction_journal_entry")
+    @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
+    def test_perform_update_reverses_any_posted_transaction_on_edit(
+        self,
+        mock_sync,
+        mock_reverse,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+
+        bank_account = MagicMock()
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.bank_account = bank_account
+        cash_tx.journal_entry_id = "je-1"
+
+        serializer = MagicMock()
+        serializer.validated_data = {}
+        serializer.save.return_value = cash_tx
+
+        with patch.object(viewset, "get_object", return_value=cash_tx), patch.object(
+            viewset, "_validate_student_income_payment"
+        ), patch.object(viewset, "_validate_student_refund"), patch.object(
+            viewset, "_refund_ledger_account_override", return_value=None
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.filter",
+            return_value=[bank_account],
+        ):
+            viewset.perform_update(serializer)
+
+        self.assertEqual(
+            cash_tx.status,
+            AccountingCashTransaction.TransactionStatus.PENDING,
+        )
+        mock_reverse.assert_called_once_with(cash_tx, actor=viewset.request.user)
+        mock_sync.assert_not_called()
+        mock_recalc.assert_called_once_with(bank_account)
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.reverse_cash_transaction_journal_entry")
+    @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
+    def test_perform_update_forces_pending_and_reverses_when_previously_pending_but_posted(
+        self,
+        mock_sync,
+        mock_reverse,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock())
+
+        bank_account = MagicMock()
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.bank_account = bank_account
+        cash_tx.journal_entry_id = "je-1"
+
+        serializer = MagicMock()
+        serializer.validated_data = {}
+        serializer.save.return_value = cash_tx
+
+        with patch.object(viewset, "get_object", return_value=cash_tx), patch.object(
+            viewset, "_validate_student_income_payment"
+        ), patch.object(viewset, "_validate_student_refund"), patch.object(
+            viewset, "_refund_ledger_account_override", return_value=None
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.filter",
+            return_value=[bank_account],
+        ):
+            viewset.perform_update(serializer)
+
+        self.assertEqual(
+            cash_tx.status,
+            AccountingCashTransaction.TransactionStatus.PENDING,
+        )
+        mock_reverse.assert_called_once_with(cash_tx, actor=viewset.request.user)
+        mock_sync.assert_not_called()
+        mock_recalc.assert_called_once_with(bank_account)
 
 
 class AccountingBankAccountListOptimizationTests(SimpleTestCase):
@@ -495,8 +948,13 @@ class AccountingCashTransactionExportTests(SimpleTestCase):
 
 
 class AccountingJournalEntryExportTests(SimpleTestCase):
+    @patch("accounting.views.ledger._build_bank_by_ledger_map", return_value={})
     @patch("common.file_generators.FileGenerator.generate_file")
-    def test_export_uses_chunked_iterator_for_prefetched_queryset(self, mock_generate):
+    def test_export_uses_chunked_iterator_for_prefetched_queryset(
+        self,
+        mock_generate,
+        _mock_bank_map,
+    ):
         from accounting.views.ledger import AccountingJournalEntryViewSet
 
         mock_generate.return_value = HttpResponse(b"csv")
@@ -518,6 +976,25 @@ class AccountingJournalEntryExportTests(SimpleTestCase):
         mock_queryset.iterator.assert_called_once_with(chunk_size=2000)
         self.assertIsInstance(response, HttpResponse)
         mock_generate.assert_called_once()
+
+
+class AccountingTransactionAccessPolicyTests(SimpleTestCase):
+    def test_complete_action_requires_admin_or_superadmin_role(self):
+        from accounting.access_policies import AccountingTransactionAccessPolicy
+
+        matching_rules = [
+            statement
+            for statement in AccountingTransactionAccessPolicy.statements
+            if "complete" in statement.get("action", [])
+        ]
+
+        self.assertTrue(matching_rules)
+        self.assertTrue(
+            any(
+                rule.get("condition") == "is_role_in:superadmin,admin"
+                for rule in matching_rules
+            )
+        )
 
 
 class CashStandingBalanceTests(SimpleTestCase):

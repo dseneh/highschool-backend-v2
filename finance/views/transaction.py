@@ -14,6 +14,7 @@ from rest_framework.response import Response
 
 from academics.models import AcademicYear
 from accounting.models import AccountingCashTransaction
+from accounting.serializers import AccountingCashTransactionSerializer
 from common.filter import get_transaction_queryparams
 from common.utils import create_model_data, get_object_by_uuid_or_fields, update_model_fields
 from finance.access_policies import TransactionAccessPolicy
@@ -46,6 +47,11 @@ class TransactionViewSet(viewsets.ModelViewSet):
     permission_classes = [TransactionAccessPolicy]
     pagination_class = TransactionPageNumberPagination
     serializer_class = TransactionDetailSerializer
+
+    @staticmethod
+    def _can_complete_transaction(user) -> bool:
+        role = str(getattr(user, "role", "") or "").strip().lower()
+        return role in {"admin", "superadmin"}
 
     def _ensure_tenant_context(self):
         """Reject tenant-specific finance operations in public schema."""
@@ -170,26 +176,131 @@ class TransactionViewSet(viewsets.ModelViewSet):
         # Set status to pending for updates
         mutable_data["status"] = "pending"
 
-        # Replace request.data with our mutated copy for downstream helpers
-        request._full_data = mutable_data  # type: ignore[attr-defined]
-
         return update_model_fields(
-            request, transaction_obj, allowed_fields, TransactionDetailSerializer
+            request,
+            transaction_obj,
+            allowed_fields,
+            TransactionDetailSerializer,
+            data=mutable_data,
+        )
+
+    def _update_accounting_transaction(self, request, pk, partial=False):
+        """Fallback update path for accounting cash transactions.
+
+        This keeps finance-originating edit flows consistent with accounting
+        lifecycle rules: any non-pending edit reverts to pending and reverses
+        linked journal postings before applying changes.
+        """
+        from accounting.models import AccountingBankAccount
+        from accounting.services import (
+            recalculate_bank_account_current_balance,
+            reverse_cash_transaction_journal_entry,
+        )
+
+        try:
+            cash_tx = AccountingCashTransaction.objects.select_related("bank_account").get(pk=pk)
+        except AccountingCashTransaction.DoesNotExist:
+            raise NotFound("No transaction found with the given ID.")
+
+        payload = request.data.copy()
+
+        # Accept finance-style field names from generic transaction forms.
+        if payload.get("account") is not None and payload.get("bank_account") is None:
+            payload["bank_account"] = payload.get("account")
+        if payload.get("type") is not None and payload.get("transaction_type") is None:
+            payload["transaction_type"] = payload.get("type")
+        if payload.get("date") is not None and payload.get("transaction_date") is None:
+            payload["transaction_date"] = payload.get("date")
+        if payload.get("reference") is not None and payload.get("reference_number") is None:
+            payload["reference_number"] = payload.get("reference")
+
+        serializer = AccountingCashTransactionSerializer(
+            cash_tx,
+            data=payload,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        previous_status = cash_tx.status
+        previous_bank_account_id = cash_tx.bank_account_id
+        had_posted_journal = bool(cash_tx.journal_entry_id)
+
+        did_reverse_posting = False
+        with transaction.atomic():
+            if had_posted_journal:
+                reverse_cash_transaction_journal_entry(cash_tx, actor=request.user)
+                did_reverse_posting = True
+
+            cash_tx = serializer.save()
+
+            cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+            cash_tx.rejection_reason = None
+            cash_tx.approved_by = None
+            cash_tx.approved_at = None
+            cash_tx.completed_by = None
+            cash_tx.completed_at = None
+            cash_tx.save(
+                update_fields=[
+                    "status",
+                    "rejection_reason",
+                    "approved_by",
+                    "approved_at",
+                    "completed_by",
+                    "completed_at",
+                    "updated_at",
+                ]
+            )
+
+        bank_account_ids = {
+            account_id
+            for account_id in (previous_bank_account_id, cash_tx.bank_account_id)
+            if account_id
+        }
+        if bank_account_ids and (
+            previous_status == AccountingCashTransaction.TransactionStatus.COMPLETED
+            or did_reverse_posting
+            or cash_tx.status == AccountingCashTransaction.TransactionStatus.COMPLETED
+        ):
+            for bank_account in AccountingBankAccount.objects.filter(id__in=bank_account_ids):
+                recalculate_bank_account_current_balance(bank_account)
+
+        return Response(
+            {
+                "id": str(cash_tx.id),
+                "status": cash_tx.status,
+                "transaction_id": cash_tx.reference_number,
+            },
+            status=status.HTTP_200_OK,
         )
 
     def update(self, request, *args, **kwargs):
-        transaction_obj = self.get_object()
-        return self._update_transaction(request, transaction_obj, partial=False)
+        try:
+            transaction_obj = self.get_object()
+            return self._update_transaction(request, transaction_obj, partial=False)
+        except Http404:
+            return self._update_accounting_transaction(
+                request,
+                kwargs.get("pk"),
+                partial=False,
+            )
 
     def partial_update(self, request, *args, **kwargs):
-        transaction_obj = self.get_object()
-        return self._update_transaction(request, transaction_obj, partial=True)
+        try:
+            transaction_obj = self.get_object()
+            return self._update_transaction(request, transaction_obj, partial=True)
+        except Http404:
+            return self._update_accounting_transaction(
+                request,
+                kwargs.get("pk"),
+                partial=True,
+            )
 
     def destroy(self, request, *args, **kwargs):
         transaction_obj = self.get_object()
-        if transaction_obj.status == "approved":
+        if transaction_obj.status in {"approved", "completed"}:
             return Response(
-                {"detail": "Cannot delete approved transactions"},
+                {"detail": "Cannot delete approved or completed transactions"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -204,7 +315,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
         notes = request.data.get("notes")
 
-        valid_statuses = ["pending", "approved", "rejected", "canceled"]
+        valid_statuses = ["pending", "approved", "completed", "rejected", "canceled"]
         if new_status not in valid_statuses:
             return Response(
                 {
@@ -214,6 +325,31 @@ class TransactionViewSet(viewsets.ModelViewSet):
             )
 
         current_status = transaction_obj.status
+
+        if new_status == "completed":
+            return Response(
+                {"detail": "Use the dedicated complete endpoint to finalize transactions."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        transition_map = {
+            "pending": {"pending", "approved", "rejected", "canceled"},
+            "approved": {"pending", "approved", "canceled"},
+            "completed": {"pending", "completed", "canceled"},
+            "rejected": {"pending", "rejected"},
+            "canceled": {"canceled", "pending", "approved"},
+        }
+
+        allowed_next = transition_map.get(current_status, set())
+        if new_status not in allowed_next:
+            return Response(
+                {
+                    "detail": (
+                        f"Invalid status transition from '{current_status}' to '{new_status}'."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if current_status in ["rejected", "canceled"] and new_status == "approved":
             return Response(
@@ -242,12 +378,14 @@ class TransactionViewSet(viewsets.ModelViewSet):
         if notes:
             update_data["notes"] = notes
 
-        request._full_data = update_data  # type: ignore[attr-defined]
-
         allowed_fields = ["status", "notes", "updated_by"]
 
         return update_model_fields(
-            request, transaction_obj, allowed_fields, TransactionDetailSerializer
+            request,
+            transaction_obj,
+            allowed_fields,
+            TransactionDetailSerializer,
+            data=update_data,
         )
 
     @action(detail=True, methods=["put"], url_path="status")
@@ -272,7 +410,6 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     def _approve_accounting_transaction(self, request, pk):
         from accounting.services.posting import (
-            post_cash_transaction_to_ledger,
             recalculate_bank_account_current_balance,
         )
         try:
@@ -291,7 +428,6 @@ class TransactionViewSet(viewsets.ModelViewSet):
                 cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
                 cash_tx.rejection_reason = None
                 cash_tx.save(update_fields=["status", "rejection_reason", "updated_at"])
-                post_cash_transaction_to_ledger(cash_tx, actor=request.user)
         except DjangoValidationError as exc:
             message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
             return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
@@ -335,7 +471,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 cash_tx.status = AccountingCashTransaction.TransactionStatus.REJECTED
                 cash_tx.save(update_fields=["status", "updated_at"])
-                if previous_status == AccountingCashTransaction.TransactionStatus.APPROVED:
+                if cash_tx.journal_entry_id:
                     reverse_cash_transaction_journal_entry(cash_tx, actor=request.user)
         except DjangoValidationError as exc:
             message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
@@ -348,6 +484,110 @@ class TransactionViewSet(viewsets.ModelViewSet):
             {"id": str(cash_tx.id), "status": "canceled", "transaction_id": cash_tx.reference_number},
             status=status.HTTP_200_OK,
         )
+
+    def _complete_accounting_transaction(self, request, pk):
+        from accounting.services.posting import (
+            post_cash_transaction_to_ledger,
+            recalculate_bank_account_current_balance,
+            sync_cash_transaction_journal_entry,
+        )
+        from accounting.models import AccountingJournalEntry
+
+        try:
+            cash_tx = AccountingCashTransaction.objects.select_related("bank_account").get(pk=pk)
+        except AccountingCashTransaction.DoesNotExist:
+            raise NotFound("No transaction found with the given ID.")
+
+        if cash_tx.status == AccountingCashTransaction.TransactionStatus.COMPLETED:
+            return Response(
+                {"detail": "Transaction is already completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if cash_tx.status != AccountingCashTransaction.TransactionStatus.APPROVED:
+            return Response(
+                {"detail": "Only approved transactions can be completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        actor_name = (
+            getattr(request.user, "username", None)
+            or getattr(request.user, "email", None)
+            or str(request.user)
+        )
+
+        try:
+            with transaction.atomic():
+                cash_tx.status = AccountingCashTransaction.TransactionStatus.COMPLETED
+                cash_tx.completed_by = actor_name
+                cash_tx.completed_at = datetime.now(timezone.utc)
+                cash_tx.save(
+                    update_fields=["status", "completed_by", "completed_at", "updated_at"]
+                )
+
+                linked_journal = cash_tx.journal_entry
+                if (
+                    linked_journal is not None
+                    and linked_journal.status == AccountingJournalEntry.EntryStatus.REVERSED
+                ):
+                    cash_tx.journal_entry = None
+                    cash_tx.save(update_fields=["journal_entry", "updated_at"])
+                    linked_journal = None
+
+                if linked_journal is None:
+                    post_cash_transaction_to_ledger(cash_tx, actor=request.user)
+                else:
+                    sync_cash_transaction_journal_entry(cash_tx, actor=request.user)
+        except DjangoValidationError as exc:
+            message = exc.messages[0] if hasattr(exc, "messages") and exc.messages else str(exc)
+            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        recalculate_bank_account_current_balance(cash_tx.bank_account)
+        return Response(
+            {
+                "id": str(cash_tx.id),
+                "status": "completed",
+                "transaction_id": cash_tx.reference_number,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["put"], url_path="complete")
+    def complete(self, request, pk=None, *args, **kwargs):
+        if not self._can_complete_transaction(request.user):
+            return Response(
+                {"detail": "Only superadmin/admin can complete transactions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            transaction_obj = self.get_object()
+
+            if transaction_obj.status == "completed":
+                return Response(
+                    {"detail": "Transaction is already completed."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if transaction_obj.status != "approved":
+                return Response(
+                    {"detail": "Only approved transactions can be completed."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            allowed_fields = ["status", "updated_by"]
+            return update_model_fields(
+                request,
+                transaction_obj,
+                allowed_fields,
+                TransactionDetailSerializer,
+                data={"status": "completed"},
+            )
+        except Http404:
+            pass
+
+        return self._complete_accounting_transaction(request, pk)
 
     # @action(detail=True, methods=["delete"], url_path="delete")
     # def delete_action(self, request, pk=None, *args, **kwargs):
@@ -943,6 +1183,53 @@ class TransactionViewSet(viewsets.ModelViewSet):
                 "message": f"{updated_count} transaction(s) approved successfully"
             },
             status=status.HTTP_200_OK
+        )
+
+    @action(detail=False, methods=["post"], url_path="bulk-complete")
+    def bulk_complete(self, request):
+        """
+        Bulk complete multiple approved transactions.
+
+        Payload: {"transaction_ids": ["id1", "id2", ...]}
+        """
+        if not self._can_complete_transaction(request.user):
+            return Response(
+                {"detail": "Only superadmin/admin can complete transactions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        transaction_ids = request.data.get("transaction_ids", [])
+
+        if not transaction_ids:
+            return Response(
+                {"detail": "transaction_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        transactions = Transaction.objects.filter(
+            id__in=transaction_ids,
+            status="approved",
+        )
+
+        if not transactions.exists():
+            return Response(
+                {"detail": "No approved transactions found with the provided IDs"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        updated_count = transactions.update(
+            status="completed",
+            updated_by=request.user,
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        return Response(
+            {
+                "success": True,
+                "updated": updated_count,
+                "message": f"{updated_count} transaction(s) completed successfully",
+            },
+            status=status.HTTP_200_OK,
         )
     
     @action(detail=False, methods=["post"], url_path="bulk-cancel")

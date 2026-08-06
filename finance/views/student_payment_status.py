@@ -114,11 +114,11 @@ class StudentPaymentStatusListView(APIView):
             ),
         )
 
-        # Prefetch approved transactions for this academic year
+        # Prefetch completed transactions for this academic year
         transactions_prefetch = Prefetch(
             "transactions",
             queryset=Transaction.objects.filter(
-                academic_year=academic_year, status="approved", type__type="income"
+                academic_year=academic_year, status="completed", type__type="income"
             ),
         )
 

@@ -8,6 +8,34 @@ so models can use simple upload_to paths like "logo.jpg" or "users/{id}.jpg"
 
 from decouple import config
 
+# Accounting attachment policy
+# Upload keys are tenant-scoped automatically by TenantAwareS3Storage
+# (e.g. tenants/<schema_name>/accounting/attachments/...).
+ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES = config(
+    "ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES",
+    default=10 * 1024 * 1024,
+    cast=int,
+)
+ACCOUNTING_ATTACHMENT_ALLOWED_MIME_TYPES = [
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+]
+ACCOUNTING_ATTACHMENT_ALLOWED_EXTENSIONS = [
+    ".pdf",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+]
+ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX = config(
+    "ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX",
+    default="accounting/attachments",
+)
+
 # Storage Backend Selection
 USE_S3_STORAGE = config("USE_S3_STORAGE", default=False, cast=bool)
 

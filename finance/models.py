@@ -23,9 +23,9 @@ class BankAccount(BaseModel):
 
     @property
     def balance(self):
-        """Calculate the current balance of the bank account (approved transactions only)."""
+        """Calculate the current balance of the bank account (completed transactions only)."""
         return (
-            self.transactions.filter(status="approved").aggregate(models.Sum("amount"))[
+            self.transactions.filter(status="completed").aggregate(models.Sum("amount"))[
                 "amount__sum"
             ]
             or 0.0
@@ -52,17 +52,17 @@ class BankAccount(BaseModel):
             totals = self.transactions.aggregate(
                 # Transaction counts
                 total_transactions=Count("id"),
-                approved_count=Count("id", filter=Q(status="approved")),
+                approved_count=Count("id", filter=Q(status="completed")),
                 pending_count=Count("id", filter=Q(status="pending")),
                 canceled_count=Count("id", filter=Q(status="canceled")),
-                # Financial totals (approved only)
+                # Financial totals (completed only)
                 total_income=Sum(
-                    "amount", filter=Q(status="approved", type__type="income")
+                    "amount", filter=Q(status="completed", type__type="income")
                 ),
                 total_expense=Sum(
-                    "amount", filter=Q(status="approved", type__type="expense")
+                    "amount", filter=Q(status="completed", type__type="expense")
                 ),
-                approved_total=Sum("amount", filter=Q(status="approved")),
+                approved_total=Sum("amount", filter=Q(status="completed")),
             )
 
             # Extract and clean totals
@@ -131,18 +131,18 @@ class BankAccount(BaseModel):
             totals = base_queryset.aggregate(
                 # Total counts by status
                 total_transactions=Count("id"),
-                approved_count=Count("id", filter=Q(status="approved")),
+                approved_count=Count("id", filter=Q(status="completed")),
                 pending_count=Count("id", filter=Q(status="pending")),
                 canceled_count=Count("id", filter=Q(status="canceled")),
-                # Financial totals (approved only)
+                # Financial totals (completed only)
                 total_income=Sum(
-                    "amount", filter=Q(status="approved", type__type="income")
+                    "amount", filter=Q(status="completed", type__type="income")
                 ),
                 total_expense=Sum(
-                    "amount", filter=Q(status="approved", type__type="expense")
+                    "amount", filter=Q(status="completed", type__type="expense")
                 ),
                 # All transactions totals by status for status breakdown
-                approved_total=Sum("amount", filter=Q(status="approved")),
+                approved_total=Sum("amount", filter=Q(status="completed")),
                 pending_total=Sum("amount", filter=Q(status="pending")),
                 canceled_total=Sum("amount", filter=Q(status="canceled")),
             )
@@ -154,7 +154,7 @@ class BankAccount(BaseModel):
             # Build status breakdown from aggregated data
             status_breakdown = []
             for status, count_key, total_key in [
-                ("approved", "approved_count", "approved_total"),
+                ("completed", "approved_count", "approved_total"),
                 ("pending", "pending_count", "pending_total"),
                 ("canceled", "canceled_count", "canceled_total"),
             ]:
@@ -168,9 +168,9 @@ class BankAccount(BaseModel):
                         }
                     )
 
-            # Type breakdown for approved transactions only
+            # Type breakdown for completed transactions only
             type_breakdown_query = (
-                base_queryset.filter(status="approved")
+                base_queryset.filter(status="completed")
                 .values("type__type")
                 .annotate(count=Count("id"), total=Sum("amount"))
                 .order_by("type__type")
@@ -187,11 +187,11 @@ class BankAccount(BaseModel):
                 for item in type_breakdown_query
             ]
 
-            # Monthly trends (last 12 months, approved only) - limit to recent data for performance
+            # Monthly trends (last 12 months, completed only) - limit to recent data for performance
             twelve_months_ago = datetime.now().date() - timedelta(days=365)
             monthly_trends_query = (
                 base_queryset.filter(
-                    status="approved",
+                    status="completed",
                     date__gte=twelve_months_ago,  # Limit to last 12 months for performance
                 )
                 .annotate(month=TruncMonth("date"))
@@ -210,9 +210,9 @@ class BankAccount(BaseModel):
                 for item in monthly_trends_query
             ]
 
-            # Payment method breakdown (approved only)
+            # Payment method breakdown (completed only)
             payment_method_query = (
-                base_queryset.filter(status="approved")
+                base_queryset.filter(status="completed")
                 .values("payment_method__name")
                 .annotate(count=Count("id"), total=Sum("amount"))
                 .order_by("payment_method__name")
@@ -402,6 +402,7 @@ class Transaction(BaseModel):
         choices=[
             ("pending", "Pending"),
             ("approved", "Approved"),
+            ("completed", "Completed"),
             ("canceled", "Canceled"),
         ],
         default="pending",

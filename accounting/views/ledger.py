@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError
-from django.db.models import DecimalField, Sum, Value
+from django.db.models import DecimalField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from datetime import date
@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from accounting.access_policies import AccountingFinanceAccessPolicy
 from accounting.models import (
     AccountingBankAccount,
+    AccountingCashTransaction,
     AccountingCurrency,
     AccountingExchangeRate,
     AccountingJournalEntry,
@@ -323,6 +324,39 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
         if error_response:
             return error_response
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["patch"], url_path="notes")
+    def update_notes(self, request, pk=None):
+        journal_entry = self.get_object()
+        if "notes" not in request.data:
+            return Response(
+                {"detail": "notes is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_notes = request.data.get("notes")
+        notes = (str(raw_notes).strip() if raw_notes is not None else "") or None
+
+        with transaction.atomic():
+            journal_entry.notes = notes
+            journal_entry.save(update_fields=["notes", "updated_at"])
+
+            linked_filter = Q(journal_entry=journal_entry)
+            if journal_entry.source_reference:
+                linked_filter |= Q(reference_number=journal_entry.source_reference)
+                linked_filter |= Q(source_reference=journal_entry.source_reference)
+
+            linked_transactions = AccountingCashTransaction.objects.filter(linked_filter).distinct()
+            for cash_tx in linked_transactions:
+                cash_tx.notes = notes
+                if hasattr(cash_tx, "updated_by"):
+                    cash_tx.updated_by = request.user
+                    cash_tx.save(update_fields=["notes", "updated_by", "updated_at"])
+                else:
+                    cash_tx.save(update_fields=["notes", "updated_at"])
+
+        serializer = self.get_serializer(journal_entry)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     _JOURNAL_SOURCE_LABELS = dict(AccountingJournalEntry._meta.get_field("source").choices)
     _JOURNAL_STATUS_LABELS = dict(AccountingJournalEntry._meta.get_field("status").choices)

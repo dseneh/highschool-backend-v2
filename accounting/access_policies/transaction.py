@@ -13,6 +13,7 @@ class AccountingTransactionAccessPolicy(BaseSchoolAccessPolicy):
                 "list",
                 "retrieve",
                 "export_transactions",
+                "download_pdf",
                 "unposted_count",
             ],
             "principal": "authenticated",
@@ -25,12 +26,24 @@ class AccountingTransactionAccessPolicy(BaseSchoolAccessPolicy):
             "condition": "is_role_in:admin,accountant,data_entry",
         },
         {
+            "action": ["update_notes"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:superadmin,admin,finance,registrar,accountant,data_entry",
+        },
+        {
             # ``post_all`` is the bulk variant of ``post_transaction`` and
             # is gated by the same admin/accountant condition.
-            "action": ["post_transaction", "post_all", "post_all_status"],
+            "action": ["post_all", "post_all_status"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:admin,accountant",
+        },
+        {
+            "action": ["post_transaction", "complete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:superadmin,admin",
         },
         {
             "action": ["destroy"],

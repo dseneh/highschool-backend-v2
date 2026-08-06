@@ -403,6 +403,7 @@ class AccountingJournalEntryListSerializer(serializers.ModelSerializer):
             "reference_number",
             "source",
             "description",
+            "notes",
             "status",
             "academic_year",
             "posted_by",
@@ -851,6 +852,8 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
     # the UI can deep-link into the student's billing page. Null when
     # the transaction is not linked to any student bill.
     student_payment = serializers.SerializerMethodField()
+    created_by_user = serializers.SerializerMethodField()
+    updated_by_user = serializers.SerializerMethodField()
 
     class Meta:
         model = AccountingCashTransaction
@@ -875,10 +878,17 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             "base_amount",
             "payer_payee",
             "description",
+            "notes",
             "status",
             "approved_by",
             "approved_at",
+            "completed_by",
+            "completed_at",
             "rejection_reason",
+            "rejected_by",
+            "rejected_at",
+            "created_by_user",
+            "updated_by_user",
             "source_reference",
             "journal_entry",
             "student_id",
@@ -1039,6 +1049,24 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             "bills": list(bills_seen.values()),
             "total_allocated": str(total_allocated),
         }
+
+    def _serialize_actor_user(self, user):
+        if not user:
+            return None
+        return {
+            "id": str(user.id),
+            "username": user.username,
+            "email": user.email,
+            "first_name": getattr(user, "first_name", "") or "",
+            "last_name": getattr(user, "last_name", "") or "",
+            "full_name": getattr(user, "get_full_name", lambda: "")() or "",
+        }
+
+    def get_created_by_user(self, obj):
+        return self._serialize_actor_user(getattr(obj, "created_by", None))
+
+    def get_updated_by_user(self, obj):
+        return self._serialize_actor_user(getattr(obj, "updated_by", None))
 
     def to_internal_value(self, data):
         """Accept FK IDs in input, convert them to use the standard FK field names."""

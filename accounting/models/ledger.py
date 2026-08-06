@@ -137,6 +137,7 @@ class AccountingJournalEntry(BaseModel):
         ],
     )
     description = models.TextField()
+    notes = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=EntryStatus.choices, default=EntryStatus.DRAFT)
     academic_year = models.ForeignKey(
         "academics.AcademicYear",

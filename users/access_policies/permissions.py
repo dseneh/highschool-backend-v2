@@ -168,6 +168,11 @@ PRIVILEGES: Dict[str, PrivilegeDef] = {
         label="Cancel transactions",
         description="Can cancel finance transactions.",
     ),
+    "TRANSACTION_COMPLETE": PrivilegeDef(
+        code="TRANSACTION_COMPLETE",
+        label="Complete transactions",
+        description="Can finalize approved transactions.",
+    ),
 
     # NOTIFICATIONS
     "NOTIFICATION_VIEW": PrivilegeDef(

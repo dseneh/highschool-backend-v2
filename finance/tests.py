@@ -1,8 +1,12 @@
 from datetime import date
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
 
+from django.http import Http404
 from django.test import SimpleTestCase, TestCase
+from rest_framework import status
+from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory
 
 from finance.signals import _refresh_payment_summary_for_enrollment
@@ -136,14 +140,13 @@ class PaymentSummaryGuardTests(SimpleTestCase):
 
 
 class EffectivePaidFallbackTests(SimpleTestCase):
-    @patch("accounting.models.AccountingCashTransaction.objects.filter")
-    @patch("accounting.models.AccountingStudentPaymentAllocation.objects.filter")
-    @patch("accounting.models.AccountingStudentBill.objects.filter")
-    def test_effective_paid_uses_direct_cash_transactions_when_unallocated(
+    @patch(
+        "accounting.services.payment_allocation.get_total_paid_for_student_year",
+        return_value=Decimal("95.00"),
+    )
+    def test_effective_paid_uses_accounting_payment_allocation_service(
         self,
-        mock_bill_filter,
-        mock_allocation_filter,
-        mock_cash_filter,
+        mock_get_total_paid,
     ):
         from finance.models import _get_effective_paid_for_enrollment
 
@@ -155,17 +158,10 @@ class EffectivePaidFallbackTests(SimpleTestCase):
         academic_year.start_date = date(2026, 1, 1)
         academic_year.end_date = date(2026, 12, 31)
 
-        bills_qs = MagicMock()
-        bills_qs.exists.return_value = True
-        bills_qs.aggregate.return_value = {"total": Decimal("0.00")}
-        mock_bill_filter.return_value = bills_qs
-
-        mock_allocation_filter.return_value.aggregate.return_value = {"total": None}
-        mock_cash_filter.return_value.aggregate.return_value = {"total": Decimal("95.00")}
-
         paid = _get_effective_paid_for_enrollment(enrollment, academic_year)
 
         self.assertEqual(paid, Decimal("95.00"))
+        mock_get_total_paid.assert_called_once_with(enrollment.student, academic_year)
 
 
 class StudentTransactionsAccountingEndpointTests(SimpleTestCase):
@@ -245,3 +241,234 @@ class StudentTransactionsAccountingEndpointTests(SimpleTestCase):
         self.assertEqual(response.data[0]["reference"], "TXN-20260101-00001")
         self.assertEqual(response.data[0]["transaction_type"]["type_code"], "TUITION")
         self.assertEqual(response.data[0]["status"], "approved")
+
+
+class FinanceTransactionCompletionFlowTests(SimpleTestCase):
+    def test_set_status_rejects_completed_transition_outside_complete_action(self):
+        import importlib
+
+        transaction_view_module = importlib.import_module("finance.views.transaction")
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={}, user=MagicMock())
+        tx = MagicMock(status="approved", student=None, academic_year=None)
+
+        with patch.object(viewset, "_ensure_tenant_context", return_value=None), patch.object(
+            transaction_view_module,
+            "update_model_fields",
+        ) as mock_update:
+            response = viewset._set_status_action(request, tx, "completed")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("dedicated complete endpoint", response.data["detail"])
+        mock_update.assert_not_called()
+
+    def test_complete_rejects_non_approved_transaction(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={}, user=SimpleNamespace(role="admin"))
+        tx = MagicMock(status="pending")
+
+        with patch.object(viewset, "get_object", return_value=tx):
+            response = viewset.complete(request, pk="tx-1")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Only approved transactions can be completed.")
+
+    def test_complete_rejects_already_completed_transaction(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={}, user=SimpleNamespace(role="admin"))
+        tx = MagicMock(status="completed")
+
+        with patch.object(viewset, "get_object", return_value=tx):
+            response = viewset.complete(request, pk="tx-1")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Transaction is already completed.")
+
+    def test_complete_updates_status_when_approved(self):
+        import importlib
+
+        transaction_view_module = importlib.import_module("finance.views.transaction")
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={}, user=SimpleNamespace(role="admin"))
+        tx = MagicMock(status="approved")
+
+        with patch.object(viewset, "get_object", return_value=tx), patch.object(
+            transaction_view_module,
+            "update_model_fields",
+            return_value=Response({"status": "completed"}, status=status.HTTP_200_OK),
+        ) as mock_update:
+            response = viewset.complete(request, pk="tx-1")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "completed")
+        allowed_fields = mock_update.call_args[0][2]
+        self.assertIn("status", allowed_fields)
+        self.assertEqual(mock_update.call_args.kwargs.get("data"), {"status": "completed"})
+
+    def test_update_forces_pending_status_in_mutated_payload(self):
+        import importlib
+
+        transaction_view_module = importlib.import_module("finance.views.transaction")
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(
+            data={"amount": "125.00", "status": "approved"},
+            user=SimpleNamespace(role="admin"),
+        )
+        tx = MagicMock()
+        tx.date = date(2026, 1, 1)
+
+        with patch.object(
+            transaction_view_module,
+            "validate_transaction_data",
+            return_value=({}, None),
+        ), patch.object(
+            transaction_view_module,
+            "update_model_fields",
+            return_value=Response({"status": "pending"}, status=status.HTTP_200_OK),
+        ) as mock_update:
+            response = viewset._update_transaction(request, tx)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_update.call_args.kwargs.get("data", {}).get("status"), "pending")
+
+    def test_update_falls_back_to_accounting_transaction_update_when_not_in_finance(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={"amount": "100.00"}, user=SimpleNamespace(role="admin"))
+
+        with patch.object(viewset, "get_object", side_effect=Http404), patch.object(
+            viewset,
+            "_update_accounting_transaction",
+            return_value=Response({"status": "pending"}, status=status.HTTP_200_OK),
+        ) as mock_fallback:
+            response = viewset.update(request, pk="cash-tx-1")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_fallback.assert_called_once_with(request, "cash-tx-1", partial=False)
+
+    def test_partial_update_falls_back_to_accounting_transaction_update_when_not_in_finance(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={"status": "pending"}, user=SimpleNamespace(role="admin"))
+
+        with patch.object(viewset, "get_object", side_effect=Http404), patch.object(
+            viewset,
+            "_update_accounting_transaction",
+            return_value=Response({"status": "pending"}, status=status.HTTP_200_OK),
+        ) as mock_fallback:
+            response = viewset.partial_update(request, pk="cash-tx-1")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_fallback.assert_called_once_with(request, "cash-tx-1", partial=True)
+
+    def test_destroy_blocks_completed_transactions(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(user=MagicMock())
+        tx = MagicMock(status="completed")
+
+        with patch.object(viewset, "get_object", return_value=tx):
+            response = viewset.destroy(request)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Cannot delete approved or completed transactions")
+
+    def test_bulk_complete_requires_transaction_ids(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={}, user=SimpleNamespace(role="admin"))
+
+        response = viewset.bulk_complete(request)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "transaction_ids is required")
+
+    def test_bulk_complete_returns_not_found_when_no_approved_transactions(self):
+        import importlib
+
+        transaction_view_module = importlib.import_module("finance.views.transaction")
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={"transaction_ids": ["tx-1"]}, user=SimpleNamespace(role="admin"))
+
+        qs = MagicMock()
+        qs.exists.return_value = False
+        with patch.object(transaction_view_module.Transaction.objects, "filter", return_value=qs):
+            response = viewset.bulk_complete(request)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["detail"], "No approved transactions found with the provided IDs")
+
+    def test_bulk_complete_updates_approved_transactions(self):
+        import importlib
+
+        transaction_view_module = importlib.import_module("finance.views.transaction")
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={"transaction_ids": ["tx-1", "tx-2"]}, user=SimpleNamespace(role="admin"))
+
+        qs = MagicMock()
+        qs.exists.return_value = True
+        qs.update.return_value = 2
+        with patch.object(transaction_view_module.Transaction.objects, "filter", return_value=qs):
+            response = viewset.bulk_complete(request)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["updated"], 2)
+        qs.update.assert_called_once_with(
+            status="completed",
+            updated_by=request.user,
+            updated_at=ANY,
+        )
+
+    def test_complete_rejects_non_admin_roles(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(data={}, user=SimpleNamespace(role="accountant"))
+
+        response = viewset.complete(request, pk="tx-1")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data["detail"], "Only superadmin/admin can complete transactions.")
+
+    def test_bulk_complete_rejects_non_admin_roles(self):
+        viewset = TransactionViewSet()
+        request = SimpleNamespace(
+            data={"transaction_ids": ["tx-1"]},
+            user=SimpleNamespace(role="accountant"),
+        )
+
+        response = viewset.bulk_complete(request)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data["detail"], "Only superadmin/admin can complete transactions.")
+
+
+class FinanceTransactionAccessPolicyTests(SimpleTestCase):
+    def test_complete_action_requires_admin_or_superadmin_role(self):
+        from finance.access_policies import TransactionAccessPolicy
+
+        matching_rules = [
+            statement
+            for statement in TransactionAccessPolicy.statements
+            if "complete" in statement.get("action", [])
+        ]
+
+        self.assertTrue(matching_rules)
+        self.assertTrue(
+            any(
+                rule.get("condition") == "is_role_in:superadmin,admin"
+                for rule in matching_rules
+            )
+        )
+
+    def test_bulk_complete_action_requires_admin_or_superadmin_role(self):
+        from finance.access_policies import TransactionAccessPolicy
+
+        matching_rules = [
+            statement
+            for statement in TransactionAccessPolicy.statements
+            if "bulk_complete" in statement.get("action", [])
+        ]
+
+        self.assertTrue(matching_rules)
+        self.assertTrue(
+            any(
+                rule.get("condition") == "is_role_in:superadmin,admin"
+                for rule in matching_rules
+            )
+        )

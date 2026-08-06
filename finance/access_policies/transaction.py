@@ -126,6 +126,12 @@ class TransactionAccessPolicy(BaseSchoolAccessPolicy):
             "effect": "allow",
             "condition": "has_privilege:TRANSACTION_CANCEL",
         },
+        {
+            "action": ["complete", "bulk_complete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:superadmin,admin",
+        },
         # 6) FINANCE_VIEW / FINANCE_MANAGE overrides for all finance models
         {
             "action": ["list", "retrieve"],

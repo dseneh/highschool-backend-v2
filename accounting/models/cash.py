@@ -140,6 +140,7 @@ class AccountingCashTransaction(BaseModel):
     class TransactionStatus(models.TextChoices):
         PENDING = "pending", "Pending"
         APPROVED = "approved", "Approved"
+        COMPLETED = "completed", "Completed"
         REJECTED = "rejected", "Rejected"
 
     bank_account = models.ForeignKey(
@@ -178,10 +179,15 @@ class AccountingCashTransaction(BaseModel):
     )
     payer_payee = models.CharField(max_length=255, blank=True, help_text="Who paid/received")
     description = models.TextField()
+    notes = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=TransactionStatus.choices, default=TransactionStatus.PENDING)
     approved_by = models.CharField(max_length=100, blank=True, null=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.CharField(max_length=100, blank=True, null=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     rejection_reason = models.TextField(blank=True, null=True)
+    rejected_by = models.CharField(max_length=100, blank=True, null=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
     source_reference = models.CharField(
         max_length=255,
         blank=True,

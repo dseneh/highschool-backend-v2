@@ -42,6 +42,7 @@ FILTER_PARAM_KEYS = (
     "amount_min",
     "amount_max",
     "reference",
+    "journal_entry_id",
 )
 
 
@@ -157,6 +158,7 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
     amount_min = params.get("amount_min")
     amount_max = params.get("amount_max")
     reference = params.get("reference")
+    journal_entry_id = params.get("journal_entry_id")
     transaction_type_code = params.get("transaction_type_code")
     student_payments = params.get("student_payments")
     search = params.get("search")
@@ -204,6 +206,8 @@ def apply_cash_transaction_list_filters(queryset, params) -> object:
             pass
     if reference:
         queryset = queryset.filter(reference_number__icontains=reference)
+    if journal_entry_id:
+        queryset = queryset.filter(journal_entry_id=journal_entry_id)
 
     ordering = params.get("ordering")
     ordering_value = str(ordering or "").strip()

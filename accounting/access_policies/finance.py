@@ -11,6 +11,12 @@ class AccountingFinanceAccessPolicy(BaseSchoolAccessPolicy):
             "effect": "allow",
         },
         {
+            "action": ["update_notes"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:superadmin,admin,finance,registrar,accountant,data_entry",
+        },
+        {
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import transaction as db_transaction
+from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Case, DecimalField, F, Q, Sum, When
 from django.db.models.functions import Abs
 from django.utils import timezone
@@ -217,12 +217,31 @@ def _compute_base_amount(cash_transaction: AccountingCashTransaction) -> Decimal
     return cash_transaction.amount * rate
 
 
+def _journal_reference_candidates(base_reference: str, *, max_length: int = 100):
+    """Yield base and suffixed variants that fit the DB reference_number length."""
+    base = str(base_reference or "").strip()
+    if not base:
+        base = timezone.now().strftime("JE-%Y%m%d%H%M%S")
+
+    yield base[:max_length]
+
+    counter = 2
+    while True:
+        suffix = f"-{counter}"
+        trimmed = base[: max(1, max_length - len(suffix))]
+        yield f"{trimmed}{suffix}"
+        counter += 1
+
+
 def post_cash_transaction_to_ledger(cash_transaction: AccountingCashTransaction, actor=None) -> AccountingJournalEntry:
     if cash_transaction.journal_entry_id:
         return cash_transaction.journal_entry
 
-    if cash_transaction.status != AccountingCashTransaction.TransactionStatus.APPROVED:
-        raise ValidationError("Only approved transactions can be posted")
+    if cash_transaction.status not in {
+        AccountingCashTransaction.TransactionStatus.APPROVED,
+        AccountingCashTransaction.TransactionStatus.COMPLETED,
+    }:
+        raise ValidationError("Only approved or completed transactions can be posted")
 
     bank_ledger, counter_ledger = _resolve_posting_accounts(cash_transaction)
     academic_year = _resolve_academic_year(cash_transaction.transaction_date)
@@ -236,17 +255,34 @@ def post_cash_transaction_to_ledger(cash_transaction: AccountingCashTransaction,
         raise ValidationError("Only income and expense transaction categories are supported by this endpoint")
 
     with db_transaction.atomic():
-        journal_entry = AccountingJournalEntry.objects.create(
-            posting_date=cash_transaction.transaction_date,
-            reference_number=f"{cash_transaction.reference_number}",
-            source="manual",
-            description=cash_transaction.description,
-            status=AccountingJournalEntry.EntryStatus.POSTED,
-            academic_year=academic_year,
-            posted_by=posted_by,
-            posted_at=timezone.now(),
-            source_reference=cash_transaction.reference_number,
-        )
+        journal_entry = None
+        for reference_candidate in _journal_reference_candidates(
+            f"{cash_transaction.reference_number}"
+        ):
+            try:
+                # Isolate each insert attempt in its own savepoint so a
+                # unique-key collision does not invalidate the outer atomic block.
+                with db_transaction.atomic():
+                    journal_entry = AccountingJournalEntry.objects.create(
+                        posting_date=cash_transaction.transaction_date,
+                        reference_number=reference_candidate,
+                        source="manual",
+                        description=cash_transaction.description,
+                        notes=cash_transaction.notes,
+                        status=AccountingJournalEntry.EntryStatus.POSTED,
+                        academic_year=academic_year,
+                        posted_by=posted_by,
+                        posted_at=timezone.now(),
+                        source_reference=cash_transaction.reference_number,
+                    )
+                break
+            except IntegrityError as exc:
+                # Retry on unique reference collisions (e.g. repost after reversal).
+                if "reference_number" not in str(exc):
+                    raise
+
+        if journal_entry is None:
+            raise ValidationError("Unable to allocate a unique journal reference number")
 
         base_amount = _compute_base_amount(cash_transaction)
 
@@ -303,8 +339,13 @@ def sync_cash_transaction_journal_entry(
             "Cannot update a transaction whose journal entry has been reversed"
         )
 
-    if cash_transaction.status != AccountingCashTransaction.TransactionStatus.APPROVED:
-        raise ValidationError("Only approved transactions with journal entries can be synced")
+    if cash_transaction.status not in {
+        AccountingCashTransaction.TransactionStatus.APPROVED,
+        AccountingCashTransaction.TransactionStatus.COMPLETED,
+    }:
+        raise ValidationError(
+            "Only approved or completed transactions with journal entries can be synced"
+        )
 
     bank_ledger, counter_ledger = _resolve_posting_accounts(cash_transaction)
     academic_year = _resolve_academic_year(cash_transaction.transaction_date)
@@ -325,6 +366,7 @@ def sync_cash_transaction_journal_entry(
         journal_entry.posting_date = cash_transaction.transaction_date
         journal_entry.reference_number = f"JE-{cash_transaction.reference_number}"
         journal_entry.description = cash_transaction.description
+        journal_entry.notes = cash_transaction.notes
         journal_entry.academic_year = academic_year
         journal_entry.source_reference = cash_transaction.reference_number
         journal_entry.save(
@@ -332,6 +374,7 @@ def sync_cash_transaction_journal_entry(
                 "posting_date",
                 "reference_number",
                 "description",
+                "notes",
                 "academic_year",
                 "source_reference",
                 "updated_at",
@@ -388,18 +431,31 @@ def reverse_cash_transaction_journal_entry(
         posted_by = getattr(actor, "username", None) or getattr(actor, "email", None) or str(actor)
 
     with db_transaction.atomic():
-        reversal_entry = AccountingJournalEntry.objects.create(
-            posting_date=timezone.now().date(),
-            reference_number=f"REV-{original_entry.reference_number}",
-            source="manual",
-            description=f"Reversal of {original_entry.reference_number}: {original_entry.description}",
-            status=AccountingJournalEntry.EntryStatus.POSTED,
-            academic_year=original_entry.academic_year,
-            posted_by=posted_by,
-            posted_at=timezone.now(),
-            reversal_of=original_entry,
-            source_reference=cash_transaction.reference_number,
-        )
+        reversal_entry = None
+        for reference_candidate in _journal_reference_candidates(
+            f"REV-{original_entry.reference_number}"
+        ):
+            try:
+                with db_transaction.atomic():
+                    reversal_entry = AccountingJournalEntry.objects.create(
+                        posting_date=timezone.now().date(),
+                        reference_number=reference_candidate,
+                        source="manual",
+                        description=f"Reversal of {original_entry.reference_number}: {original_entry.description}",
+                        status=AccountingJournalEntry.EntryStatus.POSTED,
+                        academic_year=original_entry.academic_year,
+                        posted_by=posted_by,
+                        posted_at=timezone.now(),
+                        reversal_of=original_entry,
+                        source_reference=cash_transaction.reference_number,
+                    )
+                break
+            except IntegrityError as exc:
+                if "reference_number" not in str(exc):
+                    raise
+
+        if reversal_entry is None:
+            raise ValidationError("Unable to allocate a unique reversal reference number")
 
         for line in original_entry.lines.all().order_by("line_sequence", "created_at"):
             AccountingJournalLine.objects.create(
