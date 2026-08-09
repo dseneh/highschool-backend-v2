@@ -12,9 +12,11 @@ from django.db import transaction
 from django.db.models import Case, Count, DecimalField, F, IntegerField, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.db.models.functions import Abs
+from django.utils import timezone
 
 from accounting.models import AccountingBankAccount, AccountingCashTransaction
 from accounting.services import (
+    dispatch_bank_rule_alerts_for_status_event,
     post_cash_transaction_to_ledger,
     recalculate_bank_account_current_balance,
 )
@@ -275,6 +277,14 @@ def execute_post_all(
     if user_id is not None:
         actor = get_user_model().objects.filter(id=user_id).first()
 
+    actor_name = None
+    if actor is not None:
+        actor_name = (
+            getattr(actor, "username", None)
+            or getattr(actor, "email", None)
+            or str(actor)
+        )
+
     eligible = get_eligible_post_all_queryset(
         apply_filters=apply_filters,
         filter_params=filter_params,
@@ -294,6 +304,18 @@ def execute_post_all(
         try:
             with transaction.atomic():
                 journal_entry = post_cash_transaction_to_ledger(cash_tx, actor=actor)
+                cash_tx.status = AccountingCashTransaction.TransactionStatus.COMPLETED
+                cash_tx.completed_at = timezone.now()
+                if actor_name:
+                    cash_tx.completed_by = actor_name
+                cash_tx.save(
+                    update_fields=[
+                        "status",
+                        "completed_by",
+                        "completed_at",
+                        "updated_at",
+                    ]
+                )
             posted_journal_ids.append(str(journal_entry.id))
             if cash_tx.bank_account_id:
                 affected_bank_account_ids.add(cash_tx.bank_account_id)
@@ -328,6 +350,16 @@ def execute_post_all(
     ):
         recalculate_bank_account_current_balance(bank_account)
 
+    if actor is not None and affected_bank_account_ids:
+        event_seed = f"post-all:{timezone.now().isoformat()}"
+        for bank_account in AccountingBankAccount.objects.filter(id__in=affected_bank_account_ids):
+            dispatch_bank_rule_alerts_for_status_event(
+                bank_account=bank_account,
+                transaction_status=AccountingCashTransaction.TransactionStatus.COMPLETED,
+                event_key=f"{event_seed}:{bank_account.id}",
+                actor=actor,
+            )
+
     return {
         "posted_count": len(posted_journal_ids),
         "skipped_count": len(errors),
@@ -339,8 +371,9 @@ def execute_post_all(
 def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
     """Aggregate list stats across the full filtered queryset (before pagination)."""
     approved_status = AccountingCashTransaction.TransactionStatus.APPROVED
+    completed_status = AccountingCashTransaction.TransactionStatus.COMPLETED
     signed_base_amount = approved_signed_base_amount_expression()
-    approved_filter = Q(status=approved_status)
+    completed_filter = Q(status=completed_status)
 
     amount_expr = Coalesce(
         F("base_amount"),
@@ -352,6 +385,7 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
     agg = queryset.aggregate(
         pending_count=Count("id", filter=Q(status=AccountingCashTransaction.TransactionStatus.PENDING)),
         approved_count=Count("id", filter=Q(status=approved_status)),
+        completed_count=Count("id", filter=Q(status=completed_status)),
         rejected_count=Count("id", filter=Q(status=AccountingCashTransaction.TransactionStatus.REJECTED)),
         posted_count=Count("id", filter=Q(journal_entry__isnull=False)),
         not_posted_count=Count("id", filter=Q(journal_entry__isnull=True)),
@@ -361,21 +395,22 @@ def build_cash_transaction_list_summary(queryset) -> dict[str, object]:
         ),
         approved_net_total=Sum(
             signed_base_amount,
-            filter=approved_filter,
+            filter=completed_filter,
         ),
         approved_income_total=Sum(
             Abs(amount_expr),
-            filter=approved_filter & _inflow_filter(),
+            filter=completed_filter & _inflow_filter(),
         ),
         approved_expense_total=Sum(
             Abs(amount_expr),
-            filter=approved_filter & _outflow_filter(),
+            filter=completed_filter & _outflow_filter(),
         ),
     )
 
     return {
         "pending_count": agg["pending_count"] or 0,
         "approved_count": agg["approved_count"] or 0,
+        "completed_count": agg["completed_count"] or 0,
         "rejected_count": agg["rejected_count"] or 0,
         "posted_count": agg["posted_count"] or 0,
         "not_posted_count": agg["not_posted_count"] or 0,

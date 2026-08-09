@@ -201,7 +201,7 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else "noreply@mail.ezyschool.app",
 )
-EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool Notify")
+EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool")
 ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default="admin@ezyschool.app")
 SUPPORT_EMAIL = config("SUPPORT_EMAIL", default="support@ezyschool.app")
 

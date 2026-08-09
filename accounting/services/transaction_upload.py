@@ -27,6 +27,11 @@ from accounting.models import (
     AccountingPaymentMethod,
     AccountingTransactionType,
 )
+from accounting.services.bank_rules import (
+    dispatch_bank_rule_alerts_for_status_event,
+    signed_effect_for_transaction,
+    validate_bulk_balance_rule_batch,
+)
 from staff.models import Staff
 from students.models import Student
 
@@ -215,6 +220,7 @@ def upload_transactions(
     gl_account_override: str | None = None,
     status_override: str | None = None,
     replace_by_ref_number: bool = False,
+    actor=None,
     progress_callback: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
@@ -228,6 +234,7 @@ def upload_transactions(
         gl_account_override=gl_account_override,
         status_override=status_override,
         replace_by_ref_number=replace_by_ref_number,
+        actor=actor,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
     )
@@ -240,6 +247,7 @@ def execute_transaction_upload(
     gl_account_override: str | None = None,
     status_override: str | None = None,
     replace_by_ref_number: bool = False,
+    actor=None,
     progress_callback: Callable[[int, int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
@@ -462,6 +470,53 @@ def execute_transaction_upload(
     if not default_bank_account:
         raise ValueError("No active bank account found. Create or activate a bank account first.")
 
+    account_effects: dict[AccountingBankAccount, Decimal] = {}
+    notification_account_ids: set[str] = set()
+    existing_by_ref: dict[str, AccountingCashTransaction] = {}
+    if replace_by_ref_number and transactions_to_create:
+        references = [tx_data["reference_number"] for tx_data in transactions_to_create]
+        existing_by_ref = {
+            tx.reference_number: tx
+            for tx in AccountingCashTransaction.objects.filter(reference_number__in=references).select_related(
+                "transaction_type",
+                "bank_account",
+            )
+        }
+
+    if status_to_use in {
+        AccountingCashTransaction.TransactionStatus.PENDING,
+        AccountingCashTransaction.TransactionStatus.APPROVED,
+        AccountingCashTransaction.TransactionStatus.COMPLETED,
+    }:
+        for tx_data in transactions_to_create:
+            bank_account = tx_data["bank_account"] or default_bank_account
+            delta = signed_effect_for_transaction(
+                transaction_category=tx_data["transaction_type"].transaction_category,
+                transaction_code=tx_data["transaction_type"].code,
+                amount=tx_data["amount"],
+            )
+            if replace_by_ref_number:
+                existing_tx = existing_by_ref.get(tx_data["reference_number"])
+                if (
+                    existing_tx is not None
+                    and existing_tx.status in {
+                        AccountingCashTransaction.TransactionStatus.PENDING,
+                        AccountingCashTransaction.TransactionStatus.APPROVED,
+                        AccountingCashTransaction.TransactionStatus.COMPLETED,
+                    }
+                ):
+                    delta -= signed_effect_for_transaction(
+                        transaction_category=existing_tx.transaction_type.transaction_category,
+                        transaction_code=existing_tx.transaction_type.code,
+                        amount=existing_tx.base_amount or existing_tx.amount,
+                    )
+
+            if delta != 0:
+                account_effects[bank_account] = account_effects.get(bank_account, Decimal("0.00")) + delta
+            notification_account_ids.add(str(bank_account.id))
+
+        validate_bulk_balance_rule_batch(account_effects=account_effects)
+
     created_count, updated_count, recompute_pairs = _persist_transactions(
         transactions_to_create,
         template_type=template_type,
@@ -477,6 +532,23 @@ def execute_transaction_upload(
 
     if recompute_pairs:
         _recompute_tuition_payments(recompute_pairs)
+
+    if actor is not None and notification_account_ids and status_to_use in {
+        AccountingCashTransaction.TransactionStatus.PENDING,
+        AccountingCashTransaction.TransactionStatus.APPROVED,
+        AccountingCashTransaction.TransactionStatus.COMPLETED,
+    }:
+        event_seed = f"template-upload:{uuid.uuid4()}"
+        for account_id in notification_account_ids:
+            bank_account = AccountingBankAccount.objects.filter(id=account_id).first()
+            if bank_account is None:
+                continue
+            dispatch_bank_rule_alerts_for_status_event(
+                bank_account=bank_account,
+                transaction_status=status_to_use,
+                event_key=f"{event_seed}:{status_to_use}:{account_id}",
+                actor=actor,
+            )
 
     return {
         "created": created_count,

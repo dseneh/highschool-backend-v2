@@ -75,7 +75,7 @@ def _approved_cash_net_base(
     end_date: date | None = None,
 ) -> Decimal:
     approved = bank_account.transactions.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED,
     )
     if end_date:
         approved = approved.filter(transaction_date__lte=end_date)
@@ -91,7 +91,7 @@ def _approved_cash_net_native(
     end_date: date | None = None,
 ) -> Decimal:
     approved = bank_account.transactions.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED,
     )
     if end_date:
         approved = approved.filter(transaction_date__lte=end_date)
@@ -397,7 +397,7 @@ def _first_approved_cash_activity_month(
 
     transactions = AccountingCashTransaction.objects.filter(
         bank_account_id__in=account_ids,
-        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED,
     )
     if start_date:
         transactions = transactions.filter(transaction_date__gte=start_date)

@@ -447,7 +447,7 @@ def _build_payment_summary_trends(academic_year, decimal_zero) -> dict | None:
         transactions = (
             AccountingCashTransaction.objects.filter(
                 build_student_payment_list_filter(),
-                status=AccountingCashTransaction.TransactionStatus.APPROVED,
+                status=AccountingCashTransaction.TransactionStatus.COMPLETED,
                 transaction_date__gte=start,
                 transaction_date__lte=end,
             )
@@ -532,7 +532,7 @@ def get_payment_summary(request):
     try:
         current_academic_year = _resolve_academic_year(request)
         cache_key = DataCache._get_cache_key(
-            f"dashboard_payment_summary{_year_cache_suffix(current_academic_year)}",
+            f"dashboard_payment_summary_v2{_year_cache_suffix(current_academic_year)}",
             request=request,
         )
         cached = cache.get(cache_key)
@@ -561,11 +561,11 @@ def get_payment_summary(request):
         if not current_academic_year:
             return Response(empty, status=status.HTTP_200_OK)
 
-        def approved_student_payment_total_for_year() -> float:
+        def completed_student_payment_total_for_year() -> float:
             transactions = (
                 AccountingCashTransaction.objects.filter(
                     build_student_payment_list_filter(),
-                    status=AccountingCashTransaction.TransactionStatus.APPROVED,
+                    status=AccountingCashTransaction.TransactionStatus.COMPLETED,
                 )
                 .filter(
                     Q(
@@ -628,7 +628,7 @@ def get_payment_summary(request):
         )
 
         total_gross = float(bill_totals.get('total_gross') or 0)
-        total_paid = approved_student_payment_total_for_year()
+        total_paid = completed_student_payment_total_for_year()
         cached_concession = float(bill_totals.get('total_concession') or 0)
         cached_net = float(bill_totals.get('total_expected') or 0)
         has_live_concessions = int(live_concession_totals.get('count') or 0) > 0

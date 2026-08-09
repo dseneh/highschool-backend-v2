@@ -121,7 +121,7 @@ class BillSummaryQuickStatsView(APIView):
                     academic_year=current_year,
                     type__type='income'
                 ).aggregate(
-                    total_paid=Sum('amount', filter=Q(status='approved')),
+                    total_paid=Sum('amount', filter=Q(status='completed')),
                     pending_payments=Sum('amount', filter=Q(status='pending'))
                 )
             except ImportError:

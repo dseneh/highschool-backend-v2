@@ -28,6 +28,10 @@ from .receivables import (
     AccountingStudentPaymentAllocationViewSet,
 )
 from .settings import AccountingSettingsView
+from .rules import (
+    AccountingBankBalanceRuleViewSet,
+    AccountingSpendableAllocationRuleViewSet,
+)
 from .tax_expense import (
     AccountingExpenseRecordViewSet,
     AccountingTaxCodeViewSet,
@@ -60,4 +64,6 @@ __all__ = [
     "AccountingTaxCodeViewSet",
     "AccountingTaxRemittanceViewSet",
     "AccountingSettingsView",
+    "AccountingBankBalanceRuleViewSet",
+    "AccountingSpendableAllocationRuleViewSet",
 ]

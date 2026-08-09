@@ -1,11 +1,10 @@
 """Re-materialize notification recipients for past campaigns.
 
 Useful after a fix to ``audience.resolve_user_ids`` widens the set of
-eligible recipients — e.g. when students/teachers with placeholder
-``@local.user`` emails were previously excluded from the "all" scope. This
-command walks every campaign in the target schema(s), re-resolves the
-audience, and creates ``Notification`` rows for any newly-included users.
-Existing rows are left untouched (``ignore_conflicts=True``).
+eligible recipients. This command walks every campaign in the target
+schema(s), re-resolves the audience, and creates ``Notification`` rows for
+any newly-included users. Existing rows are left untouched
+(``ignore_conflicts=True``).
 """
 
 from django.core.management.base import BaseCommand, CommandError

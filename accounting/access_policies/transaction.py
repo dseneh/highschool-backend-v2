@@ -20,7 +20,7 @@ class AccountingTransactionAccessPolicy(BaseSchoolAccessPolicy):
             "effect": "allow",
         },
         {
-            "action": ["create", "update", "partial_update", "set_status", "approve", "reject", "bulk_upload", "upload", "upload_status"],
+            "action": ["create", "update", "partial_update", "set_status", "approve", "reject", "bulk_upload", "upload", "upload_status", "limit_precheck"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:admin,accountant,data_entry",

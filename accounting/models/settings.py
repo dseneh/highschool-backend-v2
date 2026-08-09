@@ -56,6 +56,22 @@ class AccountingSettings(BaseModel):
         blank=True,
         help_text="Expense account debited when student refunds are issued.",
     )
+    default_payroll_bank_account = models.ForeignKey(
+        "AccountingBankAccount",
+        on_delete=models.SET_NULL,
+        related_name="accounting_settings_default_payroll",
+        null=True,
+        blank=True,
+        help_text="Default bank account preselected for payroll disbursements.",
+    )
+    default_expense_bank_account = models.ForeignKey(
+        "AccountingBankAccount",
+        on_delete=models.SET_NULL,
+        related_name="accounting_settings_default_expense",
+        null=True,
+        blank=True,
+        help_text="Default bank account preselected for expense disbursements.",
+    )
 
     class Meta:
         db_table = "accounting_settings"

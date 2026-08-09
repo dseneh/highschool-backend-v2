@@ -64,9 +64,9 @@ def get_billing_summary(request):
         # Aggregate transactions by month and type
         monthly_data = {}
         
-        # Get approved accounting cash transactions from the last 12 months.
+        # Count only completed cash transactions for financial totals.
         transactions = AccountingCashTransaction.objects.filter(
-            status=AccountingCashTransaction.TransactionStatus.APPROVED,
+            status=AccountingCashTransaction.TransactionStatus.COMPLETED,
             transaction_date__gte=twelve_months_ago,
         )
 

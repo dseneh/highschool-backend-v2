@@ -17,6 +17,7 @@ from django_tenants.utils import schema_context
 from django.utils import timezone
 
 from common.utils import get_object_by_uuid_or_fields
+from common.email_validation import require_valid_email
 from users.models import User, SpecialPrivilege
 from users.serializers import (
     UserSerializer,
@@ -617,11 +618,44 @@ class UserViewSet(viewsets.ModelViewSet):
         source_last_name = getattr(source_record, 'last_name', '')
         source_gender = getattr(source_record, 'gender', 'male')
         source_email = getattr(source_record, 'email', None)
+
+        try:
+            required_source_email = require_valid_email(source_email)
+        except ValueError as exc:
+            return Response(
+                {
+                    "detail": (
+                        f"Cannot create {account_type} account because the source record "
+                        "does not have a valid email address."
+                    ),
+                    "errors": {"email": [str(exc)]},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         
         # Check if user already exists
         with schema_context('public'):
             existing_user = User.objects.filter(id_number=id_number).first()
             if existing_user:
+                if (existing_user.email or '').strip().lower() != required_source_email.lower():
+                    duplicate_email_owner = User.objects.filter(
+                        email__iexact=required_source_email,
+                    ).exclude(id=existing_user.id).exists()
+                    if duplicate_email_owner:
+                        return Response(
+                            {
+                                "detail": "Cannot attach account because this email is already linked to another user.",
+                                "errors": {
+                                    "email": [
+                                        "A user with this email already exists."
+                                    ]
+                                },
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    existing_user.email = required_source_email
+                    existing_user.save(update_fields=['email'])
+
                 # Add user to tenant
                 try:
                     from core.models import Tenant
@@ -640,11 +674,19 @@ class UserViewSet(viewsets.ModelViewSet):
                     {"detail": "User account already exists", "user": serializer.data},
                     status=status.HTTP_200_OK,
                 )
-            
-            # Generate email and username
-            email = source_email or f"{account_type}.{id_number}@local.user"
-            if User.objects.filter(email=email).exists():
-                email = f"{account_type}.{id_number}@local.user"
+
+            if User.objects.filter(email__iexact=required_source_email).exists():
+                return Response(
+                    {
+                        "detail": "Cannot create account because this email is already linked to another user.",
+                        "errors": {
+                            "email": [
+                                "A user with this email already exists."
+                            ]
+                        },
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             
             username = request.data.get('username') or self._generate_unique_username(str(id_number))
             
@@ -662,7 +704,7 @@ class UserViewSet(viewsets.ModelViewSet):
             user_data = {
                 'username': username,
                 'id_number': id_number,
-                'email': email,
+                'email': required_source_email,
                 'first_name': source_first_name,
                 'last_name': source_last_name,
                 'gender': source_gender,

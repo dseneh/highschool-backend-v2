@@ -8,6 +8,7 @@ from django.db import connection
 from django_tenants.utils import schema_context
 
 from common.status import PersonStatus, Roles, UserAccountType
+from common.email_validation import is_valid_email
 from notifications.services.teacher_scope import assert_teacher_can_target_audience
 from users.models import User
 
@@ -16,12 +17,6 @@ logger = logging.getLogger(__name__)
 
 def get_tenant_user_queryset():
     """Users with access to the current tenant schema.
-
-    NOTE: We intentionally do NOT exclude users whose emails end with
-    ``@local.user``. Those are placeholder emails assigned to students /
-    teachers / parents who did not provide a real address, but they are
-    still valid in-app recipients. The placeholder email is only relevant
-    for the email channel, which gates itself via ``user_wants_email``.
 
     We resolve membership via the ``User.tenants`` M2M (lives in the
     public schema) instead of querying tenant-local ``UserTenantPermissions``
@@ -205,7 +200,7 @@ def user_wants_email(user_id: uuid.UUID, category: str) -> bool:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
             return False
-        if not user.email or user.email.endswith("@local.user"):
+        if not is_valid_email(getattr(user, "email", "")):
             return False
 
     pref = UserNotificationPreference.objects.filter(user_id=user_id).first()

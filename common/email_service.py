@@ -19,6 +19,8 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 
+from common.email_validation import is_valid_email
+
 logger = logging.getLogger(__name__)
 
 RESEND_API_URL = "https://api.resend.com/emails"
@@ -105,7 +107,7 @@ class ResendEmailService:
     def __init__(self):
         self.resend_api_key: str = getattr(settings, "RESEND_API_KEY", "").strip()
         self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@mail.ezyschool.app")
-        self.from_name: str = getattr(settings, "EMAIL_FROM_NAME", "EzySchool Notify")
+        self.from_name: str = getattr(settings, "EMAIL_FROM_NAME", "EzySchool")
         self.email_backend: str = getattr(settings, "EMAIL_BACKEND", "")
         self.email_host: str = getattr(settings, "EMAIL_HOST", "")
         self.email_host_user: str = getattr(settings, "EMAIL_HOST_USER", "").strip()
@@ -459,9 +461,9 @@ def send_notification_email(
     action_url: str = "",
 ) -> bool:
     """Send a school notification/announcement email to a user."""
-    if not user.email or str(user.email).endswith("@local.user"):
+    if not is_valid_email(getattr(user, "email", "")):
         logger.info(
-            "send_notification_email: skipping user %s due to missing/placeholder email",
+            "send_notification_email: skipping user %s due to missing/invalid email",
             getattr(user, "username", user.pk),
         )
         return False
@@ -496,9 +498,9 @@ def send_account_created_email(
     school=None,
 ) -> bool:
     """Send a welcome email with initial login instructions for a newly created account."""
-    if not user.email or user.email.endswith("@local.user"):
+    if not is_valid_email(getattr(user, "email", "")):
         logger.info(
-            "send_account_created_email: skipping user %s due to missing/placeholder email",
+            "send_account_created_email: skipping user %s due to missing/invalid email",
             user.username,
         )
         return False
@@ -526,9 +528,9 @@ def send_account_created_email(
 
 def send_tenant_owner_activation_email(*, user, tenant, activation_code: str, activate_url: str) -> bool:
     """Send a workspace-ready activation email to the tenant owner."""
-    if not user.email or user.email.endswith("@local.user"):
+    if not is_valid_email(getattr(user, "email", "")):
         logger.info(
-            "send_tenant_owner_activation_email: skipping user %s due to missing/placeholder email",
+            "send_tenant_owner_activation_email: skipping user %s due to missing/invalid email",
             getattr(user, "username", user.pk),
         )
         return False

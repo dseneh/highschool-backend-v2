@@ -26,6 +26,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from django_tenants.utils import schema_context
 
+from common.email_validation import require_valid_email
 from users.serializers import (
     MultiFieldTokenObtainPairSerializer, 
     UserSerializer,
@@ -1435,10 +1436,6 @@ class UserRecreateView(APIView):
         return candidate
 
     @staticmethod
-    def _generate_fallback_email(account_type: str, id_number: str) -> str:
-        return f"{account_type}.{id_number}@local.user"
-
-    @staticmethod
     def _build_source_summary(account_type: str, source_record, matched_student_id=None) -> dict:
         summary = {
             "account_type": account_type,
@@ -1550,9 +1547,42 @@ class UserRecreateView(APIView):
             matched_student_id=matched_student_id,
         )
 
+        try:
+            required_source_email = require_valid_email(source_email)
+        except ValueError as exc:
+            return Response(
+                {
+                    "detail": (
+                        f"Cannot create {account_type} account because the source record "
+                        "does not have a valid email address."
+                    ),
+                    "errors": {"email": [str(exc)]},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         with schema_context('public'):
             existing_user = User.objects.filter(id_number=id_number).first()
             if existing_user:
+                if (existing_user.email or '').strip().lower() != required_source_email.lower():
+                    duplicate_email_owner = User.objects.filter(
+                        email__iexact=required_source_email,
+                    ).exclude(id=existing_user.id).exists()
+                    if duplicate_email_owner:
+                        return Response(
+                            {
+                                "detail": "Cannot attach account because this email is already linked to another user.",
+                                "errors": {
+                                    "email": [
+                                        "A user with this email already exists."
+                                    ]
+                                },
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    existing_user.email = required_source_email
+                    existing_user.save(update_fields=['email'])
+
                 try:
                     from core.models import Tenant
                     tenant = Tenant.objects.get(schema_name=tenant_schema_name)
@@ -1575,9 +1605,18 @@ class UserRecreateView(APIView):
                     status=status.HTTP_200_OK,
                 )
 
-            email = source_email or self._generate_fallback_email(account_type, id_number)
-            if User.objects.filter(email=email).exists():
-                email = self._generate_fallback_email(account_type, id_number)
+            if User.objects.filter(email__iexact=required_source_email).exists():
+                return Response(
+                    {
+                        "detail": "Cannot create account because this email is already linked to another user.",
+                        "errors": {
+                            "email": [
+                                "A user with this email already exists."
+                            ]
+                        },
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Default username to id_number, allow override via request data
             username = self.request.data.get('username') or self._generate_unique_username(str(id_number))
@@ -1585,7 +1624,7 @@ class UserRecreateView(APIView):
             user_data = {
                 'username': username,
                 'id_number': id_number,
-                'email': email,
+                'email': required_source_email,
                 'first_name': source_first_name,
                 'last_name': source_last_name,
                 'gender': source_gender,

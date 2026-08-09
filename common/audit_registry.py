@@ -162,6 +162,10 @@ def register_all_models():
         AccountingExpenseRecord,
         AccountingPayrollPostingBatch,
         AccountingPayrollPostingLine,
+        AccountingSettings,
+        AccountingBankBalanceRule,
+        AccountingSpendableAllocationRule,
+        AccountingRuleThresholdState,
     )
 
     auditlog.register(AccountingCurrency, exclude_fields=COMMON_EXCLUDE)
@@ -187,6 +191,10 @@ def register_all_models():
     auditlog.register(AccountingExpenseRecord, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(AccountingPayrollPostingBatch, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(AccountingPayrollPostingLine, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(AccountingSettings, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(AccountingBankBalanceRule, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(AccountingSpendableAllocationRule, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(AccountingRuleThresholdState, exclude_fields=COMMON_EXCLUDE)
 
     # ── HR ─────────────────────────────────────────────────────────────
     from hr.models import (

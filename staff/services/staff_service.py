@@ -3,6 +3,7 @@
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
+from common.email_validation import require_valid_email
 from common.utils import update_model_fields_core
 from common.images import update_model_image
 from staff.models import Staff
@@ -267,7 +268,7 @@ class StaffService:
             data: Request data dictionary (may contain username and role)
             user: User creating the staff
         """
-        from users.models import CustomUser
+        from users.models import User
         from common.status import Roles, PersonStatus, UserAccountType
         
         # Use provided username or default to staff id_number
@@ -275,18 +276,26 @@ class StaffService:
         role = data.get("role", Roles.VIEWER)
         
         # Check if username already exists
-        if CustomUser.objects.filter(username=username).exists():
+        if User.objects.filter(username=username).exists():
             raise ValidationError(f"Username '{username}' already exists")
         
         # Check if id_number already exists as a user
-        if CustomUser.objects.filter(id_number=staff.id_number).exists():
+        if User.objects.filter(id_number=staff.id_number).exists():
             raise ValidationError(f"User account with ID number '{staff.id_number}' already exists")
+
+        try:
+            required_email = require_valid_email(
+                staff.email,
+                message="A valid staff email is required before creating a user account.",
+            )
+        except ValueError as exc:
+            raise ValidationError({"email": [str(exc)]})
         
         # Create user account
-        user_account = CustomUser.objects.create_user(
+        user_account = User.objects.create_user(
             id_number=staff.id_number,
             username=username,
-            email=staff.email or f"{username}@example.com",  # Fallback email if not provided
+            email=required_email,
             first_name=staff.first_name,
             last_name=staff.last_name,
             gender=staff.gender,

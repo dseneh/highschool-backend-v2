@@ -144,6 +144,8 @@ def get_tenant_accounting_settings(*, user=None) -> AccountingSettings:
             "payroll_tax_payable_account",
             "payroll_deductions_payable_account",
             "student_refund_account",
+            "default_payroll_bank_account",
+            "default_expense_bank_account",
         )
         .order_by("created_at")
         .first()

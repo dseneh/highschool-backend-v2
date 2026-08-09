@@ -10,6 +10,15 @@ from rest_framework.response import Response
 from types import SimpleNamespace
 
 from accounting.services.posting import post_cash_transaction_to_ledger
+from accounting.services.post_all import execute_post_all
+from accounting.services.bank_rules import (
+    default_email_template,
+    evaluate_transaction_limits,
+    notification_balance_statuses,
+    resolve_limit_amount,
+    render_email_template,
+    validate_template_placeholders,
+)
 from accounting.services.student_billing import (
     build_billing_lines_for_enrollment,
     get_enrollment_arrears_amount,
@@ -21,6 +30,261 @@ from accounting.views.cash_transaction import (
     AccountingCashTransactionViewSet,
 )
 from accounting.models import AccountingCashTransaction, AccountingJournalEntry
+
+
+class AccountingBankRuleTemplateServiceTests(SimpleTestCase):
+    def test_validate_template_placeholders_allows_supported_tokens(self):
+        validate_template_placeholders(
+            "Subject {{tenant_name}} {{rule_name}}",
+            "Body {{account_name}} {{current_balance}} {{maximum_balance}}",
+        )
+
+    def test_validate_template_placeholders_rejects_unknown_tokens(self):
+        with self.assertRaises(ValidationError):
+            validate_template_placeholders("Hello {{unsupported_value}}")
+
+    def test_render_email_template_replaces_placeholders(self):
+        rendered = render_email_template(
+            "Rule {{rule_name}} on {{account_name}}",
+            {
+                "rule_name": "Main Balance",
+                "account_name": "Operations Account",
+            },
+        )
+
+        self.assertEqual(rendered, "Rule Main Balance on Operations Account")
+
+    def test_default_template_contains_required_sections(self):
+        template = default_email_template()
+        self.assertIn("{{rule_name}}", template["subject"])
+        self.assertIn("{{current_balance}}", template["body"])
+
+
+class AccountingBankRuleNotificationStatusTests(SimpleTestCase):
+    def test_pending_trigger_uses_projected_statuses(self):
+        self.assertEqual(notification_balance_statuses("pending"), ["pending", "approved", "completed"])
+
+    def test_approved_trigger_uses_approved_and_completed_statuses(self):
+        self.assertEqual(notification_balance_statuses("approved"), ["approved", "completed"])
+
+    def test_completed_trigger_uses_completed_status_only(self):
+        self.assertEqual(notification_balance_statuses("completed"), ["completed"])
+
+
+class AccountingTransactionLimitScopeTests(SimpleTestCase):
+    @patch("accounting.services.bank_rules.resolve_limit_amount", return_value=Decimal("90.00"))
+    @patch("accounting.services.bank_rules.account_balance_for_statuses")
+    @patch("accounting.services.bank_rules.AccountingSpendableAllocationRule.objects.filter")
+    @patch("accounting.services.bank_rules.AccountingBankBalanceRule.objects.filter")
+    def test_income_evaluates_max_balance_only(
+        self,
+        mock_balance_rule_filter,
+        mock_spend_rule_filter,
+        mock_balance_for_statuses,
+        _mock_resolve_limit,
+    ):
+        rule = SimpleNamespace(
+            name="Income Max Rule",
+            limit_mode="fixed",
+            fixed_maximum_balance=Decimal("90.00"),
+            revenue_percentage=None,
+            revenue_period="monthly",
+            behavior="warn",
+            alert_threshold_percentage=Decimal("90.00"),
+            enable_email_alerts=False,
+        )
+        rule_qs = MagicMock()
+        rule_qs.prefetch_related.return_value = [rule]
+        mock_balance_rule_filter.return_value = rule_qs
+        mock_balance_for_statuses.side_effect = [Decimal("100.00"), Decimal("100.00")]
+
+        result = evaluate_transaction_limits(
+            bank_account=SimpleNamespace(account_name="Ops Account"),
+            transaction_type=SimpleNamespace(transaction_category="income", code="INCOME"),
+            base_amount=Decimal("20.00"),
+            persist_threshold_state=False,
+        )
+
+        self.assertTrue(result.requires_warning_confirmation)
+        self.assertEqual(len(result.details), 1)
+        self.assertEqual(result.details[0]["rule_name"], "Income Max Rule")
+        self.assertIsNone(result.details[0].get("kind"))
+        mock_spend_rule_filter.assert_not_called()
+
+    @patch("accounting.services.bank_rules.resolve_limit_amount", return_value=Decimal("200.00"))
+    @patch("accounting.services.bank_rules.resolve_revenue_basis", return_value=Decimal("100000.00"))
+    @patch("accounting.services.bank_rules.AccountingCashTransaction.objects.filter")
+    @patch("accounting.services.bank_rules.account_balance_for_statuses")
+    @patch("accounting.services.bank_rules.AccountingSpendableAllocationRule.objects.filter")
+    @patch("accounting.services.bank_rules.AccountingBankBalanceRule.objects.filter")
+    def test_expense_evaluates_spendable_only(
+        self,
+        mock_balance_rule_filter,
+        mock_spend_rule_filter,
+        mock_balance_for_statuses,
+        mock_cash_tx_filter,
+        _mock_revenue_basis,
+        _mock_resolve_limit,
+    ):
+        spend_rule_qs = MagicMock()
+        spend_rule_qs.order_by.return_value.first.return_value = SimpleNamespace(
+            name="Spendable Rule",
+            limit_mode="fixed",
+            fixed_allocation=Decimal("200.00"),
+            revenue_percentage=None,
+            revenue_period="monthly",
+            behavior="warn",
+        )
+        mock_spend_rule_filter.return_value = spend_rule_qs
+        mock_balance_for_statuses.side_effect = [Decimal("500.00"), Decimal("500.00")]
+        mock_cash_tx_filter.return_value.aggregate.return_value = {"total": Decimal("100.00")}
+
+        result = evaluate_transaction_limits(
+            bank_account=SimpleNamespace(account_name="Ops Account"),
+            transaction_type=SimpleNamespace(transaction_category="expense", code="EXPENSE"),
+            base_amount=Decimal("50.00"),
+            persist_threshold_state=False,
+        )
+
+        mock_balance_rule_filter.assert_not_called()
+        self.assertEqual(len(result.details), 1)
+        self.assertEqual(result.details[0]["kind"], "spendable_allocation")
+        self.assertFalse(result.should_block)
+        self.assertFalse(result.requires_warning_confirmation)
+
+    @patch("accounting.services.bank_rules.resolve_limit_amount", return_value=Decimal("200.00"))
+    @patch("accounting.services.bank_rules.resolve_revenue_basis", return_value=Decimal("100000.00"))
+    @patch("accounting.services.bank_rules.AccountingCashTransaction.objects.filter")
+    @patch("accounting.services.bank_rules.account_balance_for_statuses")
+    @patch("accounting.services.bank_rules.AccountingSpendableAllocationRule.objects.filter")
+    @patch("accounting.services.bank_rules.AccountingBankBalanceRule.objects.filter")
+    def test_expense_zero_amount_still_returns_spendable_snapshot(
+        self,
+        mock_balance_rule_filter,
+        mock_spend_rule_filter,
+        mock_balance_for_statuses,
+        mock_cash_tx_filter,
+        _mock_revenue_basis,
+        _mock_resolve_limit,
+    ):
+        spend_rule_qs = MagicMock()
+        spend_rule_qs.order_by.return_value.first.return_value = SimpleNamespace(
+            name="Spendable Rule",
+            limit_mode="fixed",
+            fixed_allocation=Decimal("200.00"),
+            revenue_percentage=None,
+            revenue_period="monthly",
+            behavior="warn",
+        )
+        mock_spend_rule_filter.return_value = spend_rule_qs
+        mock_balance_for_statuses.side_effect = [Decimal("500.00"), Decimal("500.00")]
+        mock_cash_tx_filter.return_value.aggregate.return_value = {"total": Decimal("120.00")}
+
+        result = evaluate_transaction_limits(
+            bank_account=SimpleNamespace(account_name="Ops Account"),
+            transaction_type=SimpleNamespace(transaction_category="expense", code="EXPENSE"),
+            base_amount=Decimal("0.00"),
+            persist_threshold_state=False,
+        )
+
+        mock_balance_rule_filter.assert_not_called()
+        self.assertEqual(len(result.details), 1)
+        self.assertEqual(result.details[0]["kind"], "spendable_allocation")
+        self.assertEqual(result.details[0]["current_balance"], "120.00")
+        self.assertEqual(result.details[0]["projected_balance"], "120.00")
+
+
+class AccountingLimitPrecheckApiValidationTests(SimpleTestCase):
+    @patch("accounting.views.cash_transaction.evaluate_transaction_limits")
+    @patch("accounting.views.cash_transaction.AccountingTransactionType.objects.get")
+    @patch("accounting.views.cash_transaction.AccountingBankAccount.objects.get")
+    def test_expense_limit_precheck_allows_missing_amount(
+        self,
+        mock_bank_get,
+        mock_type_get,
+        mock_evaluate,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        request = SimpleNamespace(data={"bank_account": "bank-1", "transaction_type": "tx-1"})
+        viewset.request = request
+
+        mock_bank_get.return_value = SimpleNamespace(id="bank-1")
+        mock_type_get.return_value = SimpleNamespace(id="tx-1", transaction_category="expense", code="EXPENSE")
+        mock_evaluate.return_value = SimpleNamespace(
+            should_block=False,
+            requires_warning_confirmation=False,
+            warning_messages=[],
+            blocking_messages=[],
+            details=[],
+        )
+
+        response = viewset.limit_precheck(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_evaluate.call_args.kwargs["base_amount"], Decimal("0"))
+
+    @patch("accounting.views.cash_transaction.AccountingTransactionType.objects.get")
+    @patch("accounting.views.cash_transaction.AccountingBankAccount.objects.get")
+    def test_income_limit_precheck_still_requires_amount(
+        self,
+        mock_bank_get,
+        mock_type_get,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        request = SimpleNamespace(data={"bank_account": "bank-1", "transaction_type": "tx-1"})
+        viewset.request = request
+
+        mock_bank_get.return_value = SimpleNamespace(id="bank-1")
+        mock_type_get.return_value = SimpleNamespace(id="tx-1", transaction_category="income", code="INCOME")
+
+        response = viewset.limit_precheck(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "amount or base_amount is required.")
+
+
+class AccountingLimitAmountResolutionTests(SimpleTestCase):
+    @patch("accounting.services.bank_rules.resolve_revenue_basis", return_value=Decimal("100000.00"))
+    def test_percent_revenue_mode_uses_percentage_of_revenue(self, _mock_revenue_basis):
+        result = resolve_limit_amount(
+            "percent_revenue",
+            fixed_value=None,
+            percent_value=Decimal("30.00"),
+            revenue_period="all_time",
+        )
+
+        self.assertEqual(result, Decimal("30000.00"))
+
+    @patch("accounting.services.bank_rules.resolve_revenue_basis", return_value=Decimal("100000.00"))
+    def test_legacy_percentage_mode_alias_uses_percentage_of_revenue(self, _mock_revenue_basis):
+        result = resolve_limit_amount(
+            "percentage",
+            fixed_value=None,
+            percent_value=Decimal("30.00"),
+            revenue_period="all_time",
+        )
+
+        self.assertEqual(result, Decimal("30000.00"))
+
+    def test_fixed_amount_mode_uses_fixed_limit(self):
+        result = resolve_limit_amount(
+            "fixed_amount",
+            fixed_value=Decimal("100000.00"),
+            percent_value=Decimal("30.00"),
+            revenue_period="all_time",
+        )
+
+        self.assertEqual(result, Decimal("100000.00"))
+
+    def test_legacy_flat_mode_alias_uses_fixed_limit(self):
+        result = resolve_limit_amount(
+            "flat",
+            fixed_value=Decimal("100000.00"),
+            percent_value=Decimal("30.00"),
+            revenue_period="all_time",
+        )
+
+        self.assertEqual(result, Decimal("100000.00"))
 
 
 class AccountingPostingServiceTests(SimpleTestCase):
@@ -198,6 +462,49 @@ class AccountingPostingServiceTests(SimpleTestCase):
 
         with self.assertRaises(ValidationError):
             post_cash_transaction_to_ledger(cash_tx)
+
+
+class AccountingBulkPostAllTests(SimpleTestCase):
+    @patch("accounting.services.post_all.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.services.post_all.recalculate_bank_account_current_balance")
+    @patch("accounting.services.post_all.post_cash_transaction_to_ledger")
+    @patch("accounting.services.post_all.get_eligible_post_all_queryset")
+    def test_execute_post_all_sets_status_completed_after_post(
+        self,
+        mock_get_eligible,
+        mock_post,
+        mock_recalc,
+        _mock_atomic,
+    ):
+        cash_tx = MagicMock()
+        cash_tx.id = "tx-1"
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
+        cash_tx.bank_account_id = None
+        cash_tx.completed_by = None
+        cash_tx.completed_at = None
+
+        class _Eligible:
+            def values_list(self, *args, **kwargs):
+                return [cash_tx.id]
+
+            def iterator(self, chunk_size=200):
+                return iter([cash_tx])
+
+        mock_get_eligible.return_value = _Eligible()
+        mock_post.return_value = SimpleNamespace(id="je-1")
+
+        result = execute_post_all(
+            user_id=None,
+            apply_filters=True,
+            filter_params={},
+        )
+
+        self.assertEqual(result["posted_count"], 1)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual(cash_tx.status, AccountingCashTransaction.TransactionStatus.COMPLETED)
+        self.assertIsNotNone(cash_tx.completed_at)
+        cash_tx.save.assert_called_once()
+        mock_recalc.assert_not_called()
 
 
 class _DummyBaseView:
@@ -401,20 +708,22 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         self.assertIsNotNone(cash_tx.rejected_at)
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.evaluate_transaction_limits", return_value=SimpleNamespace(should_block=False, blocking_messages=[]))
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
     def test_update_status_does_not_post_when_approved(
         self,
         mock_post,
         mock_recalc,
+        _mock_evaluate,
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
-        cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
         cash_tx.bank_account = MagicMock()
         cash_tx.journal_entry_id = None
 
@@ -429,20 +738,22 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_recalc.assert_not_called()
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.evaluate_transaction_limits", return_value=SimpleNamespace(should_block=False, blocking_messages=[]))
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
     def test_update_status_approve_ignores_prevent_journal_posting_flag(
         self,
         mock_post,
         mock_recalc,
+        _mock_evaluate,
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
-        cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
         cash_tx.bank_account = MagicMock()
         cash_tx.journal_entry_id = None
 
@@ -467,7 +778,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
@@ -487,16 +798,20 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.transaction.on_commit")
+    @patch("accounting.views.cash_transaction.evaluate_transaction_limits", return_value=SimpleNamespace(should_block=False, blocking_messages=[]))
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
     def test_update_status_completes_approved_transaction_and_recalculates_balance(
         self,
         mock_post,
         mock_recalc,
+        _mock_evaluate,
+        _mock_on_commit,
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
@@ -517,6 +832,8 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.transaction.on_commit")
+    @patch("accounting.views.cash_transaction.evaluate_transaction_limits", return_value=SimpleNamespace(should_block=False, blocking_messages=[]))
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
@@ -525,10 +842,12 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_post,
         mock_sync,
         mock_recalc,
+        _mock_evaluate,
+        _mock_on_commit,
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         reversed_journal = SimpleNamespace(status=AccountingJournalEntry.EntryStatus.REVERSED)
@@ -561,7 +880,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
@@ -588,7 +907,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
@@ -616,7 +935,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
         viewset.format_kwarg = None
 
         cash_tx = MagicMock()
@@ -634,16 +953,65 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_post.assert_not_called()
         mock_recalc.assert_not_called()
 
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.transaction.on_commit", side_effect=lambda fn: fn())
+    @patch("accounting.views.cash_transaction.dispatch_bank_rule_alerts_for_status_event")
+    @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
+    @patch("accounting.views.cash_transaction.evaluate_transaction_limits")
+    def test_update_status_dispatches_alert_on_approved_transition(
+        self,
+        mock_evaluate,
+        mock_recalc,
+        mock_dispatch,
+        _mock_on_commit,
+        _mock_atomic,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
+        viewset.format_kwarg = None
+        cash_tx = MagicMock()
+        cash_tx.status = AccountingCashTransaction.TransactionStatus.PENDING
+        cash_tx.bank_account = MagicMock()
+        cash_tx.journal_entry_id = None
+        cash_tx.bank_account = MagicMock()
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.base_amount = Decimal("50.00")
+        cash_tx.amount = Decimal("50.00")
+        cash_tx.reference_number = "TXN-1"
+        cash_tx.transaction_date = "2026-08-08"
+        cash_tx.journal_entry_id = None
+
+        mock_evaluate.return_value = SimpleNamespace(should_block=False, blocking_messages=[])
+
+        with patch.object(viewset, "get_serializer", return_value=SimpleNamespace(data={})), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.get",
+            return_value=cash_tx.bank_account,
+        ):
+            response = viewset._update_status(
+                cash_tx,
+                AccountingCashTransaction.TransactionStatus.APPROVED,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_recalc.assert_not_called()
+        mock_dispatch.assert_called_once()
+
+    @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.transaction.on_commit", side_effect=lambda fn: fn())
+    @patch("accounting.views.cash_transaction.dispatch_bank_rule_alerts_for_status_event")
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.post_cash_transaction_to_ledger")
     def test_perform_create_posts_if_created_as_approved(
         self,
         mock_post,
         mock_recalc,
+        mock_dispatch,
+        _mock_on_commit,
+        _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
         request_user = MagicMock()
-        viewset.request = SimpleNamespace(user=request_user)
+        viewset.request = SimpleNamespace(user=request_user, data={})
 
         serializer = MagicMock()
         serializer.validated_data = {
@@ -655,16 +1023,24 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         cash_tx = MagicMock()
         cash_tx.status = AccountingCashTransaction.TransactionStatus.COMPLETED
         cash_tx.bank_account = MagicMock()
+        cash_tx.bank_account_id = "bank-1"
+        cash_tx.base_amount = Decimal("100.00")
+        cash_tx.reference_number = "TXN-1"
+        cash_tx.transaction_date = "2026-08-08"
         serializer.save.return_value = cash_tx
 
         with patch.object(viewset, "_validate_student_income_payment"), patch.object(
             viewset, "_validate_student_refund"
-        ), patch.object(viewset, "_refund_ledger_account_override", return_value=None):
+        ), patch.object(viewset, "_refund_ledger_account_override", return_value=None), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.get",
+            return_value=cash_tx.bank_account,
+        ):
             viewset.perform_create(serializer)
 
         serializer.save.assert_called_once_with(created_by=request_user, updated_by=request_user)
         mock_post.assert_called_once_with(cash_tx, actor=viewset.request.user)
         mock_recalc.assert_called_once_with(cash_tx.bank_account)
+        mock_dispatch.assert_called_once()
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
@@ -678,7 +1054,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
 
         bank_account = MagicMock()
         cash_tx = MagicMock()
@@ -695,6 +1071,11 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             viewset, "_validate_student_income_payment"
         ), patch.object(viewset, "_validate_student_refund"), patch.object(
             viewset, "_refund_ledger_account_override", return_value=None
+        ), patch.object(
+            viewset, "_enforce_transaction_limits"
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.select_for_update",
+            return_value=SimpleNamespace(filter=lambda **kwargs: [bank_account]),
         ), patch(
             "accounting.views.cash_transaction.AccountingBankAccount.objects.filter",
             return_value=[bank_account],
@@ -705,6 +1086,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             cash_tx.status,
             AccountingCashTransaction.TransactionStatus.PENDING,
         )
+        self.assertIsNone(cash_tx.journal_entry)
         self.assertIsNone(cash_tx.completed_by)
         self.assertIsNone(cash_tx.completed_at)
         self.assertIsNone(cash_tx.approved_by)
@@ -715,14 +1097,18 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         mock_recalc.assert_called_once_with(bank_account)
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
+    @patch("accounting.views.cash_transaction.transaction.on_commit")
+    @patch("accounting.views.cash_transaction.dispatch_bank_rule_alerts_for_status_event")
     @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
     def test_perform_update_resets_rejected_transaction_to_pending(
         self,
         mock_sync,
+        mock_dispatch,
+        mock_on_commit,
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
 
         cash_tx = MagicMock()
         cash_tx.status = AccountingCashTransaction.TransactionStatus.REJECTED
@@ -738,6 +1124,11 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             viewset, "_validate_student_income_payment"
         ), patch.object(viewset, "_validate_student_refund"), patch.object(
             viewset, "_refund_ledger_account_override", return_value=None
+        ), patch.object(
+            viewset, "_enforce_transaction_limits"
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.select_for_update",
+            return_value=SimpleNamespace(filter=lambda **kwargs: []),
         ):
             viewset.perform_update(serializer)
 
@@ -746,6 +1137,8 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             AccountingCashTransaction.TransactionStatus.PENDING,
         )
         mock_sync.assert_not_called()
+        mock_on_commit.assert_not_called()
+        mock_dispatch.assert_not_called()
 
     @patch("accounting.views.cash_transaction.transaction.atomic", return_value=nullcontext())
     @patch("accounting.views.cash_transaction.sync_cash_transaction_journal_entry")
@@ -755,7 +1148,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
 
         cash_tx = MagicMock()
         cash_tx.status = AccountingCashTransaction.TransactionStatus.APPROVED
@@ -771,6 +1164,11 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             viewset, "_validate_student_income_payment"
         ), patch.object(viewset, "_validate_student_refund"), patch.object(
             viewset, "_refund_ledger_account_override", return_value=None
+        ), patch.object(
+            viewset, "_enforce_transaction_limits"
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.select_for_update",
+            return_value=SimpleNamespace(filter=lambda **kwargs: []),
         ):
             viewset.perform_update(serializer)
 
@@ -792,7 +1190,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
 
         bank_account = MagicMock()
         cash_tx = MagicMock()
@@ -809,6 +1207,11 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             viewset, "_validate_student_income_payment"
         ), patch.object(viewset, "_validate_student_refund"), patch.object(
             viewset, "_refund_ledger_account_override", return_value=None
+        ), patch.object(
+            viewset, "_enforce_transaction_limits"
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.select_for_update",
+            return_value=SimpleNamespace(filter=lambda **kwargs: [bank_account]),
         ), patch(
             "accounting.views.cash_transaction.AccountingBankAccount.objects.filter",
             return_value=[bank_account],
@@ -835,7 +1238,7 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
         _mock_atomic,
     ):
         viewset = AccountingCashTransactionViewSet()
-        viewset.request = SimpleNamespace(user=MagicMock())
+        viewset.request = SimpleNamespace(user=MagicMock(), data={})
 
         bank_account = MagicMock()
         cash_tx = MagicMock()
@@ -852,6 +1255,11 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
             viewset, "_validate_student_income_payment"
         ), patch.object(viewset, "_validate_student_refund"), patch.object(
             viewset, "_refund_ledger_account_override", return_value=None
+        ), patch.object(
+            viewset, "_enforce_transaction_limits"
+        ), patch(
+            "accounting.views.cash_transaction.AccountingBankAccount.objects.select_for_update",
+            return_value=SimpleNamespace(filter=lambda **kwargs: [bank_account]),
         ), patch(
             "accounting.views.cash_transaction.AccountingBankAccount.objects.filter",
             return_value=[bank_account],

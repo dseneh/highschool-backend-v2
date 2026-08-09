@@ -276,7 +276,7 @@ def resolve_exchange_rate_for_entry(
 
     tx_qs = AccountingCashTransaction.objects.filter(
         currency=from_currency,
-        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED,
     ).exclude(exchange_rate=Decimal("1"))
     if bank_account_id:
         tx_qs = tx_qs.filter(bank_account_id=bank_account_id)

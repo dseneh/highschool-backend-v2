@@ -28,6 +28,9 @@ from accounting.models import (
     AccountingPaymentMethod,
     AccountingPayrollPostingBatch,
     AccountingPayrollPostingLine,
+    AccountingBankBalanceRule,
+    AccountingNotificationChannel,
+    AccountingSpendableAllocationRule,
     AccountingSettings,
     AccountingStudentBill,
     AccountingStudentBillLine,
@@ -35,6 +38,13 @@ from accounting.models import (
     AccountingTaxCode,
     AccountingTaxRemittance,
     AccountingTransactionType,
+)
+from accounting.services.bank_rules import (
+    ALLOWED_EMAIL_PLACEHOLDERS,
+    compute_bank_account_rule_status,
+    default_email_template,
+    render_email_template,
+    validate_template_placeholders,
 )
 from accounting.services.posting import (
     _resolve_academic_year,
@@ -44,6 +54,8 @@ from accounting.services.posting import (
     compute_bank_account_balance,
 )
 from accounting.services.settings_services import resolve_student_refund_transaction_type
+from common.email_validation import is_valid_email
+from hr.models import Employee
 from students.models import Student
 
 
@@ -532,6 +544,7 @@ class AccountingPaymentMethodSerializer(serializers.ModelSerializer):
 
 class AccountingBankAccountSerializer(serializers.ModelSerializer):
     currency = serializers.PrimaryKeyRelatedField(queryset=AccountingCurrency.objects.all())
+    bank_rule_status = serializers.SerializerMethodField()
 
     class Meta:
         model = AccountingBankAccount
@@ -547,6 +560,7 @@ class AccountingBankAccountSerializer(serializers.ModelSerializer):
             "opening_balance_date",
             "current_balance",
             "status",
+            "bank_rule_status",
             "description",
             "created_at",
             "updated_at",
@@ -604,6 +618,9 @@ class AccountingBankAccountSerializer(serializers.ModelSerializer):
         response = super().to_representation(instance)
         response["currency"] = AccountingCurrencySerializer(instance.currency).data
         return response
+
+    def get_bank_rule_status(self, obj):
+        return compute_bank_account_rule_status(obj)
 
 
 class AccountingBankAccountRecentActivitySerializer(serializers.ModelSerializer):
@@ -670,8 +687,10 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
         if cached is not None:
             return cached
 
-        approved_tx = instance.transactions.filter(status=AccountingCashTransaction.TransactionStatus.APPROVED)
-        totals = aggregate_bank_account_approved_totals(approved_tx)
+        completed_tx = instance.transactions.filter(
+            status=AccountingCashTransaction.TransactionStatus.COMPLETED
+        )
+        totals = aggregate_bank_account_approved_totals(completed_tx)
         total_income = totals["income"]
         total_expense = totals["expense"]
 
@@ -679,7 +698,7 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
         net_balance = compute_bank_account_balance(instance)
 
         monthly_rows = (
-            approved_tx.annotate(month=TruncMonth("transaction_date"))
+            completed_tx.annotate(month=TruncMonth("transaction_date"))
             .values("month")
             .annotate(
                 income=Sum(Abs(F("base_amount")), filter=_inflow_filter()),
@@ -699,6 +718,9 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
         activity_breakdown = {
             "approved": instance.transactions.filter(
                 status=AccountingCashTransaction.TransactionStatus.APPROVED
+            ).count(),
+            "completed": instance.transactions.filter(
+                status=AccountingCashTransaction.TransactionStatus.COMPLETED
             ).count(),
             "pending": instance.transactions.filter(
                 status=AccountingCashTransaction.TransactionStatus.PENDING
@@ -784,6 +806,8 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
 
     # Allow blank reference_number so it can be auto-generated in create()
     reference_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    # Optional: when omitted/blank, use a safe fallback description.
+    description = serializers.CharField(required=False, allow_blank=True)
     # Optional: when omitted, validate() derives from amount * exchange_rate (or amount when rate missing).
     base_amount = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
 
@@ -912,12 +936,19 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         reference_number = (validated_data.get("reference_number") or "").strip()
         if not reference_number:
             validated_data["reference_number"] = self._generate_reference_number(transaction_date)
+
+        description = str(validated_data.get("description") or "").strip()
+        if not description:
+            validated_data["description"] = "Transaction entry"
         
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         validated_data.pop("transaction_type_code", None)
         validated_data.pop("use_student_refund_mapping", None)
+        if "description" in validated_data:
+            description = str(validated_data.get("description") or "").strip()
+            validated_data["description"] = description or "Transaction entry"
         return super().update(instance, validated_data)
 
     def get_bank_account(self, obj):
@@ -1457,6 +1488,218 @@ class AccountingPayrollPostingLineSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class AccountingBankBalanceRuleSerializer(serializers.ModelSerializer):
+    alert_recipient_ids = serializers.PrimaryKeyRelatedField(
+        source="alert_recipients",
+        queryset=Employee.objects.all(),
+        many=True,
+        required=False,
+    )
+    alert_recipients_display = serializers.SerializerMethodField()
+    bank_accounts = serializers.PrimaryKeyRelatedField(
+        queryset=AccountingBankAccount.objects.all(),
+        many=True,
+    )
+    allowed_placeholders = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AccountingBankBalanceRule
+        fields = [
+            "id",
+            "name",
+            "is_active",
+            "bank_accounts",
+            "limit_mode",
+            "fixed_maximum_balance",
+            "revenue_percentage",
+            "revenue_period",
+            "behavior",
+            "enable_email_alerts",
+            "alert_trigger",
+            "notification_trigger_status",
+            "notification_channel",
+            "alert_threshold_percentage",
+            "alert_recipient_ids",
+            "alert_recipients_display",
+            "use_default_email_template",
+            "email_subject_template",
+            "email_body_template",
+            "allowed_placeholders",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at", "allowed_placeholders", "alert_recipients_display"]
+
+    def get_alert_recipients_display(self, obj):
+        def _employee_label(employee: Employee) -> str:
+            get_full_name = getattr(employee, "get_full_name", None)
+            if callable(get_full_name):
+                full_name = (get_full_name() or "").strip()
+                if full_name:
+                    return full_name
+
+            fallback_name = f"{employee.first_name} {employee.last_name}".strip()
+            return fallback_name or employee.id_number or "Employee"
+
+        return [
+            {
+                "id": str(employee.id),
+                "label": _employee_label(employee),
+                "email": employee.email,
+            }
+            for employee in obj.alert_recipients.all()
+        ]
+
+    def get_allowed_placeholders(self, _obj):
+        return sorted(ALLOWED_EMAIL_PLACEHOLDERS)
+
+    def validate(self, attrs):
+        mode = attrs.get("limit_mode") or getattr(self.instance, "limit_mode", None)
+        fixed = attrs.get("fixed_maximum_balance")
+        if fixed is None and self.instance is not None:
+            fixed = self.instance.fixed_maximum_balance
+
+        percent = attrs.get("revenue_percentage")
+        if percent is None and self.instance is not None:
+            percent = self.instance.revenue_percentage
+
+        if mode == "fixed_amount" and (fixed is None or fixed <= 0):
+            raise serializers.ValidationError({"fixed_maximum_balance": "Fixed maximum balance must be greater than zero."})
+
+        if mode == "percent_revenue":
+            if percent is None or percent <= 0:
+                raise serializers.ValidationError({"revenue_percentage": "Revenue percentage must be greater than zero."})
+            if percent > 1000:
+                raise serializers.ValidationError({"revenue_percentage": "Revenue percentage is too high."})
+
+        enable_alerts = attrs.get("enable_email_alerts")
+        if enable_alerts is None and self.instance is not None:
+            enable_alerts = self.instance.enable_email_alerts
+
+        if enable_alerts:
+            recipients = attrs.get("alert_recipients")
+            if recipients is None and self.instance is not None:
+                recipients = self.instance.alert_recipients.all()
+            if not recipients:
+                raise serializers.ValidationError({"alert_recipient_ids": "Select at least one employee recipient."})
+
+            recipients_list = list(recipients)
+            notification_channel = attrs.get("notification_channel")
+            if notification_channel is None and self.instance is not None:
+                notification_channel = self.instance.notification_channel
+            channel_value = str(
+                notification_channel or AccountingNotificationChannel.IN_APP
+            ).strip().lower()
+
+            requires_email = channel_value in {
+                AccountingNotificationChannel.EMAIL,
+                AccountingNotificationChannel.BOTH,
+            }
+            valid_email_recipients = [
+                employee
+                for employee in recipients_list
+                if is_valid_email(getattr(employee, "email", ""))
+            ]
+            if requires_email and not valid_email_recipients:
+                raise serializers.ValidationError(
+                    {
+                        "alert_recipient_ids": (
+                            "At least one selected recipient must have a valid employee email address when channel includes email."
+                        )
+                    }
+                )
+
+        use_default = attrs.get("use_default_email_template")
+        if use_default is None and self.instance is not None:
+            use_default = self.instance.use_default_email_template
+
+        if not use_default:
+            subject = attrs.get("email_subject_template")
+            if subject is None and self.instance is not None:
+                subject = self.instance.email_subject_template
+            body = attrs.get("email_body_template")
+            if body is None and self.instance is not None:
+                body = self.instance.email_body_template
+            validate_template_placeholders(subject or "", body or "")
+
+        return attrs
+
+
+class AccountingSpendableAllocationRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountingSpendableAllocationRule
+        fields = [
+            "id",
+            "name",
+            "is_active",
+            "limit_mode",
+            "fixed_allocation",
+            "revenue_percentage",
+            "revenue_period",
+            "behavior",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+
+    def validate(self, attrs):
+        mode = attrs.get("limit_mode") or getattr(self.instance, "limit_mode", None)
+        fixed = attrs.get("fixed_allocation")
+        if fixed is None and self.instance is not None:
+            fixed = self.instance.fixed_allocation
+        percent = attrs.get("revenue_percentage")
+        if percent is None and self.instance is not None:
+            percent = self.instance.revenue_percentage
+
+        if mode == "fixed_amount" and (fixed is None or fixed <= 0):
+            raise serializers.ValidationError({"fixed_allocation": "Fixed allocation must be greater than zero."})
+        if mode == "percent_revenue" and (percent is None or percent <= 0):
+            raise serializers.ValidationError({"revenue_percentage": "Revenue percentage must be greater than zero."})
+        return attrs
+
+
+class AccountingRuleEmailPreviewSerializer(serializers.Serializer):
+    rule_id = serializers.UUIDField(required=False)
+    subject_template = serializers.CharField(required=False, allow_blank=True)
+    body_template = serializers.CharField(required=False, allow_blank=True)
+    context = serializers.DictField(required=False)
+
+    def validate(self, attrs):
+        subject = attrs.get("subject_template", "")
+        body = attrs.get("body_template", "")
+        validate_template_placeholders(subject, body)
+        return attrs
+
+    def render_preview(self):
+        defaults = default_email_template()
+        subject = self.validated_data.get("subject_template") or defaults["subject"]
+        body = self.validated_data.get("body_template") or defaults["body"]
+        context = {
+            "tenant_name": "Your School",
+            "rule_name": "High Balance Rule",
+            "rule_explanation": (
+                "Main School Account has reached the configured warning threshold (95.00% used). "
+                "Current usage is 95.00% (95,000.00 of 100,000.00). "
+                "Remaining headroom is 5,000.00 before reaching the maximum cap."
+            ),
+            "account_name": "Main School Account",
+            "current_balance": "95,000.00",
+            "maximum_balance": "100,000.00",
+            "remaining_amount": "5,000.00",
+            "recommended_transfer_amount": "0.00",
+            "threshold_percentage": "95",
+            "transaction_amount": "2,000.00",
+            "transaction_reference": "TXN-001",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+        }
+        context.update(self.validated_data.get("context") or {})
+        return {
+            "subject": render_email_template(subject, context),
+            "body": render_email_template(body, context),
+            "context": context,
+        }
+
+
 class AccountingSettingsSerializer(serializers.ModelSerializer):
     transfer_in_account_name = serializers.CharField(
         source="transfer_in_account.name",
@@ -1506,6 +1749,14 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
         source="student_refund_account.code",
         read_only=True,
     )
+    default_payroll_bank_account_name = serializers.CharField(
+        source="default_payroll_bank_account.account_name",
+        read_only=True,
+    )
+    default_expense_bank_account_name = serializers.CharField(
+        source="default_expense_bank_account.account_name",
+        read_only=True,
+    )
 
     class Meta:
         model = AccountingSettings
@@ -1529,6 +1780,10 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             "student_refund_account",
             "student_refund_account_name",
             "student_refund_account_code",
+            "default_payroll_bank_account",
+            "default_payroll_bank_account_name",
+            "default_expense_bank_account",
+            "default_expense_bank_account_name",
             "created_at",
             "updated_at",
         ]
@@ -1546,9 +1801,18 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             "payroll_deductions_payable_account_code",
             "student_refund_account_name",
             "student_refund_account_code",
+            "default_payroll_bank_account_name",
+            "default_expense_bank_account_name",
             "created_at",
             "updated_at",
         ]
+
+    def _validate_default_bank_account(self, account, *, label: str):
+        if account is None:
+            return account
+        if account.status != AccountingBankAccount.AccountStatus.ACTIVE:
+            raise serializers.ValidationError(f"{label} must reference an active bank account.")
+        return account
 
     def _validate_ledger_account(self, account, *, expected_type: str, label: str):
         if account is None:
@@ -1601,4 +1865,16 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             value,
             expected_type=AccountingLedgerAccount.AccountType.EXPENSE,
             label="Student refund account",
+        )
+
+    def validate_default_payroll_bank_account(self, value):
+        return self._validate_default_bank_account(
+            value,
+            label="Default payroll bank account",
+        )
+
+    def validate_default_expense_bank_account(self, value):
+        return self._validate_default_bank_account(
+            value,
+            label="Default expense bank account",
         )

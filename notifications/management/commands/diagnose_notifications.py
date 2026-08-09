@@ -6,7 +6,7 @@ Examples:
 
     # Focus on a specific user (email or id_number):
     python manage.py diagnose_notifications --schema=<tenant_schema> \
-        --user=student.S0001@local.user
+        --user=student@example.org
 
     # Show what `scope=all` would target right now:
     python manage.py diagnose_notifications --schema=<tenant_schema> \
@@ -81,13 +81,6 @@ class Command(BaseCommand):
         role_counts = Counter(u.get("role") or "(none)" for u in users)
         for role, count in sorted(role_counts.items()):
             self.stdout.write(f"  - role={role}: {count}")
-
-        placeholder = [
-            u for u in users if (u.get("email") or "").endswith("@local.user")
-        ]
-        self.stdout.write(
-            f"  - of those, {len(placeholder)} have placeholder @local.user emails"
-        )
 
     def _inspect_all_audience(self):
         self.stdout.write(self.style.MIGRATE_HEADING("\n== Resolve scope=all =="))

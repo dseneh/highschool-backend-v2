@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import NotFound
 
+from common.email_validation import require_valid_email
 from common.utils import get_object_by_uuid_or_fields
 from users.models import User
 from ..models import Staff
@@ -260,27 +261,34 @@ class StaffViewSet(viewsets.ModelViewSet):
     
     def _create_user_account_for_staff(self, staff, data, user):
         """Helper to create user account for staff"""
-        from users.models import CustomUser
         from common.status import Roles, PersonStatus, UserAccountType
         
         username = data.get("username") or staff.id_number
         role = data.get("role", Roles.VIEWER)
         
         # Check if username already exists
-        if CustomUser.objects.filter(username=username).exists():
+        if User.objects.filter(username=username).exists():
             raise serializers.ValidationError(f"Username '{username}' already exists")
         
         # Check if id_number already exists as a user
-        if CustomUser.objects.filter(id_number=staff.id_number).exists():
+        if User.objects.filter(id_number=staff.id_number).exists():
             raise serializers.ValidationError(
                 f"User account with ID number '{staff.id_number}' already exists"
             )
+
+        try:
+            required_email = require_valid_email(
+                staff.email,
+                message="A valid staff email is required before creating a user account.",
+            )
+        except ValueError as exc:
+            raise serializers.ValidationError({"email": [str(exc)]})
         
         # Create user account
         user_account = User.objects.create_user(
             id_number=staff.id_number,
             username=username,
-            email=staff.email or f"{username}@example.com",
+            email=required_email,
             first_name=staff.first_name,
             last_name=staff.last_name,
             gender=staff.gender,

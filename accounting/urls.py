@@ -25,6 +25,8 @@ from accounting.views import (
     AccountingTaxCodeViewSet,
     AccountingTaxRemittanceViewSet,
     AccountingTransactionTypeViewSet,
+    AccountingBankBalanceRuleViewSet,
+    AccountingSpendableAllocationRuleViewSet,
 )
 from accounting.views.settings import AccountingSettingsView
 
@@ -52,6 +54,8 @@ router.register(r"accounting/tax-remittances", AccountingTaxRemittanceViewSet, b
 router.register(r"accounting/expense-records", AccountingExpenseRecordViewSet, basename="accounting-expense-record")
 router.register(r"accounting/payroll-posting-batches", AccountingPayrollPostingBatchViewSet, basename="accounting-payroll-posting-batch")
 router.register(r"accounting/payroll-posting-lines", AccountingPayrollPostingLineViewSet, basename="accounting-payroll-posting-line")
+router.register(r"accounting/balance-rules", AccountingBankBalanceRuleViewSet, basename="accounting-balance-rule")
+router.register(r"accounting/spendable-allocation-rules", AccountingSpendableAllocationRuleViewSet, basename="accounting-spendable-allocation-rule")
 
 urlpatterns = [
     path("accounting/settings/", AccountingSettingsView.as_view(), name="accounting-settings"),

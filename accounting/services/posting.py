@@ -68,9 +68,9 @@ def compute_bank_account_balance(
     *,
     end_date=None,
 ) -> Decimal:
-    """Net balance from approved cash transactions only (no opening balance)."""
+    """Net balance from completed cash transactions."""
     approved_tx = bank_account.transactions.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED
     )
     if end_date:
         approved_tx = approved_tx.filter(transaction_date__lte=end_date)
@@ -84,11 +84,11 @@ def compute_bank_account_native_balance(
     *,
     end_date=None,
 ) -> Decimal:
-    """Net approved cash in the bank account's native currency (no opening balance)."""
+    """Net completed cash in the bank account's native currency (no opening balance)."""
     from accounting.services.currency_totals import approved_signed_native_amount_expression
 
     approved_tx = bank_account.transactions.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED
     )
     if end_date:
         approved_tx = approved_tx.filter(transaction_date__lte=end_date)
@@ -98,7 +98,7 @@ def compute_bank_account_native_balance(
 
 
 def recalculate_bank_account_current_balance(bank_account: AccountingBankAccount) -> Decimal:
-    """Recalculate and persist bank account balance from approved cash transactions."""
+    """Recalculate and persist bank account balance from completed cash transactions."""
     new_balance = compute_bank_account_balance(bank_account)
 
     if bank_account.current_balance != new_balance:
@@ -113,7 +113,7 @@ def aggregate_bank_account_balances(
     *,
     end_date=None,
 ) -> dict[int, dict[str, Decimal]]:
-    """Return base/native approved balances for a collection of bank accounts."""
+    """Return base/native completed balances for a collection of bank accounts."""
     bank_account_ids = [account.id for account in bank_accounts if getattr(account, "id", None)]
     if not bank_account_ids:
         return {}
@@ -124,7 +124,7 @@ def aggregate_bank_account_balances(
     signed_native = approved_signed_native_amount_expression()
 
     transactions = AccountingCashTransaction.objects.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED,
         bank_account_id__in=bank_account_ids,
     )
     if end_date:

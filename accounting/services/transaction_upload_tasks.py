@@ -94,7 +94,8 @@ class TransactionUploadBackgroundProcessor:
 
         def background_work() -> None:
             from django.db import close_old_connections
-            from django_tenants.utils import schema_context
+            from django_tenants.utils import get_public_schema_name, schema_context
+            from users.models import User
 
             close_old_connections()
             task_data = TransactionUploadTaskManager.get_task(task_id)
@@ -111,6 +112,12 @@ class TransactionUploadBackgroundProcessor:
                 return
 
             try:
+                actor = None
+                user_id = task_data.get("user_id")
+                if user_id:
+                    with schema_context(get_public_schema_name()):
+                        actor = User.objects.filter(id=user_id).first()
+
                 with schema_context(schema_name):
                     TransactionUploadTaskManager.update_task(
                         task_id, status="processing", progress=5
@@ -133,6 +140,7 @@ class TransactionUploadBackgroundProcessor:
                         gl_account_override=gl_account_override,
                         status_override=status_override,
                         replace_by_ref_number=replace_by_ref_number,
+                        actor=actor,
                         progress_callback=on_progress,
                         cancel_check=lambda: TransactionUploadTaskManager.is_cancelled(
                             task_id

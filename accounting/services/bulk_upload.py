@@ -25,6 +25,11 @@ from accounting.models import (
     AccountingPaymentMethod,
     AccountingTransactionType,
 )
+from accounting.services.bank_rules import (
+    dispatch_bank_rule_alerts_for_status_event,
+    signed_effect_for_transaction,
+    validate_bulk_balance_rule_batch,
+)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xls")
@@ -254,6 +259,8 @@ def bulk_upload_cash_transactions(
     bank_account_id: str | None = None,
     override_status: str | None = None,
     override_transaction_type_id: str | None = None,
+    actor=None,
+    batch_event_key: str | None = None,
 ) -> dict:
     """
     Parse and create cash transactions from CSV/Excel.
@@ -289,6 +296,8 @@ def bulk_upload_cash_transactions(
 
     errors: list[dict] = []
     transactions_to_create: list[dict] = []
+    account_effects: dict[AccountingBankAccount, Decimal] = {}
+    notification_accounts_by_status: dict[str, set[str]] = {}
 
     # Pre-fetch lookups — bank accounts matched by account_number only
     bank_accounts = {
@@ -441,7 +450,42 @@ def bulk_upload_cash_transactions(
             "status": status_str,
             "_is_update": ref in existing_refs and replace_existing,
         }
+
+        if status_str in {
+            AccountingCashTransaction.TransactionStatus.PENDING,
+            AccountingCashTransaction.TransactionStatus.APPROVED,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+        }:
+            delta = signed_effect_for_transaction(
+                transaction_category=tx_type.transaction_category,
+                transaction_code=tx_type.code,
+                amount=amount,
+            )
+            if ref in existing_refs and replace_existing:
+                existing_tx = existing_tx_by_ref.get(ref)
+                if (
+                    existing_tx is not None
+                    and existing_tx.status in {
+                        AccountingCashTransaction.TransactionStatus.PENDING,
+                        AccountingCashTransaction.TransactionStatus.APPROVED,
+                        AccountingCashTransaction.TransactionStatus.COMPLETED,
+                    }
+                ):
+                    delta -= signed_effect_for_transaction(
+                        transaction_category=existing_tx.transaction_type.transaction_category,
+                        transaction_code=existing_tx.transaction_type.code,
+                        amount=existing_tx.base_amount or existing_tx.amount,
+                    )
+
+            if delta != 0:
+                account_effects[bank_account] = account_effects.get(bank_account, Decimal("0.00")) + delta
+            notification_accounts_by_status.setdefault(status_str, set()).add(str(bank_account.id))
+
         transactions_to_create.append(parsed)
+
+    validate_bulk_balance_rule_batch(account_effects=account_effects)
+
+    event_seed = batch_event_key or f"bulk-upload:{uuid.uuid4()}"
 
     with transaction.atomic():
         created_count = 0
@@ -457,6 +501,19 @@ def bulk_upload_cash_transactions(
             else:
                 AccountingCashTransaction.objects.create(**tx_data)
                 created_count += 1
+
+    if actor is not None:
+        for status_value, account_ids in notification_accounts_by_status.items():
+            for account_id in account_ids:
+                bank_account = AccountingBankAccount.objects.filter(id=account_id).first()
+                if bank_account is None:
+                    continue
+                dispatch_bank_rule_alerts_for_status_event(
+                    bank_account=bank_account,
+                    transaction_status=status_value,
+                    event_key=f"{event_seed}:{status_value}:{account_id}",
+                    actor=actor,
+                )
 
     return {
         "created": created_count,

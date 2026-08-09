@@ -33,6 +33,8 @@ from accounting.serializers import (
 )
 from accounting.services import (
     aggregate_bank_account_balances,
+    dispatch_bank_rule_alerts_for_status_event,
+    evaluate_transaction_limits,
     post_cash_transaction_to_ledger,
     recalculate_bank_accounts_current_balances,
     recalculate_bank_account_current_balance,
@@ -147,7 +149,7 @@ class AccountingPaymentMethodViewSet(AccountingErrorFormattingMixin, viewsets.Re
 
 
 class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
-    queryset = AccountingBankAccount.objects.select_related("currency", "ledger_account").order_by("account_name")
+    queryset = AccountingBankAccount.objects.select_related("currency", "ledger_account").prefetch_related("balance_rules__alert_recipients").order_by("account_name")
     serializer_class = AccountingBankAccountSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
     pagination_class = None
@@ -247,6 +249,96 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     def _can_complete_transaction(self, user):
         role = str(getattr(user, "role", "") or "").strip().lower()
         return role in {"admin", "superadmin"}
+
+    def _can_override_limit_warning(self, user):
+        role = str(getattr(user, "role", "") or "").strip().lower()
+        return role in {"admin", "superadmin"}
+
+    def _override_flag_from_request(self, request):
+        return self._to_bool(request.data.get("override_warning_limits", False))
+
+    def _schedule_rule_alert_dispatch(
+        self,
+        *,
+        cash_transaction: AccountingCashTransaction,
+        event_status: str,
+        event_key: str,
+    ):
+        bank_account_id = cash_transaction.bank_account_id
+        tx_base_amount = cash_transaction.base_amount
+        tx_reference = cash_transaction.reference_number
+        tx_date = cash_transaction.transaction_date
+        actor = getattr(self.request, "user", None)
+
+        def _dispatch_rule_alerts():
+            try:
+                bank_account = AccountingBankAccount.objects.get(id=bank_account_id)
+            except (AccountingBankAccount.DoesNotExist, ValidationError, ValueError):
+                return
+            dispatch_bank_rule_alerts_for_status_event(
+                bank_account=bank_account,
+                transaction_status=event_status,
+                event_key=event_key,
+                actor=actor,
+                transaction_amount=tx_base_amount,
+                transaction_reference=tx_reference,
+                transaction_date=tx_date,
+            )
+
+        transaction.on_commit(_dispatch_rule_alerts)
+
+    def _enforce_transaction_limits(
+        self,
+        *,
+        payload: dict,
+        existing_instance: AccountingCashTransaction | None = None,
+        override_warning_limits: bool = False,
+    ):
+        bank_account = payload.get("bank_account")
+        if bank_account is None and existing_instance is not None:
+            bank_account = existing_instance.bank_account
+
+        transaction_type = payload.get("transaction_type")
+        if transaction_type is None and existing_instance is not None:
+            transaction_type = existing_instance.transaction_type
+
+        amount = payload.get("base_amount")
+        if amount is None:
+            amount = payload.get("amount")
+        if amount is None and existing_instance is not None:
+            amount = existing_instance.base_amount or existing_instance.amount
+
+        if not bank_account or not transaction_type or amount is None:
+            return None
+
+        evaluation = evaluate_transaction_limits(
+            bank_account=bank_account,
+            transaction_type=transaction_type,
+            base_amount=Decimal(str(amount)),
+            exclude_transaction_id=str(existing_instance.id) if existing_instance is not None else None,
+            persist_threshold_state=False,
+        )
+
+        if evaluation.should_block:
+            raise serializers.ValidationError(
+                {
+                    "detail": "Transaction blocked by configured bank-account rules.",
+                    "messages": evaluation.blocking_messages,
+                    "rule_details": evaluation.details,
+                }
+            )
+
+        if evaluation.requires_warning_confirmation and not override_warning_limits:
+            raise serializers.ValidationError(
+                {
+                    "detail": "Transaction requires warning acknowledgement before it can proceed.",
+                    "requires_override_confirmation": True,
+                    "messages": evaluation.warning_messages,
+                    "rule_details": evaluation.details,
+                }
+            )
+
+        return evaluation
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -384,6 +476,31 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                     cash_transaction.completed_by = actor_name
                     cash_transaction.completed_at = timezone.now()
 
+                if new_status in {
+                    AccountingCashTransaction.TransactionStatus.APPROVED,
+                    AccountingCashTransaction.TransactionStatus.COMPLETED,
+                }:
+                    try:
+                        blocking_amount = Decimal(
+                            str(cash_transaction.base_amount or cash_transaction.amount or 0)
+                        )
+                    except (InvalidOperation, TypeError, ValueError):
+                        blocking_amount = Decimal("0.00")
+
+                    evaluation = evaluate_transaction_limits(
+                        bank_account=cash_transaction.bank_account,
+                        transaction_type=cash_transaction.transaction_type,
+                        base_amount=blocking_amount,
+                        exclude_transaction_id=str(cash_transaction.id),
+                        persist_threshold_state=False,
+                    )
+                    if evaluation.should_block:
+                        raise ValidationError(
+                            evaluation.blocking_messages[0]
+                            if evaluation.blocking_messages
+                            else "Transaction blocked by configured bank-account rules."
+                        )
+
                 cash_transaction.save(
                     update_fields=[
                         "status",
@@ -439,6 +556,16 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             or bool(cash_transaction.journal_entry_id)
         ):
             recalculate_bank_account_current_balance(cash_transaction.bank_account)
+
+        if previous_status != new_status and new_status in {
+            AccountingCashTransaction.TransactionStatus.APPROVED,
+            AccountingCashTransaction.TransactionStatus.COMPLETED,
+        }:
+            self._schedule_rule_alert_dispatch(
+                cash_transaction=cash_transaction,
+                event_status=new_status,
+                event_key=f"status:{cash_transaction.id}:{new_status}",
+            )
 
         return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
 
@@ -627,19 +754,49 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         self._validate_student_income_payment(serializer.validated_data)
         self._validate_student_refund(serializer.validated_data)
 
+        override_warning_limits = self._override_flag_from_request(self.request)
+        if override_warning_limits and not self._can_override_limit_warning(self.request.user):
+            raise serializers.ValidationError(
+                {"detail": "You do not have permission to override warning-only limit rules."}
+            )
+
         save_kwargs = {}
         refund_ledger_account = self._refund_ledger_account_override(serializer.validated_data)
         if refund_ledger_account is not None:
             save_kwargs["ledger_account"] = refund_ledger_account
 
-        cash_transaction = serializer.save(
-            created_by=self.request.user,
-            updated_by=self.request.user,
-            **save_kwargs,
-        )
-        if cash_transaction.status == AccountingCashTransaction.TransactionStatus.COMPLETED:
-            post_cash_transaction_to_ledger(cash_transaction, actor=self.request.user)
-            recalculate_bank_account_current_balance(cash_transaction.bank_account)
+        with transaction.atomic():
+            bank_account = serializer.validated_data.get("bank_account")
+            if bank_account is not None:
+                serializer.validated_data["bank_account"] = AccountingBankAccount.objects.select_for_update().get(
+                    id=bank_account.id
+                )
+
+            self._enforce_transaction_limits(
+                payload=serializer.validated_data,
+                override_warning_limits=override_warning_limits,
+            )
+
+            cash_transaction = serializer.save(
+                created_by=self.request.user,
+                updated_by=self.request.user,
+                **save_kwargs,
+            )
+
+            if cash_transaction.status in {
+                AccountingCashTransaction.TransactionStatus.PENDING,
+                AccountingCashTransaction.TransactionStatus.APPROVED,
+                AccountingCashTransaction.TransactionStatus.COMPLETED,
+            }:
+                self._schedule_rule_alert_dispatch(
+                    cash_transaction=cash_transaction,
+                    event_status=cash_transaction.status,
+                    event_key=f"create:{cash_transaction.id}:{cash_transaction.status}",
+                )
+
+            if cash_transaction.status == AccountingCashTransaction.TransactionStatus.COMPLETED:
+                post_cash_transaction_to_ledger(cash_transaction, actor=self.request.user)
+                recalculate_bank_account_current_balance(cash_transaction.bank_account)
 
     def _validate_editable(self, cash_transaction):
         if cash_transaction.source_reference:
@@ -690,8 +847,28 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if refund_ledger_account is not None:
             save_kwargs["ledger_account"] = refund_ledger_account
 
+        override_warning_limits = self._override_flag_from_request(self.request)
+        if override_warning_limits and not self._can_override_limit_warning(self.request.user):
+            raise serializers.ValidationError(
+                {"detail": "You do not have permission to override warning-only limit rules."}
+            )
+
         did_reverse_posting = False
         with transaction.atomic():
+            next_bank = serializer.validated_data.get("bank_account") or cash_transaction.bank_account
+            lock_ids = {cash_transaction.bank_account_id}
+            if next_bank is not None:
+                lock_ids.add(next_bank.id)
+            list(
+                AccountingBankAccount.objects.select_for_update().filter(id__in=[pk for pk in lock_ids if pk])
+            )
+
+            self._enforce_transaction_limits(
+                payload=serializer.validated_data,
+                existing_instance=cash_transaction,
+                override_warning_limits=override_warning_limits,
+            )
+
             if had_posted_journal:
                 reverse_cash_transaction_journal_entry(
                     cash_transaction,
@@ -725,6 +902,13 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                     "updated_at",
                 ]
             )
+
+            if had_posted_journal and cash_transaction.journal_entry_id:
+                # Editing a posted transaction reopens it for approval, so the
+                # existing journal link must be removed even if the reversal
+                # helper was bypassed or the in-memory relation stayed stale.
+                cash_transaction.journal_entry = None
+                cash_transaction.save(update_fields=["journal_entry", "updated_at"])
 
         bank_account_ids = {
             account_id
@@ -959,6 +1143,58 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         ).count()
         return Response({"count": count}, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=["post"], url_path="limit-precheck")
+    def limit_precheck(self, request):
+        bank_account_id = request.data.get("bank_account")
+        transaction_type_id = request.data.get("transaction_type")
+        base_amount = request.data.get("base_amount")
+        amount = request.data.get("amount")
+        exclude_transaction_id = request.data.get("exclude_transaction_id")
+
+        if not bank_account_id:
+            return Response({"detail": "bank_account is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not transaction_type_id:
+            return Response({"detail": "transaction_type is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            bank_account = AccountingBankAccount.objects.get(id=bank_account_id)
+            transaction_type = AccountingTransactionType.objects.get(id=transaction_type_id)
+
+            transaction_category = str(transaction_type.transaction_category or "").lower()
+            if transaction_category == "expense":
+                value = base_amount if base_amount is not None else amount
+                if value is None:
+                    value = Decimal("0")
+            else:
+                value = base_amount if base_amount is not None else amount
+                if value is None:
+                    return Response({"detail": "amount or base_amount is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            evaluation = evaluate_transaction_limits(
+                bank_account=bank_account,
+                transaction_type=transaction_type,
+                base_amount=Decimal(str(value)),
+                exclude_transaction_id=exclude_transaction_id,
+                persist_threshold_state=False,
+            )
+        except AccountingBankAccount.DoesNotExist:
+            return Response({"detail": "Bank account not found."}, status=status.HTTP_404_NOT_FOUND)
+        except AccountingTransactionType.DoesNotExist:
+            return Response({"detail": "Transaction type not found."}, status=status.HTTP_404_NOT_FOUND)
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({"detail": "Invalid amount value."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "should_block": evaluation.should_block,
+                "requires_warning_confirmation": evaluation.requires_warning_confirmation,
+                "warning_messages": evaluation.warning_messages,
+                "blocking_messages": evaluation.blocking_messages,
+                "details": evaluation.details,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=["post"], url_path="post-all")
     def post_all(self, request):
         """Post every approved + unposted transaction matching the filter.
@@ -1175,6 +1411,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 bank_account_id=bank_account_id,
                 override_status=override_status,
                 override_transaction_type_id=override_transaction_type_id,
+                actor=request.user,
             )
             return Response(result, status=status.HTTP_200_OK)
         except ValueError as exc:
@@ -1254,6 +1491,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 gl_account_override=gl_account_override,
                 status_override=status_override,
                 replace_by_ref_number=replace_by_ref_number,
+                actor=request.user,
             )
             return Response(
                 {**result, "processing_mode": "synchronous"},
