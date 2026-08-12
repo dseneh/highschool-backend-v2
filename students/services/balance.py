@@ -29,7 +29,7 @@ from students.models import StudentEnrollmentBill
 
 
 def get_effective_paid_for_student(student, academic_year) -> Decimal:
-    """Sum approved tuition payments from the cash ledger for one student/year."""
+    """Sum completed tuition payments from the cash ledger for one student/year."""
     if not student or not academic_year:
         return Decimal("0")
 
@@ -40,11 +40,11 @@ def get_effective_paid_for_student(student, academic_year) -> Decimal:
 
 
 def build_effective_paid_subquery(*, start_date, end_date) -> Subquery:
-    """Subquery: approved cash received for the outer student in a date range."""
+    """Subquery: completed cash received for the outer student in a date range."""
     return Subquery(
         AccountingCashTransaction.objects.filter(
             build_student_match_q_outerref(),
-            status=AccountingCashTransaction.TransactionStatus.APPROVED,
+            status=AccountingCashTransaction.TransactionStatus.COMPLETED,
             transaction_date__gte=start_date,
             transaction_date__lte=end_date,
         )
@@ -180,7 +180,7 @@ def annotate_student_balance_totals(
     legacy_paid_subquery = (
         Transaction.objects.filter(
             student=OuterRef("pk"),
-            status="approved",
+            status="completed",
             type__type="income",
             **legacy_student_year_filter,
         )

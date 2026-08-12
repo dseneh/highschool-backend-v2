@@ -236,6 +236,56 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     permission_classes = [AccountingTransactionAccessPolicy]
     pagination_class = AccountingCashTransactionPagination
 
+    def _resolve_transaction_academic_year(self, *, student=None, tx_date=None, academic_year=None):
+        """Resolve the academic year context for student payment/refund validations.
+
+        Priority:
+        1) Explicit ``academic_year`` from request payload.
+        2) Student's current enrollment year.
+        3) Year containing ``tx_date`` that is also one of the student's enrollment years.
+        4) Any year containing ``tx_date`` (prefer current/recent ordering).
+        5) Global current academic year.
+        """
+        from academics.models import AcademicYear
+
+        if academic_year is not None:
+            return academic_year
+
+        if student is not None:
+            current_enrollment = (
+                student.enrollments.select_related("academic_year")
+                .filter(academic_year__current=True)
+                .first()
+            )
+            if current_enrollment and current_enrollment.academic_year_id:
+                return current_enrollment.academic_year
+
+        dated_years = AcademicYear.objects.all()
+        if tx_date:
+            dated_years = dated_years.filter(
+                Q(start_date__lte=tx_date) & Q(end_date__gte=tx_date)
+            )
+
+        # Keep ordering deterministic when multiple rows match a date.
+        ordered_dated_years = dated_years.order_by("-current", "-start_date", "-id")
+
+        if student is not None:
+            student_year_ids = list(
+                student.enrollments.values_list("academic_year_id", flat=True)
+            )
+            if student_year_ids:
+                student_dated_year = ordered_dated_years.filter(
+                    id__in=student_year_ids
+                ).first()
+                if student_dated_year:
+                    return student_dated_year
+
+        dated_year = ordered_dated_years.first()
+        if dated_year:
+            return dated_year
+
+        return AcademicYear.objects.filter(current=True).order_by("-start_date", "-id").first()
+
     @staticmethod
     def _to_bool(value):
         if isinstance(value, bool):
@@ -570,7 +620,6 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
 
     def _validate_student_income_payment(self, data, *, existing_instance=None):
-        from academics.models import AcademicYear
         from accounting.services.currency_totals import effective_payment_base_amount
         from accounting.services.student_resolution import resolve_student_from_identifier
         from finance.validators import get_student_net_remaining_balance
@@ -603,17 +652,11 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if not student:
             return
 
-        tx_date = data.get("transaction_date")
-        if tx_date is None and existing_instance is not None:
-            tx_date = existing_instance.transaction_date
-
-        academic_year = (
-            AcademicYear.objects.filter(
-                Q(start_date__lte=tx_date) & Q(end_date__gte=tx_date)
-            ).first()
-            if tx_date
-            else None
-        ) or AcademicYear.objects.filter(current=True).first()
+        academic_year = self._resolve_validation_academic_year(
+            data,
+            student=student,
+            existing_instance=existing_instance,
+        )
 
         if not academic_year:
             return
@@ -681,7 +724,6 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
             ) from exc
 
     def _validate_student_refund(self, data, *, existing_instance=None):
-        from academics.models import AcademicYear
         from accounting.services.payment_allocation import get_total_paid_for_student_year
 
         transaction_type = data.get("transaction_type")
@@ -716,17 +758,11 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                 {"detail": "Refund amount must be greater than zero."}
             )
 
-        tx_date = data.get("transaction_date")
-        if tx_date is None and existing_instance is not None:
-            tx_date = existing_instance.transaction_date
-
-        academic_year = (
-            AcademicYear.objects.filter(
-                Q(start_date__lte=tx_date) & Q(end_date__gte=tx_date)
-            ).first()
-            if tx_date
-            else None
-        ) or AcademicYear.objects.filter(current=True).first()
+        academic_year = self._resolve_validation_academic_year(
+            data,
+            student=student,
+            existing_instance=existing_instance,
+        )
 
         if not academic_year:
             raise serializers.ValidationError(
@@ -748,6 +784,19 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                     )
                 }
             )
+
+    def _resolve_validation_academic_year(self, data, *, student, existing_instance=None):
+        tx_date = data.get("transaction_date")
+        if tx_date is None and existing_instance is not None:
+            tx_date = existing_instance.transaction_date
+
+        validation_year = data.get("academic_year_id")
+
+        return self._resolve_transaction_academic_year(
+            student=student,
+            tx_date=tx_date,
+            academic_year=validation_year,
+        )
 
     def perform_create(self, serializer):
         """Validate student balance before creating an income transaction linked to a student."""

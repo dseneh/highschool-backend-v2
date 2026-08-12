@@ -225,11 +225,18 @@ def register_all_models():
 
     # ── Payroll v2 ─────────────────────────────────────────────────────
     from payroll_v2.models import (
+        EmployeeWard,
         PaySchedule,
+        PayrollDeductionInstallment,
+        PayrollDeductionSchedule,
         PayrollPeriod,
         PayrollRunRecord,
         PayrollEmployeeItem,
         PayrollSettings,
+        SalaryAdvance,
+        StaffWardSponsorship,
+        StaffWardSponsorshipPolicy,
+        StaffWardSponsorshipStudent,
     )
 
     auditlog.register(PaySchedule, exclude_fields=COMMON_EXCLUDE)
@@ -237,6 +244,13 @@ def register_all_models():
     auditlog.register(PayrollRunRecord, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(PayrollEmployeeItem, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(PayrollSettings, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(StaffWardSponsorshipPolicy, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(EmployeeWard, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(StaffWardSponsorship, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(StaffWardSponsorshipStudent, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(SalaryAdvance, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(PayrollDeductionSchedule, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(PayrollDeductionInstallment, exclude_fields=COMMON_EXCLUDE)
 
     # ── Settings ───────────────────────────────────────────────────────
     from settings.models import GradingSettings

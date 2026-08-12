@@ -612,25 +612,27 @@ class TransactionViewSet(viewsets.ModelViewSet):
         else:
             academic_year = AcademicYear.objects.filter(current=True).first()
 
+        student_link_q = (
+            Q(student=student, bill_allocations__isnull=True)
+            | Q(bill_allocations__student_bill__student=student)
+            # Restrict source_reference fallback to truly legacy unlinked rows.
+            | (
+                Q(student__isnull=True)
+                & Q(bill_allocations__isnull=True)
+                & (
+                    Q(source_reference=str(student.id))
+                    | Q(source_reference=student.id_number)
+                    | Q(source_reference=student.prev_id_number)
+                )
+            )
+        )
+
         transactions = AccountingCashTransaction.objects.select_related(
             "transaction_type",
             "payment_method",
             "bank_account",
             "currency",
-        ).filter(
-            # Direct student FK is the source of truth for any transaction
-            # created after the dedicated column landed (bulk uploads,
-            # tuition payment dialog, journal student-payment form,
-            # finance->accounting sync, etc.).
-            Q(student=student)
-            # Legacy fallbacks: rows created before the FK existed, where
-            # the student was either smuggled through ``source_reference``
-            # or only discoverable via the bill allocations chain.
-            | Q(source_reference=str(student.id))
-            | Q(source_reference=student.id_number)
-            | Q(source_reference=student.prev_id_number)
-            | Q(bill_allocations__student_bill__student=student)
-        )
+        ).filter(student_link_q)
 
         if academic_year:
             transactions = transactions.filter(

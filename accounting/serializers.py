@@ -57,6 +57,7 @@ from accounting.services.settings_services import resolve_student_refund_transac
 from common.email_validation import is_valid_email
 from hr.models import Employee
 from students.models import Student
+from academics.models import AcademicYear
 
 
 class AccountingCurrencySerializer(serializers.ModelSerializer):
@@ -784,6 +785,12 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
 
 
 class AccountingCashTransactionSerializer(serializers.ModelSerializer):
+    @staticmethod
+    def _pop_transient_fields(validated_data):
+        validated_data.pop("transaction_type_code", None)
+        validated_data.pop("use_student_refund_mapping", None)
+        validated_data.pop("academic_year_id", None)
+
     def _generate_reference_number(self, transaction_date):
         """Generate a unique reference number for cash transaction."""
         # Format: TXN-YYYYMMDD-XXXXX
@@ -862,6 +869,14 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         allow_null=True,
         write_only=True,
     )
+    # Optional explicit academic-year context used only for server-side
+    # payment/refund validation when callers need deterministic year matching.
+    academic_year_id = serializers.PrimaryKeyRelatedField(
+        queryset=AcademicYear.objects.all(),
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
 
     # Nested serializers for FK fields (output only, resolved objects)
     bank_account = serializers.SerializerMethodField()
@@ -916,6 +931,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
             "source_reference",
             "journal_entry",
             "student_id",
+            "academic_year_id",
             "student_payment",
             "created_at",
             "updated_at",
@@ -928,8 +944,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
-        validated_data.pop("transaction_type_code", None)
-        validated_data.pop("use_student_refund_mapping", None)
+        self._pop_transient_fields(validated_data)
         transaction_date = validated_data.get("transaction_date")
         
         # Auto-generate reference_number if empty or not provided
@@ -944,8 +959,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        validated_data.pop("transaction_type_code", None)
-        validated_data.pop("use_student_refund_mapping", None)
+        self._pop_transient_fields(validated_data)
         if "description" in validated_data:
             description = str(validated_data.get("description") or "").strip()
             validated_data["description"] = description or "Transaction entry"
@@ -1725,6 +1739,14 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
         source="salary_expense_account.code",
         read_only=True,
     )
+    salary_advance_repayment_ledger_account_name = serializers.CharField(
+        source="salary_advance_repayment_ledger_account.name",
+        read_only=True,
+    )
+    salary_advance_repayment_ledger_account_code = serializers.CharField(
+        source="salary_advance_repayment_ledger_account.code",
+        read_only=True,
+    )
     payroll_tax_payable_account_name = serializers.CharField(
         source="payroll_tax_payable_account.name",
         read_only=True,
@@ -1771,6 +1793,9 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             "salary_expense_account",
             "salary_expense_account_name",
             "salary_expense_account_code",
+            "salary_advance_repayment_ledger_account",
+            "salary_advance_repayment_ledger_account_name",
+            "salary_advance_repayment_ledger_account_code",
             "payroll_tax_payable_account",
             "payroll_tax_payable_account_name",
             "payroll_tax_payable_account_code",
@@ -1795,6 +1820,8 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             "transfer_out_account_code",
             "salary_expense_account_name",
             "salary_expense_account_code",
+            "salary_advance_repayment_ledger_account_name",
+            "salary_advance_repayment_ledger_account_code",
             "payroll_tax_payable_account_name",
             "payroll_tax_payable_account_code",
             "payroll_deductions_payable_account_name",
@@ -1814,14 +1841,14 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"{label} must reference an active bank account.")
         return account
 
-    def _validate_ledger_account(self, account, *, expected_type: str, label: str):
+    def _validate_ledger_account(self, account, *, expected_type: str | None, label: str):
         if account is None:
             return account
         if not account.is_active:
             raise serializers.ValidationError(f"{label} must be an active ledger account.")
         if account.is_header:
             raise serializers.ValidationError(f"{label} cannot be a header account.")
-        if account.account_type != expected_type:
+        if expected_type is not None and account.account_type != expected_type:
             raise serializers.ValidationError(f"{label} must be a {expected_type} account.")
         return account
 
@@ -1844,6 +1871,13 @@ class AccountingSettingsSerializer(serializers.ModelSerializer):
             value,
             expected_type=AccountingLedgerAccount.AccountType.EXPENSE,
             label="Salary expense account",
+        )
+
+    def validate_salary_advance_repayment_ledger_account(self, value):
+        return self._validate_ledger_account(
+            value,
+            expected_type=None,
+            label="Early salary repayment GL account",
         )
 
     def validate_payroll_tax_payable_account(self, value):

@@ -32,6 +32,14 @@ class AccountingSettings(BaseModel):
         blank=True,
         help_text="Expense account debited when payroll is posted to the ledger.",
     )
+    salary_advance_repayment_ledger_account = models.ForeignKey(
+        "AccountingLedgerAccount",
+        on_delete=models.PROTECT,
+        related_name="accounting_settings_salary_advance_repayment",
+        null=True,
+        blank=True,
+        help_text="GL account used when early salary advance repayments are posted through Finance.",
+    )
     payroll_tax_payable_account = models.ForeignKey(
         "AccountingLedgerAccount",
         on_delete=models.PROTECT,

@@ -210,10 +210,22 @@ def _build_student_match_q(student) -> Q:
     if getattr(student, "prev_id_number", None):
         student_refs.append(student.prev_id_number)
 
+    # Prefer allocation linkage whenever allocations exist.
+    # Only trust direct FK when no allocation chain is present.
+    direct_fk_match = Q(student=student, bill_allocations__isnull=True)
+
+    # Only use source_reference fallback for truly legacy rows where no explicit
+    # student linkage exists (no student FK and no allocation chain).
+    legacy_source_reference_match = Q(
+        student__isnull=True,
+        bill_allocations__isnull=True,
+        source_reference__in=student_refs,
+    )
+
     return (
-        Q(student=student)
-        | Q(source_reference__in=student_refs)
+        direct_fk_match
         | Q(bill_allocations__student_bill__student=student)
+        | legacy_source_reference_match
     )
 
 
@@ -230,17 +242,29 @@ def build_student_match_q_outerref() -> Q:
         student_bill__student=OuterRef("pk"),
     ).values("cash_transaction_id")
 
+    direct_fk_match = Q(
+        student=OuterRef("pk"),
+        bill_allocations__isnull=True,
+    )
+
+    legacy_source_reference_match = (
+        Q(student__isnull=True, bill_allocations__isnull=True)
+        & (
+            Q(source_reference=OuterRef("id_number"))
+            | Q(source_reference=OuterRef("prev_id_number"))
+            | Q(source_reference=Cast(OuterRef("pk"), CharField()))
+        )
+    )
+
     return (
-        Q(student=OuterRef("pk"))
-        | Q(source_reference=OuterRef("id_number"))
-        | Q(source_reference=OuterRef("prev_id_number"))
-        | Q(source_reference=Cast(OuterRef("pk"), CharField()))
+        direct_fk_match
         | Q(pk__in=Subquery(allocation_transaction_ids))
+        | legacy_source_reference_match
     )
 
 
 def get_total_paid_for_student_year(student, academic_year) -> Decimal:
-    """Sum of approved cash transactions a student paid in an academic year.
+    """Sum of completed cash transactions a student paid in an academic year.
 
     Uses the direct ``student`` FK as the canonical match path with legacy
     fallbacks for rows that pre-date the FK.
@@ -254,7 +278,7 @@ def get_total_paid_for_student_year(student, academic_year) -> Decimal:
     matched_ids = list(
         AccountingCashTransaction.objects.filter(
             _build_student_match_q(student),
-            status="approved",
+            status=AccountingCashTransaction.TransactionStatus.COMPLETED,
             transaction_date__gte=academic_year.start_date,
             transaction_date__lte=academic_year.end_date,
         )
@@ -289,14 +313,14 @@ def get_total_paid_for_student_year(student, academic_year) -> Decimal:
 def recompute_student_year_payments(student, academic_year) -> Decimal:
     """Rebuild ``AccountingStudentBill.paid_amount`` for one student/year.
 
-    Sums approved cash transactions then distributes the total across the
+    Sums completed cash transactions then distributes the total across the
     student's bills oldest-first (by ``bill_date`` then ``due_date``).
     Each bill's ``outstanding_amount`` and ``status`` are updated to stay
     consistent with ``paid_amount``.
 
     Idempotent: same inputs always yield the same per-bill state, so this
     is safe to call from signals, ingestion paths, or batch backfills.
-    Returns the total approved amount applied across the bills.
+    Returns the total completed amount applied across the bills.
     """
     if not student or not academic_year:
         return Decimal("0")

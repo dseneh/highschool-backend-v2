@@ -5,3 +5,6 @@ class PayrollV2Config(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "payroll_v2"
     verbose_name = "Payroll V2"
+
+    def ready(self):
+        from . import signals  # noqa: F401

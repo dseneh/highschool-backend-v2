@@ -25,6 +25,8 @@ class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
             "generate",
             "submit",
             "approve",
+            "complete",
+            "cancel",
             "mark_paid",
             "revert_to_draft",
             "recalculate",
@@ -35,6 +37,12 @@ class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
             "principal": "authenticated",
             "effect": "allow",
             "condition": "is_role_in:registrar,data_entry",
+        },
+        {
+            "action": ["record_payment"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_role_in:finance,accountant",
         },
         {
             "action": ["list", "retrieve"],

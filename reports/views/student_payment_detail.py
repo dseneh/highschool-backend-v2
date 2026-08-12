@@ -31,14 +31,14 @@ class StudentPaymentDetailReportView(APIView):
 
     @staticmethod
     def _resolve_student_for_transaction(transaction, enrollment_map):
-        student = transaction.student
-        if student:
-            return student
-
         for allocation in transaction.bill_allocations.all():
             bill = allocation.student_bill
             if bill and bill.student_id:
                 return bill.student
+
+        student = transaction.student
+        if student:
+            return student
         return None
 
     def get(self, request):
@@ -57,7 +57,7 @@ class StudentPaymentDetailReportView(APIView):
         section_ids = self._read_multi_query_values(request, "section_id")
         student_query = (request.query_params.get("student") or "").strip()
         reference_query = (request.query_params.get("reference") or "").strip()
-        status_param = (request.query_params.get("status") or "approved").strip()
+        status_param = (request.query_params.get("status") or "completed").strip()
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
         amount_min = self._parse_decimal_param(request.query_params.get("amount_min"))

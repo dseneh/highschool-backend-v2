@@ -33,8 +33,10 @@ def filter_cash_by_period(
 
 
 def approved_cash_queryset() -> QuerySet:
+    # Kept as-is for backward compatibility with existing imports.
+    # The financial reporting source-of-truth is completed cash transactions.
     return AccountingCashTransaction.objects.filter(
-        status=AccountingCashTransaction.TransactionStatus.APPROVED,
+        status=AccountingCashTransaction.TransactionStatus.COMPLETED,
     ).select_related("transaction_type", "student", "bank_account")
 
 
@@ -55,21 +57,21 @@ def sum_outflow_amount(queryset: QuerySet, *, use_base: bool = True) -> Decimal:
 
 
 def sum_income_revenue(queryset: QuerySet) -> Decimal:
-    """Recognized revenue: approved income-category cash only (no transfers)."""
+    """Recognized revenue: completed income-category cash only (no transfers)."""
     return queryset.filter(INCOME_CATEGORY).aggregate(
         total=Coalesce(Sum(Abs(F("base_amount"))), Decimal("0"))
     )["total"] or Decimal("0")
 
 
 def sum_expense_total(queryset: QuerySet) -> Decimal:
-    """Operating expense: approved expense-category cash only (no transfers)."""
+    """Operating expense: completed expense-category cash only (no transfers)."""
     return queryset.filter(EXPENSE_CATEGORY).aggregate(
         total=Coalesce(Sum(Abs(F("base_amount"))), Decimal("0"))
     )["total"] or Decimal("0")
 
 
 def sum_period_income_minus_expense(queryset: QuerySet) -> Decimal:
-    """Approved income-category cash minus expense-category cash in the queryset period."""
+    """Completed income-category cash minus expense-category cash in the queryset period."""
     return sum_income_revenue(queryset) - sum_expense_total(queryset)
 
 

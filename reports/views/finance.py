@@ -145,117 +145,6 @@ class FinanceReportView(APIView):
         return list(dict.fromkeys(values))
 
     @staticmethod
-    def _build_student_paid_map(bills_list, academic_year) -> dict[str, float]:
-        """Approved paid amount per student for the selected academic year.
-
-        Includes transactions matched directly by student, source_reference fallback,
-        and bill allocations. Allocation-linked rows are counted for the selected
-        academic year even when transaction_date falls outside year bounds.
-        """
-        from accounting.models import AccountingCashTransaction
-        from accounting.services.post_all import build_student_payment_list_filter
-
-        if not bills_list:
-            return {}
-
-        student_ids = {bill.student_id for bill in bills_list if bill.student_id}
-        if not student_ids:
-            return {}
-
-        # Resolve source_reference fallbacks to student IDs.
-        reference_to_student: dict[str, str] = {}
-        for bill in bills_list:
-            student = bill.student
-            if not student:
-                continue
-            student_key = str(student.id)
-            reference_to_student[str(student.id)] = student_key
-            if getattr(student, "id_number", None):
-                reference_to_student[str(student.id_number)] = student_key
-            if getattr(student, "prev_id_number", None):
-                reference_to_student[str(student.prev_id_number)] = student_key
-
-        transactions = (
-            AccountingCashTransaction.objects.filter(
-                build_student_payment_list_filter(),
-                status=AccountingCashTransaction.TransactionStatus.APPROVED,
-            )
-            .filter(
-                Q(
-                    transaction_date__gte=academic_year.start_date,
-                    transaction_date__lte=academic_year.end_date,
-                )
-                | Q(bill_allocations__student_bill__academic_year=academic_year)
-            )
-            .filter(
-                Q(student_id__in=student_ids)
-                | Q(source_reference__in=list(reference_to_student.keys()))
-                | Q(bill_allocations__student_bill__student_id__in=student_ids)
-            )
-            .select_related("student")
-            .prefetch_related("bill_allocations__student_bill")
-            .distinct()
-        )
-
-        paid_map: dict[str, float] = {str(student_id): 0.0 for student_id in student_ids}
-        for tx in transactions:
-            student_key = None
-
-            if tx.student_id and tx.student_id in student_ids:
-                student_key = str(tx.student_id)
-            elif tx.source_reference:
-                student_key = reference_to_student.get(str(tx.source_reference))
-
-            if not student_key:
-                for allocation in tx.bill_allocations.all():
-                    bill = allocation.student_bill
-                    if (
-                        bill
-                        and bill.academic_year_id == academic_year.id
-                        and bill.student_id in student_ids
-                    ):
-                        student_key = str(bill.student_id)
-                        break
-
-            if not student_key:
-                continue
-
-            # Always aggregate in base currency so mixed-currency payments
-            # are comparable with billing totals.
-            paid_value = tx.base_amount if tx.base_amount is not None else tx.amount
-            paid_map[student_key] = paid_map.get(student_key, 0.0) + float(paid_value or 0)
-
-        return paid_map
-
-    @staticmethod
-    def _compute_student_payment_total(academic_year) -> float:
-        """Approved student-payment total in base currency for the academic year."""
-        from accounting.models import AccountingCashTransaction
-        from accounting.services.post_all import build_student_payment_list_filter
-
-        transactions = (
-            AccountingCashTransaction.objects.filter(
-                build_student_payment_list_filter(),
-                status=AccountingCashTransaction.TransactionStatus.APPROVED,
-            )
-            .filter(
-                Q(
-                    transaction_date__gte=academic_year.start_date,
-                    transaction_date__lte=academic_year.end_date,
-                )
-                | Q(bill_allocations__student_bill__academic_year=academic_year)
-            )
-            .distinct()
-            .only("base_amount", "amount")
-        )
-
-        total = 0.0
-        for tx in transactions:
-            paid_value = tx.base_amount if tx.base_amount is not None else tx.amount
-            total += float(paid_value or 0)
-
-        return total
-
     def get(self, request):
         from academics.models import AcademicYear
         from accounting.models import (
@@ -373,8 +262,6 @@ class FinanceReportView(APIView):
             scoped_student_ids,
             academic_year,
         )
-        student_paid_map = self._build_student_paid_map(bills_list, academic_year)
-
         student_rows = {}
         for bill in bills_list:
             gross_amount = float(bill.gross_amount or 0)
@@ -455,10 +342,7 @@ class FinanceReportView(APIView):
                 net_bill = float(row["net_bill"])
 
             balance_info = student_balance_map.get(student_key, {})
-            paid = student_paid_map.get(
-                student_key,
-                balance_info.get("paid_total", float(row["_paid_fallback"])),
-            )
+            paid = balance_info.get("paid_total", float(row["_paid_fallback"]))
             balance = round(net_bill - paid, 2)
             credit_amount = round(abs(min(0.0, balance)), 2)
 
@@ -542,10 +426,6 @@ class FinanceReportView(APIView):
             "overpaid_count": status_counts.get("Overpaid", 0),
             "status_counts": status_counts,
         }
-        if not grade_level_ids and not section_ids and not student_query:
-            # Keep top-level paid total aligned with the student-payment
-            # transaction source used by the cash-transactions module.
-            totals["total_paid"] = self._compute_student_payment_total(academic_year)
         totals["balance"] = round(totals["net_bill"] - totals["total_paid"], 2)
         totals["outstanding_balance"] = max(0.0, totals["balance"])
         total_net = totals["net_bill"]

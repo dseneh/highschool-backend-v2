@@ -1,27 +1,63 @@
 from __future__ import annotations
 
+import calendar
+from datetime import date
 from decimal import Decimal
+from decimal import ROUND_DOWN
 
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from hr.models import Employee
+from accounting.models import (
+    AccountingBankAccount,
+    AccountingCashTransaction,
+    AccountingPaymentMethod,
+    AccountingTransactionType,
+)
+from accounting.models.settings import AccountingSettings
 
-from .enums import CalculationType, Frequency, LineType, PaymentStatus, PayrollStatus, PayType, TargetAmountSource
+from .enums import (
+    CalculationType,
+    DeductionSourceType,
+    Frequency,
+    LineType,
+    PaymentMethod,
+    PaymentStatus,
+    PayrollDeductionInstallmentStatus,
+    PayrollDeductionScheduleStatus,
+    PayrollStatus,
+    PayType,
+    SalaryAdvanceRepaymentMethod,
+    SalaryAdvanceRepaymentStatus,
+    SalaryAdvanceStatus,
+    StaffWardSponsorshipStatus,
+    TargetAmountSource,
+)
 from .models import (
     EmployeeCompensation,
     EmployeePayrollItem,
+    PayrollDeductionInstallment,
+    PayrollDeductionSchedule,
     PayrollCatalogItem,
     PayrollCatalogItemRule,
     PayrollEmployeeItem,
     PayrollLineItem,
     PayrollPayslipTemplate,
     PayrollPeriod,
+    PayrollSettings,
     PaySchedule,
     PayrollRunRecord,
+    SalaryAdvance,
+    SalaryAdvancePayment,
+    StaffWardSponsorship,
+    StaffWardSponsorshipPolicy,
+    StaffWardSponsorshipStudent,
     PayrollTableView,
 )
+from .obligation_services import calculate_equal_installment_amount, evaluate_deduction_limits, to_money
+from .obligation_services import validate_employee_obligation_eligibility
 
 CENT = Decimal("0.01")
 
@@ -349,6 +385,20 @@ def resolve_employee_compensation(employee, start_date, end_date):
     )
     unsaved.annual_salary = compute_compensation_annual_salary(unsaved, employee=employee)
     return unsaved
+
+
+def persisted_compensation_or_none(compensation):
+    if not compensation:
+        return None
+
+    compensation_id = getattr(compensation, "id", None)
+    if not compensation_id:
+        return None
+
+    if not EmployeeCompensation.objects.filter(pk=compensation_id).exists():
+        return None
+
+    return compensation
 
 
 def get_employee_base_amount(compensation, hours_worked=Decimal("0.00")):
@@ -1352,10 +1402,12 @@ def generate_payroll(payroll_run, employees, generated_by=None, replace_existing
         pay_schedule = employee.pay_schedule if employee.pay_schedule_id else payroll_run.pay_schedule
         periods_per_year = periods_per_year_for_schedule(pay_schedule)
 
+        persisted_compensation = persisted_compensation_or_none(compensation)
+
         employee_item = PayrollEmployeeItem.objects.create(
             payroll=payroll_run,
             employee=employee,
-            compensation=compensation if getattr(compensation, "id", None) else None,
+            compensation=persisted_compensation,
             basic_salary=basic_salary,
             gross_pay=basic_salary,
             taxable_income=basic_salary,
@@ -1389,6 +1441,7 @@ def generate_payroll(payroll_run, employees, generated_by=None, replace_existing
             EmployeePayrollItem.objects.select_related("payroll_item")
             .prefetch_related("payroll_item__rules")
             .filter(employee=employee, is_active=True, payroll_item__is_active=True)
+            .exclude(source_type=DeductionSourceType.SALARY_ADVANCE)
         )
 
         work_units = []
@@ -1453,6 +1506,30 @@ def generate_payroll(payroll_run, employees, generated_by=None, replace_existing
                 generated_by=generated_by,
             )
 
+        gross_pay, taxable_income, running_deductions = _apply_salary_advance_recurring_deductions(
+            employee_item=employee_item,
+            employee=employee,
+            pay_period_start=payroll_run.pay_period_start,
+            pay_period_end=payroll_run.pay_period_end,
+            gross_pay=gross_pay,
+            taxable_income=taxable_income,
+            running_deductions=running_deductions,
+            generated_by=generated_by,
+        )
+
+        installments = _installments_for_employee_in_period(
+            employee=employee,
+            payroll_period=payroll_run.payroll_period,
+        )
+        gross_pay, taxable_income, running_deductions = _create_installment_deduction_lines(
+            employee_item=employee_item,
+            installments=installments,
+            gross_pay=gross_pay,
+            taxable_income=taxable_income,
+            running_deductions=running_deductions,
+            generated_by=generated_by,
+        )
+
         employee_item.recalculate_totals()
 
     payroll_run.recalculate_totals()
@@ -1471,6 +1548,7 @@ def submit_payroll_for_approval(payroll_run, user=None):
         raise ValueError("Only draft payroll runs can be submitted.")
     if not payroll_run.employee_items.exists():
         raise ValueError("Cannot submit a payroll run with no employee items.")
+    _validate_run_obligation_deduction_limits(payroll_run)
     validate_payroll_settings_configured()
     validate_payroll_disbursement_account(payroll_run)
     payroll_run.status = PayrollStatus.PENDING_APPROVAL
@@ -1524,6 +1602,9 @@ def mark_payroll_paid(payroll_run, user=None):
     payroll_run.save(update_fields=["status", "paid_at", "updated_by", "updated_at"])
     payroll_run.employee_items.update(payment_status=PaymentStatus.PAID)
 
+    apply_deduction_installments_for_run(payroll_run, actor=user)
+    apply_salary_advance_repayments_for_run(payroll_run, actor=user)
+
     from .paid_table_snapshot import capture_payroll_paid_table_snapshot
 
     capture_payroll_paid_table_snapshot(payroll_run)
@@ -1557,6 +1638,8 @@ def revert_payroll_to_draft(payroll_run, user=None):
         from .live_row_lifecycle import restore_payroll_live_rows_from_snapshot
 
         restore_payroll_live_rows_from_snapshot(payroll_run, actor=user)
+        revert_deduction_installments_for_run(payroll_run, actor=user)
+        revert_salary_advance_repayments_for_run(payroll_run, actor=user)
 
     payroll_run.status = PayrollStatus.DRAFT
     payroll_run.approved_by = None
@@ -1586,7 +1669,2748 @@ def revert_payroll_to_draft(payroll_run, user=None):
 
     if payroll_run.employee_items.exists():
         payroll_run.employee_items.update(payment_status=PaymentStatus.UNPAID)
+
     return payroll_run
+
+
+
+def _period_window_for_schedule(*, start_period, end_period, requested_installments):
+    if not start_period:
+        raise ValueError("A start payroll period is required to generate a deduction schedule.")
+
+    qs = PayrollPeriod.objects.filter(schedule_id=start_period.schedule_id, start_date__gte=start_period.start_date).order_by(
+        "start_date"
+    )
+
+    if end_period and end_period.schedule_id == start_period.schedule_id:
+        qs = qs.filter(start_date__lte=end_period.start_date)
+    periods = list(qs)
+    if not periods:
+        raise ValueError("No payroll periods found for deduction schedule generation.")
+
+    if requested_installments and requested_installments > 0:
+        periods = periods[:requested_installments]
+    return periods
+
+
+def _is_probable_legacy_full_amount_equal_split_schedule(
+    *,
+    schedule: PayrollDeductionSchedule,
+    advance: SalaryAdvance,
+) -> bool:
+    if advance.repayment_method != SalaryAdvanceRepaymentMethod.EQUAL_SPLIT:
+        return False
+
+    installments = list(
+        schedule.installments.select_related("payroll_period").order_by("payroll_period__start_date", "id")
+    )
+    requested_installments = max(1, int(advance.number_of_installments or 1))
+    if len(installments) <= 1:
+        return False
+    if any(installment.status == PayrollDeductionInstallmentStatus.APPLIED for installment in installments):
+        return False
+
+    # If this equal-split schedule has the wrong installment count, it needs rebuilding.
+    if requested_installments > 1 and len(installments) != requested_installments:
+        return True
+
+    total_amount = to_money(schedule.total_amount)
+    first_amount = to_money(installments[0].scheduled_amount)
+    remaining_amount = to_money(
+        sum((to_money(installment.scheduled_amount) for installment in installments[1:]), Decimal("0.00"))
+    )
+    if first_amount != total_amount:
+        return False
+    if remaining_amount != Decimal("0.00"):
+        return False
+    if requested_installments > 1 and to_money(schedule.scheduled_amount) != total_amount:
+        return False
+    return True
+
+
+def _repair_legacy_equal_split_salary_advance_schedules(*, employee):
+    schedules = list(
+        PayrollDeductionSchedule.objects.select_related("start_period", "end_period").filter(
+            employee=employee,
+            source_type=DeductionSourceType.SALARY_ADVANCE,
+            status__in=[
+                PayrollDeductionScheduleStatus.PLANNED,
+                PayrollDeductionScheduleStatus.PARTIALLY_APPLIED,
+                PayrollDeductionScheduleStatus.DEFERRED,
+                PayrollDeductionScheduleStatus.ADJUSTED,
+            ],
+        )
+    )
+    if not schedules:
+        return
+
+    source_ids = sorted({str(schedule.source_id) for schedule in schedules if schedule.source_id})
+    advances_by_id = {
+        str(advance.id): advance
+        for advance in SalaryAdvance.objects.filter(id__in=source_ids)
+    }
+
+    for schedule in schedules:
+        advance = advances_by_id.get(str(schedule.source_id))
+        if not advance:
+            continue
+        if not _is_probable_legacy_full_amount_equal_split_schedule(schedule=schedule, advance=advance):
+            continue
+
+        create_or_replace_deduction_schedule(
+            employee=schedule.employee,
+            source_type=DeductionSourceType.SALARY_ADVANCE,
+            source_id=advance.id,
+            total_amount=schedule.total_amount,
+            start_period=schedule.start_period,
+            end_period=schedule.end_period,
+            number_of_installments=max(1, int(advance.number_of_installments or 1)),
+            fixed_installment_amount=None,
+            actor=None,
+        )
+
+
+def _ensure_salary_advance_installment_for_period(*, employee, payroll_period):
+    if not payroll_period:
+        return
+
+    schedules = list(
+        PayrollDeductionSchedule.objects.select_related("start_period", "end_period").filter(
+            employee=employee,
+            source_type=DeductionSourceType.SALARY_ADVANCE,
+            status__in=[
+                PayrollDeductionScheduleStatus.PLANNED,
+                PayrollDeductionScheduleStatus.PARTIALLY_APPLIED,
+                PayrollDeductionScheduleStatus.DEFERRED,
+                PayrollDeductionScheduleStatus.ADJUSTED,
+            ],
+        )
+    )
+    if not schedules:
+        return
+
+    advances_by_id = {
+        str(advance.id): advance
+        for advance in SalaryAdvance.objects.filter(id__in=[str(s.source_id) for s in schedules if s.source_id])
+    }
+
+    for schedule in schedules:
+        advance = advances_by_id.get(str(schedule.source_id))
+        if not advance:
+            continue
+
+        start_period = getattr(schedule, "start_period", None)
+        start_period_id = getattr(schedule, "start_period_id", None) or getattr(start_period, "id", None)
+        start_schedule_id = getattr(start_period, "schedule_id", None)
+        current_schedule_id = getattr(payroll_period, "schedule_id", None)
+
+        if not start_period_id or not start_schedule_id or current_schedule_id != start_schedule_id:
+            continue
+        payroll_start_date = getattr(payroll_period, "start_date", None)
+        start_date = getattr(start_period, "start_date", None)
+        if not payroll_start_date or not start_date or payroll_start_date < start_date:
+            continue
+        end_period = getattr(schedule, "end_period", None)
+        end_period_id = getattr(schedule, "end_period_id", None) or getattr(end_period, "id", None)
+        end_date = getattr(end_period, "start_date", None)
+        if end_period_id and end_date and payroll_start_date > end_date:
+            continue
+
+        target_installments = max(1, int(advance.number_of_installments or 1))
+        existing_installments_qs = schedule.installments.order_by("payroll_period__start_date", "id")
+        existing_count = existing_installments_qs.count()
+        if existing_count >= target_installments:
+            continue
+        if existing_installments_qs.filter(payroll_period=payroll_period).exists():
+            continue
+
+        applied_total = to_money(
+            sum(
+                (
+                    installment.actual_amount
+                    for installment in existing_installments_qs.filter(status=PayrollDeductionInstallmentStatus.APPLIED)
+                ),
+                Decimal("0.00"),
+            )
+        )
+        planned_total = to_money(
+            sum(
+                (
+                    installment.scheduled_amount
+                    for installment in existing_installments_qs.exclude(status=PayrollDeductionInstallmentStatus.APPLIED)
+                ),
+                Decimal("0.00"),
+            )
+        )
+        unallocated = max(Decimal("0.00"), to_money(schedule.total_amount) - applied_total - planned_total)
+        if unallocated <= Decimal("0.00"):
+            continue
+
+        if (
+            advance.repayment_method == SalaryAdvanceRepaymentMethod.FIXED_INSTALLMENT
+            and to_money(advance.installment_amount) > Decimal("0.00")
+        ):
+            periodic_amount = to_money(advance.installment_amount)
+        else:
+            periodic_amount = calculate_equal_installment_amount(
+                total_amount=to_money(schedule.total_amount),
+                installments=target_installments,
+            )
+
+        remaining_slots = target_installments - existing_count
+        if remaining_slots <= 1:
+            next_amount = unallocated
+        else:
+            next_amount = min(periodic_amount, unallocated)
+
+        if next_amount <= Decimal("0.00"):
+            continue
+
+        PayrollDeductionInstallment.objects.create(
+            deduction_schedule=schedule,
+            payroll_period=payroll_period,
+            scheduled_amount=next_amount,
+            actual_amount=Decimal("0.00"),
+            status=PayrollDeductionInstallmentStatus.PLANNED,
+            created_by=None,
+            updated_by=None,
+        )
+        _refresh_deduction_schedule_snapshot(schedule)
+
+
+def _get_or_create_system_deduction_item(*, code, name, priority=250):
+    item, _ = PayrollCatalogItem.objects.get_or_create(
+        code=code,
+        defaults={
+            "name": name,
+            "line_type": LineType.DEDUCTION,
+            "is_taxable": False,
+            "priority": priority,
+            "is_active": True,
+            "description": f"System-managed deduction for {name}.",
+        },
+    )
+    return item
+
+
+def _reset_orphaned_applied_installments_for_period(*, employee, payroll_period):
+    orphaned_installments = list(
+        PayrollDeductionInstallment.objects.select_related("deduction_schedule").filter(
+            deduction_schedule__employee=employee,
+            deduction_schedule__status__in=[
+                PayrollDeductionScheduleStatus.PLANNED,
+                PayrollDeductionScheduleStatus.PARTIALLY_APPLIED,
+                PayrollDeductionScheduleStatus.DEFERRED,
+                PayrollDeductionScheduleStatus.ADJUSTED,
+            ],
+            payroll_period=payroll_period,
+            status=PayrollDeductionInstallmentStatus.APPLIED,
+            payroll_line__isnull=True,
+        )
+    )
+    if not orphaned_installments:
+        return
+
+    touched_schedule_ids = set()
+    for installment in orphaned_installments:
+        installment.actual_amount = Decimal("0.00")
+        installment.status = PayrollDeductionInstallmentStatus.PLANNED
+        installment.applied_at = None
+        installment.updated_by = None
+        installment.save(
+            update_fields=[
+                "actual_amount",
+                "status",
+                "applied_at",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        touched_schedule_ids.add(installment.deduction_schedule_id)
+
+    for schedule in PayrollDeductionSchedule.objects.filter(id__in=touched_schedule_ids):
+        _recompute_schedule_remaining_and_status(schedule, actor=None)
+
+
+def _installments_for_employee_in_period(*, employee, payroll_period):
+    if not payroll_period:
+        return PayrollDeductionInstallment.objects.none()
+
+    # Self-heal for deleted payroll runs: APPLIED installments may be left without
+    # payroll_line (SET_NULL), which would otherwise hide them from future runs.
+    _reset_orphaned_applied_installments_for_period(employee=employee, payroll_period=payroll_period)
+
+    # Safety net: normalize legacy salary-advance schedules created with full principal
+    # as the first installment for equal-split repayment.
+    _repair_legacy_equal_split_salary_advance_schedules(employee=employee)
+    _ensure_salary_advance_installment_for_period(employee=employee, payroll_period=payroll_period)
+
+    return PayrollDeductionInstallment.objects.select_related("deduction_schedule").filter(
+        deduction_schedule__employee=employee,
+        deduction_schedule__source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        deduction_schedule__status__in=[
+            PayrollDeductionScheduleStatus.PLANNED,
+            PayrollDeductionScheduleStatus.PARTIALLY_APPLIED,
+            PayrollDeductionScheduleStatus.DEFERRED,
+            PayrollDeductionScheduleStatus.ADJUSTED,
+        ],
+        payroll_period=payroll_period,
+        status__in=[
+            PayrollDeductionInstallmentStatus.PLANNED,
+            PayrollDeductionInstallmentStatus.DEFERRED,
+            PayrollDeductionInstallmentStatus.ADJUSTED,
+        ],
+    )
+
+
+def _create_installment_deduction_lines(
+    *,
+    employee_item,
+    installments,
+    gross_pay,
+    taxable_income,
+    running_deductions,
+    generated_by,
+):
+    sponsorship_item = _get_or_create_system_deduction_item(
+        code="STAFF_WARD_SPONSORSHIP_DED",
+        name="Staff Ward Sponsorship",
+        priority=260,
+    )
+    advance_item = _get_or_create_system_deduction_item(
+        code="SALARY_ADVANCE_DED",
+        name="Salary Advance",
+        priority=270,
+    )
+
+    installments_list = list(installments)
+    salary_advance_source_ids = sorted(
+        {
+            str(installment.deduction_schedule.source_id)
+            for installment in installments_list
+            if installment.deduction_schedule.source_type == DeductionSourceType.SALARY_ADVANCE
+            and installment.deduction_schedule.source_id
+        }
+    )
+    salary_advances_by_id = {
+        str(advance.id): advance
+        for advance in SalaryAdvance.objects.filter(id__in=salary_advance_source_ids)
+    }
+
+    for installment in installments_list:
+        amount = to_money(installment.scheduled_amount)
+        if amount <= Decimal("0.00"):
+            continue
+
+        source_type = installment.deduction_schedule.source_type
+        if source_type == DeductionSourceType.SALARY_ADVANCE:
+            advance = salary_advances_by_id.get(str(installment.deduction_schedule.source_id))
+            if (
+                advance
+                and advance.repayment_method == SalaryAdvanceRepaymentMethod.EQUAL_SPLIT
+                and int(advance.number_of_installments or 1) > 1
+            ):
+                requested_installments = max(1, int(advance.number_of_installments or 1))
+                schedule = installment.deduction_schedule
+                schedule_installments_count = schedule.installments.count()
+                expected_equal_split_amount = calculate_equal_installment_amount(
+                    total_amount=to_money(schedule.total_amount),
+                    installments=requested_installments,
+                )
+                if (
+                    amount > expected_equal_split_amount
+                    and (
+                        schedule_installments_count != requested_installments
+                        or amount == to_money(schedule.total_amount)
+                    )
+                ):
+                    remaining_amount = to_money(schedule.remaining_amount)
+                    amount = min(expected_equal_split_amount, remaining_amount) if remaining_amount > Decimal("0.00") else expected_equal_split_amount
+
+        payroll_item = sponsorship_item if source_type == DeductionSourceType.STAFF_WARD_SPONSORSHIP else advance_item
+
+        PayrollLineItem.objects.create(
+            payroll_employee_item=employee_item,
+            payroll_item=payroll_item,
+            line_type=LineType.DEDUCTION,
+            name=payroll_item.name,
+            code=payroll_item.code,
+            amount=amount,
+            calculation_type=CalculationType.FLAT,
+            target_amount_source=TargetAmountSource.GROSS_PAY,
+            is_taxable=False,
+            is_recurring=True,
+            frequency=Frequency.MONTHLY,
+            source_type="PayrollDeductionInstallment",
+            source_id=str(installment.id),
+            metadata={
+                "deduction_schedule_id": str(installment.deduction_schedule_id),
+                "deduction_source_type": source_type,
+                "deduction_source_id": installment.deduction_schedule.source_id,
+            },
+            created_by=generated_by,
+            updated_by=generated_by,
+        )
+
+        gross_pay, taxable_income, running_deductions = _apply_line_to_running_payroll_state(
+            line_type=LineType.DEDUCTION,
+            is_taxable=False,
+            amount=amount,
+            gross_pay=gross_pay,
+            taxable_income=taxable_income,
+            running_deductions=running_deductions,
+        )
+
+    return gross_pay, taxable_income, running_deductions
+
+
+def _apply_salary_advance_recurring_deductions(
+    *,
+    employee_item,
+    employee,
+    pay_period_start,
+    pay_period_end,
+    gross_pay,
+    taxable_income,
+    running_deductions,
+    generated_by,
+):
+    advance_item = _get_or_create_system_deduction_item(
+        code="SALARY_ADVANCE_DED",
+        name="Salary Advance",
+        priority=270,
+    )
+
+    assignments = list(
+        EmployeePayrollItem.objects.filter(
+            employee=employee,
+            is_active=True,
+            source_type=DeductionSourceType.SALARY_ADVANCE,
+            payroll_item__is_active=True,
+        )
+        .select_related("payroll_item")
+        .order_by("priority", "id")
+    )
+    if not assignments:
+        return gross_pay, taxable_income, running_deductions
+
+    source_ids = sorted({assignment.source_id for assignment in assignments if assignment.source_id})
+    advances_by_id = {
+        str(advance.id): advance
+        for advance in SalaryAdvance.objects.filter(id__in=source_ids)
+    }
+
+    for assignment in assignments:
+        if not assignment.is_effective_for(pay_period_start, pay_period_end):
+            continue
+
+        advance = advances_by_id.get(str(assignment.source_id))
+        if not advance:
+            continue
+        if advance.status != SalaryAdvanceStatus.COMPLETED:
+            continue
+
+        remaining_balance = to_money(advance.remaining_balance)
+        if remaining_balance <= Decimal("0.00"):
+            assignment.is_active = False
+            assignment.end_date = assignment.end_date or pay_period_end
+            assignment.updated_by = generated_by
+            assignment.save(update_fields=["is_active", "end_date", "updated_by", "updated_at"])
+            continue
+
+        scheduled_amount = to_money(assignment.value)
+        if scheduled_amount <= Decimal("0.00"):
+            continue
+        amount = min(scheduled_amount, remaining_balance)
+        if amount <= Decimal("0.00"):
+            continue
+
+        PayrollLineItem.objects.create(
+            payroll_employee_item=employee_item,
+            payroll_item=advance_item,
+            employee_payroll_item=assignment,
+            line_type=LineType.DEDUCTION,
+            name=assignment.get_name() or advance_item.name,
+            code=advance_item.code,
+            amount=amount,
+            calculation_type=CalculationType.FLAT,
+            target_amount_source=TargetAmountSource.GROSS_PAY,
+            is_taxable=False,
+            is_recurring=True,
+            frequency=assignment.frequency,
+            source_type="SalaryAdvance",
+            source_id=str(advance.id),
+            metadata={
+                "deduction_source_type": DeductionSourceType.SALARY_ADVANCE,
+                "salary_advance_id": str(advance.id),
+                "employee_payroll_item_id": str(assignment.id),
+                "scheduled_amount": str(scheduled_amount),
+                "remaining_before": str(remaining_balance),
+            },
+            created_by=generated_by,
+            updated_by=generated_by,
+        )
+
+        gross_pay, taxable_income, running_deductions = _apply_line_to_running_payroll_state(
+            line_type=LineType.DEDUCTION,
+            is_taxable=False,
+            amount=amount,
+            gross_pay=gross_pay,
+            taxable_income=taxable_income,
+            running_deductions=running_deductions,
+        )
+
+    return gross_pay, taxable_income, running_deductions
+
+
+def _active_policy_for_date(*, as_of_date):
+    return (
+        StaffWardSponsorshipPolicy.objects.filter(is_active=True, effective_from__lte=as_of_date)
+        .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=as_of_date))
+        .order_by("-effective_from", "-created_at")
+        .first()
+    )
+
+
+def get_run_obligation_deduction_violations(payroll_run: PayrollRunRecord):
+    policy = _active_policy_for_date(as_of_date=payroll_run.pay_period_start)
+    if policy is None:
+        return {"policy": None, "violations": []}
+
+    policy_percent = Decimal(str(policy.max_payroll_deduction_percent_of_gross or "0"))
+    violations = []
+
+    for item in payroll_run.employee_items.prefetch_related("employee", "line_items").all():
+        gross = to_money(item.gross_pay)
+        all_deductions = to_money(item.total_deductions)
+        installment_lines = [
+            line
+            for line in item.line_items.all()
+            if line.source_type in ["PayrollDeductionInstallment", "SalaryAdvance"]
+        ]
+        if not installment_lines:
+            continue
+
+        voluntary_total = to_money(sum((line.amount for line in installment_lines), Decimal("0.00")))
+        base_deductions = to_money(all_deductions - voluntary_total)
+        limit_result = evaluate_deduction_limits(
+            gross_pay=gross,
+            existing_total_deductions=base_deductions,
+            proposed_deduction=voluntary_total,
+            max_deduction_percent_of_gross=policy.max_payroll_deduction_percent_of_gross,
+            min_net_pay_percent_of_gross=policy.min_net_pay_percent_of_gross,
+        )
+
+        reasons = []
+        if not limit_result.is_allowed:
+            if getattr(limit_result, "exceeds_max_deduction", False):
+                reasons.append(
+                    {
+                        "code": "exceeds_max_total_deduction",
+                        "message": (
+                            "Total deductions exceed policy maximum "
+                            f"({policy.max_payroll_deduction_percent_of_gross}% of gross)."
+                        ),
+                    }
+                )
+            if getattr(limit_result, "below_min_net_pay", False):
+                reasons.append(
+                    {
+                        "code": "below_min_net_pay",
+                        "message": (
+                            "Projected net pay falls below policy minimum "
+                            f"({policy.min_net_pay_percent_of_gross}% of gross)."
+                        ),
+                    }
+                )
+            if not reasons:
+                reasons.append(
+                    {
+                        "code": "deduction_policy_violation",
+                        "message": "Projected deductions violate payroll policy limits.",
+                    }
+                )
+
+        sponsorship_total = to_money(
+            sum(
+                (
+                    line.amount
+                    for line in installment_lines
+                    if (line.metadata or {}).get("deduction_source_type") == DeductionSourceType.STAFF_WARD_SPONSORSHIP
+                ),
+                Decimal("0.00"),
+            )
+        )
+        sponsorship_cap = to_money((gross * policy_percent) / Decimal("100"))
+        if sponsorship_total > sponsorship_cap:
+            reasons.append(
+                {
+                    "code": "sponsorship_exceeds_cap",
+                    "message": "Sponsorship recovery exceeds allowed cap for this period.",
+                }
+            )
+
+        if reasons:
+            employee_name = ""
+            if item.employee_id and item.employee:
+                employee_name = item.employee.get_full_name() or getattr(item.employee, "id_number", "") or ""
+
+            violations.append(
+                {
+                    "employee_id": str(item.employee_id),
+                    "employee_name": employee_name,
+                    "gross_pay": str(gross),
+                    "base_deductions": str(base_deductions),
+                    "proposed_obligation_deduction": str(voluntary_total),
+                    "resulting_total_deductions": str(
+                        getattr(limit_result, "resulting_total_deductions", Decimal("0.00"))
+                    ),
+                    "resulting_net_pay": str(getattr(limit_result, "resulting_net_pay", Decimal("0.00"))),
+                    "max_allowed_total_deductions": str(
+                        getattr(limit_result, "max_allowed_deductions", Decimal("0.00"))
+                    ),
+                    "min_required_net_pay": str(getattr(limit_result, "min_required_net_pay", Decimal("0.00"))),
+                    "sponsorship_deduction_total": str(sponsorship_total),
+                    "sponsorship_cap": str(sponsorship_cap),
+                    "reasons": reasons,
+                }
+            )
+
+    return {
+        "policy": {
+            "id": str(getattr(policy, "id", "")),
+            "name": getattr(policy, "name", ""),
+            "max_payroll_deduction_percent_of_gross": str(
+                getattr(policy, "max_payroll_deduction_percent_of_gross", Decimal("0"))
+            ),
+            "min_net_pay_percent_of_gross": str(
+                getattr(policy, "min_net_pay_percent_of_gross", Decimal("0"))
+            ),
+            "effective_from": str(getattr(policy, "effective_from", "")),
+            "effective_to": (
+                str(getattr(policy, "effective_to")) if getattr(policy, "effective_to", None) else None
+            ),
+        },
+        "violations": violations,
+    }
+
+
+def _validate_run_obligation_deduction_limits(payroll_run: PayrollRunRecord):
+    violations_payload = get_run_obligation_deduction_violations(payroll_run)
+    violations = violations_payload.get("violations", [])
+    if violations:
+        deduped = sorted({str(item.get("employee_id")) for item in violations if item.get("employee_id")})
+        raise ValueError(
+            "Payroll run has deduction policy violations. "
+            f"Employees affected: {', '.join(deduped)}"
+        )
+
+
+def _build_deduction_schedule_snapshot(schedule: PayrollDeductionSchedule):
+    installments_payload = []
+    installments = schedule.installments.select_related("payroll_period").order_by("payroll_period__start_date", "id")
+    for installment in installments:
+        period = installment.payroll_period
+        installments_payload.append(
+            {
+                "id": str(installment.id),
+                "payroll_period": {
+                    "id": str(period.id),
+                    "start_date": str(period.start_date),
+                    "end_date": str(period.end_date),
+                },
+                "scheduled_amount": str(to_money(installment.scheduled_amount)),
+                "actual_amount": str(to_money(installment.actual_amount)),
+                "status": installment.status,
+                "payroll_line_id": str(installment.payroll_line_id) if installment.payroll_line_id else None,
+                "applied_at": installment.applied_at.isoformat() if installment.applied_at else None,
+            }
+        )
+
+    return {
+        "version": 1,
+        "schedule": {
+            "id": str(schedule.id),
+            "employee_id": str(schedule.employee_id),
+            "source_type": schedule.source_type,
+            "source_id": str(schedule.source_id),
+            "start_period_id": str(schedule.start_period_id) if schedule.start_period_id else None,
+            "end_period_id": str(schedule.end_period_id) if schedule.end_period_id else None,
+            "total_amount": str(to_money(schedule.total_amount)),
+            "remaining_amount": str(to_money(schedule.remaining_amount)),
+            "scheduled_amount": str(to_money(schedule.scheduled_amount)),
+            "status": schedule.status,
+        },
+        "installments": installments_payload,
+    }
+
+
+def _refresh_deduction_schedule_snapshot(schedule: PayrollDeductionSchedule):
+    schedule.schedule_snapshot = _build_deduction_schedule_snapshot(schedule)
+    schedule.save(update_fields=["schedule_snapshot", "updated_at"])
+
+
+def _final_payment_date_for_schedule(*, schedule: PayrollDeductionSchedule):
+    last_installment = (
+        schedule.installments.select_related("payroll_period")
+        .order_by("payroll_period__start_date", "id")
+        .last()
+    )
+    if not last_installment:
+        return None
+    payroll_period = getattr(last_installment, "payroll_period", None)
+    if payroll_period is None:
+        return None
+    return getattr(payroll_period, "payment_date", None) or getattr(payroll_period, "end_date", None)
+
+
+def _sync_employee_deduction_item_end_date_from_schedule(*, schedule: PayrollDeductionSchedule, actor=None):
+    final_payment_date = _final_payment_date_for_schedule(schedule=schedule)
+    if final_payment_date is None:
+        return
+
+    assignment = (
+        EmployeePayrollItem.objects.filter(
+            employee=schedule.employee,
+            source_type=schedule.source_type,
+            source_id=str(schedule.source_id),
+            is_active=True,
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+    if assignment is None:
+        return
+    if assignment.end_date == final_payment_date:
+        return
+
+    assignment.end_date = final_payment_date
+    assignment.updated_by = actor
+    assignment.save(update_fields=["end_date", "updated_by", "updated_at"])
+
+
+def _json_amount(value: Decimal) -> float:
+    return float(to_money(value))
+
+
+def _build_staff_ward_student_allocation(*, sponsorship: StaffWardSponsorship, monthly_deduction: Decimal | None = None):
+    sponsorship_students = getattr(sponsorship, "sponsorship_students", None)
+    if sponsorship_students is None:
+        return []
+
+    if hasattr(sponsorship_students, "select_related"):
+        sponsorship_rows = list(sponsorship_students.select_related("student").order_by("created_at", "id"))
+    elif hasattr(sponsorship_students, "all"):
+        sponsorship_rows = list(sponsorship_students.all())
+    else:
+        sponsorship_rows = list(sponsorship_students)
+    if not sponsorship_rows:
+        return []
+
+    total_sponsored = to_money(
+        sponsorship.total_sponsored_amount
+        or sum((row.eligible_fee_total for row in sponsorship_rows), Decimal("0.00"))
+    )
+    if total_sponsored <= Decimal("0.00"):
+        return []
+
+    monthly = to_money(monthly_deduction if monthly_deduction is not None else sponsorship.payroll_recovery_amount)
+    if monthly < Decimal("0.00"):
+        monthly = Decimal("0.00")
+
+    existing_allocation = getattr(sponsorship, "student_allocation", None) or []
+    existing = {
+        str(entry.get("id_number") or "").strip(): entry
+        for entry in existing_allocation
+        if isinstance(entry, dict)
+    }
+
+    allocations = []
+    running_monthly = Decimal("0.00")
+    running_percent = Decimal("0.0000")
+
+    for index, row in enumerate(sponsorship_rows):
+        student = getattr(row, "student", None)
+        id_number = str(
+            getattr(student, "id_number", "")
+            or getattr(row, "student_id_number", "")
+            or ""
+        ).strip()
+        sponsored_amount = to_money(row.eligible_fee_total or Decimal("0.00"))
+        last_row = index == len(sponsorship_rows) - 1
+
+        if last_row:
+            allocation_percent = max(Decimal("0.0000"), Decimal("100.0000") - running_percent)
+            monthly_amount = max(Decimal("0.00"), to_money(monthly - running_monthly))
+        else:
+            allocation_percent = ((sponsored_amount / total_sponsored) * Decimal("100")).quantize(
+                Decimal("0.0001")
+            )
+            monthly_amount = to_money((monthly * allocation_percent) / Decimal("100"))
+            running_percent += allocation_percent
+            running_monthly = to_money(running_monthly + monthly_amount)
+
+        previous = existing.get(id_number, {})
+        prior_paid = to_money(Decimal(str(previous.get("total_paid") or "0")))
+        total_paid = min(sponsored_amount, max(Decimal("0.00"), prior_paid))
+        remaining_balance = max(Decimal("0.00"), to_money(sponsored_amount - total_paid))
+
+        allocations.append(
+            {
+                "id_number": id_number,
+                "sponsored_amount": _json_amount(sponsored_amount),
+                "allocation_percentage": float(allocation_percent),
+                "monthly_allocation_amount": _json_amount(monthly_amount),
+                "total_paid": _json_amount(total_paid),
+                "remaining_sponsored_balance": _json_amount(remaining_balance),
+            }
+        )
+
+    return allocations
+
+
+def _ward_sponsorship_tuition_tx_type() -> AccountingTransactionType:
+    tx_type = AccountingTransactionType.objects.filter(code__iexact="TUITION").first()
+    if tx_type is not None:
+        return tx_type
+
+    return AccountingTransactionType.objects.create(
+        code="TUITION",
+        name="Tuition Payment",
+        transaction_category="income",
+        description="Auto-generated tuition payment from ward sponsorship payroll deduction.",
+        is_active=True,
+    )
+
+
+def _resolve_student_allocation_amounts(*, allocations: list[dict], deduction_amount: Decimal):
+    planned_total = max(Decimal("0.00"), to_money(deduction_amount))
+    if planned_total <= Decimal("0.00"):
+        return [], Decimal("0.00")
+
+    normalized = []
+    for entry in allocations:
+        id_number = str(entry.get("id_number") or "").strip()
+        pct = Decimal(str(entry.get("allocation_percentage") or "0"))
+        if pct < Decimal("0"):
+            pct = Decimal("0")
+        remaining = max(
+            Decimal("0.00"),
+            to_money(Decimal(str(entry.get("remaining_sponsored_balance") or "0"))),
+        )
+        normalized.append(
+            {
+                "entry": entry,
+                "id_number": id_number,
+                "percentage": pct,
+                "remaining": remaining,
+                "allocated": Decimal("0.00"),
+            }
+        )
+
+    total_remaining_capacity = to_money(sum((row["remaining"] for row in normalized), Decimal("0.00")))
+    distributable = min(planned_total, total_remaining_capacity)
+    if distributable <= Decimal("0.00"):
+        return normalized, Decimal("0.00")
+
+    remaining_to_allocate = distributable
+    for idx, row in enumerate(normalized):
+        is_last = idx == len(normalized) - 1
+        if is_last:
+            target = remaining_to_allocate
+        else:
+            target = to_money((distributable * row["percentage"]) / Decimal("100"))
+
+        allocation = min(row["remaining"], remaining_to_allocate, max(Decimal("0.00"), target))
+        row["allocated"] = to_money(allocation)
+        remaining_to_allocate = to_money(remaining_to_allocate - row["allocated"])
+
+    if remaining_to_allocate > Decimal("0.00"):
+        for row in normalized:
+            if remaining_to_allocate <= Decimal("0.00"):
+                break
+            headroom = max(Decimal("0.00"), to_money(row["remaining"] - row["allocated"]))
+            if headroom <= Decimal("0.00"):
+                continue
+            fill = min(headroom, remaining_to_allocate)
+            row["allocated"] = to_money(row["allocated"] + fill)
+            remaining_to_allocate = to_money(remaining_to_allocate - fill)
+
+    return normalized, distributable
+
+
+def _upsert_ward_sponsorship_tuition_transactions_for_installment(
+    *,
+    payroll_run: PayrollRunRecord,
+    installment: PayrollDeductionInstallment,
+    actor=None,
+):
+    schedule = getattr(installment, "deduction_schedule", None)
+    if schedule is None:
+        return
+    if getattr(schedule, "source_type", None) != DeductionSourceType.STAFF_WARD_SPONSORSHIP:
+        return
+
+    sponsorship = (
+        StaffWardSponsorship.objects.select_related("academic_year", "employee")
+        .prefetch_related("sponsorship_students__student")
+        .filter(id=schedule.source_id)
+        .first()
+    )
+    if sponsorship is None or sponsorship.academic_year_id is None:
+        return
+
+    if not sponsorship.student_allocation:
+        sponsorship.student_allocation = _build_staff_ward_student_allocation(
+            sponsorship=sponsorship,
+            monthly_deduction=to_money(installment.scheduled_amount or Decimal("0.00")),
+        )
+
+    allocations = [row for row in (sponsorship.student_allocation or []) if isinstance(row, dict)]
+    if not allocations:
+        return
+
+    resolved, distributable = _resolve_student_allocation_amounts(
+        allocations=allocations,
+        deduction_amount=to_money(installment.actual_amount or Decimal("0.00")),
+    )
+    if distributable <= Decimal("0.00"):
+        return
+
+    students_by_id_number = {
+        str(row.student.id_number or "").strip(): row.student
+        for row in sponsorship.sponsorship_students.all()
+        if getattr(row, "student", None) is not None
+    }
+
+    tx_type = _ward_sponsorship_tuition_tx_type()
+    payment_method = _salary_advance_repayment_payment_method(PaymentMethod.OTHER)
+    bank_account = _salary_advance_repayment_bank_account()
+    actor_name = None
+    if actor is not None:
+        actor_name = (
+            (getattr(actor, "get_full_name", lambda: "")() or "").strip()
+            or (getattr(actor, "username", "") or "").strip()
+            or str(getattr(actor, "id", ""))
+        )
+
+    from accounting.services.payment_allocation import recompute_student_year_payments
+
+    for row in resolved:
+        amount = row["allocated"]
+        if amount <= Decimal("0.00"):
+            continue
+
+        id_number = row["id_number"]
+        student = students_by_id_number.get(id_number)
+        if student is None:
+            continue
+
+        source_reference = (
+            f"ward-sponsorship:{sponsorship.id}|run:{payroll_run.id}|"
+            f"installment:{installment.id}|student:{id_number}"
+        )
+
+        reference_number = (
+            f"WSP-{str(sponsorship.id)[:6]}-{str(payroll_run.id)[:6]}-"
+            f"{str(installment.id)[:6]}-{id_number}"
+        )[:100]
+
+        tx_defaults = {
+            "bank_account": bank_account,
+            "transaction_date": payroll_run.payment_date,
+            "reference_number": reference_number,
+            "transaction_type": tx_type,
+            "payment_method": payment_method,
+            "ledger_account": tx_type.default_ledger_account,
+            "amount": amount,
+            "currency": bank_account.currency,
+            "exchange_rate": Decimal("1"),
+            "base_amount": amount,
+            "payer_payee": sponsorship.employee.get_full_name() if sponsorship.employee_id else "",
+            "description": (
+                f"Ward Sponsorship Tuition Allocation - {id_number} - "
+                f"{sponsorship.employee.get_full_name() if sponsorship.employee_id else sponsorship.employee_id}"
+            ),
+            "notes": "Auto-created from payroll ward sponsorship deduction.",
+            "status": AccountingCashTransaction.TransactionStatus.COMPLETED,
+            "approved_by": actor_name,
+            "approved_at": timezone.now(),
+            "completed_by": actor_name,
+            "completed_at": timezone.now(),
+            "source_reference": source_reference,
+            "student": student,
+            "updated_by": actor,
+        }
+
+        existing_tx = AccountingCashTransaction.objects.filter(source_reference=source_reference).first()
+        if existing_tx is None:
+            AccountingCashTransaction.objects.create(created_by=actor, **tx_defaults)
+        else:
+            for field, value in tx_defaults.items():
+                setattr(existing_tx, field, value)
+            existing_tx.save(
+                update_fields=[
+                    "bank_account",
+                    "transaction_date",
+                    "reference_number",
+                    "transaction_type",
+                    "payment_method",
+                    "ledger_account",
+                    "amount",
+                    "currency",
+                    "exchange_rate",
+                    "base_amount",
+                    "payer_payee",
+                    "description",
+                    "notes",
+                    "status",
+                    "approved_by",
+                    "approved_at",
+                    "completed_by",
+                    "completed_at",
+                    "student",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+
+        row["entry"]["total_paid"] = _json_amount(
+            to_money(Decimal(str(row["entry"].get("total_paid") or "0")) + amount)
+        )
+        row["entry"]["remaining_sponsored_balance"] = _json_amount(
+            max(Decimal("0.00"), to_money(Decimal(str(row["entry"].get("remaining_sponsored_balance") or "0")) - amount))
+        )
+
+        recompute_student_year_payments(student, sponsorship.academic_year)
+
+    sponsorship.student_allocation = allocations
+    sponsorship.updated_by = actor
+    sponsorship.save(update_fields=["student_allocation", "updated_by", "updated_at"])
+
+
+def _recompute_schedule_remaining_and_status(schedule: PayrollDeductionSchedule, *, actor=None):
+    applied_total = to_money(
+        sum(
+            (
+                installment.actual_amount
+                for installment in schedule.installments.filter(status=PayrollDeductionInstallmentStatus.APPLIED)
+            ),
+            Decimal("0.00"),
+        )
+    )
+    remaining = max(Decimal("0.00"), to_money(schedule.total_amount - applied_total))
+
+    if remaining <= Decimal("0.00"):
+        schedule_status = PayrollDeductionScheduleStatus.COMPLETED
+    elif applied_total > Decimal("0.00"):
+        schedule_status = PayrollDeductionScheduleStatus.PARTIALLY_APPLIED
+    else:
+        schedule_status = PayrollDeductionScheduleStatus.PLANNED
+
+    schedule.remaining_amount = remaining
+    schedule.status = schedule_status
+    schedule.updated_by = actor
+    schedule.save(update_fields=["remaining_amount", "status", "updated_by", "updated_at"])
+    _refresh_deduction_schedule_snapshot(schedule)
+    _sync_employee_deduction_item_end_date_from_schedule(schedule=schedule, actor=actor)
+
+    if schedule.source_type == DeductionSourceType.STAFF_WARD_SPONSORSHIP and schedule.source_id:
+        sponsorship = StaffWardSponsorship.objects.filter(id=schedule.source_id).first()
+        if sponsorship is not None:
+            _sync_staff_ward_repayment_progress(sponsorship=sponsorship, actor=actor)
+
+
+def apply_deduction_installments_for_run(payroll_run: PayrollRunRecord, *, actor=None):
+    lines = PayrollLineItem.objects.filter(
+        payroll_employee_item__payroll=payroll_run,
+        source_type="PayrollDeductionInstallment",
+    )
+    if not lines.exists():
+        return
+
+    installment_ids = [line.source_id for line in lines if line.source_id]
+    installments_by_id = {
+        str(installment.id): installment
+        for installment in PayrollDeductionInstallment.objects.select_related("deduction_schedule").filter(id__in=installment_ids)
+    }
+    touched_schedule_ids = set()
+    now = timezone.now()
+
+    for line in lines:
+        installment = installments_by_id.get(str(line.source_id))
+        if installment is None:
+            continue
+        installment.actual_amount = to_money(line.amount)
+        installment.status = PayrollDeductionInstallmentStatus.APPLIED
+        installment.payroll_line = line
+        installment.applied_at = now
+        installment.updated_by = actor
+        installment.save(
+            update_fields=[
+                "actual_amount",
+                "status",
+                "payroll_line",
+                "applied_at",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        _upsert_ward_sponsorship_tuition_transactions_for_installment(
+            payroll_run=payroll_run,
+            installment=installment,
+            actor=actor,
+        )
+        touched_schedule_ids.add(installment.deduction_schedule_id)
+
+    for schedule in PayrollDeductionSchedule.objects.filter(id__in=touched_schedule_ids):
+        _recompute_schedule_remaining_and_status(schedule, actor=actor)
+
+
+def revert_deduction_installments_for_run(payroll_run: PayrollRunRecord, *, actor=None):
+    lines = PayrollLineItem.objects.filter(
+        payroll_employee_item__payroll=payroll_run,
+        source_type="PayrollDeductionInstallment",
+    )
+    if not lines.exists():
+        return
+
+    installment_ids = [line.source_id for line in lines if line.source_id]
+    installments = PayrollDeductionInstallment.objects.select_related("deduction_schedule").filter(id__in=installment_ids)
+    touched_schedule_ids = set()
+
+    for installment in installments:
+        installment.actual_amount = Decimal("0.00")
+        installment.status = PayrollDeductionInstallmentStatus.PLANNED
+        installment.payroll_line = None
+        installment.applied_at = None
+        installment.updated_by = actor
+        installment.save(
+            update_fields=[
+                "actual_amount",
+                "status",
+                "payroll_line",
+                "applied_at",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        touched_schedule_ids.add(installment.deduction_schedule_id)
+
+    for schedule in PayrollDeductionSchedule.objects.filter(id__in=touched_schedule_ids):
+        _recompute_schedule_remaining_and_status(schedule, actor=actor)
+
+
+def _expected_salary_advance_end_date(*, start_period: PayrollPeriod, installments: int):
+    periods = _period_window_for_schedule(
+        start_period=start_period,
+        end_period=None,
+        requested_installments=max(1, int(installments or 1)),
+    )
+    if not periods:
+        return start_period.end_date
+    return periods[-1].end_date
+
+
+def _ensure_salary_advance_employee_deduction_item(*, advance: SalaryAdvance, periodic_amount: Decimal, actor=None):
+    deduction_item = _get_or_create_system_deduction_item(
+        code="SALARY_ADVANCE_DED",
+        name="Salary Advance",
+        priority=270,
+    )
+
+    active_schedule = _salary_advance_open_schedules(advance=advance).order_by("-created_at").first()
+    expected_end_date = (
+        _final_payment_date_for_schedule(schedule=active_schedule)
+        if active_schedule is not None
+        else _expected_salary_advance_end_date(
+            start_period=advance.repayment_start_period,
+            installments=max(1, int(advance.number_of_installments or 1)),
+        )
+    )
+
+    assignment = (
+        EmployeePayrollItem.objects.filter(
+            employee=advance.employee,
+            source_type=DeductionSourceType.SALARY_ADVANCE,
+            source_id=str(advance.id),
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+    payload = {
+        "payroll_item": deduction_item,
+        "name_override": "Salary Advance Repayment",
+        "calculation_type": CalculationType.FLAT,
+        "value": to_money(periodic_amount),
+        "formula": "",
+        "target_amount_source": TargetAmountSource.GROSS_PAY,
+        "calculation_limit": None,
+        "is_taxable": False,
+        "is_recurring": True,
+        "frequency": Frequency.MONTHLY,
+        "start_date": advance.repayment_start_period.start_date,
+        "end_date": expected_end_date,
+        "is_active": True,
+        "priority": 270,
+        "source_type": DeductionSourceType.SALARY_ADVANCE,
+        "source_id": str(advance.id),
+        "calculation_overridden": True,
+        "notes": (advance.notes or "").strip(),
+    }
+
+    if assignment is None:
+        assignment = EmployeePayrollItem.objects.create(
+            employee=advance.employee,
+            created_by=actor,
+            updated_by=actor,
+            **payload,
+        )
+    else:
+        for key, value in payload.items():
+            setattr(assignment, key, value)
+        assignment.updated_by = actor
+        assignment.save(
+            update_fields=[
+                "payroll_item",
+                "name_override",
+                "calculation_type",
+                "value",
+                "formula",
+                "target_amount_source",
+                "calculation_limit",
+                "is_taxable",
+                "is_recurring",
+                "frequency",
+                "start_date",
+                "end_date",
+                "is_active",
+                "priority",
+                "source_type",
+                "source_id",
+                "calculation_overridden",
+                "notes",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+    return assignment
+
+
+def _salary_advance_open_schedules(*, advance: SalaryAdvance):
+    return PayrollDeductionSchedule.objects.filter(
+        employee=advance.employee,
+        source_type=DeductionSourceType.SALARY_ADVANCE,
+        source_id=str(advance.id),
+    ).exclude(status=PayrollDeductionScheduleStatus.CANCELLED)
+
+
+def _staff_ward_sponsorship_open_schedules(*, sponsorship: StaffWardSponsorship):
+    return PayrollDeductionSchedule.objects.filter(
+        employee=sponsorship.employee,
+        source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        source_id=str(sponsorship.id),
+    ).exclude(status=PayrollDeductionScheduleStatus.CANCELLED)
+
+
+def _staff_ward_sponsorship_period_start(*, sponsorship: StaffWardSponsorship):
+    if getattr(sponsorship, "start_period_id", None):
+        return sponsorship.start_period
+
+    from payroll_v2.schedule_services import derive_next_period, get_employee_pay_schedule
+
+    schedule = get_employee_pay_schedule(sponsorship.employee)
+    if schedule is None:
+        raise ValueError("Employee does not have an active pay schedule. Set a start period before activating sponsorship.")
+
+    derived = derive_next_period(schedule)
+    period, _ = PayrollPeriod.objects.get_or_create(
+        schedule=schedule,
+        start_date=derived.start_date,
+        end_date=derived.end_date,
+        defaults={
+            "name": derived.name,
+            "payment_date": derived.payment_date,
+        },
+    )
+    return period
+
+
+def _staff_ward_repayment_month_starts(*, start_date: date, end_date: date):
+    if start_date > end_date:
+        return []
+
+    month_cursor = date(start_date.year, start_date.month, 1)
+    month_end = date(end_date.year, end_date.month, 1)
+    months = []
+    while month_cursor <= month_end:
+        months.append(month_cursor)
+        if month_cursor.month == 12:
+            month_cursor = date(month_cursor.year + 1, 1, 1)
+        else:
+            month_cursor = date(month_cursor.year, month_cursor.month + 1, 1)
+    return months
+
+
+def _build_staff_ward_repayment_schedule(*, total_amount: Decimal, start_date: date, end_date: date):
+    total = to_money(total_amount)
+    if total <= Decimal("0.00"):
+        return {
+            "months_remaining": 0,
+            "monthly_deduction": Decimal("0.00"),
+            "rows": [],
+        }
+
+    month_starts = _staff_ward_repayment_month_starts(start_date=start_date, end_date=end_date)
+    if not month_starts:
+        return {
+            "months_remaining": 0,
+            "monthly_deduction": Decimal("0.00"),
+            "rows": [],
+        }
+
+    months_remaining = len(month_starts)
+    if months_remaining == 1:
+        base_amount = total
+    else:
+        base_amount = (total / Decimal(str(months_remaining))).quantize(CENT, rounding=ROUND_DOWN)
+
+    rows = []
+    remaining = total
+    for idx, month_start in enumerate(month_starts, start=1):
+        if idx == months_remaining:
+            deduction_amount = remaining
+        else:
+            deduction_amount = min(base_amount, remaining)
+
+        remaining = to_money(remaining - deduction_amount)
+        max_day = calendar.monthrange(month_start.year, month_start.month)[1]
+        payment_day = min(start_date.day, max_day)
+        repayment_date = date(month_start.year, month_start.month, payment_day)
+
+        rows.append(
+            {
+                "installment_number": idx,
+                "month_label": month_start.strftime("%B %Y"),
+                "repayment_date": repayment_date.isoformat(),
+                "scheduled_amount": str(to_money(deduction_amount)),
+                "actual_paid_amount": "0.00",
+                "remaining_balance": str(to_money(remaining)),
+                "status": "planned",
+            }
+        )
+
+    monthly_deduction = to_money(base_amount if months_remaining > 1 else total)
+    return {
+        "months_remaining": months_remaining,
+        "monthly_deduction": monthly_deduction,
+        "rows": rows,
+    }
+
+
+def _sync_staff_ward_repayment_progress(*, sponsorship: StaffWardSponsorship, actor=None):
+    if not getattr(sponsorship, "pk", None):
+        return
+
+    schedule = (
+        PayrollDeductionSchedule.objects.filter(
+            employee=sponsorship.employee,
+            source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+            source_id=str(sponsorship.id),
+        )
+        .exclude(status=PayrollDeductionScheduleStatus.CANCELLED)
+        .order_by("-created_at")
+        .first()
+    )
+
+    total_amount = to_money(sponsorship.total_sponsored_amount or Decimal("0.00"))
+    paid_amount = Decimal("0.00")
+    remaining_amount = total_amount
+
+    if schedule is not None:
+        remaining_amount = to_money(schedule.remaining_amount)
+        paid_amount = max(Decimal("0.00"), to_money(total_amount - remaining_amount))
+
+    progress_percent = Decimal("0.00")
+    if total_amount > Decimal("0.00"):
+        progress_percent = ((paid_amount / total_amount) * Decimal("100")).quantize(CENT)
+
+    repayment_schedule = list(sponsorship.repayment_schedule or [])
+    if schedule is not None and repayment_schedule:
+        installments = list(schedule.installments.order_by("payroll_period__start_date", "id"))
+        for idx, row in enumerate(repayment_schedule):
+            if idx >= len(installments):
+                break
+            installment = installments[idx]
+            row["actual_paid_amount"] = str(to_money(installment.actual_amount or Decimal("0.00")))
+            row["status"] = installment.status
+        # recompute row-level running remaining from actual paid values
+        running = total_amount
+        for row in repayment_schedule:
+            paid_row = to_money(Decimal(str(row.get("actual_paid_amount") or "0.00")))
+            running = max(Decimal("0.00"), to_money(running - paid_row))
+            row["remaining_balance"] = str(running)
+
+    sponsorship.repayment_paid_amount = to_money(paid_amount)
+    sponsorship.repayment_remaining_balance = to_money(remaining_amount)
+    sponsorship.repayment_progress_percent = to_money(progress_percent)
+    sponsorship.repayment_schedule = repayment_schedule
+    sponsorship.updated_by = actor
+    sponsorship.save(
+        update_fields=[
+            "repayment_schedule",
+            "repayment_paid_amount",
+            "repayment_remaining_balance",
+            "repayment_progress_percent",
+            "updated_by",
+            "updated_at",
+        ]
+    )
+
+
+def _ensure_unique_active_or_completed_sponsorship_students_for_year(*, sponsorship: StaffWardSponsorship):
+    if not sponsorship.academic_year_id:
+        return
+
+    sponsorship_students = getattr(sponsorship, "sponsorship_students", None)
+    if sponsorship_students is None:
+        return
+
+    if hasattr(sponsorship_students, "values_list"):
+        student_ids = list(sponsorship_students.values_list("student_id", flat=True))
+    else:
+        if hasattr(sponsorship_students, "select_related"):
+            sponsorship_rows = list(sponsorship_students.select_related("student"))
+        elif hasattr(sponsorship_students, "all"):
+            sponsorship_rows = list(sponsorship_students.all())
+        else:
+            sponsorship_rows = list(sponsorship_students)
+
+        student_ids = []
+        for row in sponsorship_rows:
+            student_id = getattr(row, "student_id", None)
+            if student_id is None:
+                student = getattr(row, "student", None)
+                student_id = getattr(student, "id", None)
+            if student_id:
+                student_ids.append(student_id)
+
+    if not student_ids:
+        return
+
+    conflicting_rows = (
+        StaffWardSponsorshipStudent.objects.select_related("student")
+        .filter(
+            student_id__in=student_ids,
+            sponsorship__academic_year_id=sponsorship.academic_year_id,
+            sponsorship__status__in=[
+                StaffWardSponsorshipStatus.ACTIVE,
+                StaffWardSponsorshipStatus.COMPLETED,
+            ],
+        )
+        .exclude(sponsorship_id=sponsorship.id)
+    )
+    if not conflicting_rows.exists():
+        return
+
+    conflicting_labels = []
+    seen_students = set()
+    for row in conflicting_rows:
+        if row.student_id in seen_students:
+            continue
+        seen_students.add(row.student_id)
+        student = getattr(row, "student", None)
+        label = (
+            getattr(student, "id_number", None)
+            or (student.get_full_name() if student and hasattr(student, "get_full_name") else None)
+            or str(row.student_id)
+        )
+        conflicting_labels.append(str(label))
+
+    conflicts_text = ", ".join(conflicting_labels)
+    raise ValueError(
+        "One or more selected students already has a Ward Sponsorship for this academic year "
+        f"and cannot be sponsored again: {conflicts_text}."
+    )
+
+
+def _ensure_staff_ward_sponsorship_employee_deduction_item(
+    *,
+    sponsorship: StaffWardSponsorship,
+    periodic_amount: Decimal,
+    actor=None,
+):
+    deduction_item = _get_or_create_system_deduction_item(
+        code="STAFF_WARD_SPONSORSHIP_DED",
+        name="Staff Ward Sponsorship",
+        priority=260,
+    )
+
+    assignment = (
+        EmployeePayrollItem.objects.filter(
+            employee=sponsorship.employee,
+            source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+            source_id=str(sponsorship.id),
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+    repayment_schedule = list(sponsorship.repayment_schedule or [])
+    schedule_end_date = None
+    if repayment_schedule:
+        try:
+            repayment_schedule.sort(key=lambda row: row.get("installment_number", 0))
+            last_row_date = repayment_schedule[-1].get("repayment_date")
+            if last_row_date:
+                schedule_end_date = date.fromisoformat(str(last_row_date))
+        except Exception:
+            schedule_end_date = None
+
+    fallback_end_date = (
+        getattr(sponsorship.end_period, "payment_date", None)
+        if sponsorship.end_period_id
+        else getattr(sponsorship.start_period, "payment_date", None)
+    )
+
+    payload = {
+        "payroll_item": deduction_item,
+        "name_override": "Ward Sponsorship Deduction",
+        "calculation_type": CalculationType.FLAT,
+        "value": to_money(periodic_amount),
+        "formula": "",
+        "target_amount_source": TargetAmountSource.GROSS_PAY,
+        "calculation_limit": None,
+        "is_taxable": False,
+        "is_recurring": True,
+        "frequency": Frequency.MONTHLY,
+        "start_date": sponsorship.start_period.start_date,
+        "end_date": schedule_end_date or fallback_end_date or (sponsorship.end_period.end_date if sponsorship.end_period_id else sponsorship.start_period.end_date),
+        "is_active": True,
+        "priority": 260,
+        "source_type": DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        "source_id": str(sponsorship.id),
+        "calculation_overridden": True,
+        "notes": (sponsorship.review_notes or "").strip(),
+    }
+
+    if assignment is None:
+        assignment = EmployeePayrollItem.objects.create(
+            employee=sponsorship.employee,
+            created_by=actor,
+            updated_by=actor,
+            **payload,
+        )
+    else:
+        for key, value in payload.items():
+            setattr(assignment, key, value)
+        assignment.updated_by = actor
+        assignment.save(
+            update_fields=[
+                "payroll_item",
+                "name_override",
+                "calculation_type",
+                "value",
+                "formula",
+                "target_amount_source",
+                "calculation_limit",
+                "is_taxable",
+                "is_recurring",
+                "frequency",
+                "start_date",
+                "end_date",
+                "is_active",
+                "priority",
+                "source_type",
+                "source_id",
+                "calculation_overridden",
+                "notes",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+
+    return assignment
+
+
+def _staff_ward_sponsorship_has_financial_processing(sponsorship: StaffWardSponsorship) -> bool:
+    has_deduction_schedule = PayrollDeductionSchedule.objects.filter(
+        employee=sponsorship.employee,
+        source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        source_id=str(sponsorship.id),
+    ).exists()
+    if has_deduction_schedule:
+        return True
+
+    source_prefix = f"ward-sponsorship:{sponsorship.id}|"
+    has_cash_transactions = AccountingCashTransaction.objects.filter(
+        source_reference__istartswith=source_prefix
+    ).exists()
+    if has_cash_transactions:
+        return True
+
+    return False
+
+
+def ensure_staff_ward_sponsorship_can_be_deleted(
+    sponsorship: StaffWardSponsorship,
+    *,
+    self_service: bool = False,
+):
+    if self_service and sponsorship.status not in {
+        StaffWardSponsorshipStatus.DRAFT,
+        StaffWardSponsorshipStatus.PENDING,
+    }:
+        raise ValueError("Only draft or pending ward sponsorship requests can be deleted.")
+
+    if sponsorship.status in {StaffWardSponsorshipStatus.ACTIVE, StaffWardSponsorshipStatus.COMPLETED}:
+        raise ValueError("Finalized sponsorships cannot be deleted because payroll history must be preserved.")
+    if sponsorship.status == StaffWardSponsorshipStatus.CANCELLED:
+        raise ValueError("Cancelled sponsorships cannot be deleted because lifecycle history must be preserved.")
+    if _staff_ward_sponsorship_has_financial_processing(sponsorship):
+        raise ValueError("This ward sponsorship can no longer be deleted because payroll or finance processing has already started.")
+
+
+def _deactivate_salary_advance_employee_deduction_item(*, advance: SalaryAdvance, end_date=None, actor=None):
+    update_kwargs = {
+        "is_active": False,
+        "updated_by": actor,
+    }
+    if end_date is not None:
+        update_kwargs["end_date"] = end_date
+    EmployeePayrollItem.objects.filter(
+        employee=advance.employee,
+        source_type=DeductionSourceType.SALARY_ADVANCE,
+        source_id=str(advance.id),
+        is_active=True,
+    ).update(**update_kwargs)
+
+
+def _set_salary_advance_repayment_status(*, advance: SalaryAdvance):
+    paid = to_money(advance.amount_paid)
+    remaining = to_money(advance.remaining_balance)
+    if remaining <= Decimal("0.00"):
+        advance.repayment_status = SalaryAdvanceRepaymentStatus.PAID
+    elif paid > Decimal("0.00"):
+        advance.repayment_status = SalaryAdvanceRepaymentStatus.IN_PROGRESS
+    else:
+        advance.repayment_status = SalaryAdvanceRepaymentStatus.NOT_STARTED
+
+
+def _reschedule_salary_advance_future_installments(*, advance: SalaryAdvance, actor=None):
+    schedule = (
+        _salary_advance_open_schedules(advance=advance)
+        .order_by("-created_at")
+        .first()
+    )
+    if schedule is None:
+        return
+
+    future_installments = list(
+        schedule.installments.exclude(status__in=[
+            PayrollDeductionInstallmentStatus.APPLIED,
+            PayrollDeductionInstallmentStatus.CANCELLED,
+        ]).order_by("payroll_period__start_date", "id")
+    )
+
+    remaining_total = to_money(advance.remaining_balance)
+    if remaining_total <= Decimal("0.00") or not future_installments:
+        for installment in future_installments:
+            installment.scheduled_amount = Decimal("0.00")
+            installment.status = PayrollDeductionInstallmentStatus.CANCELLED
+            installment.adjustment_reason = "Stopped after full repayment."
+            installment.updated_by = actor
+            installment.save(update_fields=[
+                "scheduled_amount",
+                "status",
+                "adjustment_reason",
+                "updated_by",
+                "updated_at",
+            ])
+        schedule.remaining_amount = Decimal("0.00")
+        schedule.scheduled_amount = Decimal("0.00")
+        schedule.status = PayrollDeductionScheduleStatus.COMPLETED
+        schedule.updated_by = actor
+        schedule.save(update_fields=["remaining_amount", "scheduled_amount", "status", "updated_by", "updated_at"])
+        _refresh_deduction_schedule_snapshot(schedule)
+        return
+
+    if advance.repayment_method == SalaryAdvanceRepaymentMethod.FIXED_INSTALLMENT and to_money(advance.installment_amount) > Decimal("0.00"):
+        base_amount = to_money(advance.installment_amount)
+    else:
+        base_amount = calculate_equal_installment_amount(
+            total_amount=remaining_total,
+            installments=max(1, len(future_installments)),
+        )
+
+    remaining = remaining_total
+    for installment in future_installments:
+        if remaining <= Decimal("0.00"):
+            installment.scheduled_amount = Decimal("0.00")
+            installment.status = PayrollDeductionInstallmentStatus.CANCELLED
+            installment.adjustment_reason = "Shortened after early repayment."
+            installment.updated_by = actor
+            installment.save(update_fields=[
+                "scheduled_amount",
+                "status",
+                "adjustment_reason",
+                "updated_by",
+                "updated_at",
+            ])
+            continue
+
+        current = min(base_amount, remaining)
+        current = to_money(current)
+        installment.scheduled_amount = current
+        if installment.status == PayrollDeductionInstallmentStatus.CANCELLED:
+            installment.status = PayrollDeductionInstallmentStatus.PLANNED
+            installment.adjustment_reason = ""
+            installment.updated_by = actor
+            installment.save(update_fields=[
+                "scheduled_amount",
+                "status",
+                "adjustment_reason",
+                "updated_by",
+                "updated_at",
+            ])
+        else:
+            installment.updated_by = actor
+            installment.save(update_fields=["scheduled_amount", "updated_by", "updated_at"])
+
+        remaining = max(Decimal("0.00"), to_money(remaining - current))
+
+    schedule.remaining_amount = remaining_total
+    schedule.scheduled_amount = to_money(future_installments[0].scheduled_amount)
+    schedule.status = (
+        PayrollDeductionScheduleStatus.PARTIALLY_APPLIED
+        if to_money(advance.amount_paid) > Decimal("0.00")
+        else PayrollDeductionScheduleStatus.PLANNED
+    )
+    schedule.updated_by = actor
+    schedule.save(update_fields=["remaining_amount", "scheduled_amount", "status", "updated_by", "updated_at"])
+    _refresh_deduction_schedule_snapshot(schedule)
+
+
+def _salary_advance_has_financial_processing(advance: SalaryAdvance) -> bool:
+    has_deduction_schedule = PayrollDeductionSchedule.objects.filter(
+        employee=advance.employee,
+        source_type=DeductionSourceType.SALARY_ADVANCE,
+        source_id=str(advance.id),
+    ).exists()
+    if has_deduction_schedule:
+        return True
+
+    has_repayment_rows = SalaryAdvancePayment.objects.filter(salary_advance=advance).exists()
+    if has_repayment_rows:
+        return True
+
+    has_cash_transactions = AccountingCashTransaction.objects.filter(
+        source_reference=f"salary-advance:{advance.id}"
+    ).exists()
+    if has_cash_transactions:
+        return True
+
+    return False
+
+
+def ensure_salary_advance_can_be_deleted(
+    advance: SalaryAdvance,
+    *,
+    self_service: bool = False,
+):
+    if self_service and advance.status not in {SalaryAdvanceStatus.DRAFT, SalaryAdvanceStatus.SUBMITTED}:
+        raise ValueError("Only draft or pending salary advance requests can be deleted.")
+
+    if advance.status == SalaryAdvanceStatus.COMPLETED or advance.completed_at is not None:
+        raise ValueError("Completed salary advances cannot be deleted because payroll history must be preserved.")
+    if advance.cancelled_at is not None:
+        raise ValueError("Cancelled salary advances cannot be deleted because lifecycle history must be preserved.")
+    if _salary_advance_has_financial_processing(advance):
+        raise ValueError("This salary advance can no longer be deleted because payroll or finance processing has already started.")
+
+
+@transaction.atomic
+def complete_salary_advance(advance: SalaryAdvance, user=None):
+    if advance.status != SalaryAdvanceStatus.APPROVED:
+        raise ValueError("Only approved salary advances can be completed.")
+    if not advance.repayment_start_period_id:
+        raise ValueError("Repayment start period is required to complete a salary advance.")
+
+    principal = to_money(advance.approved_amount or advance.amount)
+    if principal <= Decimal("0.00"):
+        raise ValueError("Approved amount must be greater than zero.")
+
+    fixed_amount = None
+    if (
+        advance.repayment_method == SalaryAdvanceRepaymentMethod.FIXED_INSTALLMENT
+        and advance.installment_amount
+        and advance.installment_amount > 0
+    ):
+        fixed_amount = advance.installment_amount
+
+    schedule = create_or_replace_deduction_schedule(
+        employee=advance.employee,
+        source_type=DeductionSourceType.SALARY_ADVANCE,
+        source_id=advance.id,
+        total_amount=principal,
+        start_period=advance.repayment_start_period,
+        number_of_installments=max(1, int(advance.number_of_installments or 1)),
+        fixed_installment_amount=fixed_amount,
+        actor=user,
+    )
+
+    periodic_amount = (
+        to_money(advance.installment_amount)
+        if fixed_amount is not None and to_money(advance.installment_amount) > Decimal("0.00")
+        else to_money(schedule.scheduled_amount)
+    )
+    _ensure_salary_advance_employee_deduction_item(
+        advance=advance,
+        periodic_amount=periodic_amount,
+        actor=user,
+    )
+
+    advance.approved_amount = principal
+    advance.amount_paid = to_money(advance.amount_paid)
+    advance.remaining_balance = max(Decimal("0.00"), to_money(principal - advance.amount_paid))
+    _set_salary_advance_repayment_status(advance=advance)
+    advance.status = SalaryAdvanceStatus.COMPLETED
+    advance.completed_by = user
+    advance.completed_at = timezone.now()
+    if not advance.installment_amount or advance.installment_amount <= 0:
+        advance.installment_amount = schedule.scheduled_amount
+    advance.updated_by = user
+    advance.save(update_fields=[
+        "approved_amount",
+        "amount_paid",
+        "remaining_balance",
+        "repayment_status",
+        "status",
+        "completed_by",
+        "completed_at",
+        "installment_amount",
+        "updated_by",
+        "updated_at",
+    ])
+    return advance
+
+
+@transaction.atomic
+def cancel_salary_advance(advance: SalaryAdvance, *, reason, user=None):
+    note = (reason or "").strip()
+    if not note:
+        raise ValueError("Cancellation reason is required.")
+    if advance.status != SalaryAdvanceStatus.COMPLETED:
+        raise ValueError("Only completed salary advances can be cancelled.")
+    if to_money(advance.amount_paid) > Decimal("0.00"):
+        raise ValueError(
+            "This salary advance already has repayment activity. Use early repayment/refund handling instead of cancellation."
+        )
+
+    for schedule in _salary_advance_open_schedules(advance=advance):
+        schedule.installments.exclude(status=PayrollDeductionInstallmentStatus.APPLIED).update(
+            status=PayrollDeductionInstallmentStatus.CANCELLED,
+            adjustment_reason=note,
+            updated_by=user,
+        )
+        schedule.status = PayrollDeductionScheduleStatus.CANCELLED
+        schedule.scheduled_amount = Decimal("0.00")
+        schedule.remaining_amount = Decimal("0.00")
+        schedule.updated_by = user
+        schedule.save(update_fields=["status", "scheduled_amount", "remaining_amount", "updated_by", "updated_at"])
+        _refresh_deduction_schedule_snapshot(schedule)
+
+    _deactivate_salary_advance_employee_deduction_item(
+        advance=advance,
+        end_date=advance.repayment_start_period.end_date if advance.repayment_start_period_id else None,
+        actor=user,
+    )
+
+    advance.status = SalaryAdvanceStatus.CANCELLED
+    advance.cancelled_by = user
+    advance.cancelled_at = timezone.now()
+    advance.cancellation_reason = note
+    advance.remaining_balance = Decimal("0.00")
+    advance.updated_by = user
+    advance.save(update_fields=[
+        "status",
+        "cancelled_by",
+        "cancelled_at",
+        "cancellation_reason",
+        "remaining_balance",
+        "updated_by",
+        "updated_at",
+    ])
+    return advance
+
+
+@transaction.atomic
+def record_salary_advance_payment(
+    advance: SalaryAdvance,
+    *,
+    amount,
+    payment_date,
+    payment_method=PaymentMethod.OTHER,
+    reference="",
+    notes="",
+    user=None,
+):
+    if advance.status != SalaryAdvanceStatus.COMPLETED:
+        raise ValueError("Only completed salary advances can accept repayments.")
+
+    payment_amount = to_money(amount)
+    if payment_amount <= Decimal("0.00"):
+        raise ValueError("Payment amount must be greater than zero.")
+
+    remaining_before = to_money(advance.remaining_balance)
+    if remaining_before <= Decimal("0.00"):
+        raise ValueError("This salary advance is already fully repaid.")
+    if payment_amount > remaining_before:
+        raise ValueError("Early repayment cannot exceed the remaining balance.")
+
+    payment = SalaryAdvancePayment.objects.create(
+        salary_advance=advance,
+        payment_date=payment_date,
+        amount=payment_amount,
+        payment_method=payment_method,
+        reference=(reference or "").strip(),
+        notes=(notes or "").strip(),
+        created_by=user,
+        updated_by=user,
+    )
+
+    advance.amount_paid = to_money(advance.amount_paid) + payment_amount
+    advance.remaining_balance = max(Decimal("0.00"), to_money(remaining_before - payment_amount))
+    _set_salary_advance_repayment_status(advance=advance)
+    advance.updated_by = user
+    advance.save(update_fields=["amount_paid", "remaining_balance", "repayment_status", "updated_by", "updated_at"])
+
+    if advance.remaining_balance <= Decimal("0.00"):
+        _deactivate_salary_advance_employee_deduction_item(advance=advance, actor=user)
+    _reschedule_salary_advance_future_installments(advance=advance, actor=user)
+
+    return payment
+
+
+def _salary_advance_repayment_tx_type() -> AccountingTransactionType:
+    tx_type = (
+        AccountingTransactionType.objects.filter(
+            code__iexact="SALARY_ADVANCE_REPAYMENT",
+            transaction_category="income",
+            is_active=True,
+        )
+        .order_by("name")
+        .first()
+    )
+    if tx_type is not None:
+        return tx_type
+
+    return AccountingTransactionType.objects.create(
+        code="SALARY_ADVANCE_REPAYMENT",
+        name="Salary Advance Repayment",
+        transaction_category="income",
+        description="Finance transaction for early salary advance repayments.",
+        is_system_managed=True,
+        is_active=True,
+    )
+
+
+def _salary_advance_repayment_payment_method(payment_method: str | None) -> AccountingPaymentMethod:
+    method_map = {
+        PaymentMethod.CASH: "CASH",
+        PaymentMethod.CHECK: "CHECK",
+        PaymentMethod.BANK_TRANSFER: "BANK",
+        PaymentMethod.MOBILE_MONEY: "MOMO",
+    }
+    target_code = method_map.get(payment_method or PaymentMethod.OTHER, "OTHER")
+    resolved = AccountingPaymentMethod.objects.filter(code__iexact=target_code, is_active=True).first()
+    if resolved is not None:
+        return resolved
+
+    fallback = AccountingPaymentMethod.objects.filter(code__iexact="OTHER", is_active=True).first()
+    if fallback is not None:
+        return fallback
+
+    return AccountingPaymentMethod.objects.create(
+        code="OTHER",
+        name="Other",
+        description="Fallback payment method for salary advance repayments.",
+        is_active=True,
+    )
+
+
+def _salary_advance_repayment_bank_account() -> AccountingBankAccount:
+    settings = AccountingSettings.objects.select_related("default_expense_bank_account").order_by("created_at").first()
+    if settings and settings.default_expense_bank_account_id:
+        return settings.default_expense_bank_account
+    fallback = AccountingBankAccount.objects.filter(status=AccountingBankAccount.AccountStatus.ACTIVE).order_by("created_at").first()
+    if fallback is not None:
+        return fallback
+    raise ValueError("No active bank account is configured for salary advance early repayments.")
+
+
+def _ensure_finance_user(user):
+    role = (getattr(user, "role", "") or "").strip().lower()
+    if role not in {"superadmin", "admin", "finance", "accountant"}:
+        raise ValueError("Only finance users can request early repayments.")
+
+
+@transaction.atomic
+def request_salary_advance_early_repayment(
+    advance: SalaryAdvance,
+    *,
+    amount,
+    payment_date,
+    payment_method=PaymentMethod.OTHER,
+    reference="",
+    notes="",
+    user=None,
+):
+    _ensure_finance_user(user)
+
+    if advance.status != SalaryAdvanceStatus.COMPLETED:
+        raise ValueError("Only completed salary advances can accept repayments.")
+
+    payment_date = payment_date or timezone.now().date()
+
+    payment_amount = to_money(amount)
+    if payment_amount <= Decimal("0.00"):
+        raise ValueError("Payment amount must be greater than zero.")
+
+    remaining_before = to_money(advance.remaining_balance)
+    if remaining_before <= Decimal("0.00"):
+        raise ValueError("This salary advance is already fully repaid.")
+    if payment_amount > remaining_before:
+        raise ValueError("Early repayment cannot exceed the remaining balance.")
+
+    accounting_settings = AccountingSettings.objects.select_related("salary_advance_repayment_ledger_account").order_by("created_at").first()
+    if not accounting_settings or not accounting_settings.salary_advance_repayment_ledger_account_id:
+        raise ValueError("Configure Early salary repayment GL account in Accounting settings before recording early repayments.")
+
+    bank_account = _salary_advance_repayment_bank_account()
+    if not bank_account.currency_id:
+        raise ValueError("Selected bank account has no currency configured.")
+
+    tx_type = _salary_advance_repayment_tx_type()
+    payment_method_obj = _salary_advance_repayment_payment_method(payment_method)
+
+    tx = AccountingCashTransaction.objects.create(
+        bank_account=bank_account,
+        transaction_date=payment_date,
+        reference_number=f"SAR-{str(advance.id)[:8]}-{timezone.now().strftime('%H%M%S')}",
+        transaction_type=tx_type,
+        payment_method=payment_method_obj,
+        ledger_account=accounting_settings.salary_advance_repayment_ledger_account,
+        amount=payment_amount,
+        currency=bank_account.currency,
+        exchange_rate=Decimal("1"),
+        base_amount=payment_amount,
+        payer_payee=advance.employee.get_full_name() if advance.employee_id else "",
+        description=f"Salary Advance Repayment - {advance.employee.get_full_name() if advance.employee_id else advance.employee_id}",
+        notes=(notes or "").strip(),
+        status=AccountingCashTransaction.TransactionStatus.PENDING,
+        source_reference=f"salary-advance:{advance.id}",
+        created_by=user,
+        updated_by=user,
+    )
+
+    return {
+        "salary_advance": str(advance.id),
+        "finance_transaction_id": str(tx.id),
+        "finance_transaction_reference": tx.reference_number,
+        "finance_transaction_status": tx.status,
+        "amount": payment_amount,
+        "payment_date": payment_date,
+    }
+
+
+@transaction.atomic
+def apply_salary_advance_repayment_from_finance_transaction(
+    finance_transaction: AccountingCashTransaction,
+    *,
+    actor=None,
+):
+    if finance_transaction.status != AccountingCashTransaction.TransactionStatus.COMPLETED:
+        return None
+
+    source_reference = (finance_transaction.source_reference or "").strip()
+    prefix = "salary-advance:"
+    if not source_reference.lower().startswith(prefix):
+        return None
+
+    advance_id = source_reference[len(prefix):].strip()
+    if not advance_id:
+        return None
+
+    advance = SalaryAdvance.objects.select_for_update().filter(id=advance_id).first()
+    if advance is None or advance.status != SalaryAdvanceStatus.COMPLETED:
+        return None
+
+    existing = SalaryAdvancePayment.objects.filter(finance_transaction=finance_transaction).first()
+    if existing is not None:
+        return existing
+
+    payment_amount = to_money(finance_transaction.amount)
+    remaining_before = to_money(advance.remaining_balance)
+    if remaining_before <= Decimal("0.00"):
+        return None
+
+    if payment_amount > remaining_before:
+        payment_amount = remaining_before
+
+    payment = SalaryAdvancePayment.objects.create(
+        salary_advance=advance,
+        finance_transaction=finance_transaction,
+        payment_date=finance_transaction.transaction_date,
+        amount=payment_amount,
+        payment_method=PaymentMethod.OTHER,
+        reference=(finance_transaction.reference_number or "").strip(),
+        notes=(finance_transaction.notes or "").strip(),
+        created_by=actor,
+        updated_by=actor,
+    )
+
+    advance.amount_paid = to_money(advance.amount_paid) + payment_amount
+    advance.remaining_balance = max(Decimal("0.00"), to_money(remaining_before - payment_amount))
+    _set_salary_advance_repayment_status(advance=advance)
+    advance.updated_by = actor
+    advance.save(update_fields=["amount_paid", "remaining_balance", "repayment_status", "updated_by", "updated_at"])
+
+    if advance.remaining_balance <= Decimal("0.00"):
+        _deactivate_salary_advance_employee_deduction_item(advance=advance, actor=actor)
+    _reschedule_salary_advance_future_installments(advance=advance, actor=actor)
+
+    return payment
+
+
+def apply_salary_advance_repayments_for_run(payroll_run: PayrollRunRecord, *, actor=None):
+    lines = PayrollLineItem.objects.filter(
+        payroll_employee_item__payroll=payroll_run,
+        source_type="SalaryAdvance",
+    )
+    if not lines.exists():
+        return
+
+    source_ids = sorted({line.source_id for line in lines if line.source_id})
+    advances_by_id = {
+        str(advance.id): advance
+        for advance in SalaryAdvance.objects.filter(id__in=source_ids)
+    }
+
+    for line in lines:
+        advance = advances_by_id.get(str(line.source_id))
+        if not advance:
+            continue
+
+        remaining = to_money(advance.remaining_balance)
+        if remaining <= Decimal("0.00"):
+            continue
+
+        applied_amount = min(to_money(line.amount), remaining)
+        if applied_amount <= Decimal("0.00"):
+            continue
+
+        advance.amount_paid = to_money(advance.amount_paid) + applied_amount
+        advance.remaining_balance = max(Decimal("0.00"), remaining - applied_amount)
+        _set_salary_advance_repayment_status(advance=advance)
+        if advance.remaining_balance <= Decimal("0.00"):
+            _deactivate_salary_advance_employee_deduction_item(
+                advance=advance,
+                end_date=payroll_run.pay_period_end,
+                actor=actor,
+            )
+
+        advance.updated_by = actor
+        advance.save(update_fields=["amount_paid", "remaining_balance", "repayment_status", "updated_by", "updated_at"])
+
+        _reschedule_salary_advance_future_installments(advance=advance, actor=actor)
+
+
+def revert_salary_advance_repayments_for_run(payroll_run: PayrollRunRecord, *, actor=None):
+    lines = PayrollLineItem.objects.filter(
+        payroll_employee_item__payroll=payroll_run,
+        source_type="SalaryAdvance",
+    )
+    if not lines.exists():
+        return
+
+    source_ids = sorted({line.source_id for line in lines if line.source_id})
+    advances_by_id = {
+        str(advance.id): advance
+        for advance in SalaryAdvance.objects.filter(id__in=source_ids)
+    }
+
+    for line in lines:
+        advance = advances_by_id.get(str(line.source_id))
+        if not advance:
+            continue
+
+        amount = to_money(line.amount)
+        if amount <= Decimal("0.00"):
+            continue
+
+        advance.amount_paid = max(Decimal("0.00"), to_money(advance.amount_paid) - amount)
+        advance.remaining_balance = min(to_money(advance.approved_amount), to_money(advance.remaining_balance) + amount)
+        _set_salary_advance_repayment_status(advance=advance)
+        advance.updated_by = actor
+        advance.save(update_fields=["amount_paid", "remaining_balance", "repayment_status", "updated_by", "updated_at"])
+
+        if advance.status == SalaryAdvanceStatus.COMPLETED and advance.remaining_balance > Decimal("0.00"):
+            EmployeePayrollItem.objects.filter(
+                employee=advance.employee,
+                source_type=DeductionSourceType.SALARY_ADVANCE,
+                source_id=str(advance.id),
+            ).update(is_active=True, updated_by=actor)
+
+        _reschedule_salary_advance_future_installments(advance=advance, actor=actor)
+
+
+@transaction.atomic
+def adjust_deduction_installment(*, installment: PayrollDeductionInstallment, amount, reason="", actor=None):
+    new_amount = to_money(amount)
+    if new_amount < Decimal("0.00"):
+        raise ValueError("Adjusted amount cannot be negative.")
+
+    installment.scheduled_amount = new_amount
+    installment.status = PayrollDeductionInstallmentStatus.ADJUSTED
+    installment.adjustment_reason = (reason or "").strip()
+    installment.updated_by = actor
+    installment.save(update_fields=["scheduled_amount", "status", "adjustment_reason", "updated_by", "updated_at"])
+
+    schedule = installment.deduction_schedule
+    schedule.scheduled_amount = new_amount
+    schedule.status = PayrollDeductionScheduleStatus.ADJUSTED
+    schedule.updated_by = actor
+    schedule.save(update_fields=["scheduled_amount", "status", "updated_by", "updated_at"])
+    _recompute_schedule_remaining_and_status(schedule, actor=actor)
+    return installment
+
+
+@transaction.atomic
+def defer_deduction_installment(*, installment: PayrollDeductionInstallment, reason="", actor=None):
+    installment.status = PayrollDeductionInstallmentStatus.DEFERRED
+    installment.adjustment_reason = (reason or "").strip()
+    installment.updated_by = actor
+    installment.save(update_fields=["status", "adjustment_reason", "updated_by", "updated_at"])
+
+    schedule = installment.deduction_schedule
+    schedule.status = PayrollDeductionScheduleStatus.DEFERRED
+    schedule.updated_by = actor
+    schedule.save(update_fields=["status", "updated_by", "updated_at"])
+    _refresh_deduction_schedule_snapshot(schedule)
+    return installment
+
+
+@transaction.atomic
+def auto_adjust_deduction_installment(*, installment: PayrollDeductionInstallment, max_allowed_amount, reason="", actor=None):
+    allowed = to_money(max_allowed_amount)
+    current = to_money(installment.scheduled_amount)
+    adjusted = min(current, max(Decimal("0.00"), allowed))
+    return adjust_deduction_installment(
+        installment=installment,
+        amount=adjusted,
+        reason=reason or "Auto-adjusted to payroll policy limit.",
+        actor=actor,
+    )
+
+
+@transaction.atomic
+def create_or_replace_deduction_schedule(
+    *,
+    employee,
+    source_type,
+    source_id,
+    total_amount,
+    start_period,
+    end_period=None,
+    number_of_installments=1,
+    fixed_installment_amount=None,
+    actor=None,
+):
+    amount_total = to_money(total_amount)
+    if amount_total <= Decimal("0.00"):
+        raise ValueError("Schedule total amount must be greater than zero.")
+
+    periods = _period_window_for_schedule(
+        start_period=start_period,
+        end_period=end_period,
+        requested_installments=number_of_installments,
+    )
+    if not periods:
+        raise ValueError("At least one payroll period is required for schedule generation.")
+
+    previous_schedules = PayrollDeductionSchedule.objects.filter(
+        source_type=source_type,
+        source_id=str(source_id),
+        status__in=[
+            PayrollDeductionScheduleStatus.PLANNED,
+            PayrollDeductionScheduleStatus.PARTIALLY_APPLIED,
+            PayrollDeductionScheduleStatus.DEFERRED,
+            PayrollDeductionScheduleStatus.ADJUSTED,
+        ],
+    )
+    previous_schedule_ids = list(previous_schedules.values_list("id", flat=True))
+    previous_schedules.update(
+        status=PayrollDeductionScheduleStatus.CANCELLED,
+        updated_by=actor,
+    )
+    for previous in PayrollDeductionSchedule.objects.filter(id__in=previous_schedule_ids):
+        _refresh_deduction_schedule_snapshot(previous)
+
+    requested_installments = max(1, int(number_of_installments or 1))
+
+    if fixed_installment_amount is not None and Decimal(str(fixed_installment_amount or "0")) > 0:
+        installment_amount = to_money(fixed_installment_amount)
+    else:
+        installment_amount = calculate_equal_installment_amount(total_amount=amount_total, installments=requested_installments)
+
+    schedule = PayrollDeductionSchedule.objects.create(
+        employee=employee,
+        source_type=source_type,
+        source_id=str(source_id),
+        start_period=periods[0],
+        end_period=periods[-1],
+        total_amount=amount_total,
+        remaining_amount=amount_total,
+        scheduled_amount=installment_amount,
+        status=PayrollDeductionScheduleStatus.PLANNED,
+        created_by=actor,
+        updated_by=actor,
+    )
+
+    remaining = amount_total
+    for idx, period in enumerate(periods, start=1):
+        current = installment_amount
+        should_close_out_here = len(periods) >= requested_installments and idx == len(periods)
+        if should_close_out_here:
+            current = remaining
+        current = min(current, remaining)
+        PayrollDeductionInstallment.objects.create(
+            deduction_schedule=schedule,
+            payroll_period=period,
+            scheduled_amount=current,
+            actual_amount=Decimal("0.00"),
+            status=PayrollDeductionInstallmentStatus.PLANNED,
+            created_by=actor,
+            updated_by=actor,
+        )
+        remaining = to_money(remaining - current)
+
+    _refresh_deduction_schedule_snapshot(schedule)
+
+    return schedule
+
+
+@transaction.atomic
+def submit_staff_ward_sponsorship_for_approval(sponsorship: StaffWardSponsorship, user=None):
+    if sponsorship.status != StaffWardSponsorshipStatus.DRAFT:
+        raise ValueError("Only draft sponsorships can be submitted.")
+    if not sponsorship.sponsorship_students.exists():
+        raise ValueError("Cannot submit a sponsorship without sponsored students.")
+    _ensure_unique_active_or_completed_sponsorship_students_for_year(sponsorship=sponsorship)
+
+    from .settings_services import get_tenant_payroll_settings
+
+    settings = get_tenant_payroll_settings(user=user)
+    sponsored_total = to_money(
+        sum((row.eligible_fee_total for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    if sponsored_total <= Decimal("0.00"):
+        raise ValueError("Sponsorship total must be greater than zero.")
+
+    start_period = getattr(sponsorship, "start_period", None) or _staff_ward_sponsorship_period_start(sponsorship=sponsorship)
+    if not sponsorship.academic_year_id or not sponsorship.academic_year or not sponsorship.academic_year.end_date:
+        raise ValueError("Academic year end date is required to build the repayment schedule.")
+
+    repayment_plan = _build_staff_ward_repayment_schedule(
+        total_amount=sponsored_total,
+        start_date=start_period.start_date,
+        end_date=sponsorship.academic_year.end_date,
+    )
+    if repayment_plan["months_remaining"] <= 0:
+        raise ValueError("No repayment months remain in this academic year.")
+
+    requested_periodic = to_money(
+        sponsorship.payroll_recovery_amount or repayment_plan["monthly_deduction"] or sponsored_total
+    )
+    if requested_periodic <= Decimal("0.00"):
+        requested_periodic = sponsored_total
+    validate_employee_obligation_eligibility(
+        employee=sponsorship.employee,
+        payroll_settings=settings,
+        obligation_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        requested_periodic_deduction=requested_periodic,
+        exclude_source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        exclude_source_id=sponsorship.id,
+    )
+
+    sponsorship.start_period = start_period
+    sponsorship.total_sponsored_amount = sponsored_total
+    sponsorship.payroll_recovery_amount = to_money(repayment_plan["monthly_deduction"])
+    sponsorship.repayment_schedule = repayment_plan["rows"]
+    sponsorship.student_allocation = _build_staff_ward_student_allocation(
+        sponsorship=sponsorship,
+        monthly_deduction=sponsorship.payroll_recovery_amount,
+    )
+    sponsorship.repayment_paid_amount = Decimal("0.00")
+    sponsorship.repayment_remaining_balance = sponsored_total
+    sponsorship.repayment_progress_percent = Decimal("0.00")
+    sponsorship.status = StaffWardSponsorshipStatus.PENDING
+    sponsorship.updated_by = user
+    sponsorship.save(
+        update_fields=[
+            "start_period",
+            "total_sponsored_amount",
+            "payroll_recovery_amount",
+            "repayment_schedule",
+            "student_allocation",
+            "repayment_paid_amount",
+            "repayment_remaining_balance",
+            "repayment_progress_percent",
+            "status",
+            "updated_by",
+            "updated_at",
+        ]
+    )
+    return sponsorship
+
+
+@transaction.atomic
+def approve_staff_ward_sponsorship(sponsorship: StaffWardSponsorship, user=None):
+    if sponsorship.status != StaffWardSponsorshipStatus.PENDING:
+        raise ValueError("Only pending sponsorships can be approved.")
+    _ensure_unique_active_or_completed_sponsorship_students_for_year(sponsorship=sponsorship)
+
+    employee_total = to_money(
+        sum((row.employee_responsibility_amount for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    school_total = to_money(
+        sum((row.school_covered_amount for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    sponsored_total = to_money(
+        sum((row.eligible_fee_total for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    if sponsored_total <= Decimal("0.00"):
+        raise ValueError("Sponsorship total must be greater than zero.")
+
+    start_period = getattr(sponsorship, "start_period", None) or _staff_ward_sponsorship_period_start(sponsorship=sponsorship)
+    if not sponsorship.academic_year_id or not sponsorship.academic_year or not sponsorship.academic_year.end_date:
+        raise ValueError("Academic year end date is required to build the repayment schedule.")
+    repayment_plan = _build_staff_ward_repayment_schedule(
+        total_amount=sponsored_total,
+        start_date=start_period.start_date,
+        end_date=sponsorship.academic_year.end_date,
+    )
+    if repayment_plan["months_remaining"] <= 0:
+        raise ValueError("No repayment months remain in this academic year.")
+
+    from .settings_services import get_tenant_payroll_settings
+
+    settings = get_tenant_payroll_settings(user=user)
+    requested_periodic = to_money(sponsorship.payroll_recovery_amount or repayment_plan["monthly_deduction"] or sponsored_total)
+    if requested_periodic <= Decimal("0.00"):
+        requested_periodic = sponsored_total
+    validate_employee_obligation_eligibility(
+        employee=sponsorship.employee,
+        payroll_settings=settings,
+        obligation_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        requested_periodic_deduction=requested_periodic,
+        exclude_source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        exclude_source_id=sponsorship.id,
+    )
+
+    sponsorship.start_period = start_period
+    sponsorship.total_sponsored_amount = sponsored_total
+    sponsorship.school_contribution_amount = school_total
+    sponsorship.employee_contribution_amount = employee_total
+    sponsorship.payroll_recovery_amount = to_money(repayment_plan["monthly_deduction"])
+    sponsorship.repayment_schedule = repayment_plan["rows"]
+    sponsorship.student_allocation = _build_staff_ward_student_allocation(
+        sponsorship=sponsorship,
+        monthly_deduction=sponsorship.payroll_recovery_amount,
+    )
+    sponsorship.repayment_paid_amount = Decimal("0.00")
+    sponsorship.repayment_remaining_balance = sponsored_total
+    sponsorship.repayment_progress_percent = Decimal("0.00")
+    sponsorship.status = StaffWardSponsorshipStatus.APPROVED
+    sponsorship.approved_by = user
+    sponsorship.approved_at = timezone.now()
+    sponsorship.updated_by = user
+    sponsorship.save(
+        update_fields=[
+            "total_sponsored_amount",
+            "school_contribution_amount",
+            "employee_contribution_amount",
+            "payroll_recovery_amount",
+            "repayment_schedule",
+            "student_allocation",
+            "repayment_paid_amount",
+            "repayment_remaining_balance",
+            "repayment_progress_percent",
+            "status",
+            "approved_by",
+            "approved_at",
+            "updated_by",
+            "updated_at",
+        ]
+    )
+    return sponsorship
+
+
+@transaction.atomic
+def complete_staff_ward_sponsorship(sponsorship: StaffWardSponsorship, user=None):
+    if sponsorship.status != StaffWardSponsorshipStatus.APPROVED:
+        raise ValueError("Only approved sponsorships can be finalized.")
+    _ensure_unique_active_or_completed_sponsorship_students_for_year(sponsorship=sponsorship)
+
+    employee_total = to_money(
+        sum((row.employee_responsibility_amount for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    school_total = to_money(
+        sum((row.school_covered_amount for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    sponsored_total = to_money(
+        sum((row.eligible_fee_total for row in sponsorship.sponsorship_students.all()), Decimal("0.00"))
+    )
+    if sponsored_total <= Decimal("0.00"):
+        raise ValueError("Sponsorship total must be greater than zero.")
+
+    sponsorship.start_period = sponsorship.start_period or _staff_ward_sponsorship_period_start(sponsorship=sponsorship)
+    if not sponsorship.academic_year_id or not sponsorship.academic_year or not sponsorship.academic_year.end_date:
+        raise ValueError("Academic year end date is required to generate the sponsorship repayment schedule.")
+
+    repayment_plan = _build_staff_ward_repayment_schedule(
+        total_amount=sponsored_total,
+        start_date=sponsorship.start_period.start_date,
+        end_date=sponsorship.academic_year.end_date,
+    )
+    if repayment_plan["months_remaining"] <= 0:
+        raise ValueError("No repayment months remain in the selected academic year for sponsorship recovery.")
+
+    eligible_periods = list(
+        PayrollPeriod.objects.filter(
+            schedule_id=sponsorship.start_period.schedule_id,
+            start_date__gte=sponsorship.start_period.start_date,
+            start_date__lte=sponsorship.academic_year.end_date,
+        ).order_by("start_date")
+    )
+    if not eligible_periods:
+        raise ValueError("No eligible payroll periods remain in the selected academic year for sponsorship recovery.")
+
+    period_count = min(len(eligible_periods), repayment_plan["months_remaining"])
+    sponsorship.end_period = eligible_periods[period_count - 1]
+
+    schedule = create_or_replace_deduction_schedule(
+        employee=sponsorship.employee,
+        source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        source_id=sponsorship.id,
+        total_amount=sponsored_total,
+        start_period=sponsorship.start_period,
+        end_period=sponsorship.end_period,
+        number_of_installments=period_count,
+        fixed_installment_amount=repayment_plan["monthly_deduction"],
+        actor=user,
+    )
+
+    periodic_amount = to_money(schedule.scheduled_amount)
+    _ensure_staff_ward_sponsorship_employee_deduction_item(
+        sponsorship=sponsorship,
+        periodic_amount=periodic_amount,
+        actor=user,
+    )
+
+    sponsorship.total_sponsored_amount = sponsored_total
+    sponsorship.school_contribution_amount = school_total
+    sponsorship.employee_contribution_amount = employee_total
+    sponsorship.payroll_recovery_amount = periodic_amount
+    sponsorship.repayment_schedule = repayment_plan["rows"]
+    sponsorship.student_allocation = _build_staff_ward_student_allocation(
+        sponsorship=sponsorship,
+        monthly_deduction=periodic_amount,
+    )
+    sponsorship.repayment_paid_amount = Decimal("0.00")
+    sponsorship.repayment_remaining_balance = sponsored_total
+    sponsorship.repayment_progress_percent = Decimal("0.00")
+    sponsorship.status = StaffWardSponsorshipStatus.ACTIVE
+    sponsorship.completed_at = timezone.now()
+    sponsorship.updated_by = user
+    sponsorship.save(
+        update_fields=[
+            "start_period",
+            "end_period",
+            "total_sponsored_amount",
+            "school_contribution_amount",
+            "employee_contribution_amount",
+            "payroll_recovery_amount",
+            "repayment_schedule",
+            "student_allocation",
+            "repayment_paid_amount",
+            "repayment_remaining_balance",
+            "repayment_progress_percent",
+            "status",
+            "completed_at",
+            "updated_by",
+            "updated_at",
+        ]
+    )
+    _sync_staff_ward_repayment_progress(sponsorship=sponsorship, actor=user)
+    return sponsorship
+
+
+@transaction.atomic
+def cancel_staff_ward_sponsorship(sponsorship: StaffWardSponsorship, *, reason, user=None):
+    note = (reason or "").strip()
+    if not note:
+        raise ValueError("Cancellation reason is required.")
+    if sponsorship.status not in {StaffWardSponsorshipStatus.APPROVED, StaffWardSponsorshipStatus.ACTIVE}:
+        raise ValueError("Only approved or active sponsorships can be cancelled.")
+
+    if _staff_ward_sponsorship_open_schedules(sponsorship=sponsorship).filter(
+        installments__status=PayrollDeductionInstallmentStatus.APPLIED
+    ).exists():
+        raise ValueError("This sponsorship already has payroll deduction activity. Use reversal handling instead of cancellation.")
+
+    for schedule in _staff_ward_sponsorship_open_schedules(sponsorship=sponsorship):
+        schedule.installments.exclude(status=PayrollDeductionInstallmentStatus.APPLIED).update(
+            status=PayrollDeductionInstallmentStatus.CANCELLED,
+            adjustment_reason=note,
+            updated_by=user,
+        )
+        schedule.status = PayrollDeductionScheduleStatus.CANCELLED
+        schedule.scheduled_amount = Decimal("0.00")
+        schedule.remaining_amount = Decimal("0.00")
+        schedule.updated_by = user
+        schedule.save(update_fields=["status", "scheduled_amount", "remaining_amount", "updated_by", "updated_at"])
+        _refresh_deduction_schedule_snapshot(schedule)
+
+    EmployeePayrollItem.objects.filter(
+        employee=sponsorship.employee,
+        source_type=DeductionSourceType.STAFF_WARD_SPONSORSHIP,
+        source_id=str(sponsorship.id),
+        is_active=True,
+    ).update(is_active=False, updated_by=user)
+
+    sponsorship.status = StaffWardSponsorshipStatus.CANCELLED
+    sponsorship.rejection_reason = note
+    sponsorship.completed_at = timezone.now()
+    sponsorship.updated_by = user
+    sponsorship.save(update_fields=["status", "rejection_reason", "completed_at", "updated_by", "updated_at"])
+    return sponsorship
+
+
+@transaction.atomic
+def reject_staff_ward_sponsorship(sponsorship: StaffWardSponsorship, *, reason, user=None):
+    if sponsorship.status not in [StaffWardSponsorshipStatus.PENDING, StaffWardSponsorshipStatus.DRAFT]:
+        raise ValueError("Only draft or pending sponsorships can be rejected.")
+    sponsorship.status = StaffWardSponsorshipStatus.REJECTED
+    sponsorship.rejection_reason = (reason or "").strip()
+    sponsorship.updated_by = user
+    sponsorship.save(update_fields=["status", "rejection_reason", "updated_by", "updated_at"])
+    return sponsorship
+
+
+@transaction.atomic
+def submit_salary_advance_for_approval(advance: SalaryAdvance, user=None):
+    if advance.status != SalaryAdvanceStatus.DRAFT:
+        raise ValueError("Only draft salary advances can be submitted.")
+
+    from .settings_services import get_tenant_payroll_settings
+
+    settings = get_tenant_payroll_settings(user=user)
+    requested_periodic = _salary_advance_periodic_deduction(advance)
+    validate_employee_obligation_eligibility(
+        employee=advance.employee,
+        payroll_settings=settings,
+        obligation_type=DeductionSourceType.SALARY_ADVANCE,
+        requested_periodic_deduction=requested_periodic,
+        requested_amount=to_money(advance.amount),
+        requested_installments=max(1, int(advance.number_of_installments or 1)),
+        repayment_method=advance.repayment_method,
+        fixed_installment_amount=to_money(advance.installment_amount),
+        exclude_source_type=DeductionSourceType.SALARY_ADVANCE,
+        exclude_source_id=advance.id,
+    )
+
+    advance.status = SalaryAdvanceStatus.SUBMITTED
+    advance.updated_by = user
+    advance.save(update_fields=["status", "updated_by", "updated_at"])
+    return advance
+
+
+def _salary_advance_periodic_deduction(advance: SalaryAdvance) -> Decimal:
+    principal = to_money(advance.approved_amount or advance.amount)
+    installments = max(1, int(advance.number_of_installments or 1))
+    fixed_amount = to_money(advance.installment_amount)
+    if (
+        advance.repayment_method == SalaryAdvanceRepaymentMethod.FIXED_INSTALLMENT
+        and fixed_amount > Decimal("0.00")
+    ):
+        return fixed_amount
+    return to_money(principal / Decimal(str(installments)))
+
+
+@transaction.atomic
+def approve_salary_advance(advance: SalaryAdvance, user=None):
+    if advance.status != SalaryAdvanceStatus.SUBMITTED:
+        raise ValueError("Only submitted salary advances can be approved.")
+
+    principal = to_money(advance.approved_amount or advance.amount)
+    if principal <= Decimal("0.00"):
+        raise ValueError("Approved amount must be greater than zero.")
+
+    from .settings_services import get_tenant_payroll_settings
+
+    settings = get_tenant_payroll_settings(user=user)
+    requested_periodic = _salary_advance_periodic_deduction(advance)
+    validate_employee_obligation_eligibility(
+        employee=advance.employee,
+        payroll_settings=settings,
+        obligation_type=DeductionSourceType.SALARY_ADVANCE,
+        requested_periodic_deduction=requested_periodic,
+        requested_amount=to_money(advance.amount),
+        requested_installments=max(1, int(advance.number_of_installments or 1)),
+        repayment_method=advance.repayment_method,
+        fixed_installment_amount=to_money(advance.installment_amount),
+        exclude_source_type=DeductionSourceType.SALARY_ADVANCE,
+        exclude_source_id=advance.id,
+    )
+
+    advance.approved_amount = principal
+    advance.remaining_balance = principal
+    advance.amount_paid = Decimal("0.00")
+    advance.repayment_status = SalaryAdvanceRepaymentStatus.NOT_STARTED
+    advance.status = SalaryAdvanceStatus.APPROVED
+    advance.approved_by = user
+    advance.approved_at = timezone.now()
+    advance.updated_by = user
+    advance.save(
+        update_fields=[
+            "approved_amount",
+            "amount_paid",
+            "remaining_balance",
+            "repayment_status",
+            "status",
+            "approved_by",
+            "approved_at",
+            "updated_by",
+            "updated_at",
+        ]
+    )
+    return advance
+
+
+@transaction.atomic
+def reject_salary_advance(advance: SalaryAdvance, *, reason, user=None):
+    if advance.status not in [SalaryAdvanceStatus.DRAFT, SalaryAdvanceStatus.SUBMITTED]:
+        raise ValueError("Only draft or submitted salary advances can be rejected.")
+    advance.status = SalaryAdvanceStatus.REJECTED
+    note = (reason or "").strip()
+    if note:
+        advance.notes = f"{advance.notes}\nRejection: {note}".strip()
+    advance.updated_by = user
+    advance.save(update_fields=["status", "notes", "updated_by", "updated_at"])
+    return advance
 
 
 def resolve_payroll_v2_employee_scope(

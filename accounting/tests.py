@@ -30,6 +30,7 @@ from accounting.views.cash_transaction import (
     AccountingCashTransactionViewSet,
 )
 from accounting.models import AccountingCashTransaction, AccountingJournalEntry
+from accounting.serializers import AccountingSettingsSerializer
 
 
 class AccountingBankRuleTemplateServiceTests(SimpleTestCase):
@@ -241,6 +242,18 @@ class AccountingLimitPrecheckApiValidationTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["detail"], "amount or base_amount is required.")
+
+
+class AccountingSettingsSerializerTests(SimpleTestCase):
+    def test_includes_salary_advance_repayment_mapping(self):
+        account = SimpleNamespace(pk="ledger-1", id="ledger-1", name="Early Salary Repayments", code="L-REP-001")
+        settings = SimpleNamespace(salary_advance_repayment_ledger_account=account)
+
+        payload = AccountingSettingsSerializer(settings).data
+
+        self.assertEqual(payload["salary_advance_repayment_ledger_account"], "ledger-1")
+        self.assertEqual(payload["salary_advance_repayment_ledger_account_name"], "Early Salary Repayments")
+        self.assertEqual(payload["salary_advance_repayment_ledger_account_code"], "L-REP-001")
 
 
 class AccountingLimitAmountResolutionTests(SimpleTestCase):
@@ -1403,6 +1416,67 @@ class AccountingTransactionAccessPolicyTests(SimpleTestCase):
                 for rule in matching_rules
             )
         )
+
+
+class AccountingStudentPaymentValidationTests(SimpleTestCase):
+    @patch("accounting.services.currency_totals.effective_payment_base_amount", return_value=Decimal("10000.00"))
+    @patch("finance.validators.get_student_net_remaining_balance", return_value=Decimal("16300.00"))
+    def test_income_payment_uses_explicit_academic_year_when_provided(
+        self,
+        _mock_remaining,
+        _mock_effective,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+
+        student = MagicMock()
+        explicit_year = MagicMock()
+        data = {
+            "transaction_type": SimpleNamespace(transaction_category="income"),
+            "amount": Decimal("10000.00"),
+            "exchange_rate": Decimal("1.0"),
+            "student": student,
+            "academic_year_id": explicit_year,
+        }
+
+        with patch.object(
+            viewset,
+            "_resolve_transaction_academic_year",
+            return_value=explicit_year,
+        ) as mock_resolve_year:
+            viewset._validate_student_income_payment(data)
+
+        mock_resolve_year.assert_called_once_with(
+            student=student,
+            tx_date=None,
+            academic_year=explicit_year,
+        )
+
+    @patch("accounting.services.currency_totals.effective_payment_base_amount", return_value=Decimal("10000.00"))
+    @patch("finance.validators.get_student_net_remaining_balance", return_value=Decimal("6300.00"))
+    def test_income_payment_rejects_when_effective_exceeds_remaining(
+        self,
+        _mock_remaining,
+        _mock_effective,
+    ):
+        viewset = AccountingCashTransactionViewSet()
+
+        data = {
+            "transaction_type": SimpleNamespace(transaction_category="income"),
+            "amount": Decimal("10000.00"),
+            "exchange_rate": Decimal("1.0"),
+            "student": MagicMock(),
+        }
+
+        with patch.object(
+            viewset,
+            "_resolve_transaction_academic_year",
+            return_value=MagicMock(),
+        ):
+            with self.assertRaisesMessage(
+                Exception,
+                "exceeds student balance due of 6,300.00",
+            ):
+                viewset._validate_student_income_payment(data)
 
 
 class CashStandingBalanceTests(SimpleTestCase):

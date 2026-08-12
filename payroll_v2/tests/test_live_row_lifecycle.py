@@ -69,6 +69,88 @@ class RestorePayrollLiveRowsTests(SimpleTestCase):
         restored = restore_payroll_live_rows_from_snapshot(payroll_run)
         self.assertEqual(restored, 3)
 
+    @patch("payroll_v2.live_row_lifecycle.PayrollLineItem")
+    @patch("payroll_v2.live_row_lifecycle.PayrollEmployeeItem")
+    @patch("payroll_v2.live_row_lifecycle.PayrollCatalogItemRule.objects.filter")
+    @patch("payroll_v2.live_row_lifecycle.EmployeePayrollItem.objects.filter")
+    @patch("payroll_v2.live_row_lifecycle.PayrollCatalogItem.objects.filter")
+    @patch("payroll_v2.live_row_lifecycle.EmployeeCompensation.objects.filter")
+    def test_restore_nulls_missing_optional_foreign_keys(
+        self,
+        compensation_filter,
+        payroll_item_filter,
+        employee_payroll_item_filter,
+        payroll_item_rule_filter,
+        payroll_employee_item_cls,
+        payroll_line_item_cls,
+    ):
+        from payroll_v2.live_row_lifecycle import restore_payroll_live_rows_from_snapshot
+
+        compensation_filter.return_value.exists.return_value = False
+        payroll_item_filter.return_value.exists.return_value = False
+        employee_payroll_item_filter.return_value.exists.return_value = False
+        payroll_item_rule_filter.return_value.exists.return_value = False
+
+        captured_employee_kwargs = {}
+        captured_line_kwargs = {}
+
+        def build_employee_item(*args, **kwargs):
+            captured_employee_kwargs.update(kwargs)
+            item = MagicMock()
+            item.id = kwargs.get("id")
+            return item
+
+        def build_line_item(*args, **kwargs):
+            captured_line_kwargs.update(kwargs)
+            line = MagicMock()
+            line.id = kwargs.get("id")
+            return line
+
+        payroll_employee_item_cls.side_effect = build_employee_item
+        payroll_line_item_cls.side_effect = build_line_item
+
+        payroll_run = MagicMock()
+        payroll_run.id = str(uuid4())
+        payroll_run.employee_items.exists.return_value = False
+        payroll_run.paid_table_snapshot = {
+            "employee_items": [
+                {
+                    "id": str(uuid4()),
+                    "employee": str(uuid4()),
+                    "compensation": str(uuid4()),
+                    "basic_salary": "1000.00",
+                    "gross_pay": "1000.00",
+                    "taxable_income": "1000.00",
+                    "total_tax": "0.00",
+                    "total_deductions": "0.00",
+                    "total_benefits": "0.00",
+                    "total_reimbursements": "0.00",
+                    "net_pay": "1000.00",
+                    "line_items": [
+                        {
+                            "id": str(uuid4()),
+                            "line_type": "earning",
+                            "name": "Allowance",
+                            "amount": "100.00",
+                            "calculation_type": "flat",
+                            "target_amount_source": "basic_salary",
+                            "payroll_item": str(uuid4()),
+                            "employee_payroll_item": str(uuid4()),
+                            "payroll_item_rule": str(uuid4()),
+                        }
+                    ],
+                }
+            ]
+        }
+
+        restored = restore_payroll_live_rows_from_snapshot(payroll_run)
+
+        self.assertEqual(restored, 1)
+        self.assertIsNone(captured_employee_kwargs["compensation"])
+        self.assertIsNone(captured_line_kwargs["payroll_item"])
+        self.assertIsNone(captured_line_kwargs["employee_payroll_item"])
+        self.assertIsNone(captured_line_kwargs["payroll_item_rule"])
+
 
 class RestoreBenefitLinesTests(SimpleTestCase):
     def test_restore_requires_snapshot_rows(self):

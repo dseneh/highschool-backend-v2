@@ -7,14 +7,24 @@ from common.models import BaseModel
 
 from .enums import (
     CalculationType,
+    DeductionSourceType,
+    EmployeeContributionType,
+    EmployeeWardRelationshipType,
     Frequency,
     LineType,
     PayScheduleFrequency,
+    PayrollDeductionInstallmentStatus,
+    PayrollDeductionScheduleStatus,
     PaymentMethod,
     PaymentStatus,
     PayrollStatus,
     PayrollType,
     PayType,
+    SalaryAdvanceRepaymentMethod,
+    SalaryAdvanceRepaymentStatus,
+    SalaryAdvanceStatus,
+    SponsorshipCoverageType,
+    StaffWardSponsorshipStatus,
     TargetAmountSource,
 )
 
@@ -233,6 +243,8 @@ class EmployeePayrollItem(BaseModel):
     end_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     priority = models.PositiveIntegerField(default=100)
+    source_type = models.CharField(max_length=40, blank=True, default="")
+    source_id = models.CharField(max_length=80, blank=True, default="")
     calculation_overridden = models.BooleanField(
         default=False,
         help_text="When true, employee-specific calculation replaces catalog rules for this item.",
@@ -245,6 +257,7 @@ class EmployeePayrollItem(BaseModel):
         indexes = [
             models.Index(fields=["employee", "is_active"]),
             models.Index(fields=["start_date", "end_date"]),
+            models.Index(fields=["source_type", "source_id"]),
         ]
 
     def get_name(self):
@@ -548,6 +561,14 @@ class PayrollSettings(BaseModel):
         blank=True,
         help_text="Expense transaction type used when posting payroll cash disbursements.",
     )
+    salary_advance_repayment_ledger_account = models.ForeignKey(
+        "accounting.AccountingLedgerAccount",
+        on_delete=models.PROTECT,
+        related_name="payroll_settings_salary_advance_repayments",
+        null=True,
+        blank=True,
+        help_text="Ledger account credited when early salary advance repayments are completed in finance.",
+    )
     payslip_table_column_labels = models.JSONField(
         default=dict,
         blank=True,
@@ -560,6 +581,58 @@ class PayrollSettings(BaseModel):
         default=True,
         help_text="When enabled, eligible leave balances appear on employee paystubs.",
     )
+    salary_advance_requires_approval = models.BooleanField(
+        default=True,
+        help_text="When enabled, salary advance requests must be approved before they can be activated.",
+    )
+    salary_advance_default_repayment_method = models.CharField(
+        max_length=30,
+        choices=SalaryAdvanceRepaymentMethod.choices,
+        default=SalaryAdvanceRepaymentMethod.EQUAL_SPLIT,
+        help_text="Default repayment method used when creating a salary advance request.",
+    )
+    salary_advance_default_installments = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Default number of installments suggested for a salary advance.",
+    )
+    salary_advance_max_installments = models.PositiveSmallIntegerField(
+        default=12,
+        help_text="Maximum number of installments allowed for a salary advance.",
+    )
+    salary_advance_min_service_months = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Minimum service months required before an employee can request a salary advance.",
+    )
+    maximum_ward_sponsorship_deduction_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        default=Decimal("40.0000"),
+        help_text="Maximum share of gross salary that can go to ward sponsorship deduction in one payroll.",
+    )
+    tax_reserve_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        default=Decimal("20.0000"),
+        help_text="Minimum gross salary share reserved to protect tax obligations before new deductions.",
+    )
+    minimum_take_home_pay_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        default=Decimal("30.0000"),
+        help_text="Minimum gross salary share that must remain as take-home pay after deductions.",
+    )
+    maximum_salary_advance_deduction_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        default=Decimal("20.0000"),
+        help_text="Maximum share of gross salary that can go to salary advance deduction in one payroll.",
+    )
+    ward_sponsorship_application_deadline_months = models.PositiveSmallIntegerField(
+        default=3,
+        help_text=(
+            "How many months from the academic year start employees can submit ward sponsorship requests."
+        ),
+    )
 
     class Meta:
         db_table = "payroll_settings"
@@ -568,3 +641,366 @@ class PayrollSettings(BaseModel):
 
     def __str__(self):
         return "Payroll Settings"
+
+
+class StaffWardSponsorshipPolicy(BaseModel):
+    """Tenant-level policy controlling sponsorship coverage and payroll recovery limits."""
+
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    maximum_wards = models.PositiveSmallIntegerField(default=1)
+    coverage_type = models.CharField(
+        max_length=20,
+        choices=SponsorshipCoverageType.choices,
+        default=SponsorshipCoverageType.PERCENTAGE,
+    )
+    coverage_value = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0.0000"))
+    employee_contribution_type = models.CharField(
+        max_length=20,
+        choices=EmployeeContributionType.choices,
+        default=EmployeeContributionType.NONE,
+    )
+    employee_contribution_value = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0.0000"))
+    max_payroll_deduction_percent_of_gross = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    min_net_pay_percent_of_gross = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"))
+    max_total_voluntary_deduction_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    allow_auto_adjust = models.BooleanField(default=True)
+    allow_deduction_deferral = models.BooleanField(default=True)
+    requires_approval = models.BooleanField(default=True)
+    eligible_fee_types = models.JSONField(default=list, blank=True)
+    eligible_employment_types = models.JSONField(default=list, blank=True)
+    minimum_service_months = models.PositiveSmallIntegerField(default=0)
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_staff_ward_sponsorship_policy"
+        ordering = ["-effective_from", "name"]
+        indexes = [
+            models.Index(fields=["is_active", "effective_from", "effective_to"]),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class EmployeeWard(BaseModel):
+    """Links an employee to an existing student as a ward/dependent."""
+
+    employee = models.ForeignKey("hr.Employee", on_delete=models.CASCADE, related_name="wards")
+    student = models.ForeignKey("students.Student", on_delete=models.CASCADE, related_name="employee_sponsors")
+    relationship_type = models.CharField(
+        max_length=30,
+        choices=EmployeeWardRelationshipType.choices,
+        default=EmployeeWardRelationshipType.CHILD,
+    )
+    is_verified = models.BooleanField(default=False)
+    verification_date = models.DateField(null=True, blank=True)
+    verified_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="verified_employee_wards",
+    )
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "payroll_v2_employee_ward"
+        ordering = ["employee__last_name", "employee__first_name", "student__last_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["employee", "student"], name="payroll_v2_uniq_employee_student_ward"),
+        ]
+        indexes = [
+            models.Index(fields=["employee", "is_active"]),
+            models.Index(fields=["student", "is_active"]),
+        ]
+
+
+class StaffWardSponsorship(BaseModel):
+    """Employee sponsorship application and lifecycle state."""
+
+    employee = models.ForeignKey("hr.Employee", on_delete=models.CASCADE, related_name="ward_sponsorships")
+    policy = models.ForeignKey(
+        StaffWardSponsorshipPolicy,
+        on_delete=models.PROTECT,
+        related_name="sponsorships",
+    )
+    academic_year = models.ForeignKey(
+        "academics.AcademicYear",
+        on_delete=models.PROTECT,
+        related_name="staff_ward_sponsorships",
+    )
+    application_date = models.DateField(default=timezone.now)
+    start_period = models.ForeignKey(
+        PayrollPeriod,
+        on_delete=models.PROTECT,
+        related_name="starting_sponsorships",
+        null=True,
+        blank=True,
+    )
+    end_period = models.ForeignKey(
+        PayrollPeriod,
+        on_delete=models.PROTECT,
+        related_name="ending_sponsorships",
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=StaffWardSponsorshipStatus.choices,
+        default=StaffWardSponsorshipStatus.DRAFT,
+    )
+    total_sponsored_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    school_contribution_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    employee_contribution_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    payroll_recovery_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    repayment_schedule = models.JSONField(default=list, blank=True)
+    student_allocation = models.JSONField(default=list, blank=True)
+    repayment_paid_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    repayment_remaining_balance = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    repayment_progress_percent = models.DecimalField(max_digits=7, decimal_places=2, default=Decimal("0.00"))
+    review_notes = models.TextField(blank=True)
+    rejection_reason = models.TextField(blank=True)
+    approved_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_staff_ward_sponsorships",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_staff_ward_sponsorship"
+        ordering = ["-application_date", "-created_at"]
+        indexes = [
+            models.Index(fields=["employee", "status"]),
+            models.Index(fields=["academic_year", "status"]),
+        ]
+
+
+class StaffWardSponsorshipStudent(BaseModel):
+    """Student rows attached to a sponsorship application."""
+
+    sponsorship = models.ForeignKey(
+        StaffWardSponsorship,
+        on_delete=models.CASCADE,
+        related_name="sponsorship_students",
+    )
+    employee_ward = models.ForeignKey(
+        EmployeeWard,
+        on_delete=models.PROTECT,
+        related_name="sponsorship_rows",
+    )
+    student = models.ForeignKey(
+        "students.Student",
+        on_delete=models.PROTECT,
+        related_name="sponsorship_rows",
+    )
+    enrollment = models.ForeignKey(
+        "students.Enrollment",
+        on_delete=models.PROTECT,
+        related_name="staff_sponsorship_rows",
+    )
+    eligible_fee_total = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    school_covered_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    employee_responsibility_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_staff_ward_sponsorship_student"
+        ordering = ["student__last_name", "student__first_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sponsorship", "enrollment"],
+                name="payroll_v2_uniq_sponsorship_enrollment",
+            ),
+        ]
+
+
+class SalaryAdvance(BaseModel):
+    """Salary advance request and repayment lifecycle."""
+
+    employee = models.ForeignKey("hr.Employee", on_delete=models.CASCADE, related_name="salary_advances")
+    request_date = models.DateField(default=timezone.now)
+    amount = models.DecimalField(max_digits=16, decimal_places=2)
+    approved_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    repayment_start_period = models.ForeignKey(
+        PayrollPeriod,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="salary_advances_starting",
+    )
+    repayment_method = models.CharField(
+        max_length=30,
+        choices=SalaryAdvanceRepaymentMethod.choices,
+        default=SalaryAdvanceRepaymentMethod.EQUAL_SPLIT,
+    )
+    installment_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    amount_paid = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    number_of_installments = models.PositiveSmallIntegerField(default=1)
+    remaining_balance = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    repayment_status = models.CharField(
+        max_length=20,
+        choices=SalaryAdvanceRepaymentStatus.choices,
+        default=SalaryAdvanceRepaymentStatus.NOT_STARTED,
+    )
+    status = models.CharField(max_length=20, choices=SalaryAdvanceStatus.choices, default=SalaryAdvanceStatus.DRAFT)
+    notes = models.TextField(blank=True)
+    approved_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_salary_advances",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="completed_salary_advances",
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="cancelled_salary_advances",
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_salary_advance"
+        ordering = ["-request_date", "-created_at"]
+        indexes = [
+            models.Index(fields=["employee", "status"]),
+            models.Index(fields=["status", "request_date"]),
+        ]
+
+
+class SalaryAdvancePayment(BaseModel):
+    """Recorded manual/early repayments against a salary advance."""
+
+    salary_advance = models.ForeignKey(
+        SalaryAdvance,
+        on_delete=models.CASCADE,
+        related_name="payments",
+    )
+    finance_transaction = models.OneToOneField(
+        "accounting.AccountingCashTransaction",
+        on_delete=models.SET_NULL,
+        related_name="salary_advance_payment",
+        null=True,
+        blank=True,
+    )
+    payment_date = models.DateField(default=timezone.now)
+    amount = models.DecimalField(max_digits=16, decimal_places=2)
+    payment_method = models.CharField(
+        max_length=30,
+        choices=PaymentMethod.choices,
+        default=PaymentMethod.OTHER,
+    )
+    reference = models.CharField(max_length=150, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_salary_advance_payment"
+        ordering = ["-payment_date", "-created_at"]
+        indexes = [
+            models.Index(fields=["salary_advance", "payment_date"]),
+        ]
+
+
+class PayrollDeductionSchedule(BaseModel):
+    """Generic payroll-recovery schedule for sponsorship, advances, and future obligations."""
+
+    employee = models.ForeignKey("hr.Employee", on_delete=models.CASCADE, related_name="deduction_schedules")
+    source_type = models.CharField(max_length=40, choices=DeductionSourceType.choices)
+    source_id = models.CharField(max_length=80)
+    start_period = models.ForeignKey(
+        PayrollPeriod,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="deduction_schedules_starting",
+    )
+    end_period = models.ForeignKey(
+        PayrollPeriod,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="deduction_schedules_ending",
+    )
+    total_amount = models.DecimalField(max_digits=16, decimal_places=2)
+    remaining_amount = models.DecimalField(max_digits=16, decimal_places=2)
+    scheduled_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    status = models.CharField(
+        max_length=30,
+        choices=PayrollDeductionScheduleStatus.choices,
+        default=PayrollDeductionScheduleStatus.PLANNED,
+    )
+    schedule_snapshot = models.JSONField(default=dict, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_deduction_schedule"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["employee", "status"]),
+            models.Index(fields=["source_type", "source_id"]),
+        ]
+
+
+class PayrollDeductionInstallment(BaseModel):
+    """One schedule installment tied to a payroll period and (optionally) a generated payroll line."""
+
+    deduction_schedule = models.ForeignKey(
+        PayrollDeductionSchedule,
+        on_delete=models.CASCADE,
+        related_name="installments",
+    )
+    payroll_period = models.ForeignKey(
+        PayrollPeriod,
+        on_delete=models.PROTECT,
+        related_name="deduction_installments",
+    )
+    scheduled_amount = models.DecimalField(max_digits=16, decimal_places=2)
+    actual_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    status = models.CharField(
+        max_length=30,
+        choices=PayrollDeductionInstallmentStatus.choices,
+        default=PayrollDeductionInstallmentStatus.PLANNED,
+    )
+    payroll_line = models.ForeignKey(
+        PayrollLineItem,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deduction_installments",
+    )
+    adjustment_reason = models.TextField(blank=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "payroll_v2_deduction_installment"
+        ordering = ["payroll_period__start_date", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["deduction_schedule", "payroll_period"],
+                name="payroll_v2_uniq_schedule_installment_period",
+            ),
+        ]

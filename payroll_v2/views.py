@@ -1,4 +1,6 @@
-from decimal import Decimal
+import calendar
+from datetime import date, timedelta
+from decimal import Decimal, ROUND_DOWN
 
 from django.db.models import Count, DecimalField, Prefetch, Q, Value
 from django.db.models.functions import Coalesce
@@ -10,14 +12,19 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from hr.models import Employee
+from academics.models import AcademicYear
 
 from .enums import PayrollStatus, TargetAmountSource
 from .access_policies import PayrollV2AccessPolicy
+from .obligation_services import evaluate_employee_obligation_eligibility
 from .models import (
     EmployeeCompensation,
     EmployeePayrollItem,
+    EmployeeWard,
     PayrollCatalogItem,
     PayrollCatalogItemRule,
+    PayrollDeductionInstallment,
+    PayrollDeductionSchedule,
     PayrollEmployeeItem,
     PayrollPayslipTemplate,
     PayrollPeriod,
@@ -25,11 +32,20 @@ from .models import (
     PayrollRunRecord,
     PayrollSettings,
     PayrollTableView,
+    SalaryAdvance,
+    StaffWardSponsorship,
+    StaffWardSponsorshipPolicy,
+    StaffWardSponsorshipStudent,
 )
 from .serializers import (
+    DeductionInstallmentAdjustSerializer,
+    DeductionInstallmentAutoAdjustSerializer,
     EmployeeCompensationSerializer,
     EmployeePayrollItemSerializer,
+    EmployeeWardSerializer,
     GeneratePayrollSerializer,
+    PayrollDeductionInstallmentSerializer,
+    PayrollDeductionScheduleSerializer,
     PayrollEmployeeItemSerializer,
     PayrollItemRulePreviewSerializer,
     PayrollItemRuleSerializer,
@@ -43,11 +59,33 @@ from .serializers import (
     PayrollRunWriteSerializer,
     PayrollTableViewSerializer,
     PayrollSettingsSerializer,
+    PayrollObligationEligibilityPreviewSerializer,
+    WardSponsorshipWindowPreviewSerializer,
+    SalaryAdvanceSerializer,
+    SalaryAdvanceCancellationSerializer,
+    SalaryAdvancePaymentRecordSerializer,
+    SalaryAdvanceRepaymentRequestSerializer,
+    StaffWardSponsorshipPolicySerializer,
+    StaffWardSponsorshipSerializer,
+    StaffWardSponsorshipStudentSerializer,
+    WorkflowReasonSerializer,
 )
 from .services import (
+    adjust_deduction_installment,
+    auto_adjust_deduction_installment,
+    approve_salary_advance,
+    cancel_salary_advance,
+    cancel_staff_ward_sponsorship,
+    complete_salary_advance,
+    complete_staff_ward_sponsorship,
+    defer_deduction_installment,
+    approve_staff_ward_sponsorship,
     approve_payroll,
     build_preview_item_rule_objects,
+    ensure_salary_advance_can_be_deleted,
+    ensure_staff_ward_sponsorship_can_be_deleted,
     generate_payroll,
+    get_run_obligation_deduction_violations,
     get_payroll_v2_formula_guide,
     create_employee_compensation_record,
     update_employee_compensation_record,
@@ -55,13 +93,18 @@ from .services import (
     mark_payroll_paid,
     preview_catalog_item_formula,
     preview_item_rules,
+    request_salary_advance_early_repayment,
+    reject_salary_advance,
+    reject_staff_ward_sponsorship,
     remove_payroll_catalog_item_from_employees,
     revert_employee_payroll_item_calculation,
     revert_payroll_to_draft,
     submit_payroll_for_approval,
+    submit_salary_advance_for_approval,
+    submit_staff_ward_sponsorship_for_approval,
     sync_payroll_catalog_item_to_employees,
 )
-from .portal_access import apply_employee_portal_paystub_filters
+from .portal_access import apply_employee_portal_paystub_filters, employee_for_portal_user, user_can_manage_payroll_v2
 from .schedule_services import derive_next_period
 from .settings_services import get_tenant_payroll_settings
 
@@ -446,6 +489,332 @@ class PayrollPeriodViewSet(BasePayrollViewSet):
         return qs
 
 
+class StaffWardSponsorshipPolicyViewSet(BasePayrollViewSet):
+    queryset = StaffWardSponsorshipPolicy.objects.all()
+    serializer_class = StaffWardSponsorshipPolicySerializer
+    search_fields = ["name", "description"]
+    ordering_fields = ["effective_from", "created_at", "name"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        is_active = self.request.query_params.get("is_active")
+        if is_active in ("true", "false"):
+            qs = qs.filter(is_active=is_active == "true")
+        return qs
+
+
+class EmployeeWardViewSet(BasePayrollViewSet):
+    queryset = EmployeeWard.objects.select_related("employee", "student", "verified_by")
+    serializer_class = EmployeeWardSerializer
+    search_fields = ["employee__first_name", "employee__last_name", "employee__id_number", "student__id_number"]
+    ordering_fields = ["created_at", "verification_date"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        employee = self.request.query_params.get("employee")
+        student = self.request.query_params.get("student")
+        is_active = self.request.query_params.get("is_active")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        if student:
+            qs = qs.filter(student_id=student)
+        if is_active in ("true", "false"):
+            qs = qs.filter(is_active=is_active == "true")
+        return qs
+
+
+class StaffWardSponsorshipViewSet(BasePayrollViewSet):
+    queryset = StaffWardSponsorship.objects.select_related("employee", "policy", "academic_year")
+    serializer_class = StaffWardSponsorshipSerializer
+    search_fields = ["employee__first_name", "employee__last_name", "employee__id_number"]
+    ordering_fields = ["application_date", "created_at", "status"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        employee = self.request.query_params.get("employee")
+        status_filter = self.request.query_params.get("status")
+        academic_year = self.request.query_params.get("academic_year")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if academic_year:
+            qs = qs.filter(academic_year_id=academic_year)
+        return qs
+
+    def destroy(self, request, *args, **kwargs):
+        sponsorship = self.get_object()
+        is_manager = user_can_manage_payroll_v2(request.user)
+        if not is_manager:
+            employee = employee_for_portal_user(request.user)
+            if employee is None or employee.id != sponsorship.employee_id:
+                return Response(
+                    {"detail": "You can only delete your own ward sponsorship requests."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        try:
+            ensure_staff_ward_sponsorship_can_be_deleted(sponsorship, self_service=not is_manager)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"], url_path="submit")
+    def submit(self, request, pk=None):
+        try:
+            sponsorship = submit_staff_ward_sponsorship_for_approval(self.get_object(), request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(sponsorship).data)
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        try:
+            sponsorship = approve_staff_ward_sponsorship(self.get_object(), request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(sponsorship).data)
+
+    @action(detail=True, methods=["post"], url_path="complete")
+    def complete(self, request, pk=None):
+        try:
+            sponsorship = complete_staff_ward_sponsorship(self.get_object(), request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(sponsorship).data)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, pk=None):
+        serializer = WorkflowReasonSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            sponsorship = reject_staff_ward_sponsorship(
+                self.get_object(),
+                reason=serializer.validated_data.get("reason", ""),
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(sponsorship).data)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        serializer = WorkflowReasonSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            sponsorship = cancel_staff_ward_sponsorship(
+                self.get_object(),
+                reason=serializer.validated_data.get("reason", ""),
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(sponsorship).data)
+
+
+class StaffWardSponsorshipStudentViewSet(BasePayrollViewSet):
+    queryset = StaffWardSponsorshipStudent.objects.select_related("sponsorship", "employee_ward", "student", "enrollment")
+    serializer_class = StaffWardSponsorshipStudentSerializer
+    search_fields = ["student__first_name", "student__last_name", "student__id_number"]
+    ordering_fields = ["created_at", "eligible_fee_total", "employee_responsibility_amount"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        sponsorship = self.request.query_params.get("sponsorship")
+        if sponsorship:
+            qs = qs.filter(sponsorship_id=sponsorship)
+        return qs
+
+
+class SalaryAdvanceViewSet(BasePayrollViewSet):
+    queryset = SalaryAdvance.objects.select_related("employee", "approved_by", "repayment_start_period")
+    serializer_class = SalaryAdvanceSerializer
+    search_fields = ["employee__first_name", "employee__last_name", "employee__id_number", "notes"]
+    ordering_fields = ["request_date", "created_at", "status", "remaining_balance"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        employee = self.request.query_params.get("employee")
+        status_filter = self.request.query_params.get("status")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+    def destroy(self, request, *args, **kwargs):
+        advance = self.get_object()
+        is_manager = user_can_manage_payroll_v2(request.user)
+        if not is_manager:
+            employee = employee_for_portal_user(request.user)
+            if employee is None or employee.id != advance.employee_id:
+                return Response(
+                    {"detail": "You can only delete your own salary advance requests."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        try:
+            ensure_salary_advance_can_be_deleted(advance, self_service=not is_manager)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"], url_path="submit")
+    def submit(self, request, pk=None):
+        try:
+            advance = submit_salary_advance_for_approval(self.get_object(), request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(advance).data)
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        try:
+            advance = approve_salary_advance(self.get_object(), request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(advance).data)
+
+    @action(detail=True, methods=["post"], url_path="complete")
+    def complete(self, request, pk=None):
+        try:
+            advance = complete_salary_advance(self.get_object(), request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(advance).data)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        serializer = SalaryAdvanceCancellationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            advance = cancel_salary_advance(
+                self.get_object(),
+                reason=serializer.validated_data["reason"],
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(advance).data)
+
+    @action(detail=True, methods=["post"], url_path="record-payment")
+    def record_payment(self, request, pk=None):
+        role = (getattr(request.user, "role", "") or "").strip().lower()
+        if role not in {"superadmin", "admin", "finance", "accountant"}:
+            return Response({"detail": "Only finance users can request early repayments."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = SalaryAdvancePaymentRecordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = request_salary_advance_early_repayment(
+                self.get_object(),
+                amount=serializer.validated_data["amount"],
+                payment_date=serializer.validated_data.get("payment_date"),
+                payment_method=serializer.validated_data.get("payment_method"),
+                reference=serializer.validated_data.get("reference", ""),
+                notes=serializer.validated_data.get("notes", ""),
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(SalaryAdvanceRepaymentRequestSerializer(payload).data, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, pk=None):
+        serializer = WorkflowReasonSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            advance = reject_salary_advance(
+                self.get_object(),
+                reason=serializer.validated_data.get("reason", ""),
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(advance).data)
+
+
+class PayrollDeductionScheduleViewSet(BasePayrollViewSet):
+    queryset = PayrollDeductionSchedule.objects.select_related("employee", "start_period", "end_period")
+    serializer_class = PayrollDeductionScheduleSerializer
+    search_fields = ["employee__first_name", "employee__last_name", "employee__id_number", "source_id"]
+    ordering_fields = ["created_at", "remaining_amount", "status"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        employee = self.request.query_params.get("employee")
+        source_type = self.request.query_params.get("source_type")
+        status_filter = self.request.query_params.get("status")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        if source_type:
+            qs = qs.filter(source_type=source_type)
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+
+class PayrollDeductionInstallmentViewSet(BasePayrollViewSet):
+    queryset = PayrollDeductionInstallment.objects.select_related(
+        "deduction_schedule",
+        "deduction_schedule__employee",
+        "payroll_period",
+        "payroll_line",
+    )
+    serializer_class = PayrollDeductionInstallmentSerializer
+    search_fields = ["deduction_schedule__employee__first_name", "deduction_schedule__employee__last_name"]
+    ordering_fields = ["created_at", "scheduled_amount", "actual_amount", "status"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        deduction_schedule = self.request.query_params.get("deduction_schedule")
+        payroll_period = self.request.query_params.get("payroll_period")
+        status_filter = self.request.query_params.get("status")
+        if deduction_schedule:
+            qs = qs.filter(deduction_schedule_id=deduction_schedule)
+        if payroll_period:
+            qs = qs.filter(payroll_period_id=payroll_period)
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+    @action(detail=True, methods=["post"], url_path="adjust")
+    def adjust(self, request, pk=None):
+        serializer = DeductionInstallmentAdjustSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            installment = adjust_deduction_installment(
+                installment=self.get_object(),
+                amount=serializer.validated_data["amount"],
+                reason=serializer.validated_data.get("reason", ""),
+                actor=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(installment).data)
+
+    @action(detail=True, methods=["post"], url_path="defer")
+    def defer(self, request, pk=None):
+        serializer = WorkflowReasonSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        installment = defer_deduction_installment(
+            installment=self.get_object(),
+            reason=serializer.validated_data.get("reason", ""),
+            actor=request.user,
+        )
+        return Response(self.get_serializer(installment).data)
+
+    @action(detail=True, methods=["post"], url_path="auto-adjust")
+    def auto_adjust(self, request, pk=None):
+        serializer = DeductionInstallmentAutoAdjustSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        installment = auto_adjust_deduction_installment(
+            installment=self.get_object(),
+            max_allowed_amount=serializer.validated_data["max_allowed_amount"],
+            reason=serializer.validated_data.get("reason", ""),
+            actor=request.user,
+        )
+        return Response(self.get_serializer(installment).data)
+
+
 class PayrollRunViewSet(BasePayrollViewSet):
     queryset = (
         PayrollRunRecord.objects.annotate(employee_count=Count("employee_items"))
@@ -532,6 +901,11 @@ class PayrollRunViewSet(BasePayrollViewSet):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(PayrollRunDetailSerializer(payroll_run, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["get"], url_path="obligation-violations")
+    def obligation_violations(self, request, pk=None):
+        payload = get_run_obligation_deduction_violations(self.get_object())
+        return Response(payload)
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
@@ -718,3 +1092,218 @@ class PayrollSettingsView(APIView):
         settings = serializer.save(updated_by=request.user)
         settings.refresh_from_db()
         return Response(PayrollSettingsSerializer(settings).data)
+
+
+class PayrollObligationEligibilityPreviewView(APIView):
+    """Preview shared salary advance and ward sponsorship eligibility calculations."""
+
+    permission_classes = [PayrollV2AccessPolicy]
+
+    def post(self, request):
+        serializer = PayrollObligationEligibilityPreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        employee_id = serializer.validated_data["employee"]
+        employee = Employee.objects.filter(id=employee_id).first()
+        if employee is None:
+            return Response({"detail": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        settings = get_tenant_payroll_settings(user=request.user)
+        payload = evaluate_employee_obligation_eligibility(
+            employee=employee,
+            payroll_settings=settings,
+            obligation_type=serializer.validated_data["obligation_type"],
+            requested_periodic_deduction=serializer.validated_data.get("requested_periodic_deduction"),
+            requested_amount=serializer.validated_data.get("requested_amount"),
+            requested_installments=serializer.validated_data.get("requested_installments"),
+            repayment_method=serializer.validated_data.get("repayment_method"),
+            fixed_installment_amount=serializer.validated_data.get("fixed_installment_amount"),
+            exclude_source_type=serializer.validated_data["obligation_type"],
+            exclude_source_id=serializer.validated_data.get("exclude_source_id") or None,
+        )
+        return Response(payload)
+
+
+class WardSponsorshipWindowPreviewView(APIView):
+    """Preview sponsorship application window and repayment periods using backend rules."""
+
+    permission_classes = [PayrollV2AccessPolicy]
+
+    @staticmethod
+    def _add_months(base_date: date, months: int) -> date:
+        total_month_index = (base_date.year * 12 + (base_date.month - 1)) + max(0, int(months))
+        year = total_month_index // 12
+        month = (total_month_index % 12) + 1
+        max_day = calendar.monthrange(year, month)[1]
+        day = min(base_date.day, max_day)
+        return date(year, month, day)
+
+    @classmethod
+    def _month_index(cls, *, year_start: date, target: date) -> int:
+        return ((target.year - year_start.year) * 12) + (target.month - year_start.month) + 1
+
+    @staticmethod
+    def _month_starts_between(start_date: date, end_date: date):
+        if start_date > end_date:
+            return []
+        cursor = date(start_date.year, start_date.month, 1)
+        last = date(end_date.year, end_date.month, 1)
+        months = []
+        while cursor <= last:
+            months.append(cursor)
+            if cursor.month == 12:
+                cursor = date(cursor.year + 1, 1, 1)
+            else:
+                cursor = date(cursor.year, cursor.month + 1, 1)
+        return months
+
+    @classmethod
+    def _build_repayment_schedule_preview(cls, *, total_amount: Decimal, start_date: date, end_date: date):
+        total = Decimal(str(total_amount or "0"))
+        if total <= Decimal("0"):
+            return {
+                "months_remaining": 0,
+                "monthly_deduction": "0.00",
+                "schedule": [],
+            }
+
+        months = cls._month_starts_between(start_date=start_date, end_date=end_date)
+        if not months:
+            return {
+                "months_remaining": 0,
+                "monthly_deduction": "0.00",
+                "schedule": [],
+            }
+
+        count = len(months)
+        base = total if count == 1 else (total / Decimal(str(count))).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        remaining = total.quantize(Decimal("0.01"))
+        rows = []
+
+        for idx, month_start in enumerate(months, start=1):
+            deduction = remaining if idx == count else min(base, remaining)
+            remaining = (remaining - deduction).quantize(Decimal("0.01"))
+
+            max_day = calendar.monthrange(month_start.year, month_start.month)[1]
+            payment_day = min(start_date.day, max_day)
+            repayment_date = date(month_start.year, month_start.month, payment_day)
+
+            rows.append(
+                {
+                    "installment_number": idx,
+                    "month_label": month_start.strftime("%B %Y"),
+                    "repayment_date": repayment_date.isoformat(),
+                    "deduction_amount": f"{deduction.quantize(Decimal('0.01'))}",
+                    "remaining_balance": f"{remaining}",
+                }
+            )
+
+        return {
+            "months_remaining": count,
+            "monthly_deduction": f"{base.quantize(Decimal('0.01'))}",
+            "schedule": rows,
+        }
+
+    def post(self, request):
+        serializer = WardSponsorshipWindowPreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        academic_year = AcademicYear.objects.filter(id=serializer.validated_data["academic_year"]).first()
+        if academic_year is None:
+            return Response({"detail": "Academic year not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not academic_year.start_date or not academic_year.end_date:
+            return Response(
+                {"detail": "Selected academic year must have valid start and end dates."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        settings = get_tenant_payroll_settings(user=request.user)
+        deadline_months = max(1, int(getattr(settings, "ward_sponsorship_application_deadline_months", 3) or 3))
+
+        today = date.today()
+        within_year = academic_year.start_date <= today <= academic_year.end_date
+        total_months = max(1, self._month_index(year_start=academic_year.start_date, target=academic_year.end_date))
+        current_month_index = self._month_index(year_start=academic_year.start_date, target=today) if within_year else None
+
+        start_period_id = (serializer.validated_data.get("start_period") or "").strip()
+        start_period = PayrollPeriod.objects.filter(id=start_period_id).first() if start_period_id else None
+        repayment_reference_date = start_period.start_date if start_period is not None else today
+        if repayment_reference_date < academic_year.start_date:
+            repayment_reference_date = academic_year.start_date
+
+        repayment_month_index = (
+            self._month_index(year_start=academic_year.start_date, target=repayment_reference_date)
+            if repayment_reference_date <= academic_year.end_date
+            else None
+        )
+        months_remaining = (
+            max(0, total_months - repayment_month_index + 1)
+            if repayment_month_index is not None
+            else 0
+        )
+
+        deadline_end = self._add_months(academic_year.start_date, deadline_months) - timedelta(days=1)
+        is_open = within_year and today <= deadline_end
+
+        repayment_periods = []
+        expected_end_period = None
+
+        if start_period is not None:
+            repayment_periods = list(
+                PayrollPeriod.objects.filter(
+                    schedule_id=start_period.schedule_id,
+                    start_date__gte=start_period.start_date,
+                    start_date__lte=academic_year.end_date,
+                    is_closed=False,
+                ).order_by("start_date")
+            )
+            if repayment_periods:
+                expected_end_period = repayment_periods[-1]
+
+        total_sponsorship_amount = Decimal(str(serializer.validated_data.get("total_sponsorship_amount") or "0"))
+        repayment_schedule_preview = self._build_repayment_schedule_preview(
+            total_amount=total_sponsorship_amount,
+            start_date=repayment_reference_date,
+            end_date=academic_year.end_date,
+        )
+
+        payload = {
+            "academic_year": str(academic_year.id),
+            "academic_year_name": academic_year.name,
+            "academic_year_start_date": academic_year.start_date.isoformat(),
+            "academic_year_end_date": academic_year.end_date.isoformat(),
+            "deadline_months": deadline_months,
+            "deadline_end_date": deadline_end.isoformat(),
+            "current_date": today.isoformat(),
+            "current_month_index": current_month_index,
+            "repayment_month_index": repayment_month_index,
+            "total_months_in_academic_year": total_months,
+            "months_remaining_in_academic_year": months_remaining,
+            "repayment_reference_date": repayment_reference_date.isoformat(),
+            "is_within_academic_year": within_year,
+            "is_within_deadline": today <= deadline_end if within_year else False,
+            "is_application_window_open": is_open,
+            "total_sponsorship_amount": f"{total_sponsorship_amount.quantize(Decimal('0.01'))}",
+            "monthly_deduction_amount": repayment_schedule_preview["monthly_deduction"],
+            "repayment_schedule_preview": repayment_schedule_preview["schedule"],
+            "eligible_repayment_periods": [
+                {
+                    "id": str(period.id),
+                    "name": period.name,
+                    "start_date": period.start_date.isoformat(),
+                    "end_date": period.end_date.isoformat(),
+                    "payment_date": period.payment_date.isoformat(),
+                }
+                for period in repayment_periods
+            ],
+            "expected_end_period": {
+                "id": str(expected_end_period.id),
+                "name": expected_end_period.name,
+                "start_date": expected_end_period.start_date.isoformat(),
+                "end_date": expected_end_period.end_date.isoformat(),
+                "payment_date": expected_end_period.payment_date.isoformat(),
+            }
+            if expected_end_period
+            else None,
+        }
+        return Response(payload)

@@ -175,7 +175,7 @@ class Student(BasePersonModel):
     def balance_due(self, academic_year_id=None):
         """
         Calculate the total balance due for the student in the current academic year.
-        This considers only approved transactions.
+        This considers only completed transactions.
         """
         return self.get_approved_balance(academic_year_id)
 
@@ -210,7 +210,7 @@ class Student(BasePersonModel):
 
     def get_approved_balance(self, academic_year_id=None):
         """
-        Current balance after approved payments only.
+        Current balance after completed payments only.
         Prefer the accounting student bill table as the source of truth.
         """
         academic_year = get_current_academic_year(academic_year_id)
@@ -236,7 +236,7 @@ class Student(BasePersonModel):
             str(
                 self.transactions.filter(
                     academic_year=academic_year,
-                    status="approved",
+                    status="completed",
                     type__type="income",
                 ).aggregate(total=Sum("amount"))["total"]
                 or 0
@@ -284,7 +284,7 @@ class Student(BasePersonModel):
             str(
                 self.transactions.filter(
                     academic_year=academic_year,
-                    status="approved",
+                    status="completed",
                     type__type="income",
                 ).aggregate(total=Sum("amount"))["total"]
                 or 0
@@ -317,7 +317,7 @@ class Student(BasePersonModel):
         ).aggregate(
             approved=Sum(
                 Case(
-                    When(status="approved", then="amount"),
+                    When(status="completed", then="amount"),
                     default=0,
                     output_field=DecimalField(max_digits=10, decimal_places=2),
                 )

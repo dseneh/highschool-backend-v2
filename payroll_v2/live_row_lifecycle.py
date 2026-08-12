@@ -7,8 +7,39 @@ from decimal import Decimal
 from django.conf import settings
 
 from payroll_v2.enums import PaymentStatus, PayrollStatus
-from payroll_v2.models import PayrollEmployeeItem, PayrollLineItem, PayrollRunRecord
+from payroll_v2.models import (
+    EmployeeCompensation,
+    EmployeePayrollItem,
+    PayrollCatalogItem,
+    PayrollCatalogItemRule,
+    PayrollEmployeeItem,
+    PayrollLineItem,
+    PayrollRunRecord,
+)
 from payroll_v2.paid_table_snapshot import snapshot_has_rebuild_payload
+
+
+OPTIONAL_EMPLOYEE_ITEM_FK_MODELS = {
+    "compensation": EmployeeCompensation,
+}
+
+OPTIONAL_LINE_ITEM_FK_MODELS = {
+    "payroll_item": PayrollCatalogItem,
+    "employee_payroll_item": EmployeePayrollItem,
+    "payroll_item_rule": PayrollCatalogItemRule,
+}
+
+
+def _sanitize_optional_fk_values(fields: dict, optional_fk_models: dict[str, type]) -> dict:
+    sanitized = dict(fields)
+    for field_name, model in optional_fk_models.items():
+        raw_value = sanitized.get(field_name)
+        if raw_value in (None, ""):
+            sanitized[field_name] = None
+            continue
+        if not model.objects.filter(pk=raw_value).exists():
+            sanitized[field_name] = None
+    return sanitized
 
 
 def delete_paid_live_rows_enabled() -> bool:
@@ -56,6 +87,7 @@ def restore_payroll_live_rows_from_snapshot(payroll_run: PayrollRunRecord, *, ac
             for key, value in payload.items()
             if key not in read_only_keys and key != "id"
         }
+        item_fields = _sanitize_optional_fk_values(item_fields, OPTIONAL_EMPLOYEE_ITEM_FK_MODELS)
         item_fields["payroll_id"] = payroll_run.id
         item_fields["payment_status"] = PaymentStatus.UNPAID
 
@@ -86,6 +118,7 @@ def restore_payroll_live_rows_from_snapshot(payroll_run: PayrollRunRecord, *, ac
                 for key, value in line_payload.items()
                 if key not in line_read_only and key != "id"
             }
+            line_fields = _sanitize_optional_fk_values(line_fields, OPTIONAL_LINE_ITEM_FK_MODELS)
             line_fields.pop("payroll_employee_item", None)
             line_fields["payroll_employee_item_id"] = employee_item.id
             if line_fields.get("amount") is not None:

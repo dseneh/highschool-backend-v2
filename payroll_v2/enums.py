@@ -74,3 +74,78 @@ class PaymentMethod(models.TextChoices):
     BANK_TRANSFER = "bank_transfer", "Bank Transfer"
     MOBILE_MONEY = "mobile_money", "Mobile Money"
     OTHER = "other", "Other"
+
+
+class SponsorshipCoverageType(models.TextChoices):
+    FULL = "full", "Full"
+    PERCENTAGE = "percentage", "Percentage"
+    FIXED_AMOUNT = "fixed_amount", "Fixed Amount"
+
+
+class EmployeeContributionType(models.TextChoices):
+    NONE = "none", "None"
+    PERCENTAGE = "percentage", "Percentage"
+    FIXED_AMOUNT = "fixed_amount", "Fixed Amount"
+
+
+class EmployeeWardRelationshipType(models.TextChoices):
+    CHILD = "child", "Child"
+    DEPENDENT = "dependent", "Dependent"
+    LEGAL_GUARDIAN = "legal_guardian", "Legal Guardian"
+    OTHER = "other", "Other"
+
+
+class StaffWardSponsorshipStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    PENDING = "pending", "Pending"
+    APPROVED = "approved", "Approved"
+    ACTIVE = "active", "Active"
+    SUSPENDED = "suspended", "Suspended"
+    REJECTED = "rejected", "Rejected"
+    COMPLETED = "completed", "Completed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class DeductionSourceType(models.TextChoices):
+    STAFF_WARD_SPONSORSHIP = "staff_ward_sponsorship", "Staff Ward Sponsorship"
+    SALARY_ADVANCE = "salary_advance", "Salary Advance"
+    LOAN = "loan", "Loan"
+    OTHER = "other", "Other"
+
+
+class PayrollDeductionScheduleStatus(models.TextChoices):
+    PLANNED = "planned", "Planned"
+    PARTIALLY_APPLIED = "partially_applied", "Partially Applied"
+    APPLIED = "applied", "Applied"
+    DEFERRED = "deferred", "Deferred"
+    ADJUSTED = "adjusted", "Adjusted"
+    COMPLETED = "completed", "Completed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class PayrollDeductionInstallmentStatus(models.TextChoices):
+    PLANNED = "planned", "Planned"
+    APPLIED = "applied", "Applied"
+    ADJUSTED = "adjusted", "Adjusted"
+    DEFERRED = "deferred", "Deferred"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class SalaryAdvanceRepaymentMethod(models.TextChoices):
+    FIXED_INSTALLMENT = "fixed_installment", "Fixed Installment"
+    EQUAL_SPLIT = "equal_split", "Equal Split"
+
+
+class SalaryAdvanceRepaymentStatus(models.TextChoices):
+    NOT_STARTED = "not_started", "Not Started"
+    IN_PROGRESS = "in_progress", "In Progress"
+    PAID = "paid", "Paid"
+
+
+class SalaryAdvanceStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    SUBMITTED = "submitted", "Submitted"
+    APPROVED = "approved", "Approved"
+    COMPLETED = "completed", "Completed"
+    REJECTED = "rejected", "Rejected"
+    CANCELLED = "cancelled", "Cancelled"

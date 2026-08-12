@@ -141,6 +141,7 @@ def get_tenant_accounting_settings(*, user=None) -> AccountingSettings:
             "transfer_in_account",
             "transfer_out_account",
             "salary_expense_account",
+            "salary_advance_repayment_ledger_account",
             "payroll_tax_payable_account",
             "payroll_deductions_payable_account",
             "student_refund_account",
