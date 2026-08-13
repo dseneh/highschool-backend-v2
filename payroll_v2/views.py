@@ -106,7 +106,12 @@ from .services import (
 )
 from .portal_access import apply_employee_portal_paystub_filters, employee_for_portal_user, user_can_manage_payroll_v2
 from .schedule_services import derive_next_period
-from .settings_services import get_tenant_payroll_settings
+from .settings_services import (
+    SALARY_ADVANCE_FEATURE,
+    WARD_SPONSORSHIP_FEATURE,
+    ensure_payroll_feature_enabled,
+    get_tenant_payroll_settings,
+)
 
 
 TARGET_MIN_AMOUNT_OUTPUT_FIELD = DecimalField(max_digits=14, decimal_places=2)
@@ -134,6 +139,13 @@ class BasePayrollViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+    def require_payroll_feature(self, feature):
+        try:
+            ensure_payroll_feature_enabled(feature, user=self.request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return None
 
 
 class EmployeeCompensationViewSet(BasePayrollViewSet):
@@ -495,6 +507,26 @@ class StaffWardSponsorshipPolicyViewSet(BasePayrollViewSet):
     search_fields = ["name", "description"]
     ordering_fields = ["effective_from", "created_at", "name"]
 
+    def create(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().create(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().partial_update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().destroy(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = super().get_queryset()
         is_active = self.request.query_params.get("is_active")
@@ -508,6 +540,26 @@ class EmployeeWardViewSet(BasePayrollViewSet):
     serializer_class = EmployeeWardSerializer
     search_fields = ["employee__first_name", "employee__last_name", "employee__id_number", "student__id_number"]
     ordering_fields = ["created_at", "verification_date"]
+
+    def create(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().create(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().partial_update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().destroy(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -528,6 +580,21 @@ class StaffWardSponsorshipViewSet(BasePayrollViewSet):
     serializer_class = StaffWardSponsorshipSerializer
     search_fields = ["employee__first_name", "employee__last_name", "employee__id_number"]
     ordering_fields = ["application_date", "created_at", "status"]
+
+    def create(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().create(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().partial_update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().update(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -560,6 +627,8 @@ class StaffWardSponsorshipViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="submit")
     def submit(self, request, pk=None):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
         try:
             sponsorship = submit_staff_ward_sponsorship_for_approval(self.get_object(), request.user)
         except ValueError as exc:
@@ -568,6 +637,8 @@ class StaffWardSponsorshipViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
         try:
             sponsorship = approve_staff_ward_sponsorship(self.get_object(), request.user)
         except ValueError as exc:
@@ -576,6 +647,8 @@ class StaffWardSponsorshipViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
         try:
             sponsorship = complete_staff_ward_sponsorship(self.get_object(), request.user)
         except ValueError as exc:
@@ -584,6 +657,8 @@ class StaffWardSponsorshipViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
         serializer = WorkflowReasonSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -598,6 +673,8 @@ class StaffWardSponsorshipViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, pk=None):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
         serializer = WorkflowReasonSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -617,6 +694,26 @@ class StaffWardSponsorshipStudentViewSet(BasePayrollViewSet):
     search_fields = ["student__first_name", "student__last_name", "student__id_number"]
     ordering_fields = ["created_at", "eligible_fee_total", "employee_responsibility_amount"]
 
+    def create(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().create(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().partial_update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(WARD_SPONSORSHIP_FEATURE):
+            return response
+        return super().destroy(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = super().get_queryset()
         sponsorship = self.request.query_params.get("sponsorship")
@@ -630,6 +727,21 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
     serializer_class = SalaryAdvanceSerializer
     search_fields = ["employee__first_name", "employee__last_name", "employee__id_number", "notes"]
     ordering_fields = ["request_date", "created_at", "status", "remaining_balance"]
+
+    def create(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
+        return super().create(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
+        return super().partial_update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
+        return super().update(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -659,6 +771,8 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="submit")
     def submit(self, request, pk=None):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
         try:
             advance = submit_salary_advance_for_approval(self.get_object(), request.user)
         except ValueError as exc:
@@ -667,6 +781,8 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
         try:
             advance = approve_salary_advance(self.get_object(), request.user)
         except ValueError as exc:
@@ -675,6 +791,8 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
         try:
             advance = complete_salary_advance(self.get_object(), request.user)
         except ValueError as exc:
@@ -683,6 +801,8 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, pk=None):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
         serializer = SalaryAdvanceCancellationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -697,6 +817,8 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="record-payment")
     def record_payment(self, request, pk=None):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
         role = (getattr(request.user, "role", "") or "").strip().lower()
         if role not in {"superadmin", "admin", "finance", "accountant"}:
             return Response({"detail": "Only finance users can request early repayments."}, status=status.HTTP_403_FORBIDDEN)
@@ -719,6 +841,8 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
+        if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
+            return response
         serializer = WorkflowReasonSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -1103,6 +1227,16 @@ class PayrollObligationEligibilityPreviewView(APIView):
         serializer = PayrollObligationEligibilityPreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        feature = (
+            SALARY_ADVANCE_FEATURE
+            if serializer.validated_data["obligation_type"] == "salary_advance"
+            else WARD_SPONSORSHIP_FEATURE
+        )
+        try:
+            ensure_payroll_feature_enabled(feature, user=request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
         employee_id = serializer.validated_data["employee"]
         employee = Employee.objects.filter(id=employee_id).first()
         if employee is None:
@@ -1205,6 +1339,11 @@ class WardSponsorshipWindowPreviewView(APIView):
         }
 
     def post(self, request):
+        try:
+            ensure_payroll_feature_enabled(WARD_SPONSORSHIP_FEATURE, user=request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = WardSponsorshipWindowPreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 

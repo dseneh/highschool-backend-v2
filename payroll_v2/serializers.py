@@ -1426,6 +1426,8 @@ class PayrollSettingsSerializer(serializers.ModelSerializer):
             "salary_advance_repayment_ledger_account_name",
             "payslip_table_column_labels",
             "show_leave_on_paystub",
+            "allow_salary_advance",
+            "allow_ward_sponsorship",
             "salary_advance_requires_approval",
             "salary_advance_default_repayment_method",
             "salary_advance_default_installments",

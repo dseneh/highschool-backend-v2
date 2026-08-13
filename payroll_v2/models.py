@@ -581,6 +581,14 @@ class PayrollSettings(BaseModel):
         default=True,
         help_text="When enabled, eligible leave balances appear on employee paystubs.",
     )
+    allow_salary_advance = models.BooleanField(
+        default=False,
+        help_text="When enabled, salary advance requests and actions are available to this tenant.",
+    )
+    allow_ward_sponsorship = models.BooleanField(
+        default=False,
+        help_text="When enabled, staff ward sponsorship requests and actions are available to this tenant.",
+    )
     salary_advance_requires_approval = models.BooleanField(
         default=True,
         help_text="When enabled, salary advance requests must be approved before they can be activated.",
