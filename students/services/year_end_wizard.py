@@ -147,6 +147,10 @@ def apply_year_end_wizard(*, academic_year, outcomes, consent_acknowledged=False
         raise ValidationError({"detail": "Resolve all year-end validation issues before submission.", "validation": preview})
     enrollments = _open_enrollments(academic_year, grade_level_id=grade_level_id, section_id=section_id, allowed_section_ids=allowed_section_ids)
     resolved = _validate_outcomes(enrollments, outcomes)
+    from grading.gradebook_initializer import initialize_gradebooks_for_academic_year
+
+    # Outcomes and gradebook setup must commit together; a half-applied year-end
+    # leaves closed enrollments without the gradebooks the next year depends on.
     with transaction.atomic():
         for enrollment in enrollments:
             outcome = resolved[str(enrollment.student_id)]
@@ -154,23 +158,23 @@ def apply_year_end_wizard(*, academic_year, outcomes, consent_acknowledged=False
                 graduate_student(enrollment.student, academic_year=academic_year)
             else:
                 close_enrollment_year(enrollment.student, outcome, academic_year=academic_year)
-    from grading.gradebook_initializer import initialize_gradebooks_for_academic_year
 
-    # grading_style is intentionally omitted: the service resolves it from the
-    # tenant's grading settings so gradebooks get the assessments that style needs.
-    gradebook_initialization = initialize_gradebooks_for_academic_year(
-        academic_year=academic_year,
-        created_by=actor,
-        regenerate=False,
-        section_id=section_id,
-        grade_level_id=grade_level_id,
-    )
-    if not gradebook_initialization.get("success"):
-        raise ValidationError({
-            "detail": gradebook_initialization.get("message")
-            or "Year-end outcomes were applied, but gradebook initialization failed.",
-            "error_code": gradebook_initialization.get("error_code"),
-            "gradebook_initialization": gradebook_initialization,
-        })
+        # grading_style is intentionally omitted: the service resolves it from the
+        # tenant's grading settings so gradebooks get the assessments that style needs.
+        gradebook_initialization = initialize_gradebooks_for_academic_year(
+            academic_year=academic_year,
+            created_by=actor,
+            regenerate=False,
+            section_id=section_id,
+            grade_level_id=grade_level_id,
+        )
+        if not gradebook_initialization.get("success"):
+            raise ValidationError({
+                "detail": gradebook_initialization.get("message")
+                or "Year-end processing failed while setting up gradebooks. No changes were saved.",
+                "error_code": gradebook_initialization.get("error_code"),
+                "gradebook_initialization": gradebook_initialization,
+            })
+
     preview["gradebook_initialization"] = gradebook_initialization
     return preview

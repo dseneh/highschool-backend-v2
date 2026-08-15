@@ -16,6 +16,7 @@ from django.db import transaction
 from django.db.models import Sum
 
 from academics.models import AcademicYear, MarkingPeriod, Semester
+from academics.services.current_academic_year import find_overlapping_academic_year
 from common.status import EnrollmentStatus, YearEndOutcome
 from finance.models import PaymentInstallment
 from grading.gradebook_initializer import initialize_gradebooks_for_academic_year
@@ -70,6 +71,8 @@ def _validate_target_dates(
     source_year: AcademicYear,
     start_date: date,
     end_date: date,
+    *,
+    exclude_year_id=None,
 ) -> None:
     if start_date >= end_date:
         raise ValueError("start_date must be before end_date.")
@@ -80,15 +83,16 @@ def _validate_target_dates(
     if duration > 365:
         raise ValueError("Academic year cannot exceed 365 days.")
 
-    overlap = AcademicYear.objects.filter(
-        year_type=AcademicYear.YearType.REGULAR,
-        start_date__lt=end_date,
-        end_date__gt=start_date,
+    conflict = find_overlapping_academic_year(
+        start_date,
+        end_date,
+        exclude_id=exclude_year_id,
     )
-    if source_year.id:
-        overlap = overlap.exclude(id=source_year.id)
-    if overlap.exists():
-        raise ValueError("Target dates overlap an existing academic year.")
+    if conflict is not None:
+        raise ValueError(
+            "Target dates overlap the existing academic year "
+            f"'{conflict.name}' ({conflict.start_date} to {conflict.end_date})."
+        )
 
 
 def _build_readiness(source_year: AcademicYear) -> dict[str, Any]:
@@ -538,19 +542,23 @@ def preview_rollover(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_rollover(payload: dict[str, Any], *, actor) -> dict[str, Any]:
-    preview = preview_rollover(payload)
-    source_year = AcademicYear.objects.get(id=preview["source_year"]["id"])
-    target_name = preview["target_year"]["name"]
-    target_start = preview["target_year"]["start_date"]
-    target_end = preview["target_year"]["end_date"]
-    options = _load_options(payload.get("options"))
-
-    if options.require_ready and not preview["readiness"]["is_ready"]:
-        raise ValueError("Year rollover blocked by readiness checks.")
-
     closed_current_years: list[dict[str, str]] = []
+    gradebook_result: dict[str, Any] | None = None
 
+    # Everything the new year needs must commit together: validation, the year
+    # itself, its structure, billing carry-over, and gradebook setup. A partially
+    # created year would otherwise linger and be reported as a date overlap on retry.
     with transaction.atomic():
+        preview = preview_rollover(payload)
+        source_year = AcademicYear.objects.get(id=preview["source_year"]["id"])
+        target_name = preview["target_year"]["name"]
+        target_start = preview["target_year"]["start_date"]
+        target_end = preview["target_year"]["end_date"]
+        options = _load_options(payload.get("options"))
+
+        if options.require_ready and not preview["readiness"]["is_ready"]:
+            raise ValueError("Year rollover blocked by readiness checks.")
+
         if options.set_as_current:
             current_years = AcademicYear.objects.filter(
                 current=True,
@@ -615,13 +623,17 @@ def apply_rollover(payload: dict[str, Any], *, actor) -> dict[str, Any]:
                 actor,
             )
 
-    gradebook_result: dict[str, Any] | None = None
-    if options.initialize_gradebooks:
-        gradebook_result = initialize_gradebooks_for_academic_year(
-            academic_year=target_year,
-            created_by=actor,
-            regenerate=False,
-        )
+        if options.initialize_gradebooks:
+            gradebook_result = initialize_gradebooks_for_academic_year(
+                academic_year=target_year,
+                created_by=actor,
+                regenerate=False,
+            )
+            if not gradebook_result.get("success"):
+                raise ValueError(
+                    gradebook_result.get("message")
+                    or "Gradebook initialization failed for the new academic year."
+                )
 
     return {
         "academic_year": {

@@ -105,26 +105,37 @@ def check_academic_year_overlap(
 ) -> Dict[str, Any]:
     """
     Check if academic year dates overlap with existing years
-    
+
+    Boundaries are half-open, so a year that ends on the day another starts is
+    adjacent, not overlapping.
+
     Args:
         start_date: Date object for new year
         end_date: Date object for new year
         existing_years: List of dicts with 'start_date' and 'end_date' strings
-        
+
     Returns:
         dict with 'has_overlap' (bool) and 'error' (str) keys
     """
     for year in existing_years:
-        existing_start = datetime.strptime(year['start_date'], "%Y-%m-%d").date()
-        existing_end = datetime.strptime(year['end_date'], "%Y-%m-%d").date()
-        
-        # Check if dates overlap
+        raw_start = year.get('start_date')
+        raw_end = year.get('end_date')
+        if not raw_start or not raw_end:
+            continue
+
+        existing_start = datetime.strptime(raw_start, "%Y-%m-%d").date()
+        existing_end = datetime.strptime(raw_end, "%Y-%m-%d").date()
+
         if start_date < existing_end and end_date > existing_start:
+            label = year.get('name') or f"{existing_start} to {existing_end}"
             return {
                 "has_overlap": True,
-                "error": "Academic year dates overlap with existing academic year"
+                "error": (
+                    f"Academic year dates overlap the existing academic year '{label}' "
+                    f"({existing_start} to {existing_end})"
+                ),
             }
-    
+
     return {"has_overlap": False, "error": None}
 
 

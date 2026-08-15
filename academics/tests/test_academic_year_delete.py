@@ -65,17 +65,29 @@ class AcademicYearDeleteViewTests(SimpleTestCase):
     def _make_request(self, force=False):
         return SimpleNamespace(
             query_params={"force": "true"} if force else {},
+            headers={},
+            META={},
         )
 
-    def test_delete_blocks_current_academic_year(self):
+    def test_delete_is_allowed_for_the_current_academic_year(self):
         view = AcademicYearDetailView()
         year = _StubObject(pk="year", current=True)
         view.get_object = MagicMock(return_value=year)
 
         response = view.delete(self._make_request(), id="year")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["detail"], "Cannot delete current academic year.")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(year.delete_calls, 1)
+
+    def test_delete_is_allowed_for_a_past_academic_year(self):
+        view = AcademicYearDetailView()
+        year = _StubObject(pk="year", current=False)
+        view.get_object = MagicMock(return_value=year)
+
+        response = view.delete(self._make_request(), id="year")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(year.delete_calls, 1)
 
     def test_delete_without_force_returns_400_when_protected(self):
         view = AcademicYearDetailView()
@@ -92,6 +104,17 @@ class AcademicYearDeleteViewTests(SimpleTestCase):
     def test_delete_with_force_uses_recursive_force_delete(self, mock_force_delete):
         view = AcademicYearDetailView()
         year = _StubObject(pk="year", current=False)
+        view.get_object = MagicMock(return_value=year)
+
+        response = view.delete(self._make_request(force=True), id="year")
+
+        self.assertEqual(response.status_code, 204)
+        mock_force_delete.assert_called_once()
+
+    @patch("academics.views.academic_year._force_delete_instance")
+    def test_force_delete_is_allowed_for_the_current_academic_year(self, mock_force_delete):
+        view = AcademicYearDetailView()
+        year = _StubObject(pk="year", current=True)
         view.get_object = MagicMock(return_value=year)
 
         response = view.delete(self._make_request(force=True), id="year")

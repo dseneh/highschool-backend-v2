@@ -127,10 +127,11 @@ class AcademicYearListView(APIView):
         validation_result["data"]["current"] = req_data.get("current", False)
 
         try:
-            academic_year = academic_year_adapter.create_academic_year_in_db(
-                data=validation_result["data"],
-                user=request.user
-            )
+            with transaction.atomic():
+                academic_year = academic_year_adapter.create_academic_year_in_db(
+                    data=validation_result["data"],
+                    user=request.user
+                )
             serializer = AcademicYearSerializer(
                 academic_year, context={"request": request}
             )
@@ -165,7 +166,10 @@ class AcademicYearDetailView(APIView):
         # Handle name update
         name = request.data.get("name")
         if name:
-            if AcademicYear.objects.filter(name__iexact=name).exists():
+            duplicate = AcademicYear.objects.filter(name__iexact=name).exclude(
+                id=academic_year.id
+            )
+            if duplicate.exists():
                 return Response(
                     {"detail": f"Academic year named '{name}' already exists"},
                     status=400,
@@ -217,35 +221,31 @@ class AcademicYearDetailView(APIView):
             update_data["status"] = status_value
 
         # Update in database
-        updated_year = academic_year_adapter.update_academic_year_in_db(
-            year_id=str(academic_year.id),
-            data=update_data,
-            user=request.user
-        )
-        
-        if not updated_year:
-            return Response({"detail": "Academic year not found"}, status=404)
+        with transaction.atomic():
+            updated_year = academic_year_adapter.update_academic_year_in_db(
+                year_id=str(academic_year.id),
+                data=update_data,
+                user=request.user
+            )
+
+            if not updated_year:
+                return Response({"detail": "Academic year not found"}, status=404)
         
         serializer = AcademicYearSerializer(updated_year, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):
         academic_year = self.get_object(id)
-        if academic_year.current:
-            return Response(
-                {"detail": "Cannot delete current academic year."}, status=400
-            )
 
         force = request.query_params.get("force", "false").lower() == "true"
 
         try:
-            if not force:
-                academic_year.delete()
-                return Response(status=status.HTTP_204_NO_CONTENT)
-
             with transaction.atomic():
-                _force_delete_instance(academic_year, visited=set())
-
+                if not force:
+                    academic_year.delete()
+                else:
+                    _force_delete_instance(academic_year, visited=set())
+            DataCache.invalidate_academic_years(request=request)
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ProtectedError as exc:
             return Response(
@@ -307,9 +307,7 @@ class AcademicYearDeleteImpactView(APIView):
         )
 
         reason = None
-        if academic_year.current:
-            reason = "Cannot delete current academic year."
-        elif has_related_data:
+        if has_related_data:
             reason = "Academic year has related data. Use force delete to proceed."
 
         return Response(
@@ -320,8 +318,8 @@ class AcademicYearDeleteImpactView(APIView):
                     "current": academic_year.current,
                     "status": academic_year.status,
                 },
-                "can_delete_without_force": (not academic_year.current) and (not has_related_data),
-                "can_force_delete": not academic_year.current,
+                "can_delete_without_force": not has_related_data,
+                "can_force_delete": True,
                 "reason": reason,
                 "counts": {
                     "semesters": semester_count,

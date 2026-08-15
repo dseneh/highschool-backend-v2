@@ -16,6 +16,29 @@ def clear_current_academic_years(*, exclude_id=None) -> int:
     return queryset.update(current=False)
 
 
+def find_overlapping_academic_year(start_date, end_date, *, exclude_id=None):
+    """Return the first regular academic year whose dates truly overlap the range.
+
+    Compares the stored date-only values in the tenant schema. Historical years and
+    years without both dates are archival records and never block a real year, and
+    the record being processed is excluded so it never conflicts with itself.
+    Boundaries are half-open, so a year ending the day another starts is not an overlap.
+    """
+    if not start_date or not end_date:
+        return None
+
+    queryset = AcademicYear.objects.filter(
+        year_type=AcademicYear.YearType.REGULAR,
+        start_date__isnull=False,
+        end_date__isnull=False,
+        start_date__lt=end_date,
+        end_date__gt=start_date,
+    )
+    if exclude_id:
+        queryset = queryset.exclude(id=exclude_id)
+    return queryset.order_by("start_date").first()
+
+
 @transaction.atomic
 def set_current_academic_year(academic_year: AcademicYear, *, actor=None):
     """Promote an academic year to current, demoting any other current year.

@@ -113,16 +113,26 @@ def get_academic_year_by_id(year_id: str) -> Optional[AcademicYear]:
 def get_existing_academic_years(exclude_id: Optional[str] = None) -> List[Dict[str, str]]:
     """
     Get existing academic years for overlap checking
-    
+
+    Only regular years with both dates set can block a new year; historical and
+    undated records are archival. The record being processed is excluded so it
+    never conflicts with itself.
+
     Returns:
         List of dicts with start_date and end_date as ISO strings
     """
-    queryset = AcademicYear.objects.all()
+    queryset = AcademicYear.objects.filter(
+        year_type=AcademicYear.YearType.REGULAR,
+        start_date__isnull=False,
+        end_date__isnull=False,
+    )
     if exclude_id:
         queryset = queryset.exclude(id=exclude_id)
-    
+
     return [
         {
+            'id': str(year.id),
+            'name': year.name or '',
             'start_date': year.start_date.isoformat(),
             'end_date': year.end_date.isoformat(),
         }
