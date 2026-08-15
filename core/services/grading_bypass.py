@@ -15,9 +15,6 @@ from rest_framework.exceptions import ValidationError
 from common.status import EnrollmentStatus, StudentStatus, YearEndOutcome
 from core.models import GradingBypassOperation, Tenant
 
-CONFIRMATION_PHRASE = "BYPASS GRADING"
-
-
 def _json_safe(value):
     """Convert Django/Python values to primitives suitable for JSONField storage."""
     return json.loads(json.dumps(value, cls=DjangoJSONEncoder))
@@ -204,6 +201,64 @@ def _resolve_year_end_placement(enrollment, outcome, next_grade_level_id=None):
         raise ValidationError({"detail": str(exc)}) from exc
 
 
+def build_outcome_summary(
+    *,
+    tenant: Tenant,
+    academic_year_id,
+    year_end_outcomes,
+    default_year_end_outcome=None,
+    next_grade_level_overrides=None,
+):
+    """Preview final resolved outcomes for every open enrollment without mutation."""
+    overrides = {
+        str(enrollment_id): value
+        for enrollment_id, value in (next_grade_level_overrides or {}).items()
+        if value
+    }
+    with schema_context(tenant.schema_name):
+        from students.models import Enrollment
+
+        academic_year = _get_academic_year(academic_year_id)
+        enrollments = list(
+            Enrollment.objects.filter(
+                academic_year=academic_year,
+                status=EnrollmentStatus.ENROLLED,
+            )
+            .select_related("grade_level", "section")
+            .order_by("grade_level__level", "section__name")
+        )
+        outcomes = _validate_outcomes(
+            enrollments,
+            year_end_outcomes,
+            default_year_end_outcome,
+        )
+        status_totals = {outcome: 0 for outcome in YearEndOutcome.all()}
+        class_totals = {}
+        for enrollment in enrollments:
+            resolved_outcome, _next_grade = _resolve_year_end_placement(
+                enrollment,
+                outcomes[str(enrollment.pk)],
+                overrides.get(str(enrollment.pk)),
+            )
+            status_totals[resolved_outcome] = status_totals.get(resolved_outcome, 0) + 1
+            class_key = (str(enrollment.grade_level), str(enrollment.section))
+            if class_key not in class_totals:
+                class_totals[class_key] = {
+                    "grade_level": str(enrollment.grade_level),
+                    "section": str(enrollment.section),
+                    "total": 0,
+                    "outcomes": {outcome: 0 for outcome in YearEndOutcome.all()},
+                }
+            class_totals[class_key]["total"] += 1
+            class_totals[class_key]["outcomes"][resolved_outcome] += 1
+
+        return {
+            "total_students": len(enrollments),
+            "status_totals": status_totals,
+            "classes": list(class_totals.values()),
+        }
+
+
 def execute_bypass(
     *,
     tenant: Tenant,
@@ -213,11 +268,14 @@ def execute_bypass(
     year_end_outcomes,
     default_year_end_outcome=None,
     next_grade_level_overrides=None,
+    consent_acknowledged=False,
 ):
     """Finalize one year, then permanently remove only its grading graph."""
     reason = (reason or "").strip()
     if not reason:
         raise ValidationError({"reason": "A reason is required for a grading bypass."})
+    if consent_acknowledged is not True:
+        raise ValidationError({"consent_acknowledged": "Explicit consent is required before executing a grading bypass."})
 
     next_grade_level_overrides = {
         str(enrollment_id): value

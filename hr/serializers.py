@@ -28,10 +28,10 @@ class EmployeeOrStaffPKField(serializers.PrimaryKeyRelatedField):
         try:
             return super().to_internal_value(data)
         except serializers.ValidationError:
-            try:
-                staff = Staff.objects.get(id=data)
-            except (Staff.DoesNotExist, ValueError, TypeError):
-                staff = Staff.objects.filter(id_number=data).first()
+            identifier = str(data)
+            staff = Staff.objects.filter(id_number=identifier).first()
+            if not staff:
+                staff = Staff.objects.filter(id=identifier).first()
 
             if not staff:
                 self.fail("does_not_exist", pk_value=data)
@@ -261,7 +261,7 @@ class EmployeeTeacherSectionSerializer(serializers.ModelSerializer):
 
 
 class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
-    teacher = EmployeeOrStaffPKField(queryset=Employee.objects.all())
+    teacher = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
         required=False,
@@ -279,8 +279,17 @@ class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
     def validate(self, attrs):
-        section_subject = attrs.get("section_subject")
-        subject = attrs.get("subject")
+        teacher = attrs.get("teacher", self.instance.teacher if self.instance else None)
+        section_subject = attrs.get(
+            "section_subject",
+            self.instance.section_subject if self.instance else None,
+        )
+        subject = attrs.get("subject", self.instance.subject if self.instance else None)
+
+        if teacher and not teacher.is_teacher:
+            raise serializers.ValidationError(
+                {"teacher": "The selected employee is not marked as a teacher in this institution."}
+            )
 
         if not section_subject and not subject:
             raise serializers.ValidationError({"section_subject": "This field is required."})

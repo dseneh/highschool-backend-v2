@@ -21,6 +21,11 @@ router.register(r"employee-positions", EmployeePositionViewSet, basename="employ
 router.register(r"employee-specializations", EmployeeSpecializationViewSet, basename="employee-specialization")
 router.register(r"teacher-sections", EmployeeTeacherSectionViewSet, basename="employee-teacher-section")
 router.register(r"teacher-subjects", EmployeeTeacherSubjectViewSet, basename="employee-teacher-subject")
+router.register(
+    r"employee-teacher-subjects",
+    EmployeeTeacherSubjectViewSet,
+    basename="employee-teacher-subject-explicit",
+)
 router.register(r"leave-types", LeaveTypeViewSet, basename="leave-type")
 router.register(r"leave-requests", LeaveRequestViewSet, basename="leave-request")
 router.register(r"employee-attendance", EmployeeAttendanceViewSet, basename="employee-attendance")

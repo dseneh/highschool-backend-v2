@@ -18,6 +18,7 @@ from students.views.enrollment_lifecycle_bulk import (
     EnrollmentLifecycleRulesView,
     EnrollmentLifecycleUndoView,
 )
+from students.views.year_end_wizard import YearEndWizardApplyView, YearEndWizardView
 from finance.views import StudentPaymentStatusListView
 from students.views.distributions import (
     get_grade_level_distribution,
@@ -206,6 +207,8 @@ urlpatterns = [
         EnrollmentLifecycleBulkPreviewView.as_view(),
         name="enrollment_lifecycle_bulk_preview",
     ),
+    path("students/year-end-wizard/preview/", YearEndWizardView.as_view(), name="year_end_wizard_preview"),
+    path("students/year-end-wizard/apply/", YearEndWizardApplyView.as_view(), name="year_end_wizard_apply"),
     path(
         "students/enrollment-lifecycle/apply/",
         EnrollmentLifecycleBulkApplyView.as_view(),

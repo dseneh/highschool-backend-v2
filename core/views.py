@@ -32,9 +32,9 @@ from io import BytesIO
 
 from core.models import Domain, Tenant, SignupRequest, TenantOwnerActivationCode
 from core.services.grading_bypass import (
-    CONFIRMATION_PHRASE,
     build_preview as build_grading_bypass_preview,
     execute_bypass as execute_grading_bypass,
+    build_outcome_summary as build_grading_bypass_outcome_summary,
 )
 from core.serializers import (
     TenantSerializer,
@@ -602,10 +602,8 @@ class TenantViewSet(ModelViewSet):
     )
     def grading_bypass(self, request, *args, **kwargs):
         validate_tenant_is_in_public_schema()
-        if request.data.get("confirmation_phrase") != CONFIRMATION_PHRASE:
-            raise ValidationError({
-                "confirmation_phrase": f"Enter '{CONFIRMATION_PHRASE}' to continue."
-            })
+        if request.data.get("consent_acknowledged") is not True:
+            raise ValidationError({"consent_acknowledged": "Explicit consent is required before executing a grading bypass."})
         academic_year_id = request.data.get("academic_year")
         if not academic_year_id:
             raise ValidationError({"academic_year": "An academic year is required."})
@@ -617,6 +615,7 @@ class TenantViewSet(ModelViewSet):
             year_end_outcomes=request.data.get("year_end_outcomes"),
             default_year_end_outcome=request.data.get("default_year_end_outcome"),
             next_grade_level_overrides=request.data.get("next_grade_level_overrides"),
+            consent_acknowledged=True,
         )
         return Response({
             "id": str(operation.pk),
@@ -625,6 +624,25 @@ class TenantViewSet(ModelViewSet):
             "financial_adjustments": operation.financial_adjustments,
             "year_end_records_updated": operation.year_end_records_updated,
         }, status=status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="grading-bypass-outcome-summary",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def grading_bypass_outcome_summary(self, request, *args, **kwargs):
+        validate_tenant_is_in_public_schema()
+        academic_year_id = request.data.get("academic_year")
+        if not academic_year_id:
+            raise ValidationError({"academic_year": "An academic year is required."})
+        return Response(build_grading_bypass_outcome_summary(
+            tenant=self.get_object(),
+            academic_year_id=academic_year_id,
+            year_end_outcomes=request.data.get("year_end_outcomes"),
+            default_year_end_outcome=request.data.get("default_year_end_outcome"),
+            next_grade_level_overrides=request.data.get("next_grade_level_overrides"),
+        ))
 
     @action(
         detail=True,

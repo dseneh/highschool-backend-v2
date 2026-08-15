@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.db.models import Q
 from users.models import User
 from academics.models import SectionSubject, Subject, SectionSchedule
 
@@ -23,6 +24,24 @@ class StaffOrEmployeePKField(serializers.PrimaryKeyRelatedField):
             return super().to_internal_value(data)
         except serializers.ValidationError:
             from hr.models import Employee
+
+            # Some grading payloads originate from a linked User account. Map
+            # that UUID through its stable id_number to the tenant Staff row.
+            try:
+                user = User.objects.get(id=data)
+            except (User.DoesNotExist, ValueError):
+                user = None
+            if user:
+                staff = self.get_queryset().filter(
+                    Q(id_number=user.id_number)
+                    | Q(user_account_id_number=user.id_number)
+                ).first()
+                if staff:
+                    return staff
+
+            staff = self.get_queryset().filter(id_number=str(data)).first()
+            if staff:
+                return staff
 
             try:
                 emp = Employee.objects.get(id=data)
