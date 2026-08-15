@@ -104,6 +104,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
 
         # Determine current grade level based on priority
         current_grade_level = None
+        latest_completed_enrollment = None
         if current_enrollment:
             # Priority 1: Use grade level from current enrollment
             current_grade_level = current_enrollment.grade_level
@@ -112,12 +113,17 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             previous_enrollment = instance.enrollments.order_by(
                 "-academic_year__start_date"
             ).first()
+            latest_completed_enrollment = instance.enrollments.filter(
+                status="completed",
+                next_grade_level__isnull=False,
+            ).select_related("next_grade_level").order_by(
+                "-academic_year__start_date"
+            ).first()
             if (
-                previous_enrollment
-                and hasattr(previous_enrollment, "next_grade_level")
-                and previous_enrollment.next_grade_level
+                latest_completed_enrollment
+                and latest_completed_enrollment.next_grade_level
             ):
-                current_grade_level = previous_enrollment.next_grade_level
+                current_grade_level = latest_completed_enrollment.next_grade_level
             else:
                 # Priority 3: Use student's grade_level field
                 current_grade_level = instance.grade_level
@@ -131,6 +137,21 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             }
         else:
             response["current_grade_level"] = None
+
+        next_grade_level = (
+            latest_completed_enrollment.next_grade_level
+            if latest_completed_enrollment is not None
+            else None
+        )
+        response["next_grade_level"] = (
+            {
+                "id": next_grade_level.id,
+                "name": next_grade_level.name,
+                "level": next_grade_level.level,
+            }
+            if next_grade_level
+            else None
+        )
 
         if current_enrollment:
             include_billing = context.get("include_billing", True)
@@ -155,6 +176,19 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             current_enrollment=current_enrollment,
             academic_year=selected_academic_year,
         )
+        from students.services.balance import get_student_effective_outstanding_balance
+
+        annotated_balance = getattr(instance, "balance_total", None)
+        effective_balance = (
+            annotated_balance
+            if annotated_balance is not None
+            else get_student_effective_outstanding_balance(instance)
+        )
+        response["balance"] = float(effective_balance)
+        response["has_balance"] = effective_balance > 0
+        response["student_type"] = getattr(instance, "student_type", "new")
+        if hasattr(instance, "has_balance"):
+            response["has_balance"] = bool(instance.has_balance)
         enrollment_count = getattr(instance, "enrollment_count", None)
         if enrollment_count is None:
             enrollment_count = instance.enrollments.count()

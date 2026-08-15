@@ -269,3 +269,77 @@ def annotate_student_balance_totals(
             output_field=decimal_output,
         )
     )
+
+
+def annotate_student_effective_outstanding_balance(students: QuerySet) -> QuerySet:
+    """Attach the balance visible on the student list across academic years.
+
+    A current-year bill already contains carried-forward arrears, so it is the
+    authoritative balance once present. Before re-enrollment, sum eligible
+    historical bills so former balances remain visible without a current seat.
+    """
+    decimal_output = DecimalField(max_digits=12, decimal_places=2)
+    eligible_bills = AccountingStudentBill.objects.exclude(
+        status=AccountingStudentBill.BillStatus.CANCELLED,
+    )
+    has_current_bill = Exists(
+        eligible_bills.filter(
+            student=OuterRef("pk"),
+            academic_year__current=True,
+        )
+    )
+    current_balance = (
+        eligible_bills.filter(
+            student=OuterRef("pk"),
+            academic_year__current=True,
+        )
+        .order_by()
+        .values("student")
+        .annotate(total=Sum("outstanding_amount"))
+        .values("total")[:1]
+    )
+    historical_balance = (
+        eligible_bills.filter(
+            student=OuterRef("pk"),
+            academic_year__current=False,
+        )
+        .order_by()
+        .values("student")
+        .annotate(total=Sum("outstanding_amount"))
+        .values("total")[:1]
+    )
+    return students.annotate(
+        balance_total=Case(
+            When(
+                has_current_bill,
+                then=Coalesce(Subquery(current_balance), Value(0), output_field=decimal_output),
+            ),
+            default=Coalesce(Subquery(historical_balance), Value(0), output_field=decimal_output),
+            output_field=decimal_output,
+        ),
+    ).annotate(
+        has_balance=Case(
+            When(balance_total__gt=0, then=Value(True)),
+            default=Value(False),
+        )
+    )
+
+
+def get_student_effective_outstanding_balance(student) -> Decimal:
+    """Resolve the Student List balance contract for one detail response."""
+    current_total = AccountingStudentBill.objects.filter(
+        student=student,
+        academic_year__current=True,
+    ).exclude(
+        status=AccountingStudentBill.BillStatus.CANCELLED,
+    ).aggregate(total=Sum("outstanding_amount"))["total"]
+    if current_total is not None:
+        return max(Decimal("0"), current_total)
+
+    historical_total = AccountingStudentBill.objects.filter(
+        student=student,
+        academic_year__current=False,
+    ).exclude(
+        status=AccountingStudentBill.BillStatus.CANCELLED,
+    ).aggregate(total=Sum("outstanding_amount"))["total"]
+    return max(Decimal("0"), historical_total or Decimal("0"))

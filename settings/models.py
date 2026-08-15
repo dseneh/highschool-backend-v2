@@ -143,6 +143,11 @@ class GradingSettings(BaseModel):
         help_text="Minimum overall average (%) for mid-year promotion",
     )
 
+    allow_grade_view_with_outstanding_balance = models.BooleanField(
+        default=True,
+        help_text="Allow students and non-privileged viewers to access grades when the current-year balance is outstanding.",
+    )
+
     # Official transcript access
     allow_student_transcript_download = models.BooleanField(
         default=False,

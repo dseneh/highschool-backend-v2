@@ -10,6 +10,7 @@ from students.services.enrollment_lifecycle import (
     close_enrollment_year,
     graduate_student,
     resolve_next_grade_level,
+    resolve_year_end_placement,
     transfer_out_student,
 )
 from students.services.student_status import compute_is_enrolled
@@ -22,20 +23,79 @@ class ResolveNextGradeLevelTests(SimpleTestCase):
         self.assertEqual(result, grade)
 
     @patch("students.services.enrollment_lifecycle.GradeLevel.objects")
-    def test_promote_returns_next_level_in_division(self, mock_objects):
+    def test_promote_returns_next_configured_level(self, mock_objects):
         grade = SimpleNamespace(id="g1", level=5, division_id="d1")
         next_grade = SimpleNamespace(id="g2", level=6, division_id="d1")
-        mock_objects.filter.return_value.order_by.return_value.first.return_value = (
-            next_grade
-        )
+        mock_objects.filter.return_value.order_by.return_value = [next_grade]
 
         result = resolve_next_grade_level(grade, YearEndOutcome.PROMOTED)
         self.assertEqual(result, next_grade)
         mock_objects.filter.assert_called_once_with(
             active=True,
-            division_id="d1",
-            level=6,
+            level__gt=5,
         )
+
+    @patch("students.services.enrollment_lifecycle.GradeLevel.objects")
+    def test_double_promotion_returns_second_configured_grade(self, mock_objects):
+        grade = SimpleNamespace(id="g8", level=8)
+        grade_nine = SimpleNamespace(id="g9", level=9)
+        grade_ten = SimpleNamespace(id="g10", level=10)
+        mock_objects.filter.return_value.order_by.return_value = [grade_nine, grade_ten]
+
+        result = resolve_next_grade_level(grade, YearEndOutcome.DOUBLE_PROMOTED)
+
+        self.assertEqual(result, grade_ten)
+
+    @patch("students.services.enrollment_lifecycle.resolve_next_grade_level", return_value=None)
+    def test_double_promotion_requires_two_higher_configured_grades(self, _mock_next_grade):
+        grade = SimpleNamespace(id="g11", level=11)
+
+        with self.assertRaisesRegex(
+            EnrollmentLifecycleError,
+            "Double promotion requires at least two higher configured grade levels",
+        ):
+            resolve_year_end_placement(grade, YearEndOutcome.DOUBLE_PROMOTED)
+
+    @patch("students.services.enrollment_lifecycle.resolve_next_grade_level", return_value=None)
+    def test_final_grade_promotion_becomes_graduation(self, _mock_next_grade):
+        grade = SimpleNamespace(id="g12", level=12, division_id="d1")
+
+        outcome, next_grade = resolve_year_end_placement(
+            grade, YearEndOutcome.PROMOTED
+        )
+
+        self.assertEqual(outcome, YearEndOutcome.GRADUATED)
+        self.assertIsNone(next_grade)
+
+    @patch("students.services.enrollment_lifecycle.GradeLevel.objects")
+    def test_promotion_allows_active_higher_grade_override(self, mock_objects):
+        grade = SimpleNamespace(pk="g9", level=9)
+        selected_next_grade = SimpleNamespace(pk="g11", level=11)
+        mock_objects.filter.return_value.first.return_value = selected_next_grade
+
+        outcome, next_grade = resolve_year_end_placement(
+            grade,
+            YearEndOutcome.PROMOTED,
+            next_grade_level_id="g11",
+        )
+
+        self.assertEqual(outcome, YearEndOutcome.PROMOTED)
+        self.assertEqual(next_grade, selected_next_grade)
+        mock_objects.filter.assert_called_once_with(
+            pk="g11",
+            active=True,
+            level__gt=9,
+        )
+
+    def test_repeat_rejects_different_next_grade_override(self):
+        grade = SimpleNamespace(pk="g9", level=9)
+
+        with self.assertRaises(EnrollmentLifecycleError):
+            resolve_year_end_placement(
+                grade,
+                YearEndOutcome.REPEATED,
+                next_grade_level_id="g10",
+            )
 
 
 class CloseEnrollmentYearTests(SimpleTestCase):

@@ -1,7 +1,7 @@
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,6 +22,15 @@ from ..serializers import (
     StudentDisciplinaryActionSerializer,
     DisciplinaryActionTypeSerializer,
 )
+from ..services.student_status import compute_is_enrolled
+
+
+def _ensure_currently_enrolled_for_discipline(student):
+    if not compute_is_enrolled(student):
+        raise PermissionDenied({
+            "code": "discipline_restricted_not_enrolled",
+            "detail": "Disciplinary actions can only be created or changed for students currently enrolled in this academic year.",
+        })
 
 
 class StudentDisciplinaryActionPagination(PageNumberPagination):
@@ -219,6 +228,7 @@ class StudentDisciplinaryActionListCreateView(APIView):
 
         serializer = StudentDisciplinaryActionSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
+        _ensure_currently_enrolled_for_discipline(serializer.validated_data["student"])
         _ensure_action_text_from_type(serializer)
         record = serializer.save(created_by=request.user, updated_by=request.user)
 
@@ -254,6 +264,7 @@ class StudentDisciplinaryActionDetailView(APIView):
 
     def put(self, request, id):
         record = self.get_object(id)
+        _ensure_currently_enrolled_for_discipline(record.student)
         payload, _student_status_update, error_response = _extract_status_updates(
             request.data
         )
@@ -317,6 +328,7 @@ class StudentDisciplinaryActionDetailView(APIView):
 
     def delete(self, request, id):
         record = self.get_object(id)
+        _ensure_currently_enrolled_for_discipline(record.student)
         record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -369,6 +381,7 @@ class StudentDisciplinaryActionByStudentListCreateView(APIView):
 
     def post(self, request, student_id):
         student = self.get_student(student_id)
+        _ensure_currently_enrolled_for_discipline(student)
         request_payload, _student_status_update, error_response = _extract_status_updates(
             request.data
         )

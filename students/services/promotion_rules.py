@@ -48,7 +48,10 @@ def min_average_for_action(action: str, outcome: str | None, rules: dict) -> flo
         raw = rules.get("mid_year_promotion_min_overall_average")
         if raw is not None:
             return raw
-    if action == "complete_year" and (outcome or "").lower() == YearEndOutcome.PROMOTED:
+    if action == "complete_year" and (outcome or "").lower() in {
+        YearEndOutcome.PROMOTED,
+        YearEndOutcome.DOUBLE_PROMOTED,
+    }:
         return rules.get("year_closure_min_overall_average")
     return None
 

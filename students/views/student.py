@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from django.core.cache import cache
 from django.db import transaction, router, connection
-from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When, Prefetch
+from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When, Prefetch, Exists, CharField
 from django.db.models.functions import Coalesce
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
@@ -30,7 +30,10 @@ from common.utils import (
 )
 from academics.models import AcademicYear, GradeLevel
 from accounting.models import AccountingStudentBill
-from students.services.balance import annotate_student_balance_totals
+from students.services.balance import (
+    annotate_student_balance_totals,
+    annotate_student_effective_outstanding_balance,
+)
 from students.models import Student, Enrollment, StudentEnrollmentBill, Attendance
 from students.serializers import StudentDetailSerializer, StudentSerializer
 from students.views.student_etag import student_detail_etag
@@ -172,8 +175,31 @@ class StudentListView(APIView):
                 paid_max not in (None, ""),
             ]
         )
-        if needs_balance_annotations:
-            students = annotate_student_balance_totals(students)
+        # The list contract always exposes effective outstanding balance and
+        # has_balance, including students without a current-year enrollment.
+        students = annotate_student_balance_totals(students)
+        students = annotate_student_effective_outstanding_balance(students)
+
+        students = students.annotate(
+            student_type=Case(
+                When(
+                    Exists(
+                        Enrollment.objects.filter(
+                            student=OuterRef("pk"),
+                            academic_year__current=False,
+                            status=EnrollmentStatus.COMPLETED,
+                        )
+                    ),
+                    then=Value("returning"),
+                ),
+                default=Value("new"),
+                output_field=CharField(),
+            )
+        )
+        student_type = (request.query_params.get("student_type") or "").strip().lower()
+        student_type_values = [value.strip() for value in student_type.split(",") if value.strip()]
+        if student_type_values:
+            students = students.filter(student_type__in=student_type_values)
 
         if balance_owed == "owed":
             students = students.filter(balance_total__gt=0)

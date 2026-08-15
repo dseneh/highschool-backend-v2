@@ -4,12 +4,15 @@ from rest_framework.views import APIView
 
 from academics.access_policies import AcademicsAccessPolicy
 from academics.models import GradeBookScheduleProjection, StudentScheduleProjection
+from common.utils import get_object_by_uuid_or_fields
 from academics.serializers import (
     GradeBookScheduleProjectionSerializer,
     StudentScheduleProjectionSerializer,
     TeacherScheduleProjectionSerializer,
 )
 from staff.models import Staff, TeacherSchedule
+from students.models import Student
+from students.services.student_status import compute_is_enrolled, resolve_current_enrollment
 
 
 def _resolve_staff_id(teacher_id):
@@ -98,6 +101,21 @@ class StudentScheduleProjectionListView(APIView):
     permission_classes = [AcademicsAccessPolicy]
 
     def get(self, request, student_id):
+        student = get_object_by_uuid_or_fields(
+            Student,
+            student_id,
+            fields=["id_number", "prev_id_number"],
+        )
+        current_enrollment = resolve_current_enrollment(student)
+        if not compute_is_enrolled(student, current_enrollment=current_enrollment):
+            return Response(
+                {
+                    "code": "schedule_restricted_not_enrolled",
+                    "detail": "Current class schedules are only available for students currently enrolled in this academic year.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         queryset = (
             StudentScheduleProjection.objects.select_related(
                 "class_schedule",
@@ -110,7 +128,7 @@ class StudentScheduleProjectionListView(APIView):
                 "subject",
                 "period",
             )
-            .filter(student_id=student_id, active=True, class_schedule__active=True)
+            .filter(student=student, active=True, class_schedule__active=True)
             .order_by("day_of_week", "start_time")
         )
 

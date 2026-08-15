@@ -422,6 +422,11 @@ class StudentGradeHistoryView(APIView):
 
     def get(self, request, student_id):
         student = _get_student(student_id)
+        from academics.models import AcademicYear
+        from grading.services.grade_access import enforce_grade_access
         from students.services.student_grade_history import StudentGradeHistoryService
 
+        current_year = AcademicYear.objects.filter(current=True).first()
+        if current_year is not None:
+            enforce_grade_access(student, current_year)
         return Response(StudentGradeHistoryService.serialize_for_student(student))

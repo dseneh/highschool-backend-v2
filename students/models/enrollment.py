@@ -44,6 +44,7 @@ class Enrollment(BaseModel):
         null=True,
         default=None,
     )
+    completion_date = models.DateField(blank=True, null=True, default=None)
 
     class Meta:
         db_table = 'enrollment'

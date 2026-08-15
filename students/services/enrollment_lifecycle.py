@@ -30,18 +30,74 @@ def resolve_next_grade_level(
     if normalized == YearEndOutcome.REPEATED:
         return grade_level
 
-    if normalized != YearEndOutcome.PROMOTED:
+    progression_steps = {
+        YearEndOutcome.PROMOTED: 1,
+        YearEndOutcome.DOUBLE_PROMOTED: 2,
+    }.get(normalized)
+    if progression_steps is None:
         return None
 
-    return (
-        GradeLevel.objects.filter(
-            active=True,
-            division_id=grade_level.division_id,
-            level=grade_level.level + 1,
-        )
-        .order_by("level")
-        .first()
+    candidates = list(
+        GradeLevel.objects.filter(active=True, level__gt=grade_level.level)
+        .order_by("level", "name")
     )
+    if len(candidates) < progression_steps:
+        return None
+    return candidates[progression_steps - 1]
+
+
+def resolve_year_end_placement(
+    grade_level: GradeLevel,
+    outcome: str,
+    next_grade_level_id=None,
+) -> tuple[str, Optional[GradeLevel]]:
+    """Resolve the final year-end outcome and next placement from grade order.
+
+    A promotion from the highest configured grade becomes graduation. This
+    deliberately uses the school's configured grade-level ordering rather than
+    grade IDs or a required contiguous numeric sequence.
+    """
+    normalized = (outcome or "").lower().strip()
+    if normalized == YearEndOutcome.REPEATED:
+        if next_grade_level_id and str(next_grade_level_id) != str(grade_level.pk):
+            raise EnrollmentLifecycleError(
+                "A repeating student must remain in the current grade level."
+            )
+        return normalized, grade_level
+    if normalized == YearEndOutcome.PROMOTED:
+        if next_grade_level_id:
+            next_grade = GradeLevel.objects.filter(
+                pk=next_grade_level_id,
+                active=True,
+                level__gt=grade_level.level,
+            ).first()
+            if next_grade is None:
+                raise EnrollmentLifecycleError(
+                    "The selected next grade must be an active configured grade above the current grade."
+                )
+            return normalized, next_grade
+        next_grade = resolve_next_grade_level(grade_level, normalized)
+        if next_grade is None:
+            return YearEndOutcome.GRADUATED, None
+        return normalized, next_grade
+    if normalized == YearEndOutcome.DOUBLE_PROMOTED:
+        expected_next_grade = resolve_next_grade_level(grade_level, normalized)
+        if expected_next_grade is None:
+            raise EnrollmentLifecycleError(
+                "Double promotion requires at least two higher configured grade levels."
+            )
+        if next_grade_level_id and str(next_grade_level_id) != str(expected_next_grade.pk):
+            raise EnrollmentLifecycleError(
+                "Double promotion must use the second configured grade above the current grade."
+            )
+        return normalized, expected_next_grade
+    if normalized in {
+        YearEndOutcome.GRADUATED,
+        YearEndOutcome.WITHDRAWN,
+        YearEndOutcome.TRANSFERRED,
+    }:
+        return normalized, None
+    raise EnrollmentLifecycleError("Unsupported year-end outcome.")
 
 
 def _require_enrolled_enrollment(enrollment: Optional["Enrollment"]) -> "Enrollment":
@@ -62,35 +118,38 @@ def close_enrollment_year(
     outcome: str,
     *,
     academic_year=None,
+    next_grade_level_id=None,
 ) -> "Enrollment":
     """
-    Close the current academic year with promoted or repeated outcome.
+    Close the current academic year with a progression or repeat outcome.
     Sets enrollment.status = completed and next_grade_level.
     """
     normalized = (outcome or "").lower().strip()
     if normalized not in YearEndOutcome.close_year_outcomes():
         raise EnrollmentLifecycleError(
-            "outcome must be 'promoted' or 'repeated'."
+            "outcome must be 'promoted', 'double_promoted', or 'repeated'."
         )
 
     enrollment = _require_enrolled_enrollment(
         resolve_current_enrollment(student, academic_year=academic_year)
     )
 
-    next_grade = resolve_next_grade_level(enrollment.grade_level, normalized)
-    if normalized == YearEndOutcome.PROMOTED and next_grade is None:
-        raise EnrollmentLifecycleError(
-            "No higher grade level is configured. Use graduate instead."
-        )
+    resolved_outcome, next_grade = resolve_year_end_placement(
+        enrollment.grade_level, normalized, next_grade_level_id
+    )
 
     enrollment.status = EnrollmentStatus.COMPLETED
-    enrollment.year_end_outcome = normalized
+    enrollment.year_end_outcome = resolved_outcome
     enrollment.next_grade_level = next_grade
     enrollment.save(
         update_fields=["status", "year_end_outcome", "next_grade_level"]
     )
 
-    if (student.status or "").lower() in (
+    if resolved_outcome == YearEndOutcome.GRADUATED:
+        student.status = StudentStatus.GRADUATED
+        student.date_of_graduation = date.today()
+        student.save(update_fields=["status", "date_of_graduation"])
+    elif (student.status or "").lower() in (
         StudentStatus.WITHDRAWN,
         StudentStatus.TRANSFERRED,
         StudentStatus.ENROLLED,
@@ -229,7 +288,7 @@ def undo_year_end_promotion(
         )
     if outcome not in YearEndOutcome.close_year_outcomes():
         raise EnrollmentLifecycleError(
-            "Only promoted or repeated year-end outcomes can be undone."
+            "Only promoted, double-promoted, or repeated year-end outcomes can be undone."
         )
 
     enrollment.status = EnrollmentStatus.ENROLLED

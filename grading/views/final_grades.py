@@ -18,6 +18,7 @@ from grading.utils import (
     calculate_marking_period_percentage,
 )
 from grading.services.pdf_report import generate_student_report_card_pdf
+from grading.services.grade_access import enforce_grade_access
 from students.models import Student, Enrollment
 
 class StudentFinalGradeView(APIView):
@@ -56,6 +57,7 @@ class StudentFinalGradeView(APIView):
 
         # Get gradebook
         gradebook = get_object_or_404(GradeBook, pk=gradebook_id)
+        enforce_grade_access(student, gradebook.academic_year)
 
         # Get all marking periods for this gradebook's academic year
         marking_periods = (
@@ -208,6 +210,7 @@ class StudentFinalGradesView(APIView):
                         )
         # Get academic year
         academic_year = get_object_or_404(AcademicYear, pk=academic_year_id)
+        enforce_grade_access(student, academic_year)
 
         # Get marking period if specified
         marking_period = None
@@ -679,6 +682,8 @@ class StudentReportCardPDFView(APIView):
                     {"detail": "No current academic year."},
                     status=404,
                 )
+
+            enforce_grade_access(student, academic_year)
 
         # Get enrollment
         try:

@@ -15,6 +15,7 @@ from students.services.enrollment_lifecycle import (
     graduate_student,
     mid_year_promote_student,
     resolve_next_grade_level,
+    resolve_year_end_placement,
     transfer_out_student,
     undo_mid_year_promotion,
     undo_year_end_promotion,
@@ -174,17 +175,14 @@ def check_eligibility(
         if action == "complete_year":
             normalized = (outcome or "").lower().strip()
             if normalized not in YearEndOutcome.close_year_outcomes():
-                return False, "outcome must be promoted or repeated.", None
-            if enrollment and normalized == YearEndOutcome.PROMOTED:
-                next_grade = resolve_next_grade_level(
+                return False, "outcome must be promoted, double promoted, or repeated.", None
+            if enrollment and normalized in {
+                YearEndOutcome.PROMOTED,
+                YearEndOutcome.DOUBLE_PROMOTED,
+            }:
+                resolve_year_end_placement(
                     enrollment.grade_level, normalized
                 )
-                if next_grade is None:
-                    return (
-                        False,
-                        "No higher grade level configured; use graduate instead.",
-                        None,
-                    )
                 ok, overall_average, avg_reason = meets_minimum_average(
                     student,
                     action=action,
@@ -267,15 +265,9 @@ def resolve_year_end_projected_outcome(
         projected = YearEndOutcome.REPEATED
 
     if projected == YearEndOutcome.PROMOTED:
-        next_grade = resolve_next_grade_level(
+        projected, _next_grade = resolve_year_end_placement(
             enrollment.grade_level, projected
         )
-        if next_grade is None:
-            return (
-                None,
-                average,
-                "No higher grade level configured; use graduate instead.",
-            )
 
     return projected, average, None
 
@@ -494,7 +486,7 @@ def build_promoted_queryset(
     grade_level: str,
     section: str,
 ):
-    """Students with completed year-end promotion in the given class."""
+    """Students with completed single or double year-end promotion in the class."""
     from students.models import Student
 
     if not grade_level or not section:
@@ -504,7 +496,10 @@ def build_promoted_queryset(
         Student.objects.filter(
             enrollments__academic_year__current=True,
             enrollments__status=EnrollmentStatus.COMPLETED,
-            enrollments__year_end_outcome=YearEndOutcome.PROMOTED,
+            enrollments__year_end_outcome__in=[
+                YearEndOutcome.PROMOTED,
+                YearEndOutcome.DOUBLE_PROMOTED,
+            ],
             enrollments__grade_level_id=grade_level,
             enrollments__section_id=section,
         )

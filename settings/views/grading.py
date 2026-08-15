@@ -91,6 +91,7 @@ class GradingSettingsView(APIView):
             "year_closure_require_approved_grades",
             "allow_mid_year_promotion",
             "mid_year_promotion_min_overall_average",
+            "allow_grade_view_with_outstanding_balance",
             "allow_student_transcript_download",
             "student_transcript_download_scope",
             "transcript_download_days",

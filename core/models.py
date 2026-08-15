@@ -370,6 +370,44 @@ class Tenant(TenantBase):
         return self.active and self.status == self.STATUS_ACTIVE and not self.maintenance_mode
 
 
+class GradingBypassOperation(models.Model):
+    """Public-schema audit record for an exceptional academic-year closure."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.PROTECT,
+        related_name="grading_bypass_operations",
+    )
+    academic_year_id = models.CharField(max_length=64)
+    academic_year_name = models.CharField(max_length=255)
+    executed_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="executed_grading_bypasses",
+    )
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    preview = models.JSONField(default=dict, blank=True)
+    deleted_records = models.JSONField(default=dict, blank=True)
+    financial_adjustments = models.JSONField(default=dict, blank=True)
+    year_end_records_updated = models.PositiveIntegerField(default=0)
+    failure_detail = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "core_grading_bypass_operation"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["tenant", "academic_year_id", "status"])]
+
+
 class Domain(DomainMixin):
     """
     Domain model for tenant routing.

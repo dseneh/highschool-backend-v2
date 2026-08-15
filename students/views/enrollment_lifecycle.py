@@ -55,7 +55,7 @@ class StudentCompleteYearView(_StudentLifecycleMixin, APIView):
         if outcome not in YearEndOutcome.close_year_outcomes():
             return Response(
                 {
-                    "detail": "outcome is required and must be 'promoted' or 'repeated'."
+                    "detail": "outcome is required and must be 'promoted', 'double_promoted', or 'repeated'."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )

@@ -3,7 +3,7 @@ from datetime import date
 from django.db import transaction
 
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from ..access_policies import StudentAccessPolicy
@@ -20,6 +20,15 @@ from academics.models import AcademicYear
 
 from ..models import Attendance, Enrollment, Student
 from ..services.attendance_stats import build_student_attendance_summary, count_school_days
+from ..services.student_status import compute_is_enrolled
+
+
+def _is_current_active_enrollment(enrollment):
+    return bool(
+        enrollment
+        and getattr(enrollment.academic_year, "current", False)
+        and compute_is_enrolled(enrollment.student, current_enrollment=enrollment)
+    )
 from ..serializers import (
     AttendanceBulkUpsertSerializer,
     AttendanceSectionRosterSerializer,
@@ -185,13 +194,11 @@ class AttendanceSectionRosterView(APIView):
                 continue
 
             student = enrollment.student
-            if student.status in (
-                StudentStatus.WITHDRAWN,
-                StudentStatus.GRADUATED,
-                StudentStatus.TRANSFERRED,
-                StudentStatus.DELETED,
-            ):
-                continue
+            if not _is_current_active_enrollment(enrollment):
+                raise PermissionDenied({
+                    "code": "attendance_restricted_not_enrolled",
+                    "detail": "Attendance can only be recorded for students currently enrolled in this academic year.",
+                })
 
             incoming_absences[enrollment_id] = {
                 "enrollment": enrollment,
@@ -325,19 +332,15 @@ class AttendanceListView(APIView):
 
     def post(self, request, student_id):
         student = self.get_student(student_id)
-        enrollment = self.get_current_enrollment(student)
-        if not enrollment:
-            return Response(
-                {"detail": "No active enrollment found for this student."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Guard: reject attendance for withdrawn / inactive students
-        if student.status in (StudentStatus.WITHDRAWN, StudentStatus.GRADUATED, StudentStatus.TRANSFERRED, StudentStatus.DELETED):
-            return Response(
-                {"detail": f"Cannot record attendance for a student with status '{student.status}'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        enrollment = Enrollment.objects.filter(
+            student=student,
+            academic_year__current=True,
+        ).select_related("student", "academic_year").first()
+        if not _is_current_active_enrollment(enrollment):
+            raise PermissionDenied({
+                "code": "attendance_restricted_not_enrolled",
+                "detail": "Attendance can only be recorded for students currently enrolled in this academic year.",
+            })
 
         req: dict = request.data
 
@@ -378,6 +381,11 @@ class AttendanceDetailView(APIView):
 
     def put(self, request, id):
         attendence = self.get_object(id)
+        if not _is_current_active_enrollment(attendence.enrollment):
+            raise PermissionDenied({
+                "code": "attendance_restricted_not_enrolled",
+                "detail": "Historical attendance records are read-only when the student is not currently enrolled.",
+            })
 
         allowed_fields = [
             "date",
@@ -402,5 +410,10 @@ class AttendanceDetailView(APIView):
 
     def delete(self, request, id):
         attendence = self.get_object(id)
+        if not _is_current_active_enrollment(attendence.enrollment):
+            raise PermissionDenied({
+                "code": "attendance_restricted_not_enrolled",
+                "detail": "Historical attendance records are read-only when the student is not currently enrolled.",
+            })
         attendence.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

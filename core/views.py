@@ -31,6 +31,11 @@ from PIL import Image
 from io import BytesIO
 
 from core.models import Domain, Tenant, SignupRequest, TenantOwnerActivationCode
+from core.services.grading_bypass import (
+    CONFIRMATION_PHRASE,
+    build_preview as build_grading_bypass_preview,
+    execute_bypass as execute_grading_bypass,
+)
 from core.serializers import (
     TenantSerializer,
     CreateTenantSerializer,
@@ -567,6 +572,59 @@ class TenantViewSet(ModelViewSet):
             )
 
         return Response({"results": rows}, status=status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="grading-bypass-preview",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def grading_bypass_preview(self, request, *args, **kwargs):
+        validate_tenant_is_in_public_schema()
+        academic_year_id = request.query_params.get("academic_year")
+        if not academic_year_id:
+            raise ValidationError({"academic_year": "An academic year is required."})
+        return Response(build_grading_bypass_preview(
+            tenant=self.get_object(),
+            academic_year_id=academic_year_id,
+            page=request.query_params.get("page", 1),
+            page_size=request.query_params.get("page_size", 25),
+            search=(request.query_params.get("search") or "").strip(),
+            grade_level=(request.query_params.get("grade_level") or "").strip(),
+            section=(request.query_params.get("section") or "").strip(),
+        ))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="grading-bypass",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def grading_bypass(self, request, *args, **kwargs):
+        validate_tenant_is_in_public_schema()
+        if request.data.get("confirmation_phrase") != CONFIRMATION_PHRASE:
+            raise ValidationError({
+                "confirmation_phrase": f"Enter '{CONFIRMATION_PHRASE}' to continue."
+            })
+        academic_year_id = request.data.get("academic_year")
+        if not academic_year_id:
+            raise ValidationError({"academic_year": "An academic year is required."})
+        operation = execute_grading_bypass(
+            tenant=self.get_object(),
+            academic_year_id=academic_year_id,
+            actor=request.user,
+            reason=request.data.get("reason"),
+            year_end_outcomes=request.data.get("year_end_outcomes"),
+            default_year_end_outcome=request.data.get("default_year_end_outcome"),
+            next_grade_level_overrides=request.data.get("next_grade_level_overrides"),
+        )
+        return Response({
+            "id": str(operation.pk),
+            "status": operation.status,
+            "deleted_records": operation.deleted_records,
+            "financial_adjustments": operation.financial_adjustments,
+            "year_end_records_updated": operation.year_end_records_updated,
+        }, status=status.HTTP_200_OK)
 
     @action(
         detail=True,

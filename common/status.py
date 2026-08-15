@@ -179,6 +179,7 @@ class YearEndOutcome:
     """Set on enrollment when status = completed (or on mid-year exit rows)."""
 
     PROMOTED = "promoted"
+    DOUBLE_PROMOTED = "double_promoted"
     REPEATED = "repeated"
     GRADUATED = "graduated"
     WITHDRAWN = "withdrawn"
@@ -198,8 +199,8 @@ class YearEndOutcome:
 
     @classmethod
     def close_year_outcomes(cls):
-        """Outcomes allowed via complete-year (promote / repeat)."""
-        return frozenset({cls.PROMOTED, cls.REPEATED})
+        """Outcomes allowed via complete-year progression."""
+        return frozenset({cls.PROMOTED, cls.DOUBLE_PROMOTED, cls.REPEATED})
 
 
 class EnrollmentType:

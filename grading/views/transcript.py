@@ -21,6 +21,7 @@ from grading.services.transcript_access import (
     update_transcript_request_status,
 )
 from grading.tasks.transcript_worker import start_official_transcript_background_task
+from grading.services.grade_access import enforce_grade_access
 from reports.tasks import TaskManager
 from students.models import Student
 from students.services.student_lookup import get_student_by_identifier
@@ -299,6 +300,8 @@ class OfficialTranscriptGenerateView(APIView):
                 },
                 status=403,
             )
+
+        enforce_grade_access(student)
 
         cache_key = TaskManager.generate_cache_key(
             {
