@@ -55,8 +55,8 @@ def get_year_end_outcome_options(grade_level: GradeLevel) -> list[dict]:
             "next_grade_level": grade_level,
         },
         {
-            "value": YearEndOutcome.GRADUATED,
-            "label": "Graduated",
+            "value": YearEndOutcome.WITHDRAWN,
+            "label": "Withdrawn",
             "next_grade_level": None,
         },
     ]
@@ -78,6 +78,14 @@ def get_year_end_outcome_options(grade_level: GradeLevel) -> list[dict]:
                 "value": YearEndOutcome.DOUBLE_PROMOTED,
                 "label": "Double Promoted",
                 "next_grade_level": double_promoted,
+            }
+        )
+    if promoted is None:
+        options.append(
+            {
+                "value": YearEndOutcome.GRADUATED,
+                "label": "Graduated",
+                "next_grade_level": None,
             }
         )
     return options
@@ -128,11 +136,13 @@ def resolve_year_end_placement(
                 "Double promotion must use the second configured grade above the current grade."
             )
         return normalized, expected_next_grade
-    if normalized in {
-        YearEndOutcome.GRADUATED,
-        YearEndOutcome.WITHDRAWN,
-        YearEndOutcome.TRANSFERRED,
-    }:
+    if normalized == YearEndOutcome.GRADUATED:
+        if resolve_next_grade_level(grade_level, YearEndOutcome.PROMOTED) is not None:
+            raise EnrollmentLifecycleError(
+                "Graduation is only available from the highest configured grade level."
+            )
+        return normalized, None
+    if normalized in {YearEndOutcome.WITHDRAWN, YearEndOutcome.TRANSFERRED}:
         return normalized, None
     raise EnrollmentLifecycleError("Unsupported year-end outcome.")
 
@@ -164,7 +174,7 @@ def close_enrollment_year(
     normalized = (outcome or "").lower().strip()
     if normalized not in YearEndOutcome.close_year_outcomes():
         raise EnrollmentLifecycleError(
-            "outcome must be 'promoted', 'double_promoted', or 'repeated'."
+            "outcome must be promoted, double_promoted, repeated, or withdrawn."
         )
 
     enrollment = _require_enrolled_enrollment(
@@ -174,6 +184,17 @@ def close_enrollment_year(
     resolved_outcome, next_grade = resolve_year_end_placement(
         enrollment.grade_level, normalized, next_grade_level_id
     )
+
+    if normalized == YearEndOutcome.WITHDRAWN:
+        enrollment.status = EnrollmentStatus.WITHDRAWN
+        enrollment.year_end_outcome = resolved_outcome
+        enrollment.next_grade_level = None
+        enrollment.save(
+            update_fields=["status", "year_end_outcome", "next_grade_level"]
+        )
+        student.status = StudentStatus.WITHDRAWN
+        student.save(update_fields=["status"])
+        return enrollment
 
     enrollment.status = EnrollmentStatus.COMPLETED
     enrollment.year_end_outcome = resolved_outcome

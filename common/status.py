@@ -200,7 +200,7 @@ class YearEndOutcome:
     @classmethod
     def close_year_outcomes(cls):
         """Outcomes allowed via complete-year progression."""
-        return frozenset({cls.PROMOTED, cls.DOUBLE_PROMOTED, cls.REPEATED})
+        return frozenset({cls.PROMOTED, cls.DOUBLE_PROMOTED, cls.REPEATED, cls.WITHDRAWN})
 
 
 class EnrollmentType:

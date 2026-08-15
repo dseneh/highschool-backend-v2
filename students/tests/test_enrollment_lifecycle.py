@@ -29,7 +29,11 @@ class ResolveNextGradeLevelTests(SimpleTestCase):
 
         self.assertEqual(
             [option["value"] for option in options],
-            [YearEndOutcome.REPEATED, YearEndOutcome.GRADUATED],
+            [
+                YearEndOutcome.REPEATED,
+                YearEndOutcome.WITHDRAWN,
+                YearEndOutcome.GRADUATED,
+            ],
         )
         self.assertEqual(options[0]["next_grade_level"], grade)
         self.assertIsNone(options[1]["next_grade_level"])
@@ -50,11 +54,29 @@ class ResolveNextGradeLevelTests(SimpleTestCase):
             [option["value"] for option in options],
             [
                 YearEndOutcome.REPEATED,
-                YearEndOutcome.GRADUATED,
+                YearEndOutcome.WITHDRAWN,
                 YearEndOutcome.PROMOTED,
             ],
         )
         self.assertEqual(options[-1]["next_grade_level"].name, "Grade 12")
+
+    @patch("students.services.enrollment_lifecycle.resolve_current_enrollment")
+    def test_withdrawn_closes_enrollment_and_marks_student_withdrawn(self, mock_resolve):
+        grade = SimpleNamespace(pk="g1", level=1)
+        enrollment = SimpleNamespace(
+            status=EnrollmentStatus.ENROLLED,
+            grade_level=grade,
+            save=MagicMock(),
+        )
+        student = SimpleNamespace(status=StudentStatus.ACTIVE, save=MagicMock())
+        mock_resolve.return_value = enrollment
+
+        result = close_enrollment_year(student, YearEndOutcome.WITHDRAWN)
+
+        self.assertEqual(result.status, EnrollmentStatus.WITHDRAWN)
+        self.assertEqual(result.year_end_outcome, YearEndOutcome.WITHDRAWN)
+        self.assertIsNone(result.next_grade_level)
+        self.assertEqual(student.status, StudentStatus.WITHDRAWN)
 
     def test_repeat_returns_same_grade(self):
         grade = SimpleNamespace(id="g1", level=5, division_id="d1")
@@ -135,6 +157,19 @@ class ResolveNextGradeLevelTests(SimpleTestCase):
                 YearEndOutcome.REPEATED,
                 next_grade_level_id="g10",
             )
+
+    @patch(
+        "students.services.enrollment_lifecycle.resolve_next_grade_level",
+        return_value=SimpleNamespace(pk="g2", level=2),
+    )
+    def test_graduation_is_rejected_below_highest_grade(self, _mock_next_grade):
+        grade = SimpleNamespace(pk="g1", level=1)
+
+        with self.assertRaisesRegex(
+            EnrollmentLifecycleError,
+            "Graduation is only available from the highest configured grade level",
+        ):
+            resolve_year_end_placement(grade, YearEndOutcome.GRADUATED)
 
 
 class CloseEnrollmentYearTests(SimpleTestCase):
