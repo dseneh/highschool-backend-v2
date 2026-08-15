@@ -58,7 +58,7 @@ echo ""
 mkdir -p staticfiles
 
 echo "Starting Gunicorn on port ${PORT:-8080} with ${WEB_CONCURRENCY:-3} workers..."
-python manage.py process_grading_bypass_jobs --loop &
+python -u manage.py process_grading_bypass_jobs --loop &
 JOB_WORKER_PID=$!
 trap 'kill "$JOB_WORKER_PID" 2>/dev/null || true' EXIT TERM INT
 exec gunicorn api.wsgi:application --bind 0.0.0.0:${PORT:-8080} --workers ${WEB_CONCURRENCY:-3} --timeout 120

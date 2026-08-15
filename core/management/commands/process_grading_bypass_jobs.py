@@ -33,6 +33,8 @@ class Command(BaseCommand):
             if operation is None:
                 return False
             operation_id = str(operation.pk)
+            self.stdout.write(f"Claiming grading bypass job {operation_id}")
 
         run_bypass_job(operation_id)
+        self.stdout.write(f"Finished grading bypass job {operation_id}")
         return True
