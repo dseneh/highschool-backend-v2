@@ -26,6 +26,11 @@ urlpatterns = [
         name="current-academic-year",
     ),
     path(
+        "academic-years/schooling-days/",
+        AcademicYearSchoolingDaysView.as_view(),
+        name="academic-year-schooling-days",
+    ),
+    path(
         "academic-years/rollover/preview/",
         AcademicYearRolloverPreviewView.as_view(),
         name="academic-year-rollover-preview",
@@ -59,6 +64,11 @@ urlpatterns = [
         "academic-years/<str:id>/delete-impact/",
         AcademicYearDeleteImpactView.as_view(),
         name="academic-year-delete-impact",
+    ),
+    path(
+        "academic-years/<str:id>/set-current/",
+        AcademicYearSetCurrentView.as_view(),
+        name="academic-year-set-current",
     ),
     # Semester
     path(

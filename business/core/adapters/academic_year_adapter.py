@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any
 from django.db import transaction
 
 from academics.models import AcademicYear
+from academics.services.current_academic_year import clear_current_academic_years
 from business.core.core_models import AcademicYearData
 
 
@@ -38,7 +39,7 @@ def create_academic_year_in_db(data: Dict[str, Any], user=None) -> AcademicYear:
     
     # If this is set as current, unset existing current year
     if data.get('current', False):
-        AcademicYear.objects.filter(current=True).update(current=False)
+        clear_current_academic_years()
     
     academic_year = AcademicYear.objects.create(
         start_date=data.get('start_date'),
@@ -72,7 +73,7 @@ def update_academic_year_in_db(year_id: str, data: Dict[str, Any], user=None) ->
         
         # If setting as current, unset existing current year
         if data.get('current', False) and not academic_year.current:
-            AcademicYear.objects.filter(current=True).update(current=False)
+            clear_current_academic_years(exclude_id=academic_year.id)
         
         # Update fields
         for field, value in data.items():

@@ -1,4 +1,7 @@
 
+from datetime import date
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.models import Q
@@ -12,6 +15,8 @@ from common.cache_service import DataCache
 
 from ..models import AcademicYear
 from ..serializers import AcademicYearSerializer
+from ..services.current_academic_year import set_current_academic_year
+from ..services.school_days import summarize_schooling_days
 
 # Business logic imports
 from business.core.services import academic_year_service
@@ -333,6 +338,79 @@ class AcademicYearDeleteImpactView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class AcademicYearSetCurrentView(APIView):
+    """Promote a past/other academic year to be the current one."""
+
+    permission_classes = [AcademicsAccessPolicy]
+
+    def post(self, request, id):
+        academic_year = get_object_or_404(AcademicYear, Q(id=id) | Q(name=id))
+
+        if academic_year.current:
+            serializer = AcademicYearSerializer(academic_year, context={"request": request})
+            return Response(
+                {
+                    "detail": f"{academic_year.name} is already the current academic year.",
+                    "academic_year": serializer.data,
+                    "previous_academic_year": None,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            updated, previous = set_current_academic_year(
+                academic_year, actor=request.user
+            )
+        except DjangoValidationError as exc:
+            return Response({"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
+
+        DataCache.invalidate_academic_years(request=request)
+
+        serializer = AcademicYearSerializer(updated, context={"request": request})
+        return Response(
+            {
+                "detail": f"{updated.name} is now the current academic year.",
+                "academic_year": serializer.data,
+                "previous_academic_year": (
+                    {"id": str(previous.id), "name": previous.name} if previous else None
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AcademicYearSchoolingDaysView(APIView):
+    """Preview schooling days for a date range before an academic year exists."""
+
+    permission_classes = [AcademicsAccessPolicy]
+
+    def get(self, request):
+        start_raw = request.query_params.get("start_date")
+        end_raw = request.query_params.get("end_date")
+
+        try:
+            start = date.fromisoformat(str(start_raw))
+            end = date.fromisoformat(str(end_raw))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "start_date and end_date are required in YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if start > end:
+            return Response(
+                {"detail": "start_date must be on or before end_date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        summary = summarize_schooling_days(start, end)
+        return Response(
+            {"start_date": start.isoformat(), "end_date": end.isoformat(), **summary},
+            status=status.HTTP_200_OK,
+        )
+
 
 # create an endpoint to get the current academic year for an institution
 class CurrentAcademicYearView(APIView):

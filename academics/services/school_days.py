@@ -96,3 +96,41 @@ def get_academic_year_duration(academic_year) -> dict:
         "days_elapsed": days_elapsed,
         "completion_percentage": completion_percentage,
     }
+
+
+def summarize_schooling_days(start: date, end: date) -> dict:
+    """Break a date range into operating days, blocked days, and net schooling days.
+
+    Blocked days are only counted when they fall on an operating day, so a holiday
+    landing on a weekend is never subtracted twice.
+    """
+    if start > end:
+        return {
+            "operating_days": sorted(get_operating_days()),
+            "weekdays": 0,
+            "holidays": 0,
+            "schooling_days": 0,
+            "holidays_configured": False,
+        }
+
+    operating = get_operating_days()
+    blocked = get_blocked_days(start, end)
+
+    weekdays = 0
+    current = start
+    while current <= end:
+        if current.isoweekday() in operating:
+            weekdays += 1
+        current = current.fromordinal(current.toordinal() + 1)
+
+    effective_blocked = sum(
+        1 for day in blocked if start <= day <= end and day.isoweekday() in operating
+    )
+
+    return {
+        "operating_days": sorted(operating),
+        "weekdays": weekdays,
+        "holidays": effective_blocked,
+        "schooling_days": weekdays - effective_blocked,
+        "holidays_configured": bool(blocked),
+    }
