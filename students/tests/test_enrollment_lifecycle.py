@@ -10,6 +10,7 @@ from students.services.enrollment_lifecycle import (
     close_enrollment_year,
     graduate_student,
     resolve_next_grade_level,
+    get_year_end_outcome_options,
     resolve_year_end_placement,
     transfer_out_student,
 )
@@ -17,6 +18,44 @@ from students.services.student_status import compute_is_enrolled
 
 
 class ResolveNextGradeLevelTests(SimpleTestCase):
+    @patch(
+        "students.services.enrollment_lifecycle.resolve_next_grade_level",
+        side_effect=[None, None],
+    )
+    def test_highest_grade_only_allows_repeat_or_graduate(self, _mock_next_grade):
+        grade = SimpleNamespace(id="g12", pk="g12", level=12, name="Grade 12")
+
+        options = get_year_end_outcome_options(grade)
+
+        self.assertEqual(
+            [option["value"] for option in options],
+            [YearEndOutcome.REPEATED, YearEndOutcome.GRADUATED],
+        )
+        self.assertEqual(options[0]["next_grade_level"], grade)
+        self.assertIsNone(options[1]["next_grade_level"])
+
+    @patch(
+        "students.services.enrollment_lifecycle.resolve_next_grade_level",
+        side_effect=[
+            SimpleNamespace(id="g12", pk="g12", level=12, name="Grade 12"),
+            None,
+        ],
+    )
+    def test_second_highest_grade_allows_only_single_promotion(self, _mock_next_grade):
+        grade = SimpleNamespace(id="g11", pk="g11", level=11, name="Grade 11")
+
+        options = get_year_end_outcome_options(grade)
+
+        self.assertEqual(
+            [option["value"] for option in options],
+            [
+                YearEndOutcome.REPEATED,
+                YearEndOutcome.GRADUATED,
+                YearEndOutcome.PROMOTED,
+            ],
+        )
+        self.assertEqual(options[-1]["next_grade_level"].name, "Grade 12")
+
     def test_repeat_returns_same_grade(self):
         grade = SimpleNamespace(id="g1", level=5, division_id="d1")
         result = resolve_next_grade_level(grade, YearEndOutcome.REPEATED)

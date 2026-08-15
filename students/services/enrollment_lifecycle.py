@@ -46,6 +46,43 @@ def resolve_next_grade_level(
     return candidates[progression_steps - 1]
 
 
+def get_year_end_outcome_options(grade_level: GradeLevel) -> list[dict]:
+    """Return valid year-end outcomes and their configured next placements."""
+    options = [
+        {
+            "value": YearEndOutcome.REPEATED,
+            "label": "Repeating",
+            "next_grade_level": grade_level,
+        },
+        {
+            "value": YearEndOutcome.GRADUATED,
+            "label": "Graduated",
+            "next_grade_level": None,
+        },
+    ]
+    promoted = resolve_next_grade_level(grade_level, YearEndOutcome.PROMOTED)
+    if promoted is not None:
+        options.append(
+            {
+                "value": YearEndOutcome.PROMOTED,
+                "label": "Promoted",
+                "next_grade_level": promoted,
+            }
+        )
+    double_promoted = resolve_next_grade_level(
+        grade_level, YearEndOutcome.DOUBLE_PROMOTED
+    )
+    if double_promoted is not None:
+        options.append(
+            {
+                "value": YearEndOutcome.DOUBLE_PROMOTED,
+                "label": "Double Promoted",
+                "next_grade_level": double_promoted,
+            }
+        )
+    return options
+
+
 def resolve_year_end_placement(
     grade_level: GradeLevel,
     outcome: str,

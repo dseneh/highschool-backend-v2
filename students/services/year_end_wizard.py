@@ -7,7 +7,11 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from common.status import EnrollmentStatus, YearEndOutcome
-from students.services.enrollment_lifecycle import close_enrollment_year, graduate_student
+from students.services.enrollment_lifecycle import (
+    close_enrollment_year,
+    get_year_end_outcome_options,
+    graduate_student,
+)
 from students.services.enrollment_lifecycle_bulk import check_eligibility
 from students.services.promotion_rules import get_promotion_rules
 
@@ -52,11 +56,37 @@ def build_year_end_wizard_preview(*, academic_year, outcomes=None, grade_level_i
         reason = "Year-end outcome is required."
         average = None
         if outcome:
-            eligible, reason, average = check_eligibility(
-                enrollment.student,
-                "graduate" if outcome == YearEndOutcome.GRADUATED else "complete_year",
-                outcome=outcome,
-                rules=rules,
+            allowed_values = {
+                option["value"]
+                for option in get_year_end_outcome_options(enrollment.grade_level)
+            }
+            if outcome not in allowed_values:
+                eligible = False
+                reason = "That year-end outcome has no valid configured grade placement."
+            else:
+                eligible, reason, average = check_eligibility(
+                    enrollment.student,
+                    "graduate" if outcome == YearEndOutcome.GRADUATED else "complete_year",
+                    outcome=outcome,
+                    rules=rules,
+                )
+        outcome_options = []
+        for option in get_year_end_outcome_options(enrollment.grade_level):
+            next_grade = option["next_grade_level"]
+            outcome_options.append(
+                {
+                    "value": option["value"],
+                    "label": option["label"],
+                    "next_grade_level": (
+                        {
+                            "id": str(next_grade.id),
+                            "name": next_grade.name,
+                            "level": next_grade.level,
+                        }
+                        if next_grade
+                        else None
+                    ),
+                }
             )
         rows.append({
             "student_id": str(enrollment.student_id),
@@ -69,8 +99,20 @@ def build_year_end_wizard_preview(*, academic_year, outcomes=None, grade_level_i
             "outcome": outcome,
             "eligible": eligible,
             "validation_error": reason,
+            "allowed_outcomes": outcome_options,
+            "next_grade_level": next_grade_for_outcome(outcome_options, outcome),
         })
     return _summary(rows, rules)
+
+
+def next_grade_for_outcome(outcome_options, outcome):
+    if not outcome:
+        return None
+    selected = next(
+        (option for option in outcome_options if option["value"] == outcome),
+        None,
+    )
+    return selected["next_grade_level"] if selected else None
 
 
 def _summary(rows, rules):
