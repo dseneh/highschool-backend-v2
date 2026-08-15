@@ -144,15 +144,16 @@ class GradingSettingsView(APIView):
             from academics.models import Section
 
             # Get current academic year (tenant-filtered)
-            academic_year = AcademicYear.objects.filter(active=True).first()
+            academic_year = AcademicYear.get_current_academic_year()
 
             if not academic_year:
                 return GradingResponse.error(
-                    message="No active academic year found",
+                    message="No current academic year found",
                     errors=[
-                        "Cannot reinitialize gradebooks without an active academic year"
+                        "Cannot reinitialize gradebooks without a current academic year. "
+                        "Mark an academic year as current first."
                     ],
-                    error_code="NO_ACTIVE_ACADEMIC_YEAR",
+                    error_code="NO_CURRENT_ACADEMIC_YEAR",
                 )
 
             # Check if we should use background processing
@@ -534,7 +535,7 @@ class GradebookRegenerateView(APIView):
         # Get required parameters
         academic_year_id = request.data.get("academic_year_id")
         if not academic_year_id:
-            current_year = AcademicYear.objects.filter(active=True).first()
+            current_year = AcademicYear.get_current_academic_year()
             academic_year_id = current_year.id if current_year else None
         if not academic_year_id:
             return GradingResponse.validation_error(
@@ -643,7 +644,7 @@ class GradebookRegenerateView(APIView):
                 return GradingResponse.error(
                     message="Gradebook regeneration failed",
                     errors=result.get("errors", []),
-                    error_code="REGENERATION_FAILED",
+                    error_code=result.get("error_code", "REGENERATION_FAILED"),
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
@@ -721,8 +722,9 @@ class GradingTaskStatusView(APIView):
                         response_data["settings_updated"] = True
                         response_data["new_grading_style"] = new_style
         elif task["status"] == "failed":
-            response_data["message"] = "Task failed"
+            response_data["message"] = task.get("error") or "Task failed"
             response_data["error"] = task.get("error")
+            response_data["error_code"] = task.get("error_code")
 
         return GradingResponse.task_status(
             task_id=task["id"],
@@ -733,6 +735,7 @@ class GradingTaskStatusView(APIView):
             updated_at=task["updated_at"],
             result=task.get("result"),
             error=task.get("error"),
+            error_code=response_data.get("error_code"),
             settings_updated=response_data.get("settings_updated", False),
             new_grading_style=response_data.get("new_grading_style"),
         )

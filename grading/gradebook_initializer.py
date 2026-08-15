@@ -37,15 +37,82 @@ from grading.models import (
     AssessmentType, DefaultAssessmentTemplate,
     GradeBook, Assessment, Grade, GradeLetter
 )
-from grading.utils import generate_assessments_for_gradebook_with_settings
+from grading.utils import (
+    create_gradebook_with_assessments,
+    generate_assessments_for_gradebook_with_settings,
+    resolve_grading_style,
+)
+
+
+class GradingConfigurationError(Exception):
+    """Raised when the grading setup required for generation is missing."""
+
+    def __init__(self, message: str, error_code: str):
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+
+
+def _scoped_sections(section_id: Optional[str], grade_level_id: Optional[str]):
+    """Active sections narrowed to the requested generation scope."""
+    sections = Section.objects.filter(active=True).select_related('grade_level')
+    if section_id:
+        sections = sections.filter(id=section_id)
+    if grade_level_id:
+        sections = sections.filter(grade_level_id=grade_level_id)
+    return sections
+
+
+def _validate_grading_configuration(
+    academic_year: AcademicYear,
+    grading_style: str,
+    sections,
+) -> None:
+    """Fail fast with an actionable message when grading setup is incomplete."""
+    if not MarkingPeriod.objects.filter(
+        semester__academic_year=academic_year, active=True
+    ).exists():
+        raise GradingConfigurationError(
+            f"No active marking periods are configured for {academic_year.name}. "
+            "Set up semesters and marking periods before generating gradebooks.",
+            'NO_MARKING_PERIODS',
+        )
+
+    if not sections.exists():
+        raise GradingConfigurationError(
+            "No active sections match the selected scope. "
+            "Check the grade level and section selection.",
+            'NO_SECTIONS_IN_SCOPE',
+        )
+
+    if not SectionSubject.objects.filter(section__in=sections).exists():
+        raise GradingConfigurationError(
+            "No subjects are assigned to the sections in the selected scope. "
+            "Assign subjects to each section before generating gradebooks.",
+            'NO_SECTION_SUBJECTS',
+        )
+
+    if grading_style == 'multiple_entry':
+        if not DefaultAssessmentTemplate.objects.filter(is_active=True).exists():
+            raise GradingConfigurationError(
+                "No active default assessment templates are configured. "
+                "Add assessment templates before generating assessments in multiple-entry mode.",
+                'NO_ASSESSMENT_TEMPLATES',
+            )
+    elif not AssessmentType.objects.filter(active=True).exists():
+        raise GradingConfigurationError(
+            "No active assessment types are configured for single-entry grading.",
+            'NO_ASSESSMENT_TYPES',
+        )
 
 
 def initialize_gradebooks_for_academic_year(
     academic_year: AcademicYear,
-    grading_style: str = 'multiple_entry',
+    grading_style: Optional[str] = None,
     created_by=None,
     regenerate: bool = False,
     section_id: Optional[str] = None,
+    grade_level_id: Optional[str] = None,
     skip_assessment_types: bool = False,
     skip_grade_letters: bool = False,
     skip_templates: bool = False
@@ -63,10 +130,12 @@ def initialize_gradebooks_for_academic_year(
     
     Args:
         academic_year: AcademicYear instance to create gradebooks for
-        grading_style: 'single_entry' or 'multiple_entry'
+        grading_style: 'single_entry' or 'multiple_entry'; resolved from
+            GradingSettings when omitted
         created_by: User instance for created_by/updated_by fields
         regenerate: If True, deletes existing gradebooks and recreates (DESTRUCTIVE)
         section_id: Optional UUID string to limit to specific section
+        grade_level_id: Optional UUID string to limit to a specific grade level
         skip_assessment_types: Skip populating assessment types
         skip_grade_letters: Skip populating grade letters
         skip_templates: Skip populating default templates
@@ -87,6 +156,7 @@ def initialize_gradebooks_for_academic_year(
                 'gradebooks_created': int,
                 'gradebooks_skipped': int,
                 'gradebooks_deleted': int,
+                'gradebooks_backfilled': int,
                 'assessments_created': int,
                 'grades_created': int,
                 'sections_processed': int
@@ -104,6 +174,10 @@ def initialize_gradebooks_for_academic_year(
         >>> print(f"Created {result['stats']['gradebooks_created']} gradebooks")
     """
     
+    # Fall back to the tenant's configured style so callers never silently
+    # generate assessments the school's grading mode cannot read.
+    grading_style = resolve_grading_style(grading_style)
+
     # Validate inputs
     if grading_style not in ['single_entry', 'multiple_entry']:
         return {
@@ -137,6 +211,7 @@ def initialize_gradebooks_for_academic_year(
         'gradebooks_created': 0,
         'gradebooks_skipped': 0,
         'gradebooks_deleted': 0,
+        'gradebooks_backfilled': 0,
         'assessments_created': 0,
         'grades_created': 0,
         'sections_processed': 0
@@ -175,17 +250,22 @@ def initialize_gradebooks_for_academic_year(
                 stats['templates_updated'] = template_result['updated']
                 errors.extend(template_result.get('errors', []))
             
-            # Step 4: Create/Regenerate Gradebooks and Assessments
+            # Step 4: Validate grading setup, then create/regenerate gradebooks
+            # Validation runs after the ensure-steps so fixture-seeded config counts.
+            sections = _scoped_sections(section_id, grade_level_id)
+            _validate_grading_configuration(academic_year, grading_style, sections)
+
             gradebook_result = _initialize_gradebooks(
                 academic_year=academic_year,
                 grading_style=grading_style,
                 created_by=created_by,
                 regenerate=regenerate,
-                section_id=section_id
+                sections=sections
             )
             stats['gradebooks_created'] = gradebook_result['created']
             stats['gradebooks_skipped'] = gradebook_result['skipped']
             stats['gradebooks_deleted'] = gradebook_result['deleted']
+            stats['gradebooks_backfilled'] = gradebook_result['backfilled']
             stats['assessments_created'] = gradebook_result['assessments_created']
             stats['sections_processed'] = gradebook_result['sections_processed']
             errors.extend(gradebook_result.get('errors', []))
@@ -196,7 +276,8 @@ def initialize_gradebooks_for_academic_year(
         grade_result = _create_grade_entries_chunked(
             academic_year=academic_year,
             created_by=created_by,
-            section_id=section_id
+            section_id=section_id,
+            grade_level_id=grade_level_id
         )
         stats['grades_created'] = grade_result['created']
         errors.extend(grade_result.get('errors', []))
@@ -209,6 +290,15 @@ def initialize_gradebooks_for_academic_year(
             'errors': errors
         }
         
+    except GradingConfigurationError as e:
+        return {
+            'success': False,
+            'message': e.message,
+            'error_code': e.error_code,
+            'grading_style': grading_style,
+            'stats': stats,
+            'errors': errors + [e.message]
+        }
     except Exception as e:
         return {
             'success': False,
@@ -483,31 +573,22 @@ def _initialize_gradebooks(
     grading_style: str,
     created_by,
     regenerate: bool,
-    section_id: Optional[str]
+    sections
 ) -> Dict[str, Any]:
     """
-    Create gradebooks for all section-subjects and generate assessments.
+    Create gradebooks for the scoped section-subjects and generate assessments.
     
     This optimized function:
     1. Queries sections with select_related to minimize DB hits
     2. Bulk queries section-subjects
     3. Creates gradebooks and generates assessments
-    4. Handles regeneration by deleting existing gradebooks
+    4. Backfills assessments that are missing on existing gradebooks
+    5. Handles regeneration by deleting existing gradebooks
     """
-    # Get sections
-    # if section_id:
-    #     sections = Section.objects.filter(
-    #         id=section_id,
-    #         grade_level__school=school
-    #     ).select_related('grade_level')
-    # else:
-    sections = Section.objects.filter(
-        active=True
-    ).select_related('grade_level')
-    
     created = 0
     skipped = 0
     deleted = 0
+    backfilled = 0
     assessments_created = 0
     sections_processed = 0
     errors = []
@@ -533,36 +614,34 @@ def _initialize_gradebooks(
                         section_subject=section_subject,
                         academic_year=academic_year
                     ).first()
-                    
-                    if existing_gradebook and not regenerate:
-                        skipped += 1
-                        continue
-                    
+
                     if existing_gradebook and regenerate:
                         # Delete existing gradebook (cascades to assessments and grades)
                         existing_gradebook.delete()
+                        existing_gradebook = None
                         deleted += 1
-                    
-                    # Create new gradebook
-                    gradebook = GradeBook.objects.create(
+
+                    # Shared create-then-generate service keeps every workflow on the
+                    # same resolve-style -> gradebook -> assessments sequence, and is
+                    # idempotent so retries only fill gaps.
+                    result = create_gradebook_with_assessments(
                         section_subject=section_subject,
-                        section=section,
-                        subject=section_subject.subject,
                         academic_year=academic_year,
                         name=f'{section_subject.subject.name} - {section.name}',
                         calculation_method='weighted',
                         created_by=created_by,
-                        updated_by=created_by
+                        grading_style=grading_style,
                     )
-                    
-                    # Generate assessments based on grading style
-                    # The generate_assessments_for_gradebook_with_settings function
-                    result = generate_assessments_for_gradebook_with_settings(gradebook, grading_style=grading_style)
-                    assessments_count = result['assessments_created']
+                    assessments_count = result['generation_result']['assessments_created']
                     assessments_created += assessments_count
-                    
-                    created += 1
-                    
+
+                    if result['created']:
+                        created += 1
+                    else:
+                        skipped += 1
+                        if assessments_count:
+                            backfilled += 1
+
                 except Exception as e:
                     errors.append(
                         f"Error creating gradebook for {section_subject.subject.name} "
@@ -576,6 +655,7 @@ def _initialize_gradebooks(
         'created': created,
         'skipped': skipped,
         'deleted': deleted,
+        'backfilled': backfilled,
         'assessments_created': assessments_created,
         'sections_processed': sections_processed,
         'errors': errors
@@ -677,6 +757,7 @@ def _create_grade_entries_chunked(
     academic_year: AcademicYear,
     created_by,
     section_id: Optional[str],
+    grade_level_id: Optional[str] = None,
     chunk_size: int = 1
 ) -> Dict[str, Any]:
     """
@@ -689,6 +770,7 @@ def _create_grade_entries_chunked(
         academic_year: Academic year to create grades for
         created_by: User creating the grades
         section_id: Optional section ID to limit processing
+        grade_level_id: Optional grade level ID to limit processing
         chunk_size: Number of sections to process per transaction (default: 1)
     
     Returns:
@@ -710,6 +792,8 @@ def _create_grade_entries_chunked(
     
     if section_id:
         assessments = assessments.filter(gradebook__section_id=section_id)
+    if grade_level_id:
+        assessments = assessments.filter(gradebook__section__grade_level_id=grade_level_id)
     
     # Group assessments by section
     assessments_by_section = defaultdict(list)
@@ -724,9 +808,9 @@ def _create_grade_entries_chunked(
     logger.info(f"Processing {total_sections} sections one at a time to prevent timeout")
     
     # Process sections ONE AT A TIME
-    for i, section_id in enumerate(section_ids):
+    for i, current_section_id in enumerate(section_ids):
         section_num = i + 1
-        section_assessments = assessments_by_section[section_id]
+        section_assessments = assessments_by_section[current_section_id]
         section = section_assessments[0].gradebook.section
         
         logger.info(f"Processing section {section_num}/{total_sections}: {section.name}")
@@ -736,7 +820,7 @@ def _create_grade_entries_chunked(
             with transaction.atomic():
                 # Get enrollments for this section
                 enrollments = Enrollment.objects.filter(
-                    section_id=section_id,
+                    section_id=current_section_id,
                     academic_year=academic_year
                 ).select_related('student')
                 

@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from academics.models import AcademicYear, Section, SectionSubject
 from grading.models import GradeBook
+from grading.utils import create_gradebook_with_assessments
 from users.models import CustomUser
 
 
@@ -134,20 +135,23 @@ class Command(BaseCommand):
                         continue
 
                     if not dry_run:
-                        # Create the gradebook
-                        gradebook = GradeBook.objects.create(
+                        # Shared service also generates the assessments required by
+                        # the configured grading style.
+                        result = create_gradebook_with_assessments(
                             section_subject=section_subject,
-                            section=section_subject.section,  # Denormalized field
-                            subject=section_subject.subject,  # Denormalized field
                             academic_year=academic_year,
                             name=gradebook_name,
                             calculation_method=calculation_method,
                             created_by=system_user,
-                            updated_by=system_user,
                         )
+                        gradebook = result['gradebook']
+                        assessments = result['generation_result']['assessments_created']
                         created_count += 1
                         self.stdout.write(
-                            self.style.SUCCESS(f'CREATED: {gradebook_name} (ID: {gradebook.id})')
+                            self.style.SUCCESS(
+                                f'CREATED: {gradebook_name} (ID: {gradebook.id}, '
+                                f'assessments: {assessments})'
+                            )
                         )
                     else:
                         created_count += 1

@@ -344,6 +344,42 @@ def resolve_enrollment_for_gradebook(
 # ============================================================================
 
 
+def resolve_grading_style(grading_style: Optional[str] = None) -> str:
+    """Return the explicit style, else the tenant's configured grading style."""
+    if grading_style:
+        return grading_style
+    settings = get_grading_settings()
+    return getattr(settings, "grading_style", None) or "multiple_entry"
+
+
+def validate_assessment_generation_config(academic_year, grading_style: str) -> None:
+    """Raise ValueError when the setup cannot produce any assessment."""
+    from .models import DefaultAssessmentTemplate
+    from academics.models import MarkingPeriod
+
+    if grading_style not in ("single_entry", "multiple_entry"):
+        raise ValueError(
+            f"Invalid grading style '{grading_style}'. "
+            "Must be 'single_entry' or 'multiple_entry'."
+        )
+
+    if not MarkingPeriod.objects.filter(
+        semester__academic_year=academic_year, active=True
+    ).exists():
+        raise ValueError(
+            f"No active marking periods are configured for {academic_year}. "
+            "Set up semesters and marking periods before generating assessments."
+        )
+
+    if grading_style == "multiple_entry" and not DefaultAssessmentTemplate.objects.filter(
+        is_active=True
+    ).exists():
+        raise ValueError(
+            "No active default assessment templates are configured. "
+            "Add assessment templates before generating assessments in multiple-entry mode."
+        )
+
+
 def generate_assessments_for_gradebook_with_settings(
     gradebook: GradeBook, grading_style=None, created_by=None
 ) -> dict:
@@ -372,13 +408,7 @@ def generate_assessments_for_gradebook_with_settings(
 
     ay = gradebook.academic_year
 
-    if not grading_style:
-        try:
-            grading_settings = GradingSettings.objects.first()
-            grading_style = grading_settings.grading_style if grading_settings else "multiple_entry"
-        except:
-            # Default to multiple entry if no settings exist
-            grading_style = "multiple_entry"
+    grading_style = resolve_grading_style(grading_style)
 
     created_assessments = []
     mode = grading_style
@@ -464,55 +494,67 @@ def generate_assessments_for_gradebook_with_settings(
 def create_gradebook_with_assessments(
     section_subject,
     academic_year,
-    name,
-    calculation_method,
-    created_by,
+    name=None,
+    calculation_method="weighted",
+    created_by=None,
     auto_generate=True,
+    grading_style=None,
 ):
     """
-    Create a gradebook and optionally auto-generate assessments.
+    Canonical entry point for creating a gradebook together with the assessments
+    required by the tenant's configured grading style.
 
-    This is a convenience function that combines gradebook creation with
-    automatic assessment generation based on school settings.
+    Every workflow that generates gradebooks (year-end wizard, academic year
+    rollover, schedule projections, management commands) should route through
+    this helper so the resolve-style -> create-gradebook -> generate-assessments
+    sequence stays consistent.
+
+    Creation is idempotent: an existing gradebook for the section-subject and
+    academic year is reused, and assessment generation only fills gaps.
 
     Args:
         section_subject: SectionSubject instance
         academic_year: AcademicYear instance
-        name: Name for the gradebook
+        name: Name for a newly created gradebook (defaults to "Subject - Section")
         calculation_method: Calculation method (average/weighted/cumulative)
         created_by: User creating the gradebook
         auto_generate: Whether to automatically generate assessments (default: True)
+        grading_style: Explicit style; resolved from grading settings when omitted
 
     Returns:
         dict with:
         {
             'gradebook': GradeBook instance,
+            'created': bool,
             'assessments_generated': bool,
             'generation_result': dict (if assessments were generated)
         }
     """
-    # Create the gradebook
-    gradebook = GradeBook.objects.create(
+    section = section_subject.section
+    subject = section_subject.subject
+    gradebook, created = GradeBook.objects.get_or_create(
         section_subject=section_subject,
-        section=section_subject.section,
-        subject=section_subject.subject,
         academic_year=academic_year,
-        name=name,
-        calculation_method=calculation_method,
-        created_by=created_by,
-        updated_by=created_by,
+        defaults={
+            "section": section,
+            "subject": subject,
+            "name": name or f"{subject.name} - {section.name}",
+            "calculation_method": calculation_method,
+            "created_by": created_by,
+            "updated_by": created_by,
+        },
     )
 
     result = {
         "gradebook": gradebook,
+        "created": created,
         "assessments_generated": False,
         "generation_result": None,
     }
 
     if auto_generate:
-        # Automatically generate assessments based on settings
         generation_result = generate_assessments_for_gradebook_with_settings(
-            gradebook, created_by=created_by
+            gradebook, grading_style=grading_style, created_by=created_by
         )
         result["assessments_generated"] = True
         result["generation_result"] = generation_result
@@ -637,6 +679,9 @@ def generate_default_assessments_for_academic_year(
         academic_year=academic_year, active=True
     ).select_related("section")
 
+    grading_style = resolve_grading_style()
+    validate_assessment_generation_config(academic_year, grading_style)
+
     stats = {
         "gradebooks_processed": 0,
         "assessments_created": 0,
@@ -649,7 +694,7 @@ def generate_default_assessments_for_academic_year(
         try:
             # Use settings-aware generation
             result = generate_assessments_for_gradebook_with_settings(
-                gradebook, created_by
+                gradebook, grading_style=grading_style, created_by=created_by
             )
             stats["gradebooks_processed"] += 1
             stats["assessments_created"] += result["assessments_created"]
@@ -705,10 +750,12 @@ def regenerate_assessments_for_academic_year(
     """
     from .models import DefaultAssessmentTemplate, Assessment, Grade, GradeBook
 
-    # Check 1: Verify templates exist
+    grading_style = resolve_grading_style()
+
+    # Check 1: Verify templates exist (single-entry mode does not use templates)
     templates = DefaultAssessmentTemplate.objects.filter(is_active=True)
 
-    if not templates.exists():
+    if grading_style != "single_entry" and not templates.exists():
         raise ValueError(
             "No active templates found. Please create templates before regenerating assessments."
         )
@@ -764,12 +811,14 @@ def regenerate_assessments_for_academic_year(
             deleted_count = assessments_to_delete.count()
             assessments_to_delete.delete()
 
-            # Regenerate from templates
-            created = generate_default_assessments_for_gradebook(gradebook, created_by)
+            # Regenerate using the configured grading style
+            result = generate_assessments_for_gradebook_with_settings(
+                gradebook, grading_style=grading_style, created_by=created_by
+            )
 
             stats["gradebooks_processed"] += 1
             stats["assessments_deleted"] += deleted_count
-            stats["assessments_created"] += len(created)
+            stats["assessments_created"] += result["assessments_created"]
 
         except Exception as e:
             stats["gradebooks_with_errors"].append(

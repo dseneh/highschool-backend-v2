@@ -285,8 +285,8 @@ def create_student_bill(enrollment, request):
             created_by=request.user,
             updated_by=request.user,
             type="other",
-            name="Arrears",
-            notes="Outstanding balance carried forward from prior academic year(s).",
+            name="Brought Forward",
+            notes="Outstanding balance carried forward from prior academic year.",
         )
     ]
 

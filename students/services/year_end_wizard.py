@@ -155,18 +155,21 @@ def apply_year_end_wizard(*, academic_year, outcomes, consent_acknowledged=False
             else:
                 close_enrollment_year(enrollment.student, outcome, academic_year=academic_year)
     from grading.gradebook_initializer import initialize_gradebooks_for_academic_year
-    from settings.models import GradingSettings
 
-    settings = GradingSettings.objects.first()
+    # grading_style is intentionally omitted: the service resolves it from the
+    # tenant's grading settings so gradebooks get the assessments that style needs.
     gradebook_initialization = initialize_gradebooks_for_academic_year(
         academic_year=academic_year,
-        grading_style=getattr(settings, "grading_style", "multiple_entry"),
         created_by=actor,
         regenerate=False,
+        section_id=section_id,
+        grade_level_id=grade_level_id,
     )
     if not gradebook_initialization.get("success"):
         raise ValidationError({
-            "detail": "Year-end outcomes were applied, but gradebook initialization failed.",
+            "detail": gradebook_initialization.get("message")
+            or "Year-end outcomes were applied, but gradebook initialization failed.",
+            "error_code": gradebook_initialization.get("error_code"),
             "gradebook_initialization": gradebook_initialization,
         })
     preview["gradebook_initialization"] = gradebook_initialization

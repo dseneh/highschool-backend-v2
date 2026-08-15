@@ -173,11 +173,23 @@ class MockTaskProcessor:
                         grading_style=params.get('grading_style'),
                         created_by=user,
                         regenerate=params.get('regenerate', False),
-                        section_id=params.get('section_id')
+                        section_id=params.get('section_id'),
+                        grade_level_id=params.get('grade_level_id')
                     )
                     
                     logger.info(f"Gradebook initialization completed: Task {task_id}")
                     logger.info(f"Stats: {result.get('stats')}")
+                    
+                    if not result.get('success'):
+                        GradingTaskManager.update_task(
+                            task_id,
+                            status='failed',
+                            progress=100,
+                            result=result,
+                            error=result.get('message') or 'Gradebook initialization failed.',
+                            error_code=result.get('error_code'),
+                        )
+                        return
                     
                     # Mark as completed
                     GradingTaskManager.update_task(

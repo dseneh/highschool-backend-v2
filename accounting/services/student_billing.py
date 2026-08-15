@@ -20,8 +20,8 @@ from accounting.models import (
 from students.models import Enrollment, StudentEnrollmentBill
 
 
-ARREARS_LINE_NAME = "Arrears"
-ARREARS_LINE_DESCRIPTION = "Outstanding balance carried forward from prior academic year(s)."
+ARREARS_LINE_NAME = "Brought Forward"
+ARREARS_LINE_DESCRIPTION = "Outstanding balance carried forward from prior academic year."
 
 
 @dataclass

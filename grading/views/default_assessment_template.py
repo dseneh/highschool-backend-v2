@@ -266,10 +266,13 @@ class GenerateAssessmentsForAcademicYearView(APIView):
                 )
         else:
             # NORMAL MODE: Only create new assessments
-            result = generate_default_assessments_for_academic_year(
-                academic_year,
-                created_by=request.user
-            )
+            try:
+                result = generate_default_assessments_for_academic_year(
+                    academic_year,
+                    created_by=request.user
+                )
+            except ValueError as e:
+                return Response({"detail": str(e)}, status=400)
             
             return Response(
                 BulkAssessmentGenerationResultOut(result).data,

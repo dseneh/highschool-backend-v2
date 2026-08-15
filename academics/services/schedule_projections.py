@@ -6,11 +6,13 @@ from django.db import transaction
 from django.db.models import Q
 
 from academics.models import (
+    AcademicYear,
     GradeBookScheduleProjection,
     SectionSchedule,
     StudentScheduleProjection,
 )
 from grading.models import GradeBook
+from grading.utils import create_gradebook_with_assessments
 from staff.models import Staff, TeacherSchedule, TeacherSubject
 from students.models import Enrollment
 
@@ -135,14 +137,13 @@ def _ensure_gradebooks(class_schedule: SectionSchedule):
     existing_by_year = {gradebook.academic_year_id: gradebook for gradebook in existing_gradebooks}
 
     missing_year_ids = [year_id for year_id in year_ids if year_id not in existing_by_year]
-    for year_id in missing_year_ids:
-        GradeBook.objects.create(
-            section_subject=section_subject,
-            section=section,
-            subject=subject,
-            academic_year_id=year_id,
-            name=f"{subject.name} - {section.name}",
-        )
+    if missing_year_ids:
+        for academic_year in AcademicYear.objects.filter(id__in=missing_year_ids):
+            create_gradebook_with_assessments(
+                section_subject=section_subject,
+                academic_year=academic_year,
+                name=f"{subject.name} - {section.name}",
+            )
 
     return GradeBook.objects.filter(section_subject=section_subject, active=True)
 

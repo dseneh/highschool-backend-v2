@@ -8,12 +8,9 @@ def ensure_payroll_settings_table(apps, schema_editor):
     if "payroll_settings" in schema_editor.connection.introspection.table_names():
         return
 
-    # PayrollSettings is introduced by this same SeparateDatabaseAndState
-    # migration, so it is not reliably available from the historical app
-    # registry passed to RunPython.
-    from payroll_v2.models import PayrollSettings
-
-    schema_editor.create_model(PayrollSettings)
+    # Must use the historical model: the concrete model carries fields added by
+    # later migrations, which would then fail to be added again on fresh databases.
+    schema_editor.create_model(apps.get_model("payroll_v2", "PayrollSettings"))
 
 
 class Migration(migrations.Migration):
@@ -100,8 +97,8 @@ class Migration(migrations.Migration):
                     },
                 ),
             ],
-            database_operations=[
-                migrations.RunPython(ensure_payroll_settings_table, migrations.RunPython.noop),
-            ],
         ),
+        # Runs after the state operation above so the historical PayrollSettings
+        # model is present in the app registry passed to RunPython.
+        migrations.RunPython(ensure_payroll_settings_table, migrations.RunPython.noop),
     ]

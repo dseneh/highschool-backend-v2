@@ -179,7 +179,7 @@ class GradingResponse:
             ... )
         """
         response_data = {
-            'success': True,
+            'success': status != 'failed',
             'task': {
                 'id': task_id,
                 'status': status,
