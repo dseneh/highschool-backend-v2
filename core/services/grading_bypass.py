@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date
 from decimal import Decimal
 
@@ -269,6 +270,7 @@ def execute_bypass(
     default_year_end_outcome=None,
     next_grade_level_overrides=None,
     consent_acknowledged=False,
+    operation=None,
 ):
     """Finalize one year, then permanently remove only its grading graph."""
     reason = (reason or "").strip()
@@ -283,14 +285,19 @@ def execute_bypass(
         if value
     }
     preview = build_preview(tenant=tenant, academic_year_id=academic_year_id)
-    operation = GradingBypassOperation.objects.create(
-        tenant=tenant,
-        academic_year_id=str(academic_year_id),
-        academic_year_name=preview["academic_year"]["name"],
-        executed_by=actor,
-        reason=reason,
-        preview=preview,
-    )
+    if operation is None:
+        operation = GradingBypassOperation.objects.create(
+            tenant=tenant,
+            academic_year_id=str(academic_year_id),
+            academic_year_name=preview["academic_year"]["name"],
+            executed_by=actor,
+            reason=reason,
+            preview=preview,
+        )
+    operation.status = GradingBypassOperation.Status.IN_PROGRESS
+    operation.stage = "Preparing academic year"
+    operation.total_students = preview["students_requiring_year_end_completion"]
+    operation.save(update_fields=["status", "stage", "total_students"])
     try:
         with transaction.atomic(), schema_context(tenant.schema_name):
             from accounting.models import AccountingStudentBill
@@ -323,6 +330,8 @@ def execute_bypass(
             )
 
             updated_count = 0
+            operation.stage = "Completing student outcomes"
+            operation.save(update_fields=["stage"])
             for enrollment in open_enrollments:
                 outcome, next_grade_level = _resolve_year_end_placement(
                     enrollment,
@@ -346,6 +355,9 @@ def execute_bypass(
             GradeBook.objects.filter(academic_year=academic_year).delete()
 
         operation.status = GradingBypassOperation.Status.COMPLETED
+        operation.stage = "Completed"
+        operation.students_processed = updated_count
+        operation.progress_percent = 100
         operation.deleted_records = deleted_records
         operation.financial_adjustments = {
             "bills_normalized_to_zero_outstanding": settled_bill_count,
@@ -355,7 +367,8 @@ def execute_bypass(
         operation.completed_at = timezone.now()
         operation.save(update_fields=[
             "status", "deleted_records", "financial_adjustments",
-            "year_end_records_updated", "completed_at",
+            "year_end_records_updated", "completed_at", "stage",
+            "students_processed", "progress_percent",
         ])
         return operation
     except Exception as exc:
@@ -364,3 +377,78 @@ def execute_bypass(
         operation.completed_at = timezone.now()
         operation.save(update_fields=["status", "failure_detail", "completed_at"])
         raise
+
+
+def create_bypass_job(*, tenant, academic_year_id, actor, payload):
+    """Validate and persist a bypass request, then start one background worker."""
+    if payload.get("consent_acknowledged") is not True:
+        raise ValidationError({"consent_acknowledged": "Explicit consent is required before executing a grading bypass."})
+    reason = (payload.get("reason") or "").strip()
+    if not reason:
+        raise ValidationError({"reason": "A reason is required for a grading bypass."})
+    preview = build_preview(tenant=tenant, academic_year_id=academic_year_id)
+    request_payload = {
+        "academic_year_id": str(academic_year_id),
+        "reason": reason,
+        "year_end_outcomes": payload.get("year_end_outcomes") or {},
+        "default_year_end_outcome": payload.get("default_year_end_outcome"),
+        "next_grade_level_overrides": payload.get("next_grade_level_overrides") or {},
+        "consent_acknowledged": True,
+    }
+    with transaction.atomic():
+        operation = GradingBypassOperation.objects.select_for_update().filter(
+            tenant=tenant,
+            academic_year_id=str(academic_year_id),
+        ).exclude(status=GradingBypassOperation.Status.FAILED).first()
+        if operation is not None:
+            return operation
+        operation = GradingBypassOperation.objects.create(
+            tenant=tenant,
+            academic_year_id=str(academic_year_id),
+            academic_year_name=preview["academic_year"]["name"],
+            executed_by=actor,
+            reason=reason,
+            preview=preview,
+            request_payload=request_payload,
+            total_students=preview["students_requiring_year_end_completion"],
+        )
+
+    threading.Thread(
+        target=run_bypass_job,
+        args=(str(operation.pk),),
+        daemon=True,
+        name=f"grading-bypass-{operation.pk}",
+    ).start()
+    return operation
+
+
+def run_bypass_job(operation_id):
+    """Claim and execute a persisted bypass job exactly once per operation."""
+    from django.db import close_old_connections
+
+    close_old_connections()
+    try:
+        with transaction.atomic():
+            operation = GradingBypassOperation.objects.select_for_update().get(pk=operation_id)
+            if operation.status != GradingBypassOperation.Status.PENDING:
+                return
+            operation.status = GradingBypassOperation.Status.IN_PROGRESS
+            operation.stage = "Starting"
+            operation.save(update_fields=["status", "stage"])
+        tenant = operation.tenant
+        payload = operation.request_payload
+        execute_bypass(
+            tenant=tenant,
+            academic_year_id=payload["academic_year_id"],
+            actor=operation.executed_by,
+            reason=payload["reason"],
+            year_end_outcomes=payload["year_end_outcomes"],
+            default_year_end_outcome=payload.get("default_year_end_outcome"),
+            next_grade_level_overrides=payload.get("next_grade_level_overrides"),
+            consent_acknowledged=True,
+            operation=operation,
+        )
+    except Exception:
+        return
+    finally:
+        close_old_connections()

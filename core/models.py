@@ -375,6 +375,7 @@ class GradingBypassOperation(models.Model):
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
+        IN_PROGRESS = "in_progress", "In progress"
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
 
@@ -399,6 +400,11 @@ class GradingBypassOperation(models.Model):
     financial_adjustments = models.JSONField(default=dict, blank=True)
     year_end_records_updated = models.PositiveIntegerField(default=0)
     failure_detail = models.TextField(blank=True, default="")
+    request_payload = models.JSONField(default=dict, blank=True)
+    stage = models.CharField(max_length=80, blank=True, default="Queued")
+    total_students = models.PositiveIntegerField(default=0)
+    students_processed = models.PositiveIntegerField(default=0)
+    progress_percent = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 

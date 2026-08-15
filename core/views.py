@@ -30,10 +30,17 @@ from django.core.files.base import ContentFile
 from PIL import Image
 from io import BytesIO
 
-from core.models import Domain, Tenant, SignupRequest, TenantOwnerActivationCode
+from core.models import (
+    Domain,
+    Tenant,
+    SignupRequest,
+    TenantOwnerActivationCode,
+    GradingBypassOperation,
+)
 from core.services.grading_bypass import (
     build_preview as build_grading_bypass_preview,
-    execute_bypass as execute_grading_bypass,
+    create_bypass_job,
+    run_bypass_job,
     build_outcome_summary as build_grading_bypass_outcome_summary,
 )
 from core.serializers import (
@@ -607,23 +614,55 @@ class TenantViewSet(ModelViewSet):
         academic_year_id = request.data.get("academic_year")
         if not academic_year_id:
             raise ValidationError({"academic_year": "An academic year is required."})
-        operation = execute_grading_bypass(
+        operation = create_bypass_job(
             tenant=self.get_object(),
             academic_year_id=academic_year_id,
             actor=request.user,
-            reason=request.data.get("reason"),
-            year_end_outcomes=request.data.get("year_end_outcomes"),
-            default_year_end_outcome=request.data.get("default_year_end_outcome"),
-            next_grade_level_overrides=request.data.get("next_grade_level_overrides"),
-            consent_acknowledged=True,
+            payload=request.data,
         )
         return Response({
-            "id": str(operation.pk),
+            "job_id": str(operation.pk),
             "status": operation.status,
-            "deleted_records": operation.deleted_records,
-            "financial_adjustments": operation.financial_adjustments,
-            "year_end_records_updated": operation.year_end_records_updated,
-        }, status=status.HTTP_200_OK)
+            "stage": operation.stage,
+            "students_processed": operation.students_processed,
+            "total_students": operation.total_students,
+            "progress_percent": operation.progress_percent,
+        }, status=status.HTTP_202_ACCEPTED)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="grading-bypass-status/(?P<job_id>[^/.]+)",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def grading_bypass_status(self, request, *args, **kwargs):
+        validate_tenant_is_in_public_schema()
+        operation = GradingBypassOperation.objects.filter(
+            pk=kwargs["job_id"], tenant=self.get_object()
+        ).first()
+        if operation is None:
+            raise NotFound("Grading bypass job was not found.")
+        if operation.status == operation.Status.PENDING:
+            import threading
+
+            threading.Thread(
+                target=run_bypass_job,
+                args=(str(operation.pk),),
+                daemon=True,
+                name=f"grading-bypass-resume-{operation.pk}",
+            ).start()
+        return Response({
+            "job_id": str(operation.pk),
+            "status": operation.status,
+            "stage": operation.stage,
+            "students_processed": operation.students_processed,
+            "total_students": operation.total_students,
+            "progress_percent": operation.progress_percent,
+            "failure_detail": operation.failure_detail or None,
+            "deleted_records": operation.deleted_records if operation.status == operation.Status.COMPLETED else None,
+            "financial_adjustments": operation.financial_adjustments if operation.status == operation.Status.COMPLETED else None,
+            "year_end_records_updated": operation.year_end_records_updated if operation.status == operation.Status.COMPLETED else None,
+        })
 
     @action(
         detail=True,
