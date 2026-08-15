@@ -642,6 +642,21 @@ class TenantViewSet(ModelViewSet):
         ).first()
         if operation is None:
             raise NotFound("Grading bypass job was not found.")
+        if (
+            operation.status == operation.Status.IN_PROGRESS
+            and operation.stage == "Starting"
+            and operation.created_at < timezone.now() - timedelta(minutes=5)
+        ):
+            operation.status = operation.Status.FAILED
+            operation.stage = "Failed"
+            operation.failure_detail = (
+                "The background worker stopped before processing began. "
+                "Retry the bypass operation."
+            )
+            operation.completed_at = timezone.now()
+            operation.save(
+                update_fields=["status", "stage", "failure_detail", "completed_at"]
+            )
         if operation.status == operation.Status.PENDING:
             import threading
 

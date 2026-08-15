@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import date
 from decimal import Decimal
@@ -15,6 +16,8 @@ from rest_framework.exceptions import ValidationError
 
 from common.status import EnrollmentStatus, StudentStatus, YearEndOutcome
 from core.models import GradingBypassOperation, Tenant
+
+logger = logging.getLogger(__name__)
 
 def _json_safe(value):
     """Convert Django/Python values to primitives suitable for JSONField storage."""
@@ -427,6 +430,7 @@ def run_bypass_job(operation_id):
     from django.db import close_old_connections
 
     close_old_connections()
+    operation = None
     try:
         with transaction.atomic():
             operation = GradingBypassOperation.objects.select_for_update().get(pk=operation_id)
@@ -448,7 +452,24 @@ def run_bypass_job(operation_id):
             consent_acknowledged=True,
             operation=operation,
         )
-    except Exception:
+    except Exception as exc:
+        logger.exception("Grading bypass job %s failed", operation_id)
+        if operation is not None:
+            try:
+                operation.status = GradingBypassOperation.Status.FAILED
+                operation.stage = "Failed"
+                operation.failure_detail = str(exc)[:2000]
+                operation.completed_at = timezone.now()
+                operation.save(
+                    update_fields=[
+                        "status",
+                        "stage",
+                        "failure_detail",
+                        "completed_at",
+                    ]
+                )
+            except Exception:
+                logger.exception("Could not persist failure for grading bypass job %s", operation_id)
         return
     finally:
         close_old_connections()
