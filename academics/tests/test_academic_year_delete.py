@@ -13,23 +13,29 @@ from academics.views.academic_year import (
 class _StubModelMeta:
     app_label = "academics"
     model_name = "stub"
+    label = "academics.Stub"
 
 
 class _StubObject:
     _meta = _StubModelMeta()
 
-    def __init__(self, pk="1", protected_objects=None, current=False):
+    def __init__(self, pk="1", protected_objects=None, current=False, protected_waves=None):
         self.pk = pk
         self.current = current
-        self._protected_objects = protected_objects or []
+        # Django's collector reports one blocked level at a time, so a delete can
+        # raise repeatedly with a different set of blockers each pass.
+        if protected_waves is not None:
+            self._waves = [list(wave) for wave in protected_waves]
+        elif protected_objects:
+            self._waves = [list(protected_objects)]
+        else:
+            self._waves = []
         self.delete_calls = 0
 
     def delete(self):
         self.delete_calls += 1
-        if self._protected_objects:
-            protected = self._protected_objects
-            self._protected_objects = []
-            raise ProtectedError("blocked", protected)
+        if self._waves:
+            raise ProtectedError("blocked", self._waves.pop(0))
 
 
 class ForceDeleteInstanceTests(SimpleTestCase):
@@ -57,6 +63,24 @@ class ForceDeleteInstanceTests(SimpleTestCase):
         self.assertEqual(grandchild.delete_calls, 1)
         self.assertEqual(child.delete_calls, 2)
         self.assertEqual(root.delete_calls, 2)
+
+    def test_force_delete_clears_successive_protected_waves(self):
+        first = _StubObject(pk="first")
+        second = _StubObject(pk="second")
+        root = _StubObject(pk="root", protected_waves=[[first], [second]])
+
+        _force_delete_instance(root, visited=set())
+
+        self.assertEqual(first.delete_calls, 1)
+        self.assertEqual(second.delete_calls, 1)
+        self.assertEqual(root.delete_calls, 3)
+
+    def test_force_delete_raises_when_a_pass_makes_no_progress(self):
+        blocker = _StubObject(pk="blocker")
+        root = _StubObject(pk="root", protected_waves=[[blocker], [blocker]])
+
+        with self.assertRaises(ProtectedError):
+            _force_delete_instance(root, visited=set())
 
 
 class AcademicYearDeleteViewTests(SimpleTestCase):
@@ -121,3 +145,17 @@ class AcademicYearDeleteViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 204)
         mock_force_delete.assert_called_once()
+
+    def test_force_delete_failure_does_not_re_offer_force(self):
+        view = AcademicYearDetailView()
+        blocked_child = _StubObject(pk="child")
+        year = _StubObject(
+            pk="year", protected_waves=[[blocked_child], [blocked_child]]
+        )
+        view.get_object = MagicMock(return_value=year)
+
+        response = view.delete(self._make_request(force=True), id="year")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["can_force_delete"])
+        self.assertIn("still protected", response.data["detail"])

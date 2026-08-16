@@ -262,6 +262,17 @@ def calculate_student_payment_summary(enrollment, academic_year=None):
     if not academic_year:
         academic_year = enrollment.academic_year
 
+    academic_year_manager = getattr(academic_year.__class__, "_default_manager", None)
+    if not getattr(academic_year, "pk", None) or (
+        academic_year_manager
+        and not academic_year_manager.filter(pk=academic_year.pk).exists()
+    ):
+        logger.debug(
+            "Skipping payment summary refresh for deleted academic year %s",
+            getattr(academic_year, "pk", None),
+        )
+        return None
+
     enrollment_manager = getattr(enrollment.__class__, "_default_manager", None)
     if enrollment_manager and not enrollment_manager.filter(pk=enrollment.pk).exists():
         # Re-enrollment deletes the previous enrollment and cascades bill deletion.

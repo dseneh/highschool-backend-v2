@@ -2,7 +2,7 @@
 from datetime import date
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models.deletion import ProtectedError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -23,26 +23,87 @@ from business.core.services import academic_year_service
 from business.core.adapters import academic_year_adapter
 
 
-def _force_delete_instance(instance, visited: set[tuple[str, str, str]]) -> None:
-    """Recursively delete objects blocked by PROTECT constraints."""
-    if not instance or getattr(instance, "pk", None) is None:
-        return
-
-    key = (
+def _instance_key(instance) -> tuple[str, str, str]:
+    return (
         instance._meta.app_label,
         instance._meta.model_name,
         str(instance.pk),
     )
-    if key in visited:
-        return
-    visited.add(key)
 
-    try:
-        instance.delete()
-    except ProtectedError as exc:
-        for protected in list(exc.protected_objects):
-            _force_delete_instance(protected, visited)
-        instance.delete()
+
+# Guards against pathological graphs; each pass clears one wave of blockers.
+_MAX_FORCE_DELETE_PASSES = 50
+
+
+def _delete_legacy_prior_institution_records(academic_year) -> int:
+    """Remove rows from the retired prior-institution table before force deletion."""
+    if academic_year._meta.model_name != "academicyear":
+        return 0
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT to_regclass(current_schema() || '.prior_institution_record')
+            """
+        )
+        if cursor.fetchone()[0] is None:
+            return 0
+
+        cursor.execute(
+            """
+            DELETE FROM prior_institution_record AS record
+            WHERE record.academic_year_id = %s
+               OR record.maps_to_academic_year_id = %s
+               OR EXISTS (
+                    SELECT 1
+                                        FROM marking_period AS period
+                                        JOIN semester AS semester_record
+                                            ON semester_record.id = period.semester_id
+                                        WHERE period.id = record.marking_period_id
+                                            AND semester_record.academic_year_id = %s
+               )
+            """,
+            [academic_year.pk, academic_year.pk, academic_year.pk],
+        )
+        return cursor.rowcount
+
+
+def _force_delete_instance(instance, visited: set[tuple[str, str, str]]) -> None:
+    """Delete an object, clearing PROTECT-blocked relations wave by wave.
+
+    Django's collector stops at the first level that is protected, so a single
+    pass is not enough: clearing one wave can expose another from a deeper
+    relation. Retry until the delete succeeds or a pass makes no progress.
+    """
+    if not instance or getattr(instance, "pk", None) is None:
+        return
+
+    _delete_legacy_prior_institution_records(instance)
+
+    for _ in range(_MAX_FORCE_DELETE_PASSES):
+        try:
+            instance.delete()
+            return
+        except ProtectedError as exc:
+            progressed = False
+            for protected in list(exc.protected_objects):
+                if not protected or getattr(protected, "pk", None) is None:
+                    continue
+                key = _instance_key(protected)
+                if key in visited:
+                    continue
+                visited.add(key)
+                _force_delete_instance(protected, visited)
+                progressed = True
+
+            if not progressed:
+                raise
+
+    raise ProtectedError(
+        "Could not clear all protected relations for "
+        f"{instance._meta.label} {instance.pk}.",
+        set(),
+    )
 
 class AcademicYearListView(APIView):
     permission_classes = [AcademicsAccessPolicy]
@@ -240,14 +301,31 @@ class AcademicYearDetailView(APIView):
         force = request.query_params.get("force", "false").lower() == "true"
 
         try:
-            with transaction.atomic():
-                if not force:
-                    academic_year.delete()
-                else:
+            if force:
+                from finance.utils import disable_payment_summary_refresh
+
+                # Delete signals must not rebuild summaries while this year and
+                # its enrollments are being removed from the database.
+                with transaction.atomic(), disable_payment_summary_refresh():
                     _force_delete_instance(academic_year, visited=set())
+            else:
+                with transaction.atomic():
+                    academic_year.delete()
             DataCache.invalidate_academic_years(request=request)
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ProtectedError as exc:
+            if force:
+                return Response(
+                    {
+                        "detail": (
+                            "Academic year could not be deleted: some related records are "
+                            "still protected. Remove them first, then try again."
+                        ),
+                        "can_force_delete": False,
+                        "protected_count": len(exc.protected_objects),
+                    },
+                    status=400,
+                )
             return Response(
                 {
                     "detail": "Academic year has related data and cannot be deleted without force.",

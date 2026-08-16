@@ -117,6 +117,33 @@ class PaymentSummaryGuardTests(SimpleTestCase):
         mock_plan.assert_not_called()
         mock_status.assert_not_called()
 
+    def test_calculate_student_payment_summary_skips_deleted_academic_year(self):
+        class DummyAcademicYear:
+            pass
+
+        class DummyEnrollment:
+            pass
+
+        DummyAcademicYear._default_manager = MagicMock()
+        DummyAcademicYear._default_manager.filter.return_value.exists.return_value = False
+        academic_year = DummyAcademicYear()
+        academic_year.pk = "ay-deleted"
+
+        enrollment = DummyEnrollment()
+        enrollment.pk = "enr-1"
+        enrollment.academic_year = academic_year
+
+        with patch(
+            "students.models.StudentPaymentSummary.objects.update_or_create"
+        ) as mock_update_or_create, patch(
+            "finance.utils._calculate_payment_plan_direct"
+        ) as mock_plan:
+            result = calculate_student_payment_summary(enrollment, academic_year)
+
+        self.assertIsNone(result)
+        mock_update_or_create.assert_not_called()
+        mock_plan.assert_not_called()
+
     def test_refresh_payment_summary_skips_deleted_enrollment(self):
         class DummyEnrollment:
             pass
