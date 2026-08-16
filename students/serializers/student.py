@@ -200,20 +200,9 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             current_enrollment=current_enrollment,
             academic_year=selected_academic_year,
         )
-        from students.services.balance import get_student_effective_outstanding_balance
 
-        annotated_balance = getattr(instance, "balance_total", None)
-        effective_balance = (
-            annotated_balance
-            if annotated_balance is not None
-            else get_student_effective_outstanding_balance(instance)
-        )
-        response["balance"] = float(effective_balance)
-        response["has_balance"] = effective_balance > 0
         response["student_type"] = getattr(instance, "student_type", "new")
         response["graduation_year"] = self._resolve_graduation_year(instance)
-        if hasattr(instance, "has_balance"):
-            response["has_balance"] = bool(instance.has_balance)
         enrollment_count = getattr(instance, "enrollment_count", None)
         if enrollment_count is None:
             enrollment_count = instance.enrollments.count()
@@ -244,16 +233,27 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             if show_rank:
                 response["rank"] = metric.get("rank") if metric else None
 
+        # Balance is opt-in: resolving it costs extra subqueries per row, so it
+        # is only emitted when the caller asks for the balance columns.
         if show_balance:
+            from students.services.balance import (
+                get_student_effective_outstanding_balance,
+            )
+
             balance_value = getattr(instance, "balance_total", None)
             if balance_value is None:
-                balance_value = instance.get_approved_balance(
-                    selected_academic_year.id if selected_academic_year else None
-                )
+                balance_value = get_student_effective_outstanding_balance(instance)
             try:
-                response["balance"] = float(balance_value) if balance_value is not None else None
+                effective_balance = float(balance_value)
             except (TypeError, ValueError):
-                response["balance"] = None
+                effective_balance = None
+            response["balance"] = effective_balance
+            annotated_has_balance = getattr(instance, "has_balance", None)
+            response["has_balance"] = (
+                bool(annotated_has_balance)
+                if annotated_has_balance is not None
+                else bool(effective_balance and effective_balance > 0)
+            )
 
         if show_paid:
             paid_value = getattr(instance, "paid_total", None)

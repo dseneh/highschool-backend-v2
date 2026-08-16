@@ -163,6 +163,23 @@ class StudentListFilterTests(TenantTestCase):
         data = self._list(status="graduated", graduation_year=self.current_year.name)
         self.assertEqual(data["count"], 0)
 
+    def test_balance_fields_are_omitted_by_default(self):
+        row = self._list(search=self.new_student.id_number)["results"][0]
+        self.assertNotIn("balance", row)
+        self.assertNotIn("has_balance", row)
+
+    def test_balance_fields_are_returned_when_requested(self):
+        row = self._list(
+            search=self.new_student.id_number, show_balance="1"
+        )["results"][0]
+        self.assertIn("balance", row)
+        self.assertIn("has_balance", row)
+        self.assertFalse(row["has_balance"])
+
+    def test_balance_filter_still_works_without_show_balance(self):
+        data = self._list(balance_owed="clear")
+        self.assertIn(self.new_student.id_number, self._id_numbers(data))
+
 
 class StudentReportFilterTests(StudentListFilterTests):
     """The export queryset must honour the same filters as the list view."""

@@ -177,8 +177,7 @@ class StudentListView(APIView):
         paid_max = query_params.get("paid_max")
 
         # billed_total/paid_total are only consumed by the paid columns and the
-        # paid/percentage filters. balance_total and has_balance always come from
-        # annotate_student_effective_outstanding_balance below.
+        # paid/percentage filters.
         needs_billed_paid_totals = any(
             [
                 show_paid,
@@ -190,9 +189,20 @@ class StudentListView(APIView):
         )
         if needs_billed_paid_totals:
             students = annotate_student_balance_totals(students)
-        # The list contract always exposes effective outstanding balance and
-        # has_balance, including students without a current-year enrollment.
-        students = annotate_student_effective_outstanding_balance(students)
+
+        # balance_total/has_balance cost extra subqueries per row, so they are
+        # only annotated when a balance column or balance filter needs them.
+        needs_effective_balance = any(
+            [
+                show_balance,
+                bool(balance_owed),
+                bool(balance_condition),
+                balance_min not in (None, ""),
+                balance_max not in (None, ""),
+            ]
+        )
+        if needs_effective_balance:
+            students = annotate_student_effective_outstanding_balance(students)
 
         students = students.annotate(
             student_type=Case(
