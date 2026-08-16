@@ -71,6 +71,8 @@ def count_instructional_days_for_year(
     academic_year,
     *,
     end_cap: Optional[date] = None,
+    operating_days: Optional[Set[int]] = None,
+    blocked_days: Optional[Set[date]] = None,
 ) -> int:
     if not academic_year or not academic_year.start_date or not academic_year.end_date:
         return 0
@@ -82,14 +84,34 @@ def count_instructional_days_for_year(
     if academic_year.start_date > period_end:
         return 0
 
-    return count_instructional_days(academic_year.start_date, period_end)
+    return count_instructional_days(
+        academic_year.start_date,
+        period_end,
+        operating_days=operating_days,
+        blocked_days=blocked_days,
+    )
 
 
 def get_academic_year_duration(academic_year) -> dict:
     """Instructional progress for an academic year (school days, not calendar days)."""
     today = date.today()
-    total_days = count_instructional_days_for_year(academic_year)
-    days_elapsed = count_instructional_days_for_year(academic_year, end_cap=today)
+    if not academic_year or not academic_year.start_date or not academic_year.end_date:
+        return {"total_days": 0, "days_elapsed": 0, "completion_percentage": 0}
+
+    # Load the calendar once and reuse it for both counts.
+    operating_days = get_operating_days()
+    blocked_days = get_blocked_days(academic_year.start_date, academic_year.end_date)
+    total_days = count_instructional_days_for_year(
+        academic_year,
+        operating_days=operating_days,
+        blocked_days=blocked_days,
+    )
+    days_elapsed = count_instructional_days_for_year(
+        academic_year,
+        end_cap=today,
+        operating_days=operating_days,
+        blocked_days=blocked_days,
+    )
     completion_percentage = int((days_elapsed / total_days * 100)) if total_days > 0 else 0
     return {
         "total_days": total_days,

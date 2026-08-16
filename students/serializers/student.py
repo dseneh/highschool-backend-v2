@@ -41,6 +41,26 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
             "withdrawal_reason",
         ]
 
+    def _resolve_graduation_year(self, instance: Student):
+        """Academic year the student graduated in, from the year-end record."""
+        academic_year_name = getattr(instance, "graduation_academic_year", None)
+        if academic_year_name:
+            return academic_year_name
+
+        if not hasattr(instance, "graduation_academic_year"):
+            graduating_enrollment = (
+                instance.enrollments.filter(year_end_outcome="graduated")
+                .select_related("academic_year")
+                .order_by("-academic_year__start_date")
+                .first()
+            )
+            if graduating_enrollment:
+                return graduating_enrollment.academic_year.name
+
+        if instance.date_of_graduation:
+            return str(instance.date_of_graduation.year)
+        return None
+
     def to_representation(self, instance: Student):
         response = super().to_representation(instance)
         response["full_name"] = instance.get_full_name()
@@ -167,6 +187,10 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
                     "include_billing": include_billing,
                     "include_payment_plan": include_payment_plan,
                     "include_payment_status": include_payment_status,
+                    # Shared across every row of a list response.
+                    "academic_year_duration_cache": context.setdefault(
+                        "academic_year_duration_cache", {}
+                    ),
                 },
             ).data
 
@@ -187,6 +211,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         response["balance"] = float(effective_balance)
         response["has_balance"] = effective_balance > 0
         response["student_type"] = getattr(instance, "student_type", "new")
+        response["graduation_year"] = self._resolve_graduation_year(instance)
         if hasattr(instance, "has_balance"):
             response["has_balance"] = bool(instance.has_balance)
         enrollment_count = getattr(instance, "enrollment_count", None)

@@ -22,6 +22,15 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
             "next_grade_level",
         ]
 
+    def _resolve_duration(self, academic_year):
+        """Duration is identical for every row sharing an academic year, so compute it once."""
+        cache = self.context.get("academic_year_duration_cache")
+        if cache is None:
+            return get_academic_year_duration(academic_year)
+        if academic_year.id not in cache:
+            cache[academic_year.id] = get_academic_year_duration(academic_year)
+        return cache[academic_year.id]
+
     def to_representation(self, instance):
         response = super().to_representation(instance)
         response["student"] = instance.student.id_number
@@ -47,7 +56,7 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
             "start_date": instance.academic_year.start_date,
             "end_date": instance.academic_year.end_date,
             "current": instance.academic_year.current,
-            "duration": get_academic_year_duration(instance.academic_year),
+            "duration": self._resolve_duration(instance.academic_year),
         }
 
         # Get include_payment_plan and include_payment_status from context

@@ -396,7 +396,14 @@ class Student(BasePersonModel):
     
     @property
     def student_class(self):
-        current_enrollment = self.enrollments.filter(academic_year__current=True).first()
+        # Reuse the list view's current_year_enrollments prefetch when present.
+        prefetched = getattr(self, "current_year_enrollments", None)
+        if prefetched is not None:
+            current_enrollment = prefetched[0] if prefetched else None
+        else:
+            current_enrollment = self.enrollments.filter(
+                academic_year__current=True
+            ).select_related("grade_level", "section").first()
         if current_enrollment and current_enrollment.grade_level:
             return f"{current_enrollment.grade_level.name} {current_enrollment.section.name if current_enrollment.section else ''}".strip()
         return self.grade_level.name if self.grade_level else "N/A"

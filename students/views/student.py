@@ -5,7 +5,7 @@ from django.utils import timezone
 from django.core.cache import cache
 from django.db import transaction, router, connection
 from django.db.models import Q, Sum, Avg, Count, F, Value, DecimalField, OuterRef, Subquery, ExpressionWrapper, FloatField, Case, When, Prefetch, Exists, CharField
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, ExtractYear
 from django.db.models.deletion import Collector
 from django.db.models.signals import pre_delete
 from django.db.utils import OperationalError, ProgrammingError
@@ -41,7 +41,7 @@ from students.views.utils import create_enrollment_for_student
 from common.http_etag import attach_etag, maybe_not_modified
 from finance.models import Transaction
 from grading.services.ranking import RankingService
-from common.status import EnrollmentStatus, StudentStatus
+from common.status import EnrollmentStatus, StudentStatus, YearEndOutcome
 
 # Import business logic (framework-agnostic)
 from business.students.services import student_service
@@ -67,6 +67,7 @@ def _table_exists(table_name: str) -> bool:
 class StudentPageNumberPagination(PageNumberPagination):
     page_size = 10  # Set your desired page size here
     page_size_query_param = "page_size"
+    max_page_size = 200
 
 
 class StudentListView(APIView):
@@ -84,6 +85,10 @@ class StudentListView(APIView):
             request.query_params.get("show_billing_summary"),
         )
         include_billing = _to_bool(include_billing_raw, default=False)
+        # The list renders no payment schedule, so this stays off unless asked for.
+        include_payment_plan = _to_bool(
+            request.query_params.get("include_payment_plan"), default=False
+        )
         include_grades = request.query_params.get("include_grades", "false").lower() in (
             "true",
             "1",
@@ -149,6 +154,16 @@ class StudentListView(APIView):
         ) = student_service.parse_enrollment_status_filter(status)
         query_params.pop("status", None)
 
+        # Lifecycle statuses the caller wants removed from the result set
+        # (e.g. the Students list excludes graduates, which have their own page).
+        excluded_lifecycle_statuses = [
+            value.strip().lower()
+            for value in (request.query_params.get("exclude_status") or "").split(",")
+            if value.strip()
+        ]
+        query_params.pop("exclude_status", None)
+        query_params.pop("graduation_year", None)
+
         query = get_student_queryparams(query_params, filter_fields)
         if query:
             students = students.filter(query)
@@ -161,23 +176,22 @@ class StudentListView(APIView):
         paid_min = query_params.get("paid_min")
         paid_max = query_params.get("paid_max")
 
-        needs_balance_annotations = any(
+        # billed_total/paid_total are only consumed by the paid columns and the
+        # paid/percentage filters. balance_total and has_balance always come from
+        # annotate_student_effective_outstanding_balance below.
+        needs_billed_paid_totals = any(
             [
-                include_billing,
-                show_balance,
                 show_paid,
-                bool(balance_owed),
-                bool(balance_condition),
-                balance_min not in (None, ""),
-                balance_max not in (None, ""),
                 bool(paid_condition),
                 paid_min not in (None, ""),
                 paid_max not in (None, ""),
+                balance_condition.startswith("pct-"),
             ]
         )
+        if needs_billed_paid_totals:
+            students = annotate_student_balance_totals(students)
         # The list contract always exposes effective outstanding balance and
         # has_balance, including students without a current-year enrollment.
-        students = annotate_student_balance_totals(students)
         students = annotate_student_effective_outstanding_balance(students)
 
         students = students.annotate(
@@ -187,7 +201,6 @@ class StudentListView(APIView):
                         Enrollment.objects.filter(
                             student=OuterRef("pk"),
                             academic_year__current=False,
-                            status=EnrollmentStatus.COMPLETED,
                         )
                     ),
                     then=Value("returning"),
@@ -200,6 +213,31 @@ class StudentListView(APIView):
         student_type_values = [value.strip() for value in student_type.split(",") if value.strip()]
         if student_type_values:
             students = students.filter(student_type__in=student_type_values)
+
+        graduating_enrollments = Enrollment.objects.filter(
+            student=OuterRef("pk"),
+            year_end_outcome=YearEndOutcome.GRADUATED,
+        ).order_by("-academic_year__start_date")
+        students = students.annotate(
+            graduation_academic_year=Subquery(
+                graduating_enrollments.values("academic_year__name")[:1]
+            ),
+            graduation_date_year=ExtractYear("date_of_graduation"),
+        )
+
+        graduation_year_values = [
+            value.strip()
+            for value in (request.query_params.get("graduation_year") or "").split(",")
+            if value.strip()
+        ]
+        if graduation_year_values:
+            graduation_year_query = Q(graduation_academic_year__in=graduation_year_values)
+            numeric_years = [
+                int(value) for value in graduation_year_values if value.isdigit()
+            ]
+            if numeric_years:
+                graduation_year_query |= Q(graduation_date_year__in=numeric_years)
+            students = students.filter(graduation_year_query)
 
         if balance_owed == "owed":
             students = students.filter(balance_total__gt=0)
@@ -309,9 +347,18 @@ class StudentListView(APIView):
                 ).distinct()
 
         # Stats before status tab filter (aligned with display status contract).
+        # Exclusions are applied after stats so the summary cards still report
+        # totals for statuses that are hidden from the rows (e.g. graduated).
         stats_data: dict = {}
         if include_stats:
-            stats_data = build_student_list_stats(students)
+            # Count on a lean queryset so the balance subqueries are not dragged
+            # into the SELECT list of every COUNT.
+            stats_data = build_student_list_stats(
+                Student.objects.filter(pk__in=students.order_by().values("pk"))
+            )
+
+        if excluded_lifecycle_statuses:
+            students = students.exclude(status__in=excluded_lifecycle_statuses)
 
         students = students.annotate(enrollment_count=Count("enrollments", distinct=True))
 
@@ -469,7 +516,7 @@ class StudentListView(APIView):
             context={
                 "request": request,
                 "include_billing": include_billing,
-                "include_payment_plan": include_billing,
+                "include_payment_plan": include_billing and include_payment_plan,
                 "include_grades": include_grades,
                 "include_payment_status": include_billing,
                 "show_rank": show_rank,

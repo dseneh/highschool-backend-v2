@@ -6,8 +6,8 @@ import threading
 from datetime import datetime
 from io import BytesIO, StringIO
 
-from django.db.models import Case, DecimalField, ExpressionWrapper, F, FloatField, OuterRef, Q, Subquery, Sum, Value, When
-from django.db.models.functions import Coalesce
+from django.db.models import Case, CharField, DecimalField, Exists, ExpressionWrapper, F, FloatField, OuterRef, Q, Subquery, Sum, Value, When
+from django.db.models.functions import Coalesce, ExtractYear
 from django.http import HttpResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -19,6 +19,7 @@ from academics.models import AcademicYear
 from students.services.balance import annotate_student_balance_totals
 from business.students.services import student_service
 from common.filter import get_student_queryparams
+from common.status import YearEndOutcome
 from common.utils import get_enrollment_bill_summary
 from finance.models import Transaction
 from grading.services.ranking import RankingService
@@ -400,9 +401,65 @@ def _build_students_queryset(query_params, academic_year=None):
     ) = student_service.parse_enrollment_status_filter(status_filter)
     query_params.pop("status", None)
 
+    excluded_lifecycle_statuses = [
+        value.strip().lower()
+        for value in str(query_params.get("exclude_status") or "").split(",")
+        if value.strip()
+    ]
+    student_type_values = [
+        value.strip().lower()
+        for value in str(query_params.get("student_type") or "").split(",")
+        if value.strip()
+    ]
+    graduation_year_values = [
+        value.strip()
+        for value in str(query_params.get("graduation_year") or "").split(",")
+        if value.strip()
+    ]
+    query_params.pop("exclude_status", None)
+    query_params.pop("student_type", None)
+    query_params.pop("graduation_year", None)
+
     query = get_student_queryparams(query_params, filter_fields)
     if query:
         students = students.filter(query)
+
+    if student_type_values:
+        students = students.annotate(
+            student_type=Case(
+                When(
+                    Exists(
+                        Enrollment.objects.filter(
+                            student=OuterRef("pk"),
+                            academic_year__current=False,
+                        )
+                    ),
+                    then=Value("returning"),
+                ),
+                default=Value("new"),
+                output_field=CharField(),
+            )
+        ).filter(student_type__in=student_type_values)
+
+    if graduation_year_values:
+        graduating_enrollments = Enrollment.objects.filter(
+            student=OuterRef("pk"),
+            year_end_outcome=YearEndOutcome.GRADUATED,
+        ).order_by("-academic_year__start_date")
+        students = students.annotate(
+            graduation_academic_year=Subquery(
+                graduating_enrollments.values("academic_year__name")[:1]
+            ),
+            graduation_date_year=ExtractYear("date_of_graduation"),
+        )
+        graduation_year_query = Q(graduation_academic_year__in=graduation_year_values)
+        numeric_years = [int(value) for value in graduation_year_values if value.isdigit()]
+        if numeric_years:
+            graduation_year_query |= Q(graduation_date_year__in=numeric_years)
+        students = students.filter(graduation_year_query)
+
+    if excluded_lifecycle_statuses:
+        students = students.exclude(status__in=excluded_lifecycle_statuses)
 
     students = annotate_student_balance_totals(
         students,
