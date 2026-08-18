@@ -23,6 +23,7 @@ from core.platform_banner_views import (
     PlatformBannerTargetingMetaView,
     PlatformBannerViewSet,
 )
+from core.feature_views import TenantFeatureAccessView, TenantFeatureActionView, TenantFeaturesView
 
 router = DefaultRouter()
 router.register(r'tenants', TenantViewSet, basename='tenant')
@@ -40,6 +41,9 @@ urlpatterns = [
     # captures them as detail lookups and returns 404 (or worse, tries to
     # parse "me"/"current" as a UUID/schema name).
     path('tenants/current/', current_tenant, name='current-tenant'),
+    path('features/', TenantFeaturesView.as_view(), name='tenant-features'),
+    path('features/<slug:key>/', TenantFeatureAccessView.as_view(), name='tenant-feature-access'),
+    path('features/<slug:key>/<slug:action>/', TenantFeatureActionView.as_view(), name='tenant-feature-action'),
 
     # Onboarding endpoints (must be before router so they aren't swallowed by
     # the TenantViewSet detail lookup on schema_name)
@@ -68,4 +72,3 @@ urlpatterns = [
     path('search/', search_tenant_info, name='search-tenant-info'),
     path('cache/invalidate/', invalidate_cache, name='invalidate-cache'),
 ]
-

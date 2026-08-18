@@ -370,6 +370,111 @@ class Tenant(TenantBase):
         return self.active and self.status == self.STATUS_ACTIVE and not self.maintenance_mode
 
 
+class Feature(models.Model):
+    """A platform capability that can be included in a plan or sold as an add-on."""
+
+    key = models.SlugField(max_length=80, unique=True)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+    category = models.CharField(max_length=80, blank=True, default="")
+    is_purchasable = models.BooleanField(default=True)
+    stripe_price_id = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "core_feature"
+        ordering = ["category", "name"]
+
+    def __str__(self):
+        return self.name
+
+
+class TenantFeatureEntitlement(models.Model):
+    """The commercial and local-access state for one tenant feature."""
+
+    class Source(models.TextChoices):
+        ADDON = "addon", "Add-on"
+        PLAN = "plan", "Plan"
+        COMPLIMENTARY = "complimentary", "Complimentary"
+        GRANDFATHERED = "grandfathered", "Grandfathered"
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        PENDING_PAYMENT = "pending_payment", "Pending payment"
+        ENDED = "ended", "Ended"
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="feature_entitlements",
+    )
+    feature = models.ForeignKey(
+        Feature,
+        on_delete=models.PROTECT,
+        related_name="tenant_entitlements",
+    )
+    source = models.CharField(max_length=24, choices=Source.choices, default=Source.ADDON)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.ACTIVE)
+    locally_enabled = models.BooleanField(default=True)
+    cancel_at_period_end = models.BooleanField(default=False)
+    active_from = models.DateTimeField(null=True, blank=True)
+    active_until = models.DateTimeField(null=True, blank=True)
+    stripe_subscription_item_id = models.CharField(max_length=255, blank=True, default="")
+    limits = models.JSONField(default=dict, blank=True)
+    updated_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_feature_entitlements",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "core_tenant_feature_entitlement"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "feature"], name="core_tenant_feature_unique"),
+        ]
+
+
+class TenantFeatureChange(models.Model):
+    """Immutable audit trail for tenant-admin feature access changes."""
+
+    class Action(models.TextChoices):
+        ENABLED = "enabled", "Enabled"
+        LOCALLY_DISABLED = "locally_disabled", "Locally disabled"
+        LOCALLY_ENABLED = "locally_enabled", "Locally enabled"
+        CANCELLATION_SCHEDULED = "cancellation_scheduled", "Cancellation scheduled"
+        CANCELLATION_RESUMED = "cancellation_resumed", "Cancellation resumed"
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="feature_changes")
+    feature = models.ForeignKey(Feature, on_delete=models.PROTECT, related_name="tenant_changes")
+    entitlement = models.ForeignKey(
+        TenantFeatureEntitlement,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="changes",
+    )
+    action = models.CharField(max_length=32, choices=Action.choices)
+    actor = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="feature_changes",
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "core_tenant_feature_change"
+        ordering = ["-created_at"]
+
+
 class GradingBypassOperation(models.Model):
     """Public-schema audit record for an exceptional academic-year closure."""
 

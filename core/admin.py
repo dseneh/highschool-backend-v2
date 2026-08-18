@@ -4,7 +4,7 @@ Admin configuration for core models
 
 from django.contrib import admin
 from django_tenants.admin import TenantAdminMixin
-from .models import Tenant, Domain, SignupRequest
+from .models import Domain, Feature, SignupRequest, Tenant, TenantFeatureEntitlement
 
 
 
@@ -30,3 +30,17 @@ class SignupRequestAdmin(admin.ModelAdmin):
     list_editable = ("status",)
     readonly_fields = ("submitted_at",)
     ordering = ("-submitted_at",)
+
+
+@admin.register(Feature)
+class FeatureAdmin(admin.ModelAdmin):
+    list_display = ("key", "name", "category", "is_purchasable", "is_active")
+    list_filter = ("is_active", "is_purchasable", "category")
+    search_fields = ("key", "name")
+
+
+@admin.register(TenantFeatureEntitlement)
+class TenantFeatureEntitlementAdmin(admin.ModelAdmin):
+    list_display = ("tenant", "feature", "status", "locally_enabled", "cancel_at_period_end")
+    list_filter = ("status", "source", "locally_enabled", "cancel_at_period_end")
+    search_fields = ("tenant__name", "feature__key")

@@ -221,6 +221,40 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             )
 
         return None
+
+    def _enforce_feature_access(self, request):
+        """Block paid module APIs centrally, including direct API requests."""
+        feature_paths = {
+            "/api/v1/payroll/": "payroll",
+            "/api/v1/payroll-v2/": "payroll",
+            "/api/v1/employee-benefits/": "payroll",
+            "/api/v1/employee-disbursements/": "payroll",
+        }
+        feature_key = next(
+            (key for prefix, key in feature_paths.items() if request.path.startswith(prefix)),
+            None,
+        )
+        if not feature_key:
+            return None
+
+        tenant = getattr(request, "tenant", None)
+        if not tenant or getattr(tenant, "schema_name", None) == get_public_schema_name():
+            return None
+
+        from django.http import JsonResponse
+        from core.services.features import feature_access
+
+        access = feature_access(tenant, feature_key)
+        if access.enabled:
+            return None
+        return JsonResponse(
+            {
+                "detail": "This feature is not enabled for this workspace.",
+                "error_code": access.reason.upper(),
+                "feature_key": feature_key,
+            },
+            status=403,
+        )
     
     def process_request(self, request):
         """
@@ -246,7 +280,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                 return response
 
             self._ensure_superadmin_tenant_access(request)
-            return self._enforce_tenant_runtime_controls(request)
+            runtime_response = self._enforce_tenant_runtime_controls(request)
+            return runtime_response or self._enforce_feature_access(request)
         except Exception as exc:
             # If it's an API endpoint and we have a DRF or Http404 exception, handle it
             if request.path.startswith('/api/'):
@@ -505,4 +540,3 @@ class ApiPerformanceMetricsMiddleware:
         response["X-Response-Time-Ms"] = f"{duration_ms:.2f}"
         response["X-Query-Count"] = str(query_count)
         return response
-
