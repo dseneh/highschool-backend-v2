@@ -59,6 +59,21 @@ PRIVILEGES: Dict[str, PrivilegeDef] = {
             "transaction types, etc."
         ),
     ),
+    "BUDGET_VIEW": PrivilegeDef(
+        code="BUDGET_VIEW",
+        label="View budgets",
+        description="Can view annual budgets, projections, performance, and budget reports.",
+    ),
+    "BUDGET_MANAGE": PrivilegeDef(
+        code="BUDGET_MANAGE",
+        label="Manage budgets",
+        description="Can create, edit, submit, and revise annual school budgets.",
+    ),
+    "BUDGET_APPROVE": PrivilegeDef(
+        code="BUDGET_APPROVE",
+        label="Approve budgets",
+        description="Can approve, activate, and close annual school budgets and revisions.",
+    ),
 
     # GRADING app (Assessment, AssessmentType, CalculationMethod, DefaultAssessmentTemplate,
     # Grade, GradeBook, GradeLetter)

@@ -48,6 +48,7 @@ from .views.academic_reports import ClassGradeSummaryReportView, HonorRollReport
 from .views.report_cards import BulkReportCardsExportView
 from .views.hr_reports import EmployeeListReportView, StaffDirectoryReportView
 from .views.advanced_reports import ProfitLossReportView, RevenueReportView, CustomReportBuilderView
+from .views.budget_reports import BudgetReportView
 
 app_name = "reports"
 
@@ -75,6 +76,15 @@ urlpatterns = [
     path("accounting/bank-reconciliation/", BankReconciliationReportView.as_view(), name="bank-reconciliation-reports"),
     path("accounting/profit-loss/", ProfitLossReportView.as_view(), name="profit-loss-reports"),
     path("accounting/revenue/", RevenueReportView.as_view(), name="revenue-reports"),
+    path("accounting/budget-summary/", BudgetReportView.as_view(report_type="budget-summary"), name="budget-summary-report"),
+    path("accounting/budget-vs-actual/", BudgetReportView.as_view(report_type="budget-vs-actual"), name="budget-vs-actual-report"),
+    path("accounting/revenue-performance/", BudgetReportView.as_view(report_type="revenue-performance"), name="revenue-performance-report"),
+    path("accounting/expense-performance/", BudgetReportView.as_view(report_type="expense-performance"), name="expense-performance-report"),
+    path("accounting/enrollment-vs-budget/", BudgetReportView.as_view(report_type="enrollment-vs-budget"), name="enrollment-vs-budget-report"),
+    path("accounting/tuition-projection-vs-actual/", BudgetReportView.as_view(report_type="tuition-projection-vs-actual"), name="tuition-projection-vs-actual-report"),
+    path("accounting/payroll-staff-cost/", BudgetReportView.as_view(report_type="payroll-staff-cost"), name="payroll-staff-cost-report"),
+    path("accounting/variance-analysis/", BudgetReportView.as_view(report_type="variance-analysis"), name="variance-analysis-report"),
+    path("accounting/annual-financial-performance/", BudgetReportView.as_view(report_type="annual-financial-performance"), name="annual-financial-performance-report"),
     # Payroll Reports
     path("payroll/run-summary/", PayrollRunSummaryReportView.as_view(), name="payroll-run-summary-reports"),
     path("payroll/register/", PayrollRegisterReportView.as_view(), name="payroll-register-reports"),

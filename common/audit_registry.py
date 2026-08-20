@@ -196,6 +196,25 @@ def register_all_models():
     auditlog.register(AccountingSpendableAllocationRule, exclude_fields=COMMON_EXCLUDE)
     auditlog.register(AccountingRuleThresholdState, exclude_fields=COMMON_EXCLUDE)
 
+    # Budgeting
+    from budgeting.models import (
+        Budget,
+        BudgetEnrollmentAssumption,
+        BudgetLifecycleEvent,
+        BudgetLine,
+        BudgetLinePeriod,
+        BudgetRevision,
+        BudgetRevisionLineDelta,
+        BudgetSection,
+    )
+
+    for model in (
+        Budget, BudgetSection, BudgetLine, BudgetLinePeriod,
+        BudgetEnrollmentAssumption, BudgetRevision, BudgetRevisionLineDelta,
+        BudgetLifecycleEvent,
+    ):
+        auditlog.register(model, exclude_fields=COMMON_EXCLUDE)
+
     # ── HR ─────────────────────────────────────────────────────────────
     from hr.models import (
         EmployeeDepartment,

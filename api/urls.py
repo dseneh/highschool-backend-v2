@@ -56,6 +56,7 @@ urlpatterns = [
     path(api_base, include("students.urls")),
     path(api_base, include("finance.urls")),
     path(api_base, include("accounting.urls")),
+    path(f"{api_base}accounting/", include("budgeting.urls")),
     path(api_base, include("hr.urls")),
     path(api_base, include("staff.urls")),
     path(f"{api_base}payroll/settings/", PayrollSettingsView.as_view(), name="payroll-settings"),

@@ -85,6 +85,7 @@ TENANT_APPS = [
     "grading",  # Grading models (GradeLetter, AssessmentType, GradeBook, Assessment, Grade, etc.)
     "finance",  # Finance models (BankAccount, Transaction, PaymentMethod, PaymentInstallment, etc.)
     "accounting",  # Accounting models (Ledger, Journal, Cash, AR, Tax, Posting Bridge - Phase 2-5)
+    "budgeting",  # Annual budgets, revisions, assumptions, and lifecycle audit
     "hr",  # HR models (Payroll, Contracts, Workforce - Phase 6-7)
     "payroll_v2",  # Payroll: schedules, runs, items, settings, paystubs
     "employee_benefits",  # Named employee benefits/allocations with approval workflow
