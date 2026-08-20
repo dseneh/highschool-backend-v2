@@ -6,7 +6,7 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import connection
+from django.db import connection, IntegrityError, transaction
 from django.db.models import Q
 from django.core.cache import cache
 from django.contrib.auth.hashers import make_password
@@ -36,6 +36,7 @@ from core.models import (
     SignupRequest,
     TenantOwnerActivationCode,
     GradingBypassOperation,
+    TenantCreationJob,
 )
 from core.services.grading_bypass import (
     build_preview as build_grading_bypass_preview,
@@ -56,6 +57,7 @@ from common.utils import update_model_fields
 from common.audit_utils import log_tenant_control_change
 from common.permissions import IsSuperAdmin
 from core.services.tenant_deletion import hard_delete_tenant_workspace
+from core.services.tenant_clone import module_metadata, resolve_modules, start_clone_job
 from common.email_service import send_tenant_owner_activation_email
 from users.utils import build_activation_url
 from students.models import Student
@@ -319,6 +321,123 @@ class TenantViewSet(ModelViewSet):
         # Ensure we're in the public schema
         validate_tenant_is_in_public_schema()
         serializer.save()
+
+    def create(self, request, *args, **kwargs):
+        """Preserve default creation and enqueue clone-based creation."""
+        validate_tenant_is_in_public_schema()
+        initialization_source = request.data.get("initialization_source", "default")
+        if initialization_source == "default":
+            return super().create(request, *args, **kwargs)
+        if initialization_source != "clone":
+            raise ValidationError({"initialization_source": "Use 'default' or 'clone'."})
+
+        source_schema = str(request.data.get("source_tenant") or "").strip()
+        selected_modules = request.data.get("clone_modules") or []
+        if not source_schema:
+            raise ValidationError({"source_tenant": "A source tenant is required."})
+        if not isinstance(selected_modules, list) or not selected_modules:
+            raise ValidationError({"clone_modules": "Select at least one supported module."})
+        resolve_modules(selected_modules)
+
+        source = Tenant.objects.filter(
+            schema_name=source_schema,
+            active=True,
+        ).exclude(status=Tenant.STATUS_DELETED).first()
+        if source is None:
+            raise ValidationError({"source_tenant": "The source tenant does not exist or is not accessible."})
+
+        creation_payload = {
+            key: value
+            for key, value in request.data.items()
+            if key not in {"initialization_source", "source_tenant", "clone_modules"}
+        }
+        serializer = CreateTenantSerializer(data=creation_payload, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        destination_schema = serializer.validated_data.get("schema_name")
+        if not destination_schema:
+            short_name = serializer.validated_data.get("short_name") or serializer.validated_data["name"][:10]
+            destination_schema = "".join(
+                character for character in short_name.lower().replace(" ", "_").replace("-", "_")
+                if character.isalnum() or character == "_"
+            )
+            creation_payload["schema_name"] = destination_schema
+        if source.schema_name == destination_schema:
+            raise ValidationError({"schema_name": "Destination must differ from the source tenant."})
+
+        active_statuses = [TenantCreationJob.Status.PENDING, TenantCreationJob.Status.IN_PROGRESS]
+        existing_job = TenantCreationJob.objects.filter(
+            destination_schema=destination_schema,
+            status__in=active_statuses,
+        ).first()
+        if existing_job:
+            return Response(self._creation_job_data(existing_job), status=status.HTTP_202_ACCEPTED)
+
+        try:
+            with transaction.atomic():
+                job = TenantCreationJob.objects.create(
+                    source_tenant=source,
+                    source_schema=source.schema_name,
+                    destination_schema=destination_schema,
+                    requested_by=request.user,
+                    selected_modules=selected_modules,
+                    request_payload=creation_payload,
+                )
+        except IntegrityError:
+            job = TenantCreationJob.objects.get(
+                destination_schema=destination_schema,
+                status__in=active_statuses,
+            )
+        start_clone_job(job)
+        return Response(self._creation_job_data(job), status=status.HTTP_202_ACCEPTED)
+
+    @staticmethod
+    def _creation_job_data(job):
+        return {
+            "job_id": str(job.pk),
+            "status": job.status,
+            "stage": job.stage,
+            "progress_percent": job.progress_percent,
+            "failure_detail": job.failure_detail or None,
+            "destination_schema": job.destination_schema,
+            "tenant_schema": (job.result or {}).get("tenant_schema"),
+            "cloned_counts": (job.result or {}).get("cloned_counts"),
+        }
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="clone-modules",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def clone_modules(self, request):
+        validate_tenant_is_in_public_schema()
+        return Response({
+            "results": module_metadata(),
+            "excluded_data": [
+                "users and tenant memberships",
+                "students and guardians",
+                "employees and staff assignments",
+                "attendance, grades, and transcripts",
+                "payments, journal entries, balances, and transactions",
+                "payroll periods, employee compensation, and payroll runs",
+                "notification campaigns and user preferences",
+            ],
+        })
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path=r"creation-jobs/(?P<job_id>[^/.]+)",
+        permission_classes=[IsAuthenticated, IsSuperAdmin],
+    )
+    def creation_job_status(self, request, job_id=None):
+        validate_tenant_is_in_public_schema()
+        job = TenantCreationJob.objects.filter(pk=job_id).first()
+        if job is None:
+            raise NotFound("Tenant creation job was not found.")
+        if job.status == TenantCreationJob.Status.PENDING:
+            start_clone_job(job)
+        return Response(self._creation_job_data(job))
 
     def update(self, request, *args, **kwargs):
         """
@@ -1397,4 +1516,3 @@ class ContactInquiryView(APIView):
             pass
 
         return Response({"detail": "Message sent successfully."}, status=status.HTTP_201_CREATED)
-

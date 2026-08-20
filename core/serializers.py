@@ -422,6 +422,20 @@ class CreateTenantSerializer(serializers.Serializer):
         write_only=True,
         help_text="Signup request ID to link/update automatically after workspace creation.",
     )
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    website = serializers.URLField(required=False, allow_blank=True)
+    funding_type = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    school_type = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    slogan = serializers.CharField(max_length=250, required=False, allow_blank=True)
+    emis_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    date_est = serializers.DateField(required=False, allow_null=True)
+    address = serializers.CharField(max_length=250, required=False, allow_blank=True)
+    city = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    state = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    country = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    postal_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
     active = serializers.BooleanField(default=True)
     maintenance_mode = serializers.BooleanField(default=False, required=False)
     login_access_policy = serializers.ChoiceField(
@@ -470,6 +484,14 @@ class CreateTenantSerializer(serializers.Serializer):
     def validate_schema_name(self, value):
         """Validate schema_name format and uniqueness"""
         value = self.validate_value(value, "schema_name")
+        return value
+
+    def validate_domain(self, value):
+        from core.models import Domain
+
+        value = value.strip().lower()
+        if Domain.objects.filter(domain__iexact=value).exists():
+            raise serializers.ValidationError(f"Domain '{value}' already exists")
         return value
 
     def validate_name(self, value):
@@ -760,4 +782,3 @@ class ContactInquirySerializer(serializers.Serializer):
     school_name = serializers.CharField(required=False, allow_blank=True, max_length=200)
     topic = serializers.ChoiceField(choices=TOPIC_CHOICES)
     message = serializers.CharField(max_length=5000)
-

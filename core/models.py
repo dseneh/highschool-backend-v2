@@ -519,6 +519,62 @@ class GradingBypassOperation(models.Model):
         indexes = [models.Index(fields=["tenant", "academic_year_id", "status"])]
 
 
+class TenantCreationJob(models.Model):
+    """Public-schema state for asynchronous clone-based tenant creation."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        IN_PROGRESS = "in_progress", "In progress"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="clone_source_jobs",
+    )
+    destination_tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="creation_jobs",
+    )
+    source_schema = models.CharField(max_length=63, blank=True, default="")
+    destination_schema = models.CharField(max_length=63, db_index=True)
+    requested_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="requested_tenant_creation_jobs",
+    )
+    selected_modules = models.JSONField(default=list)
+    request_payload = models.JSONField(default=dict)
+    result = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    stage = models.CharField(max_length=80, default="Queued")
+    progress_percent = models.PositiveSmallIntegerField(default=0)
+    failure_detail = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "core_tenant_creation_job"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["destination_schema", "status"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["destination_schema"],
+                condition=models.Q(status__in=["pending", "in_progress"]),
+                name="unique_active_tenant_creation_destination",
+            )
+        ]
+
+
 class Domain(DomainMixin):
     """
     Domain model for tenant routing.
