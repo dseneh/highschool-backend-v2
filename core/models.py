@@ -565,7 +565,12 @@ class TenantCreationJob(models.Model):
     class Meta:
         db_table = "core_tenant_creation_job"
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["destination_schema", "status"])]
+        indexes = [
+            models.Index(
+                fields=["destination_schema", "status"],
+                name="core_tenant_destina_dac0e8_idx",
+            )
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["destination_schema"],
