@@ -5,7 +5,6 @@ from rest_framework import serializers
 from core.models import Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
 from django_tenants.utils import schema_context
-from django.db import transaction
 import logging
 import uuid
 
@@ -510,7 +509,6 @@ class CreateTenantSerializer(serializers.Serializer):
         
         return value.strip()
 
-    @transaction.atomic
     def create(self, validated_data):
         """
         Create a new Tenant with domain.
@@ -521,6 +519,7 @@ class CreateTenantSerializer(serializers.Serializer):
         from core.models import Tenant, Domain
         from users.models import User
         from common.status import Roles, UserAccountType
+        from tenant_users.permissions.models import UserTenantPermissions
 
         # Required fields
         name = validated_data["name"]
@@ -639,7 +638,15 @@ class CreateTenantSerializer(serializers.Serializer):
         
         # Automatically add owner as superuser to the new tenant
         with schema_context(tenant.schema_name):
-            tenant.add_user(owner, is_superuser=True, is_staff=True)
+            permissions, _ = UserTenantPermissions.objects.get_or_create(
+                profile=owner,
+                defaults={"is_superuser": True, "is_staff": True},
+            )
+            if not permissions.is_superuser or not permissions.is_staff:
+                permissions.is_superuser = True
+                permissions.is_staff = True
+                permissions.save(update_fields=["is_superuser", "is_staff"])
+            owner.tenants.add(tenant)
         
         # Add all superadmin users to the new tenant
         # Superadmins should have access to all tenants
