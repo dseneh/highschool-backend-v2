@@ -1,0 +1,15 @@
+{
+  "module": "students",
+  "label": "Students",
+  "description": "Student records and enrollment management",
+  "permissions": [
+    {"code": "students.view", "name": "View Students", "risk": "medium", "scopes": ["own", "assigned", "all"]},
+    {"code": "students.create", "name": "Create Students", "risk": "medium", "scopes": ["all"], "requires": ["students.view"]},
+    {"code": "students.update", "name": "Update Students", "risk": "medium", "scopes": ["all"], "requires": ["students.view"]},
+    {"code": "students.delete", "name": "Delete Students", "risk": "critical", "scopes": ["all"], "requires": ["students.view"]},
+    {"code": "students.enroll", "name": "Enroll Students", "risk": "medium", "scopes": ["all"], "requires": ["students.view"]},
+    {"code": "students.promote", "name": "Promote Students", "risk": "high", "scopes": ["all"], "requires": ["students.view"]},
+    {"code": "students.transfer", "name": "Transfer Students", "risk": "high", "scopes": ["all"], "requires": ["students.view"]},
+    {"code": "students.withdraw", "name": "Withdraw Students", "risk": "high", "scopes": ["all"], "requires": ["students.view"]}
+  ]
+}

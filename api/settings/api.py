@@ -10,7 +10,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "api.authentication.TenantSessionAuthentication",
         "api.authentication.TenantAwareJWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
+        "api.authentication.RBACSessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",

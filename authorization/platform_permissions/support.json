@@ -1,0 +1,9 @@
+{
+  "module": "support",
+  "label": "Platform Support",
+  "description": "Controlled tenant support access",
+  "permissions": [
+    {"code": "platform.support.access_tenant", "name": "Access Tenant Support", "risk": "critical", "scopes": ["all"]},
+    {"code": "platform.support.impersonate", "name": "Impersonate Tenant User", "risk": "critical", "assignable": false, "scopes": ["all"], "requires": ["platform.support.access_tenant"]}
+  ]
+}

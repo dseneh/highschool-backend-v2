@@ -71,7 +71,8 @@ class HasPrivilege(BasePermission):
             return False
         
         # Superadmin always has all privileges
-        if hasattr(request.user, 'role') and request.user.role == Roles.SUPERADMIN:
+        role = str(getattr(request.user, 'role', '') or '').strip().lower()
+        if role in {Roles.SUPERADMIN, "super_admin"} or request.user.is_superuser:
             return True
         
         # If no specific privilege code is set, allow

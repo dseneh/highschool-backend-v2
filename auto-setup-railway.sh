@@ -32,6 +32,7 @@ echo ""
 if [ "$SUPERUSER_EXISTS" = "true" ]; then
     echo "Step 4: Already initialized - running tenant migrations only..."
     python manage.py migrate_schemas --fake-initial --noinput
+    python manage.py sync_permissions
     python manage.py collectstatic --noinput --clear
     echo "✅ Step 4 complete"
 else

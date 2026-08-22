@@ -1,0 +1,15 @@
+{
+  "module": "authorization",
+  "label": "Authorization",
+  "description": "Tenant role and membership administration",
+  "permissions": [
+    {"code": "roles.view", "name": "View Roles", "scopes": ["all"]},
+    {"code": "roles.create", "name": "Create Roles", "risk": "high", "scopes": ["all"], "requires": ["roles.view"]},
+    {"code": "roles.update", "name": "Update Roles", "risk": "high", "scopes": ["all"], "requires": ["roles.view"]},
+    {"code": "roles.delete", "name": "Delete Roles", "risk": "high", "scopes": ["all"], "requires": ["roles.view"]},
+    {"code": "roles.clone", "name": "Clone Roles", "risk": "medium", "scopes": ["all"], "requires": ["roles.view", "roles.create"]},
+    {"code": "roles.assign_permissions", "name": "Assign Role Permissions", "risk": "critical", "scopes": ["all"], "requires": ["roles.view", "roles.update"]},
+    {"code": "roles.assign_users", "name": "Assign Users to Roles", "risk": "high", "scopes": ["all"], "requires": ["roles.view"]},
+    {"code": "roles.view_audit", "name": "View Authorization Audit", "risk": "high", "scopes": ["all"], "requires": ["roles.view"]}
+  ]
+}

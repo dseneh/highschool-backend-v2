@@ -1,0 +1,13 @@
+{
+  "module": "users",
+  "label": "Users",
+  "description": "Tenant user and personal profile management",
+  "permissions": [
+    {"code": "users.view", "name": "View Users", "risk": "medium", "scopes": ["own", "all"]},
+    {"code": "users.create", "name": "Create Users", "risk": "high", "scopes": ["all"], "requires": ["users.view"]},
+    {"code": "users.update", "name": "Update Users", "risk": "high", "scopes": ["own", "all"], "requires": ["users.view"]},
+    {"code": "users.deactivate", "name": "Deactivate Users", "risk": "critical", "scopes": ["all"], "requires": ["users.view"]},
+    {"code": "profile.view", "name": "View Profile", "scopes": ["own"]},
+    {"code": "profile.update", "name": "Update Profile", "risk": "medium", "scopes": ["own"], "requires": ["profile.view"]}
+  ]
+}

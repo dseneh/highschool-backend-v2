@@ -1,0 +1,17 @@
+{
+  "key": "student",
+  "name": "Student",
+  "description": "Student self-service access",
+  "grants": [
+    {"permission": "profile.view", "scope": "own"},
+    {"permission": "profile.update", "scope": "own"},
+    {"permission": "academics.view", "scope": "all"},
+    {"permission": "academics.schedule.view", "scope": "own"},
+    {"permission": "students.view", "scope": "own"},
+    {"permission": "attendance.view", "scope": "own"},
+    {"permission": "grades.view", "scope": "own"},
+    {"permission": "billing.view", "scope": "own"},
+    {"permission": "reports.transcript.view", "scope": "own"},
+    {"permission": "notifications.view", "scope": "own"}
+  ]
+}

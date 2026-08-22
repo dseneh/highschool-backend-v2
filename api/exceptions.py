@@ -7,6 +7,20 @@ from rest_framework.response import Response
 from rest_framework import status
 
 
+def _detail_message(data) -> str:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "detail":
+                return str(value[0] if isinstance(value, list) and value else value)
+            if isinstance(value, list) and value:
+                return f"{key}: {value[0]}"
+            if value:
+                return f"{key}: {value}"
+    if isinstance(data, list) and data:
+        return str(data[0])
+    return str(data) if data else "An error occurred"
+
+
 def custom_exception_handler(exc, context):
     """
     Custom exception handler that returns JSON responses for API errors.
@@ -25,35 +39,7 @@ def custom_exception_handler(exc, context):
     # Normalize validation errors to use 'detail' field
     if response is not None:
         # Check if we have field errors or non_field_errors
-        if isinstance(response.data, dict):
-            # Handle field-specific validation errors
-            if any(isinstance(v, list) for v in response.data.values()):
-                # Extract error message with field name for better context
-                error_message = None
-                error_field = None
-                
-                for key, value in response.data.items():
-                    if isinstance(value, list) and value:
-                        error_field = key
-                        error_message = value[0] if isinstance(value[0], str) else str(value[0])
-                        break
-                
-                if error_message:
-                    # Include field name in the message for clarity
-                    if error_field and error_field != "non_field_errors":
-                        error_message = f"{error_field}: {error_message}"
-                    response.data = {"detail": error_message}
-            
-            # Handle non_field_errors
-            elif "non_field_errors" in response.data:
-                non_field_errors = response.data.get("non_field_errors", [])
-                if non_field_errors:
-                    error_message = (
-                        non_field_errors[0] 
-                        if isinstance(non_field_errors[0], str) 
-                        else str(non_field_errors[0])
-                    )
-                    response.data = {"detail": error_message}
+        response.data = {"detail": _detail_message(response.data)}
         
         return response
     

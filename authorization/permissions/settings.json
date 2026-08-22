@@ -1,0 +1,10 @@
+{
+  "module": "settings",
+  "label": "Tenant Settings",
+  "description": "Tenant settings and authorization audit",
+  "permissions": [
+    {"code": "tenant.settings.view", "name": "View Tenant Settings", "risk": "medium", "scopes": ["all"]},
+    {"code": "tenant.settings.manage", "name": "Manage Tenant Settings", "risk": "critical", "scopes": ["all"], "requires": ["tenant.settings.view"]},
+    {"code": "audit.view", "name": "View Audit Logs", "risk": "high", "scopes": ["all"]}
+  ]
+}

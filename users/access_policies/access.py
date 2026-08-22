@@ -90,6 +90,9 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         if not user:
             return False
 
+        if is_global_superadmin(user) or user.is_superuser:
+            return True
+
         return user.has_privilege(self._normalize_code(privilege_code))
 
     def has_any_privilege(self, request, view, action, privilege_codes: str) -> bool:
@@ -100,6 +103,9 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         user = self._get_user(request)
         if not user:
             return False
+
+        if is_global_superadmin(user) or user.is_superuser:
+            return True
 
         codes = [self._normalize_code(c) for c in privilege_codes.split(",") if c.strip()]
         user_privileges = set(user.get_privileges())

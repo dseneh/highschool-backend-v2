@@ -1,0 +1,12 @@
+{
+  "module": "payroll",
+  "label": "Payroll",
+  "description": "Payroll configuration, processing, and approval",
+  "permissions": [
+    {"code": "payroll.view", "name": "View Payroll", "risk": "high", "scopes": ["all"]},
+    {"code": "payroll.process", "name": "Process Payroll", "risk": "critical", "scopes": ["all"], "requires": ["payroll.view"]},
+    {"code": "payroll.review", "name": "Review Payroll", "risk": "critical", "scopes": ["all"], "requires": ["payroll.view"]},
+    {"code": "payroll.approve", "name": "Approve Payroll", "risk": "critical", "scopes": ["all"], "requires": ["payroll.view", "payroll.review"]},
+    {"code": "payroll.configure", "name": "Configure Payroll", "risk": "critical", "scopes": ["all"], "requires": ["payroll.view"]}
+  ]
+}

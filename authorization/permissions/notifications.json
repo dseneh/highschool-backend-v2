@@ -1,0 +1,11 @@
+{
+  "module": "notifications",
+  "label": "Notifications",
+  "description": "In-app notifications and announcements",
+  "permissions": [
+    {"code": "notifications.view", "name": "View Notifications", "scopes": ["own", "assigned", "all"]},
+    {"code": "notifications.send", "name": "Send Notifications", "risk": "high", "scopes": ["all"], "requires": ["notifications.view"]},
+    {"code": "notifications.send_class", "name": "Send Class Notifications", "risk": "medium", "scopes": ["assigned", "all"], "requires": ["notifications.view"]},
+    {"code": "notifications.manage", "name": "Manage Notification Rules", "risk": "high", "scopes": ["all"], "requires": ["notifications.view"]}
+  ]
+}

@@ -40,6 +40,10 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         tenant = getattr(request, "tenant", None)
         if tenant:
             ensure_global_superadmin_tenant_membership(user, tenant)
+        if hasattr(request, "_request"):
+            from authorization.runtime import initialize_request_authorization
+
+            initialize_request_authorization(request, user)
         return user, token
 
 
@@ -68,4 +72,21 @@ class TenantSessionAuthentication(authentication.BaseAuthentication):
         if header_tenant and header_tenant != getattr(session_obj.tenant, "schema_name", ""):
             return None
 
+        from authorization.runtime import initialize_request_authorization
+
+        initialize_request_authorization(request, session_obj.user)
         return session_obj.user, None
+
+
+class RBACSessionAuthentication(authentication.SessionAuthentication):
+    """Django session authentication with a lazy tenant RBAC request facade."""
+
+    def authenticate(self, request):
+        result = super().authenticate(request)
+        if not result:
+            return None
+        user, auth = result
+        from authorization.runtime import initialize_request_authorization
+
+        initialize_request_authorization(request, user)
+        return user, auth
