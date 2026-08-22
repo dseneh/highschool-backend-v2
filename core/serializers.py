@@ -5,7 +5,9 @@ from rest_framework import serializers
 from core.models import Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
 from django_tenants.utils import schema_context
+from django.db import transaction
 import logging
+import uuid
 
 
 logger = logging.getLogger(__name__)
@@ -508,6 +510,7 @@ class CreateTenantSerializer(serializers.Serializer):
         
         return value.strip()
 
+    @transaction.atomic
     def create(self, validated_data):
         """
         Create a new Tenant with domain.
@@ -517,6 +520,7 @@ class CreateTenantSerializer(serializers.Serializer):
         """
         from core.models import Tenant, Domain
         from users.models import User
+        from common.status import Roles, UserAccountType
 
         # Required fields
         name = validated_data["name"]
@@ -549,10 +553,21 @@ class CreateTenantSerializer(serializers.Serializer):
         # Get owner user
         request = self.context.get("request")
         if owner_email:
-            try:
-                owner = User.objects.get(email=owner_email)
-            except User.DoesNotExist:
-                raise serializers.ValidationError(f"User with email '{owner_email}' does not exist")
+            owner_email = owner_email.strip().lower()
+            owner = User.objects.filter(email__iexact=owner_email).first()
+            if owner is None:
+                owner_id_number = f"OWNER-{uuid.uuid4().hex[:12]}"
+                owner = User.objects.create(
+                    email=owner_email,
+                    username=f"owner_{uuid.uuid4().hex[:12]}",
+                    id_number=owner_id_number,
+                    account_type=UserAccountType.GLOBAL,
+                    role=Roles.ADMIN,
+                    is_active=True,
+                    is_default_password=True,
+                )
+                owner.set_password(owner_id_number)
+                owner.save(update_fields=["password"])
         elif request and request.user.is_authenticated:
             owner = request.user
         else:

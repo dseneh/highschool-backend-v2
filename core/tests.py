@@ -313,3 +313,43 @@ class TenantCloneIntegrationTests(TenantTestCase):
 
 			with schema_context("public"):
 				hard_delete_tenant_workspace(created)
+
+	def test_tenant_creation_provisions_new_owner_user(self):
+		from django.contrib.auth.hashers import check_password
+		from core.serializers import CreateTenantSerializer
+		from tenant_users.permissions.models import UserTenantPermissions
+		from users.models import User
+
+		suffix = uuid.uuid4().hex[:10]
+		schema_name = f"owner_create_{suffix}"
+		owner_email = f"new-owner-{suffix}@example.com"
+		serializer = CreateTenantSerializer(
+			data={
+				"name": f"Owner Tenant {suffix}",
+				"short_name": f"owner-{suffix}",
+				"schema_name": schema_name,
+				"domain": f"{schema_name}.localhost",
+				"owner_email": owner_email,
+			},
+		)
+		serializer.is_valid(raise_exception=True)
+
+		with schema_context("public"):
+			created = serializer.save()
+			owner = User.objects.get(email=owner_email)
+			owner_id_number = owner.id_number
+			self.assertTrue(owner.is_active)
+			self.assertTrue(owner.is_default_password)
+			self.assertTrue(check_password(owner_id_number, owner.password))
+			with schema_context(created.schema_name):
+				self.assertTrue(
+					UserTenantPermissions.objects.filter(
+						profile_id=owner.id,
+						is_superuser=True,
+					).exists()
+				)
+		try:
+			self.assertEqual(created.owner_id, owner.id)
+		finally:
+			with schema_context("public"):
+				created.delete(force_drop=True)
