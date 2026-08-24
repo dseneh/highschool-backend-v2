@@ -130,7 +130,7 @@ class TenantViewSet(ModelViewSet):
         "name",
         "short_name",
         "funding_type",
-        "school_type",
+        "school_division_id",
         "slogan",
         "emis_number",
         "description",

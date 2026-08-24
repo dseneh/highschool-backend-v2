@@ -41,7 +41,7 @@ class SchoolSerializer(serializers.ModelSerializer):
             "name",
             "short_name",
             "id_number",
-            "school_type",
+            "school_division_id",
             "funding_type",
             "slogan",
             "emis_number",

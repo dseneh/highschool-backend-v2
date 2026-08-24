@@ -16,7 +16,7 @@ from django.contrib.postgres.fields import JSONField
 from django_tenants.models import DomainMixin
 from tenant_users.tenants.models import TenantBase
 from core.validators import ValidateImageFile
-from common.status import SchoolFundingType, SchoolType
+from common.status import SchoolFundingType
 
 
 def generate_unique_id_number():
@@ -78,11 +78,10 @@ class Tenant(TenantBase):
         default=SchoolFundingType.PRIVATE,
         help_text="Funding type: private, public, charter, etc."
     )
-    school_type = models.CharField(
-        max_length=100, 
-        choices=SchoolType.choices(), 
-        default=SchoolType.PRIMARY,
-        help_text="School type: primary, secondary, tertiary, etc."
+    school_division_id = models.UUIDField(
+        null=True,
+        blank=True,
+        help_text="ID of the configured Division in this tenant's schema.",
     )
     slogan = models.CharField(max_length=250, blank=True, null=True, help_text="School motto/slogan")
     emis_number = models.CharField(

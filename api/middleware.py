@@ -44,6 +44,10 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         '/api/v1/auth/password/forgot/',
         '/api/v1/auth/password/reset/',
         '/api/v1/tenants/current/',
+        '/api/v1/divisions/',
+        '/api/v1/divisions',
+        '/api/v1/grade-levels/',
+        '/api/v1/grade-levels',
     }
 
     def _blocked_tenant_response(self, detail: str, error_code: str, status_code: int = 423):

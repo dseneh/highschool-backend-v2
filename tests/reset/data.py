@@ -27,7 +27,6 @@ def create_school(user):
         id_number="0001",
         name="Dujar High School",
         short_name="DHS",
-        school_type="public",
         description=fake.catch_phrase(),
         address=fake.street_address(),
         city=fake.city(),

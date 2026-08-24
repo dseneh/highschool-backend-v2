@@ -19,7 +19,6 @@ class SchoolData:
     id_number: str = ""
     short_name: str = ""
     funding_type: str = "private"
-    school_type: str = "high school"
     slogan: Optional[str] = None
     emis_number: Optional[str] = None
     description: Optional[str] = None

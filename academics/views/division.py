@@ -1,3 +1,7 @@
+import uuid
+
+from django.db import connection
+from django_tenants.utils import get_public_schema_name, schema_context
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import NotFound
@@ -11,6 +15,20 @@ from common.cache_service import DataCache
 from ..models import Division
 from ..serializers import DivisionSerializer
 
+
+def _default_divisions():
+    from defaults.data.division_list import division_list
+
+    return [
+        {
+            "id": uuid.uuid5(uuid.NAMESPACE_URL, f"ezyschool:division:{item['name'].lower()}"),
+            "name": item["name"],
+            "description": item.get("description", ""),
+            "active": item.get("status", "active") == "active",
+        }
+        for item in division_list
+    ]
+
 # Business logic imports
 from business.core.services import division_service
 from business.core.adapters import division_adapter
@@ -20,7 +38,22 @@ class DivisionListView(APIView):
     # permission_classes = [AllowAny]
 
     def get(self, request):
-        
+        tenant_schema = request.query_params.get("tenant_schema")
+        if connection.schema_name == get_public_schema_name():
+            if tenant_schema:
+                from core.models import Tenant
+
+                tenant = Tenant.objects.filter(schema_name=tenant_schema).first()
+                if tenant:
+                    with schema_context(tenant.schema_name):
+                        divisions = list(
+                            Division.objects.all()
+                            # .order_by("name")
+                            .values("id", "name", "description", "active")
+                        )
+                    return Response(divisions, status=status.HTTP_200_OK)
+            return Response(_default_divisions(), status=status.HTTP_200_OK)
+
         # Use cached divisions for better performance
         force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
         divisions = DataCache.get_divisions(force_refresh)

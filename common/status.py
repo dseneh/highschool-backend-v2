@@ -68,27 +68,6 @@ class SchoolFundingType:
     def choices(cls):
         return [(x.lower(), x.capitalize()) for x in cls.all()]
 
-class SchoolType:
-    PRIMARY = "primary"
-    SECONDARY = "secondary"
-    HIGHER_EDUCATION = "higher_education"
-    VOCATIONAL = "vocational"
-    K12 = "k12"
-
-    @classmethod
-    def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
-
-    @classmethod
-    def choices(cls):
-        return [(x.lower(), x.capitalize()) for x in cls.all()]
-
-
 class SchoolLevel:
     PRIMARY = "primary"
     SECONDARY = "secondary"

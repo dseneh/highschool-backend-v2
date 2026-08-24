@@ -5,6 +5,7 @@ from rest_framework import serializers
 from core.models import Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
 from django_tenants.utils import schema_context
+from django.db import transaction
 import logging
 import uuid
 
@@ -182,6 +183,7 @@ class BaseTenantSerializer(TenantDomainMixin, serializers.ModelSerializer):
     """
     domain = serializers.SerializerMethodField()
     domains = serializers.SerializerMethodField()
+    school_division = serializers.UUIDField(source="school_division_id", allow_null=True, required=False)
     
     class Meta:
         model = Tenant
@@ -219,6 +221,7 @@ class TenantListSerializer(BaseTenantSerializer):
             "schema_name",
             "name",
             "short_name",
+            "school_division",
             "phone",
             "email",
             "website",
@@ -256,6 +259,7 @@ class PublicTenantSerializer(BaseTenantSerializer):
             "id_number",
             "name",
             "short_name",
+            "school_division",
             "schema_name",
             "domain",
             "domains",
@@ -290,6 +294,7 @@ class TenantSerializer(BaseTenantSerializer):
     """
     schema_name = serializers.CharField(read_only=True)
     id_number = serializers.CharField(read_only=True)  # ID number should not be changed after creation
+    school_division = serializers.UUIDField(source="school_division_id", allow_null=True, required=False)
     
     class Meta:
         model = Tenant
@@ -305,7 +310,7 @@ class TenantSerializer(BaseTenantSerializer):
             "domains",
             # Identity fields
             "funding_type",
-            "school_type",
+            "school_division",
             "slogan",
             "emis_number",
             "description",
@@ -417,6 +422,11 @@ class CreateTenantSerializer(serializers.Serializer):
         required=False,
         help_text="Email of the owner user (optional, uses request user if not provided)"
     )
+    owner_first_name = serializers.CharField(required=False, allow_blank=True)
+    owner_last_name = serializers.CharField(required=False, allow_blank=True)
+    owner_gender = serializers.ChoiceField(
+        choices=["male", "female"], required=False, default="male"
+    )
     signup_request_id = serializers.IntegerField(
         required=False,
         min_value=1,
@@ -427,7 +437,7 @@ class CreateTenantSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
     website = serializers.URLField(required=False, allow_blank=True)
     funding_type = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    school_type = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    school_division = serializers.UUIDField(required=False, allow_null=True)
     slogan = serializers.CharField(max_length=250, required=False, allow_blank=True)
     emis_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
@@ -520,6 +530,7 @@ class CreateTenantSerializer(serializers.Serializer):
         from users.models import User
         from common.status import Roles, UserAccountType
         from tenant_users.permissions.models import UserTenantPermissions
+        from common.utils import ID_ENTITY_EMPLOYEE, generate_entity_id_number
 
         # Required fields
         name = validated_data["name"]
@@ -528,7 +539,12 @@ class CreateTenantSerializer(serializers.Serializer):
         schema_name = validated_data.get("schema_name")
         domain = validated_data.get("domain")
         owner_email = validated_data.get("owner_email")
+        owner_first_name = validated_data.get("owner_first_name", "")
+        owner_last_name = validated_data.get("owner_last_name", "")
+        owner_gender = validated_data.get("owner_gender", "male")
         signup_request_id = validated_data.get("signup_request_id")
+        owner_created = False
+        owner_needs_creation = False
         
         # Priority: workspace > schema_name > auto-generate from name
         # Workspace is the preferred identifier that becomes the schema_name
@@ -555,18 +571,8 @@ class CreateTenantSerializer(serializers.Serializer):
             owner_email = owner_email.strip().lower()
             owner = User.objects.filter(email__iexact=owner_email).first()
             if owner is None:
-                owner_id_number = f"OWNER-{uuid.uuid4().hex[:12]}"
-                owner = User.objects.create(
-                    email=owner_email,
-                    username=f"owner_{uuid.uuid4().hex[:12]}",
-                    id_number=owner_id_number,
-                    account_type=UserAccountType.GLOBAL,
-                    role=Roles.ADMIN,
-                    is_active=True,
-                    is_default_password=True,
-                )
-                owner.set_password(owner_id_number)
-                owner.save(update_fields=["password"])
+                owner_needs_creation = True
+                owner = request.user if request and request.user.is_authenticated else None
         elif request and request.user.is_authenticated:
             owner = request.user
         else:
@@ -580,8 +586,15 @@ class CreateTenantSerializer(serializers.Serializer):
                     'last_name': 'Admin'
                 }
             )
+
+        if owner_needs_creation and owner is None:
+            owner, _ = User.objects.get_or_create(
+                email="admin@example.com",
+                defaults={"id_number": "admin001", "username": "admin"},
+            )
         
         # Prepare tenant data with all profile fields
+        skip_default_divisions = bool(self.context.get("skip_default_divisions"))
         tenant_data = {
             "name": name,
             "short_name": short_name,
@@ -589,7 +602,7 @@ class CreateTenantSerializer(serializers.Serializer):
             "owner": owner,
             # Identity fields
             "funding_type": validated_data.get("funding_type"),
-            "school_type": validated_data.get("school_type"),
+            "school_division_id": validated_data.get("school_division"),
             "slogan": validated_data.get("slogan"),
             "emis_number": validated_data.get("emis_number"),
             "description": validated_data.get("description"),
@@ -626,69 +639,126 @@ class CreateTenantSerializer(serializers.Serializer):
         # Remove None values to use model defaults
         tenant_data = {k: v for k, v in tenant_data.items() if v is not None}
         
-        # Create the tenant
-        tenant = Tenant.objects.create(**tenant_data)
-        
-        # Create domain for the tenant
-        domain_obj = Domain.objects.create(
-            domain=domain,
-            tenant=tenant,
-            is_primary=True,
-        )
-        
-        # Automatically add owner as superuser to the new tenant
-        with schema_context(tenant.schema_name):
-            permissions, _ = UserTenantPermissions.objects.get_or_create(
-                profile=owner,
-                defaults={"is_superuser": True, "is_staff": True},
-            )
-            if not permissions.is_superuser or not permissions.is_staff:
-                permissions.is_superuser = True
-                permissions.is_staff = True
-                permissions.save(update_fields=["is_superuser", "is_staff"])
-            owner.tenants.add(tenant)
-        
-        # Add all superadmin users to the new tenant
-        # Superadmins should have access to all tenants
+        tenant = None
         try:
-            from common.status import Roles
-            superadmin_users = User.objects.filter(role=Roles.SUPERADMIN)
-            with schema_context(tenant.schema_name):
-                for superadmin in superadmin_users:
-                    # Skip if already added (e.g., if owner is also a superadmin)
-                    if superadmin.id != owner.id:
-                        tenant.add_user(superadmin, is_superuser=True, is_staff=True)
-        except Exception as e:
-            # Log the error but don't fail tenant creation
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to add superadmin users to tenant {tenant.name}: {e}")
-        
-        # Generate the initial onboarding plan and set status to pending.
-        # Workspace provisioning (default data) now happens later via the
-        # onboarding wizard POST /onboarding/apply/ endpoint.
-        try:
-            from defaults.services import build_initial_plan
-            tenant.onboarding_plan = build_initial_plan(tenant)
-            tenant.save(update_fields=["onboarding_plan"])
-        except Exception as e:
-            logger.error(f"Failed to generate onboarding plan for tenant {tenant.name}: {e}")
+            # Schema creation runs tenant migrations and must happen outside an
+            # outer transaction because PostgreSQL does not allow those DDL
+            # operations while migration trigger events are pending.
+            tenant = Tenant.objects.create(**tenant_data)
 
-        # Keep CRM records in sync with newly created workspaces.
-        try:
-            _sync_signup_request_after_tenant_create(
-                tenant=tenant,
-                owner=owner,
-                signup_request_id=signup_request_id,
-                request=request,
-                actor=request.user if request and getattr(request.user, "is_authenticated", False) else None,
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to sync signup request for workspace %s: %s",
-                tenant.schema_name,
-                e,
-            )
+            # All database work after schema creation is one transaction. If
+            # any step fails, the exception handler below removes the schema.
+            with transaction.atomic():
+                with schema_context(tenant.schema_name):
+                    if not skip_default_divisions:
+                        from academics.models import Division
+                        from defaults.data.division_list import division_list
+
+                        for division_data in division_list:
+                            Division.objects.get_or_create(
+                                name=division_data["name"],
+                                defaults={"description": division_data.get("description", "")},
+                            )
+
+                        requested_division_id = tenant.school_division_id
+                        if requested_division_id:
+                            selected_division = Division.objects.filter(id=requested_division_id).first()
+                            if selected_division is None:
+                                for division_data in division_list:
+                                    catalog_id = uuid.uuid5(
+                                        uuid.NAMESPACE_URL,
+                                        f"ezyschool:division:{division_data['name'].lower()}",
+                                    )
+                                    if catalog_id == requested_division_id:
+                                        selected_division = Division.objects.filter(
+                                            name__iexact=division_data["name"]
+                                        ).first()
+                                        break
+                                if selected_division is None:
+                                    raise serializers.ValidationError(
+                                        {"school_division": "Selected school division does not exist."}
+                                    )
+                                tenant.school_division_id = selected_division.id
+                                tenant.save(update_fields=["school_division_id"])
+
+                    if owner_needs_creation:
+                        owner_id_number = generate_entity_id_number(
+                            User, ID_ENTITY_EMPLOYEE, tenant=tenant
+                        )
+                        owner = User.objects.create(
+                            email=owner_email,
+                            username=owner_id_number,
+                            id_number=owner_id_number,
+                            first_name=owner_first_name,
+                            last_name=owner_last_name,
+                            gender=owner_gender,
+                            account_type=UserAccountType.GLOBAL,
+                            role=Roles.ADMIN,
+                            is_active=True,
+                            is_default_password=True,
+                        )
+                        owner.set_password(owner_id_number)
+                        owner.save(update_fields=["password"])
+                        owner_created = True
+                        tenant.owner = owner
+                        tenant.save(update_fields=["owner"])
+
+                domain_obj = Domain.objects.create(
+                    domain=domain,
+                    tenant=tenant,
+                    is_primary=True,
+                )
+
+                # Automatically add owner as superuser to the new tenant.
+                with schema_context(tenant.schema_name):
+                    permissions, _ = UserTenantPermissions.objects.get_or_create(
+                        profile=owner,
+                        defaults={"is_superuser": True, "is_staff": True},
+                    )
+                    if not permissions.is_superuser or not permissions.is_staff:
+                        permissions.is_superuser = True
+                        permissions.is_staff = True
+                        permissions.save(update_fields=["is_superuser", "is_staff"])
+                    owner.tenants.add(tenant)
+
+                    from common.status import Roles
+                    for superadmin in User.objects.filter(role=Roles.SUPERADMIN):
+                        if superadmin.id != owner.id:
+                            existing_permissions, created = UserTenantPermissions.objects.get_or_create(
+                                profile=superadmin,
+                                defaults={"is_superuser": True, "is_staff": True},
+                            )
+                            if not created and (
+                                not existing_permissions.is_superuser
+                                or not existing_permissions.is_staff
+                            ):
+                                existing_permissions.is_superuser = True
+                                existing_permissions.is_staff = True
+                                existing_permissions.save(update_fields=["is_superuser", "is_staff"])
+                            superadmin.tenants.add(tenant)
+
+                from defaults.services import build_initial_plan
+                tenant.onboarding_plan = build_initial_plan(tenant)
+                tenant.save(update_fields=["onboarding_plan"])
+
+                _sync_signup_request_after_tenant_create(
+                    tenant=tenant,
+                    owner=owner,
+                    signup_request_id=signup_request_id,
+                    request=request,
+                    actor=request.user if request and getattr(request.user, "is_authenticated", False) else None,
+                )
+        except Exception:
+            # Tenant schema creation is necessarily outside the transaction;
+            # compensate for that boundary so failed creation leaves no tenant.
+            if tenant is not None:
+                try:
+                    tenant.delete(force_drop=True)
+                except Exception:
+                    logger.exception("Failed to clean up tenant %s after creation failure", tenant.schema_name)
+            if owner_created:
+                User.objects.filter(pk=owner.pk).delete()
+            raise
         
         # Store domain for response
         self._domain = domain_obj

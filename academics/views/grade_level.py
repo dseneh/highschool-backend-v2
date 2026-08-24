@@ -1,5 +1,6 @@
 from django.shortcuts import get_object_or_404
 from django.db.models import Prefetch
+from django_tenants.utils import schema_context, get_public_schema_name
 from django.core.cache import cache
 from rest_framework import status
 from rest_framework.response import Response
@@ -11,6 +12,7 @@ from common.utils import get_tenant_from_request, update_model_fields
 from common.cache_service import DataCache
 
 from ..models import GradeLevel, Section
+from core.models import Tenant
 from ..serializers import GradeLevelSerializer
 
 logger = logging.getLogger(__name__)
@@ -26,11 +28,20 @@ class GradeLevelListView(APIView):
     def get(self, request):
         academic_year_id = request.query_params.get('academic_year_id')
         tenant = get_tenant_from_request(request)
+        include_all = request.query_params.get("include_all_divisions", "false").lower() == "true"
+        user_role = str(getattr(request.user, "role", "") or "").lower()
+        include_all = include_all and user_role in {"admin", "superadmin"}
+        division_id = None
+        if tenant and not include_all:
+            with schema_context(get_public_schema_name()):
+                tenant_record = Tenant.objects.filter(schema_name=tenant).first()
+                division_id = getattr(tenant_record, "school_division_id", None)
         
         # Generate cache key based on academic year
         cache_key = f"grade_levels:{tenant}"
         if academic_year_id:
             cache_key += f":ay:{academic_year_id}"
+        cache_key += f":division:{division_id or 'all'}"
         
         # Try to get from cache first
         cached_data = cache.get(cache_key)
@@ -62,6 +73,8 @@ class GradeLevelListView(APIView):
             'tuition_fees',
             sections_prefetch
         ).order_by('level')
+        if division_id:
+            grade_levels = grade_levels.filter(division_id=division_id)
         
         # Serialize the grade levels
         serializer = GradeLevelSerializer(

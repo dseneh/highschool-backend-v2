@@ -258,7 +258,10 @@ def run_clone_job(job_id: str) -> None:
 
         actor = User.objects.get(pk=job.requested_by_id)
         request = type("JobRequest", (), {"user": actor})()
-        serializer = CreateTenantSerializer(data=job.request_payload, context={"request": request})
+        serializer = CreateTenantSerializer(
+            data=job.request_payload,
+            context={"request": request, "skip_default_divisions": True},
+        )
         serializer.is_valid(raise_exception=True)
         _update_job(job.pk, "Creating Schema", 15)
         tenant = serializer.save()

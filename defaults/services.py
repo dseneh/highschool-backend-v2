@@ -22,6 +22,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class OnboardingConfigurationError(ValueError):
+    def __init__(self, message: str, error_code: str):
+        super().__init__(message)
+        self.error_code = error_code
+
+
 # ---------------------------------------------------------------------------
 # Plan template helpers
 # ---------------------------------------------------------------------------
@@ -33,7 +39,6 @@ STEP_ORDER = [
     "subjects",
     "grading",
     "finance",
-    "accounting",
     "hr_staff",
     "payroll",
 ]
@@ -48,7 +53,6 @@ REQUIRED_STEPS = [
 ]
 
 OPTIONAL_STEPS = [
-    "accounting",
     "hr_staff",
     "payroll",
 ]
@@ -83,11 +87,6 @@ STEP_META = {
         "label": "Finance",
         "description": "Currency, payment methods, fee types, and transaction categories.",
         "icon": "Coins01Icon",
-    },
-    "accounting": {
-        "label": "Accounting",
-        "description": "Chart of accounts, accounting payment methods, and bank accounts.",
-        "icon": "Invoice01Icon",
     },
     "hr_staff": {
         "label": "HR & Staff",
@@ -143,14 +142,6 @@ def build_initial_plan(tenant) -> dict:
     from defaults.data.payment_methods import payment_method_data
     from defaults.data.transaction_types import transaction_types_data
     from defaults.data.fees import fee_list
-    from defaults.data.accounting import (
-        accounting_currency,
-        accounting_ledger_accounts,
-        accounting_payment_methods,
-        accounting_transaction_types,
-        accounting_fee_items,
-        accounting_bank_accounts,
-    )
     from defaults.data.hr import employee_departments, employee_positions, leave_types
     from defaults.data.payroll import get_default_pay_schedule
 
@@ -168,7 +159,7 @@ def build_initial_plan(tenant) -> dict:
             "name": tenant.name,
             "short_name": tenant.short_name or "",
             "slogan": tenant.slogan or "",
-            "school_type": tenant.school_type or "secondary",
+            "school_division": str(tenant.school_division_id) if tenant.school_division_id else "",
             "funding_type": tenant.funding_type or "private",
             "emis_number": tenant.emis_number or "",
             "description": tenant.description or "",
@@ -251,6 +242,7 @@ def build_initial_plan(tenant) -> dict:
     # Step: grading
     steps["grading"] = _build_step_entry(
         payload={
+            "grading_style": "multiple_entry",
             "grade_letters": [
                 {"letter": "A+", "min_percentage": 97, "max_percentage": 100, "order": 1},
                 {"letter": "A",  "min_percentage": 93, "max_percentage": 96,  "order": 2},
@@ -302,51 +294,6 @@ def build_initial_plan(tenant) -> dict:
             "fees": [
                 {"name": f["name"], "description": f.get("description", "")}
                 for f in fee_list
-            ],
-        }
-    )
-
-    # Step: accounting
-    steps["accounting"] = _build_step_entry(
-        payload={
-            "currency": {
-                "name": accounting_currency["name"],
-                "code": accounting_currency["code"],
-                "symbol": accounting_currency["symbol"],
-            },
-            "ledger_accounts_count": len(accounting_ledger_accounts),
-            "gl_accounts": [
-                {
-                    "code": a["code"],
-                    "name": a["name"],
-                    "account_type": a["account_type"],
-                    "normal_balance": a["normal_balance"],
-                    "category": a.get("category", ""),
-                    "parent_code": a.get("parent_code", ""),
-                }
-                for a in accounting_ledger_accounts
-            ],
-            "transaction_types": [
-                {
-                    "name": t["name"],
-                    "code": t["code"],
-                    "transaction_category": t["transaction_category"],
-                    "description": t.get("description", ""),
-                    "default_ledger_account_code": t.get("default_ledger_account_code", ""),
-                }
-                for t in accounting_transaction_types
-            ],
-            "payment_methods": [m["name"] for m in accounting_payment_methods],
-            "bank_accounts": [
-                {
-                    "account_name": b["account_name"],
-                    "account_number": b["account_number"],
-                    "bank_name": b.get("bank_name", ""),
-                    "account_type": b.get("account_type", "savings"),
-                    "ledger_account_code": b.get("ledger_account_code", ""),
-                    "currency_code": accounting_currency["code"],
-                }
-                for b in accounting_bank_accounts
             ],
         }
     )
@@ -410,7 +357,7 @@ def get_completion_status(plan: dict) -> dict:
     """
     steps = plan.get("steps", {})
     required = plan.get("required_steps", REQUIRED_STEPS)
-    optional = plan.get("optional_steps", OPTIONAL_STEPS)
+    optional = [key for key in plan.get("optional_steps", OPTIONAL_STEPS) if key != "accounting"]
 
     completed_required = [k for k in required if steps.get(k, {}).get("status") == "completed"]
     completed_optional = [k for k in optional if steps.get(k, {}).get("status") == "completed"]
@@ -440,7 +387,6 @@ def apply_onboarding_plan(tenant, user, plan: dict) -> dict:
     This runs in a single database transaction; any unhandled exception rolls
     back all database changes but the error is captured in the result.
     """
-    from defaults import run as default_run
     from django_tenants.utils import schema_context
     from django.db import transaction
 
@@ -475,24 +421,22 @@ def apply_onboarding_plan(tenant, user, plan: dict) -> dict:
                     tenant, user,
                     steps.get("grading", {}).get("payload", {})
                 )
+                grading_style = results["grading"]["grading_style"]
+                results["gradebooks"] = _generate_onboarding_gradebooks(
+                    user, grading_style
+                )
                 # Step 6: Finance
                 results["finance"] = _apply_finance(
                     tenant, user,
                     steps.get("finance", {}).get("payload", {}),
                 )
-                # Step 7: Accounting (optional)
-                if "accounting" in step_order:
-                    results["accounting"] = _apply_accounting(
-                        tenant, user,
-                        steps.get("accounting", {}).get("payload", {})
-                    )
-                # Step 8: HR & Staff (optional)
+                # Step 7: HR & Staff (optional)
                 if "hr_staff" in step_order:
                     results["hr_staff"] = _apply_hr_staff(
                         tenant, user,
                         steps.get("hr_staff", {}).get("payload", {})
                     )
-                # Step 9: Payroll (optional)
+                # Step 8: Payroll (optional)
                 if "payroll" in step_order:
                     results["payroll"] = _apply_payroll(
                         tenant, user,
@@ -501,6 +445,19 @@ def apply_onboarding_plan(tenant, user, plan: dict) -> dict:
 
         return {"success": True, "steps": results, "applied_at": _now_iso()}
 
+    except OnboardingConfigurationError as exc:
+        logger.warning(
+            "Onboarding configuration incomplete for tenant %s: %s",
+            tenant.schema_name,
+            exc,
+        )
+        return {
+            "success": False,
+            "error": str(exc),
+            "error_code": exc.error_code,
+            "steps": results,
+            "applied_at": _now_iso(),
+        }
     except Exception as exc:
         logger.exception("Onboarding apply failed for tenant %s", tenant.schema_name)
         return {"success": False, "error": str(exc), "steps": results, "applied_at": _now_iso()}
@@ -510,8 +467,19 @@ def apply_onboarding_plan(tenant, user, plan: dict) -> dict:
 # Per-step apply helpers
 # ---------------------------------------------------------------------------
 
-def _ok(step: str, records_created: int = 0, records_updated: int = 0) -> dict:
-    return {"step": step, "ok": True, "records_created": records_created, "records_updated": records_updated}
+def _ok(
+    step: str,
+    records_created: int = 0,
+    records_updated: int = 0,
+    **details,
+) -> dict:
+    return {
+        "step": step,
+        "ok": True,
+        "records_created": records_created,
+        "records_updated": records_updated,
+        **details,
+    }
 
 
 def _fail(step: str, error: str) -> dict:
@@ -520,15 +488,27 @@ def _fail(step: str, error: str) -> dict:
 
 def _apply_school_profile(tenant, payload: dict) -> dict:
     try:
+        from django_tenants.utils import schema_context
+        from academics.models import Division
+
         fields_to_update = [
-            "name", "short_name", "slogan", "school_type", "funding_type",
+            "name", "short_name", "slogan", "school_division_id", "funding_type",
             "emis_number", "description", "address", "city", "state",
             "country", "postal_code", "phone", "email", "website",
         ]
         updated = False
+        payload_fields = {**payload}
+        if "school_division" in payload_fields:
+            payload_fields["school_division_id"] = payload_fields.pop("school_division")
+
         for field in fields_to_update:
-            if field in payload and payload[field] is not None:
-                setattr(tenant, field, payload[field])
+            if field in payload_fields and payload_fields[field] is not None:
+                value = payload_fields[field]
+                if field == "school_division_id" and value:
+                    with schema_context(tenant.schema_name):
+                        if not Division.objects.filter(id=value, active=True).exists():
+                            raise ValueError("Selected school division does not exist in this workspace.")
+                setattr(tenant, field, value or None if field == "school_division_id" else value)
                 updated = True
         if payload.get("date_est"):
             tenant.date_est = payload["date_est"]
@@ -611,12 +591,21 @@ def _apply_academic_calendar(tenant, user, payload: dict) -> dict:
 
 def _apply_grade_structure(tenant, user, payload: dict) -> dict:
     from academics.models import Division, GradeLevel, GradeLevelTuitionFee, Section
+    from defaults.data.division_list import division_list
+    from defaults.data.gade_level import grade_level_data
 
     created = 0
+    submitted_grade_labels = {
+        grade.get("level"): {
+            "name": str(grade.get("name", "")).strip(),
+            "short_name": str(grade.get("short_name", "")).strip(),
+        }
+        for grade in payload.get("grade_levels", [])
+        if isinstance(grade, dict) and isinstance(grade.get("level"), int)
+    }
 
-    # Divisions
     division_objs = []
-    for div_data in payload.get("divisions", []):
+    for div_data in division_list:
         div, div_created = Division.objects.get_or_create(
             name=div_data.get("name", ""),
             defaults={
@@ -629,26 +618,36 @@ def _apply_grade_structure(tenant, user, payload: dict) -> dict:
         if div_created:
             created += 1
 
-    # Grade levels
     grade_level_objs = []
-    for gl_data in payload.get("grade_levels", []):
-        div_idx = gl_data.get("division_index", 0)
+    for gl_data in grade_level_data:
+        div_idx = gl_data.get("division", 0)
         div_obj = division_objs[div_idx] if div_idx < len(division_objs) else (division_objs[0] if division_objs else None)
-        gl, gl_created = GradeLevel.objects.get_or_create(
-            name=gl_data.get("name", ""),
-            defaults={
-                "short_name": gl_data.get("short_name", ""),
-                "description": gl_data.get("description", ""),
-                "level": gl_data.get("level", 1),
-                "division": div_obj,
-                "created_by": user,
-                "updated_by": user,
-            },
-        )
+        level = gl_data.get("level", 1)
+        submitted_labels = submitted_grade_labels.get(level, {})
+        name = submitted_labels.get("name") or gl_data.get("name", "")
+        short_name = submitted_labels.get("short_name") or gl_data.get("short_name", "")
+        gl = GradeLevel.objects.filter(level=level).first()
+        gl_created = gl is None
+        if gl_created:
+            gl = GradeLevel.objects.create(
+                name=name,
+                short_name=short_name,
+                description=gl_data.get("description", ""),
+                level=level,
+                division=div_obj,
+                created_by=user,
+                updated_by=user,
+            )
+        else:
+            gl.name = name
+            gl.short_name = short_name
+            gl.description = gl_data.get("description", "")
+            gl.division = div_obj
+            gl.updated_by = user
+            gl.save(update_fields=["name", "short_name", "description", "division", "updated_by", "updated_at"])
         grade_level_objs.append(gl)
         if gl_created:
             created += 1
-            # Tuition fee placeholders
             for t in ["new", "returning", "transferred"]:
                 GradeLevelTuitionFee.objects.get_or_create(
                     grade_level=gl,
@@ -656,7 +655,6 @@ def _apply_grade_structure(tenant, user, payload: dict) -> dict:
                     defaults={"amount": 0, "created_by": user, "updated_by": user},
                 )
 
-    # Sections — one "General" per grade_level ≤ level 13, else Arts/Science
     for gl in grade_level_objs:
         if gl.level <= 13:
             _, s_created = Section.objects.get_or_create(
@@ -688,11 +686,12 @@ def _apply_grade_structure(tenant, user, payload: dict) -> dict:
 
 
 def _apply_subjects(tenant, user, payload: dict) -> dict:
-    from academics.models import Subject
+    from academics.models import Section, SectionSubject, Subject
 
     created = 0
+    subject_objs = []
     for s_data in payload.get("subjects", []):
-        _, s_created = Subject.objects.get_or_create(
+        subject, s_created = Subject.objects.get_or_create(
             name=s_data.get("name", ""),
             defaults={
                 "code": s_data.get("code") or None,
@@ -701,10 +700,26 @@ def _apply_subjects(tenant, user, payload: dict) -> dict:
                 "updated_by": user,
             },
         )
+        subject_objs.append(subject)
         if s_created:
             created += 1
 
-    return _ok("subjects", records_created=created)
+    assignments_created = 0
+    for section in Section.objects.filter(active=True):
+        for subject in subject_objs:
+            _, assignment_created = SectionSubject.objects.get_or_create(
+                section=section,
+                subject=subject,
+                defaults={"created_by": user, "updated_by": user},
+            )
+            if assignment_created:
+                assignments_created += 1
+
+    return _ok(
+        "subjects",
+        records_created=created,
+        subject_assignments_created=assignments_created,
+    )
 
 
 def _apply_grading(tenant, user, payload: dict) -> dict:
@@ -740,11 +755,53 @@ def _apply_grading(tenant, user, payload: dict) -> dict:
         if c:
             created += 1
 
-    if not GradingSettings.objects.exists():
-        GradingSettings.objects.create(created_by=user, updated_by=user)
-        created += 1
+    grading_style = payload.get("grading_style", "multiple_entry")
+    if grading_style not in {"single_entry", "multiple_entry"}:
+        raise ValueError("Grading style must be single_entry or multiple_entry.")
 
-    return _ok("grading", records_created=created)
+    grading_settings = GradingSettings.objects.first()
+    if grading_settings is None:
+        GradingSettings.objects.create(
+            grading_style=grading_style,
+            use_default_templates=grading_style == "multiple_entry",
+            created_by=user,
+            updated_by=user,
+        )
+        created += 1
+    else:
+        grading_settings.grading_style = grading_style
+        grading_settings.use_default_templates = grading_style == "multiple_entry"
+        grading_settings.updated_by = user
+        grading_settings.save(
+            update_fields=["grading_style", "use_default_templates", "updated_by", "updated_at"]
+        )
+
+    return _ok("grading", records_created=created, grading_style=grading_style)
+
+
+def _generate_onboarding_gradebooks(user, grading_style: str) -> dict:
+    from academics.models import AcademicYear
+    from grading.gradebook_initializer import initialize_gradebooks_for_academic_year
+
+    academic_year = AcademicYear.get_current_academic_year()
+    if academic_year is None:
+        raise OnboardingConfigurationError(
+            "No current academic year is configured. Complete the academic calendar before generating gradebooks.",
+            "NO_CURRENT_ACADEMIC_YEAR",
+        )
+
+    result = initialize_gradebooks_for_academic_year(
+        academic_year=academic_year,
+        grading_style=grading_style,
+        created_by=user,
+        regenerate=False,
+        skip_grade_letters=True,
+    )
+    if not result.get("success"):
+        error_code = result.get("error_code") or "GRADEBOOK_GENERATION_FAILED"
+        message = result.get("message") or "Gradebook generation failed."
+        raise OnboardingConfigurationError(message, error_code)
+    return result
 
 
 def _apply_finance(tenant, user, payload: dict) -> dict:
@@ -1079,6 +1136,28 @@ def _apply_hr_staff(tenant, user, payload: dict) -> dict:
     from defaults.data.hr import employee_departments, employee_positions, leave_types
     from defaults import run as default_run
 
+    def generated_code(value: str, used_codes: set[str]) -> str:
+        words = [
+            "".join(character for character in word.upper() if character.isalnum())
+            for word in value.split()
+        ]
+        words = [word for word in words if word]
+        base = (words[0][:3] if len(words) == 1 else "".join(word[0] for word in words)[:4]) or "ITEM"
+        code = base
+        suffix = 2
+        while code in used_codes:
+            code = f"{base}{suffix}"
+            suffix += 1
+        used_codes.add(code)
+        return code
+
+    def reserve_or_generate_code(submitted_code: str, value: str, used_codes: set[str]) -> str:
+        code = submitted_code.strip().upper()
+        if code and code not in used_codes:
+            used_codes.add(code)
+            return code
+        return generated_code(value, used_codes)
+
     try:
         departments_payload = payload.get("departments") or [
             {"name": d["name"], "code": d.get("code", ""), "description": d.get("description", "")}
@@ -1112,12 +1191,16 @@ def _apply_hr_staff(tenant, user, payload: dict) -> dict:
         created = 0
         with schema_context(tenant.schema_name):
             department_by_code = {}
+            used_department_codes = set(
+                EmployeeDepartment.objects.exclude(code="").values_list("code", flat=True)
+            )
 
             for department_data in departments_payload:
                 name = str(department_data.get("name", "")).strip()
                 if not name:
                     continue
-                code = str(department_data.get("code", "")).strip().upper()
+                submitted_code = str(department_data.get("code", "")).strip().upper()
+                code = reserve_or_generate_code(submitted_code, name, used_department_codes)
                 department, was_created = EmployeeDepartment.objects.get_or_create(
                     name=name,
                     defaults={
@@ -1130,7 +1213,12 @@ def _apply_hr_staff(tenant, user, payload: dict) -> dict:
                 if was_created:
                     created += 1
                 department_by_code[code] = department
+                if submitted_code:
+                    department_by_code[submitted_code] = department
 
+            used_position_codes = set(
+                EmployeePosition.objects.exclude(code="").values_list("code", flat=True)
+            )
             for position_data in positions_payload:
                 title = str(position_data.get("title", "")).strip()
                 if not title:
@@ -1140,12 +1228,16 @@ def _apply_hr_staff(tenant, user, payload: dict) -> dict:
                 department = department_by_code.get(department_code)
                 if department is None and department_code:
                     department = EmployeeDepartment.objects.filter(code=department_code).first()
+                if department is None:
+                    raise ValueError(f"Position '{title}' must belong to a valid department.")
 
                 _, was_created = EmployeePosition.objects.get_or_create(
                     title=title,
                     department=department,
                     defaults={
-                        "code": str(position_data.get("code", "")).strip().upper(),
+                        "code": reserve_or_generate_code(
+                            str(position_data.get("code", "")), title, used_position_codes
+                        ),
                         "description": position_data.get("description", ""),
                         "employment_type": position_data.get("employment_type", "full_time"),
                         "can_teach": bool(position_data.get("can_teach", False)),
@@ -1156,6 +1248,9 @@ def _apply_hr_staff(tenant, user, payload: dict) -> dict:
                 if was_created:
                     created += 1
 
+            used_leave_codes = set(
+                LeaveType.objects.exclude(code="").values_list("code", flat=True)
+            )
             for leave_data in leave_types_payload:
                 name = str(leave_data.get("name", "")).strip()
                 if not name:
@@ -1164,7 +1259,9 @@ def _apply_hr_staff(tenant, user, payload: dict) -> dict:
                 _, was_created = LeaveType.objects.get_or_create(
                     name=name,
                     defaults={
-                        "code": str(leave_data.get("code", "")).strip().upper(),
+                        "code": reserve_or_generate_code(
+                            str(leave_data.get("code", "")), name, used_leave_codes
+                        ),
                         "description": leave_data.get("description", ""),
                         "default_days": int(leave_data.get("default_days", 1) or 1),
                         "requires_approval": bool(leave_data.get("requires_approval", True)),

@@ -131,7 +131,7 @@ class DataCache:
             return list(
                 Division.objects.all()
                 .order_by('name')
-                .values('id', 'name', 'description')
+                .values('id', 'name', 'description', 'active')
             )
         
         return DataCache._get_cached_data("divisions", query, force_refresh=force_refresh, request=request)

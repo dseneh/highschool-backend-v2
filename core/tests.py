@@ -313,3 +313,31 @@ class TenantCloneIntegrationTests(TenantTestCase):
 
 			with schema_context("public"):
 				hard_delete_tenant_workspace(created)
+
+	def test_tenant_creation_seeds_divisions_in_the_new_workspace_schema(self):
+		from core.serializers import CreateTenantSerializer
+		from academics.models import Division
+
+		suffix = uuid.uuid4().hex[:10]
+		schema_name = f"division_seed_{suffix}"
+		request = type("TestRequest", (), {"user": self.tenant.owner})()
+		serializer = CreateTenantSerializer(
+			data={
+				"name": f"Division Seed Tenant {suffix}",
+				"short_name": f"div-{suffix}",
+				"schema_name": schema_name,
+				"domain": f"{schema_name}.localhost",
+			},
+			context={"request": request},
+		)
+		serializer.is_valid(raise_exception=True)
+		with schema_context("public"):
+			created = serializer.save()
+		try:
+			with schema_context(created.schema_name):
+				self.assertGreater(Division.objects.count(), 0)
+		finally:
+			from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+			with schema_context("public"):
+				hard_delete_tenant_workspace(created)
