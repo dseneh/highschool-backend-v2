@@ -10,13 +10,17 @@ import django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'api.settings')
 django.setup()
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from common.status import Roles, UserAccountType
 
 User = get_user_model()
 
 def fix_or_create_superuser():
-    email = "admin@ezyschool.app"
+    email = os.environ.get(
+        "PUBLIC_TENANT_OWNER_EMAIL",
+        f"admin@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}",
+    )
     password = "Ezyschool.net"
     username = "admin"
     

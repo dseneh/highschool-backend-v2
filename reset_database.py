@@ -168,7 +168,7 @@ def create_public_tenant(dry_run=False):
         
         # Get configuration from environment or use defaults
         domain_url = os.environ.get('PUBLIC_TENANT_DOMAIN', 'public.localhost')
-        owner_email = os.environ.get('PUBLIC_TENANT_OWNER_EMAIL', 'admin@ezyschool.app')
+        owner_email = os.environ.get('PUBLIC_TENANT_OWNER_EMAIL', f"admin@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}")
         owner_password = os.environ.get('PUBLIC_TENANT_OWNER_PASSWORD', 'Ezyschool.net')
         owner_id_number = os.environ.get('PUBLIC_TENANT_OWNER_ID_NUMBER', 'admin001')
         owner_username = os.environ.get('PUBLIC_TENANT_OWNER_USERNAME', 'admin')
@@ -233,7 +233,7 @@ def ensure_superadmin_configured(dry_run=False):
     
     try:
         User = get_user_model()
-        email = "admin@ezyschool.app"
+        email = f"admin@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"
         
         user = User.objects.get(email=email)
         
@@ -320,7 +320,7 @@ Examples:
         else:
             print("✅ DATABASE RESET COMPLETE!")
             print("\nSuperadmin Credentials:")
-            print("  Email:    admin@ezyschool.app")
+            print(f"  Email:    admin@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}")
             print("  Username: admin")
             print("  Password: Ezyschool.net")
         print("="*70)

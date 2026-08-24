@@ -74,7 +74,7 @@ def is_valid_tenant_redirect_uri(redirect_uri: str, tenant_slug: str) -> bool:
         # Path-based local dev redirect, e.g. http://localhost:3000/auth/callback
         return True
 
-    # Subdomain-based redirect, e.g. https://dujar.ezyschool.app/auth/callback
+    # Subdomain-based redirect, e.g. https://dujar.myezyschool.com/auth/callback
     return host.startswith(f"{tenant}.")
 
 

@@ -16,8 +16,8 @@ echo "✅ Shared schema migrations complete"
 # Step 2: Create public tenant (required for django-tenant-users)
 echo ""
 echo "🏢 Step 2: Creating public tenant..."
-PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-public.${RAILWAY_PUBLIC_DOMAIN:-ezyschool.net}}"
-OWNER_EMAIL="${DJANGO_SUPERUSER_EMAIL:-admin@ezyschool.app}"
+PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-public.${RAILWAY_PUBLIC_DOMAIN:-myezyschool.com}}"
+OWNER_EMAIL="${DJANGO_SUPERUSER_EMAIL:-admin@myezyschool.com}"
 
 # Check if public tenant already exists
 PUBLIC_EXISTS=$(python check_setup.py public_tenant 2>/dev/null || echo "false")
@@ -45,7 +45,7 @@ if [ "$CREATE_SUPERUSER" = "true" ]; then
         echo "✅ Superuser already exists"
     else
         python manage.py create_superadmin \
-            --email "${DJANGO_SUPERUSER_EMAIL:-admin@ezyschool.app}" \
+            --email "${DJANGO_SUPERUSER_EMAIL:-admin@myezyschool.com}" \
             --password "${DJANGO_SUPERUSER_PASSWORD:-changeme}" \
             --id-number "${DJANGO_SUPERUSER_ID_NUMBER:-admin001}" \
             --name "${DJANGO_SUPERUSER_NAME:-System Administrator}"
@@ -104,7 +104,7 @@ echo "  - Static files: ✅"
 echo "  - Deployment checks: ✅"
 echo ""
 echo "🔗 Superuser Credentials (if created):"
-echo "  Email: ${DJANGO_SUPERUSER_EMAIL:-admin@ezyschool.app}"
+echo "  Email: ${DJANGO_SUPERUSER_EMAIL:-admin@myezyschool.com}"
 echo "  ID Number: ${DJANGO_SUPERUSER_ID_NUMBER:-admin001}"
 echo "  Username: ${DJANGO_SUPERUSER_USERNAME:-superadmin}"
 echo ""

@@ -867,7 +867,7 @@ class OfficialTranscriptPDF:
             return block
 
         verify_url = (
-            f"https://verify.ezyschool.app/transcript/{self.payload.transcript_id}"
+            f"https://verify.{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}/transcript/{self.payload.transcript_id}"
             if self.payload.transcript_id
             else ""
         )

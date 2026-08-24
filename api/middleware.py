@@ -9,13 +9,52 @@ from django.conf import settings
 from django.db import connection, reset_queries
 from django_tenants.middleware.main import TenantMainMiddleware
 from django_tenants.utils import get_public_schema_name
-from django.http import Http404
+from django.http import Http404, HttpResponseRedirect
 from core.models import Tenant
 from api.authentication import TenantAwareJWTAuthentication
 from users.tenant_access import is_global_superadmin
 
 
 logger = logging.getLogger(__name__)
+
+
+class LegacyDomainRedirectMiddleware:
+    """Permanently redirects requests on legacy APP_ROOT_DOMAIN(s) to the current domain.
+
+    Preserves subdomain, full path, and query string, e.g.
+    https://dujar.ezyschool.app/students/123?year=2026
+        -> https://dujar.myezyschool.com/students/123?year=2026
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self.legacy_domains = [d.lower() for d in getattr(settings, "LEGACY_APP_DOMAINS", [])]
+        self.root_domain = getattr(settings, "APP_ROOT_DOMAIN", "myezyschool.com").lower()
+
+    def _matching_legacy_domain(self, host: str):
+        for legacy_domain in self.legacy_domains:
+            if host == legacy_domain or host.endswith(f".{legacy_domain}"):
+                return legacy_domain
+        return None
+
+    def __call__(self, request):
+        host = request.get_host().split(":")[0].lower()
+        legacy_domain = self._matching_legacy_domain(host)
+
+        if legacy_domain and host != self.root_domain and not host.endswith(f".{self.root_domain}"):
+            if host == legacy_domain:
+                new_host = self.root_domain
+            else:
+                subdomain = host[: -(len(legacy_domain) + 1)]
+                new_host = f"{subdomain}.{self.root_domain}"
+
+            scheme = "https" if request.is_secure() else "http"
+            redirect_url = f"{scheme}://{new_host}{request.get_full_path()}"
+            response = HttpResponseRedirect(redirect_url)
+            response.status_code = 308  # Permanent redirect, preserves HTTP method.
+            return response
+
+        return self.get_response(request)
 
 
 class HeaderBasedTenantMiddleware(TenantMainMiddleware):

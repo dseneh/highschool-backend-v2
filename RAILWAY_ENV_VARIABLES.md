@@ -186,12 +186,20 @@ Important: if RESEND_API_KEY is not set in Railway, the backend falls back to Dj
 
 ```bash
 # Base frontend URL used for tenant/auth links
-FRONTEND_DOMAIN=https://app.ezyschool.app
+FRONTEND_DOMAIN=https://app.myezyschool.com
 FRONTEND_USE_SUBDOMAIN=True
 
+# Single source of truth for the app's root domain. Tenant subdomain links
+# are derived as {workspace}.{APP_ROOT_DOMAIN}. Defaults to APP_ROOT_DOMAIN
+# when unset.
+APP_ROOT_DOMAIN=myezyschool.com
+
 # Optional: force direct tenant subdomain links in emails
-# Example output: https://<workspace>.ezyschool.app/activate-account
-FRONTEND_SUBDOMAIN_BASE=ezyschool.app
+# Example output: https://<workspace>.myezyschool.com/activate-account
+FRONTEND_SUBDOMAIN_BASE=myezyschool.com
+
+# Legacy domains that should permanently redirect to APP_ROOT_DOMAIN
+LEGACY_APP_DOMAINS=ezyschool.app,ezyschool.net
 
 # Keep False for production subdomain routing
 FRONTEND_DEV_MODE=False

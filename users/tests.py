@@ -2,7 +2,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
@@ -12,6 +12,8 @@ from users.sso_views import GlobalLogoutView
 from users.sso_views import SsoRefreshView
 from users.sso_views import SsoTokenExchangeView
 from users.sso_views import TenantLogoutView
+from users.sso_views import is_valid_tenant_redirect_uri
+from users.utils import build_frontend_url
 
 
 class SsoPkceUtilsTests(SimpleTestCase):
@@ -38,7 +40,7 @@ class SsoTokenExchangeViewTests(TestCase):
 		code_obj.consumed_at = None
 		code_obj.revoked_at = None
 		code_obj.expires_at = self.now + timedelta(seconds=50)
-		code_obj.redirect_uri = "https://dujar.ezyschool.app/auth/callback"
+		code_obj.redirect_uri = "https://dujar.myezyschool.com/auth/callback"
 		code_obj.code_challenge = challenge
 		code_obj.code_challenge_method = "S256"
 		code_obj.client = SimpleNamespace(client_id="ezyschool-web")
@@ -96,7 +98,7 @@ class SsoTokenExchangeViewTests(TestCase):
 				"grant_type": "authorization_code",
 				"code": "one-time-code",
 				"client_id": "ezyschool-web",
-				"redirect_uri": "https://dujar.ezyschool.app/auth/callback",
+				"redirect_uri": "https://dujar.myezyschool.com/auth/callback",
 				"code_verifier": verifier,
 			},
 			format="json",
@@ -122,7 +124,7 @@ class SsoTokenExchangeViewTests(TestCase):
 				"grant_type": "authorization_code",
 				"code": "one-time-code",
 				"client_id": "ezyschool-web",
-				"redirect_uri": "https://dujar.ezyschool.app/auth/callback",
+				"redirect_uri": "https://dujar.myezyschool.com/auth/callback",
 				"code_verifier": "invalid-verifier",
 			},
 			format="json",
@@ -177,7 +179,7 @@ class SsoAuthorizeViewTests(SimpleTestCase):
 			"/api/v1/sso/authorize/",
 			{
 				"client_id": "ezyschool-web",
-				"redirect_uri": "https://dujar.ezyschool.app/auth/callback",
+				"redirect_uri": "https://dujar.myezyschool.com/auth/callback",
 				"tenant": "dujar",
 				"state": "abc123",
 				"code_challenge": "challenge",
@@ -223,7 +225,7 @@ class SsoAuthorizeViewTests(SimpleTestCase):
 			"/api/v1/sso/authorize/",
 			{
 				"client_id": "ezyschool-web",
-				"redirect_uri": "https://dujar.ezyschool.app/auth/callback",
+				"redirect_uri": "https://dujar.myezyschool.com/auth/callback",
 				"tenant": "dujar",
 				"state": "abc123",
 				"code_challenge": "challenge",
@@ -263,7 +265,7 @@ class SsoAuthorizeViewTests(SimpleTestCase):
 			"/api/v1/sso/authorize/",
 			{
 				"client_id": "ezyschool-web",
-				"redirect_uri": "https://dujar.ezyschool.app/auth/callback",
+				"redirect_uri": "https://dujar.myezyschool.com/auth/callback",
 				"tenant": "dujar",
 				"state": "abc123",
 				"code_challenge": "challenge",
@@ -309,7 +311,7 @@ class SsoAuthorizeViewTests(SimpleTestCase):
 			"/api/v1/sso/authorize/",
 			{
 				"client_id": "ezyschool-web",
-				"redirect_uri": "https://dujar.ezyschool.app/auth/callback",
+				"redirect_uri": "https://dujar.myezyschool.com/auth/callback",
 				"tenant": "dujar",
 				"state": "abc123",
 				"code_challenge": "challenge",
@@ -500,3 +502,56 @@ class SsoLogoutViewTests(SimpleTestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertEqual(response.data.get("revoked_tenant_sessions"), ["sess-1", "sess-2"])
 		central.save.assert_called_once()
+
+
+class TenantUrlGenerationTests(SimpleTestCase):
+	"""Verifies tenant URLs are derived from APP_ROOT_DOMAIN via FRONTEND_SUBDOMAIN_BASE."""
+
+	@override_settings(
+		FRONTEND_DOMAIN="https://myezyschool.com",
+		FRONTEND_SUBDOMAIN_BASE="myezyschool.com",
+		FRONTEND_USE_SUBDOMAIN=True,
+		FRONTEND_DEV_MODE=False,
+	)
+	def test_builds_tenant_subdomain_url_on_new_root_domain(self):
+		url = build_frontend_url(school_workspace="dujar", path="/activate-account")
+		self.assertEqual(url, "https://dujar.myezyschool.com/activate-account")
+
+	@override_settings(
+		FRONTEND_DOMAIN="https://myezyschool.com",
+		FRONTEND_SUBDOMAIN_BASE="myezyschool.com",
+		FRONTEND_USE_SUBDOMAIN=True,
+		FRONTEND_DEV_MODE=False,
+	)
+	def test_builds_root_domain_url_without_workspace(self):
+		url = build_frontend_url(school_workspace=None, path="/reset-password")
+		self.assertEqual(url, "https://myezyschool.com/reset-password")
+
+	@override_settings(
+		FRONTEND_DOMAIN="http://localhost:3000",
+		FRONTEND_SUBDOMAIN_BASE="",
+		FRONTEND_USE_SUBDOMAIN=True,
+		FRONTEND_DEV_MODE=True,
+	)
+	def test_falls_back_to_path_based_tenant_url_on_localhost(self):
+		url = build_frontend_url(school_workspace="dujar", path="/activate-account")
+		self.assertEqual(url, "http://localhost:3000/dujar/activate-account")
+
+
+class SsoRedirectUriValidationTests(SimpleTestCase):
+	"""Ensures the SSO redirect_uri validator is domain-agnostic (no ezyschool.app dependency)."""
+
+	def test_accepts_tenant_subdomain_on_new_root_domain(self):
+		self.assertTrue(
+			is_valid_tenant_redirect_uri("https://dujar.myezyschool.com/auth/callback", "dujar")
+		)
+
+	def test_rejects_mismatched_tenant_subdomain(self):
+		self.assertFalse(
+			is_valid_tenant_redirect_uri("https://other.myezyschool.com/auth/callback", "dujar")
+		)
+
+	def test_accepts_localhost_path_based_redirect(self):
+		self.assertTrue(
+			is_valid_tenant_redirect_uri("http://localhost:3000/auth/callback", "dujar")
+		)

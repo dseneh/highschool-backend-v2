@@ -10,6 +10,17 @@ References:
 from pathlib import Path
 from decouple import config
 
+# Single source of truth for the app's public root domain. Tenant domains are
+# derived as f"{subdomain}.{APP_ROOT_DOMAIN}". Legacy domains (previously used
+# for the app) are kept only to support the permanent redirect to the current
+# domain - see api.middleware.LegacyDomainRedirectMiddleware.
+APP_ROOT_DOMAIN = config("APP_ROOT_DOMAIN", default="myezyschool.com").strip().lower()
+LEGACY_APP_DOMAINS = config(
+    "LEGACY_APP_DOMAINS",
+    default="ezyschool.app,ezyschool.net",
+    cast=lambda v: [s.strip().lower() for s in v.split(",") if s.strip()],
+)
+
 # Build paths inside the project
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -104,6 +115,7 @@ TENANT_MODEL = "core.Tenant"  # Your Tenant model (TenantBase)
 TENANT_DOMAIN_MODEL = "core.Domain"  # Domain model for routing
 
 MIDDLEWARE = [
+    "api.middleware.LegacyDomainRedirectMiddleware",  # Must be first - 301/308 redirects legacy domains before any routing
     "corsheaders.middleware.CorsMiddleware",  # Must be before tenant middleware to handle OPTIONS requests
     "api.middleware.HeaderBasedTenantMiddleware",  # Handles schema switching via X-Tenant header (skips OPTIONS)
     "api.middleware.ApiPerformanceMetricsMiddleware",  # Optional endpoint performance metrics headers/logging
@@ -199,11 +211,11 @@ EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
-    default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else "noreply@mail.ezyschool.app",
+    default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else f"noreply@mail.{APP_ROOT_DOMAIN}",
 )
 EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool")
-ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default="admin@ezyschool.app")
-SUPPORT_EMAIL = config("SUPPORT_EMAIL", default="support@ezyschool.app")
+ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default=f"admin@{APP_ROOT_DOMAIN}")
+SUPPORT_EMAIL = config("SUPPORT_EMAIL", default=f"support@{APP_ROOT_DOMAIN}")
 
 # Resend API key (production). Ignored in DEBUG when local SMTP is configured.
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
@@ -212,7 +224,7 @@ RESEND_API_KEY = config("RESEND_API_KEY", default="")
 FRONTEND_DOMAIN = config("FRONTEND_DOMAIN", default="http://localhost:3000")
 FRONTEND_USE_SUBDOMAIN = config("FRONTEND_USE_SUBDOMAIN", default=True, cast=bool)
 FRONTEND_DEV_MODE = config("FRONTEND_DEV_MODE", default=True, cast=bool)
-FRONTEND_SUBDOMAIN_BASE = config("FRONTEND_SUBDOMAIN_BASE", default="")
+FRONTEND_SUBDOMAIN_BASE = config("FRONTEND_SUBDOMAIN_BASE", default=APP_ROOT_DOMAIN)
 FRONTEND_PASSWORD_RESET_PATH = config("FRONTEND_PASSWORD_RESET_PATH", default="/reset-password")
 
 # Branding for transactional emails

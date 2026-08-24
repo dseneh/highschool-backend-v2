@@ -50,7 +50,7 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
         "product_name": "EzySchool System",
         "dev_name": "DewX IT Solutions",
         "dev_website": "https://dewx.tech",
-        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app"),
+        "support_email": getattr(settings, "SUPPORT_EMAIL", f"support@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"),
         "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
     }
 
@@ -79,7 +79,7 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
     if parsed_domain and parsed_domain.netloc:
         context["school_website"] = f"{parsed_domain.scheme}://{parsed_domain.netloc}"
     else:
-        context["school_website"] = "https://www.ezyschool.app"
+        context["school_website"] = f"https://www.{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"
 
     return context
 
@@ -106,7 +106,7 @@ class ResendEmailService:
 
     def __init__(self):
         self.resend_api_key: str = getattr(settings, "RESEND_API_KEY", "").strip()
-        self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@mail.ezyschool.app")
+        self.from_email: str = getattr(settings, "DEFAULT_FROM_EMAIL", f"noreply@mail.{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}")
         self.from_name: str = getattr(settings, "EMAIL_FROM_NAME", "EzySchool")
         self.email_backend: str = getattr(settings, "EMAIL_BACKEND", "")
         self.email_host: str = getattr(settings, "EMAIL_HOST", "")
@@ -319,7 +319,7 @@ def _build_signup_request_email_context(signup_request) -> dict[str, object]:
     context: dict[str, object] = {
         "user_name": signup_request.first_name,
         "school_name": signup_request.school_name,
-        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app"),
+        "support_email": getattr(settings, "SUPPORT_EMAIL", f"support@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"),
         "current_year": datetime.now().year,
         "product_name": "EzySchool",
         "dev_name": "DewX IT Solutions",
@@ -393,8 +393,8 @@ def send_signup_request_confirmation_email(signup_request) -> bool:
 
 def send_contact_inquiry_emails(*, name: str, email: str, school_name: str, topic: str, message: str) -> bool:
     """Notify admin and send receipt for a marketing contact form submission."""
-    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@ezyschool.app")
-    support_email = getattr(settings, "SUPPORT_EMAIL", "support@ezyschool.app")
+    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", f"admin@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}")
+    support_email = getattr(settings, "SUPPORT_EMAIL", f"support@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}")
     topic_labels = {
         "general": "General question",
         "sales": "Sales & pricing",
@@ -437,7 +437,7 @@ def send_contact_inquiry_emails(*, name: str, email: str, school_name: str, topi
 
 def send_signup_request_admin_notification_email(signup_request) -> bool:
     """Notify the platform admin team about a new marketing signup request."""
-    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", "admin@ezyschool.app")
+    admin_email = getattr(settings, "ADMIN_NOTIFICATION_EMAIL", f"admin@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}")
     if not admin_email:
         logger.warning("send_signup_request_admin_notification_email: ADMIN_NOTIFICATION_EMAIL is not set")
         return False
