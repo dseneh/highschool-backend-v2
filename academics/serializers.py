@@ -34,6 +34,24 @@ from staff.models import TeacherSchedule, TeacherSubject
 
 
 class SchoolSerializer(serializers.ModelSerializer):
+    school_division = serializers.SerializerMethodField()
+    workspace = serializers.CharField(source="schema_name", read_only=True)
+    redirect_url = serializers.SerializerMethodField()
+    meta = serializers.SerializerMethodField()
+
+    def get_school_division(self, instance):
+        division = instance.school_division
+        if division is None:
+            return None
+        return {"id": str(division.id), "name": division.name}
+
+    def get_redirect_url(self, instance):
+        domain = instance.domains.filter(is_primary=True).first()
+        return f"https://{domain.domain}" if domain else None
+
+    def get_meta(self, instance):
+        return {}
+
     class Meta:
         model = Tenant
         fields = [
@@ -41,7 +59,7 @@ class SchoolSerializer(serializers.ModelSerializer):
             "name",
             "short_name",
             "id_number",
-            "school_division_id",
+            "school_division",
             "funding_type",
             "slogan",
             "emis_number",
@@ -66,7 +84,17 @@ class SchoolSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance: Tenant):
         response = super().to_representation(instance)
-        response["full_address"] = instance.full_address()
+        response["full_address"] = ", ".join(
+            value
+            for value in [
+                instance.address,
+                instance.city,
+                instance.state,
+                instance.country,
+                instance.postal_code,
+            ]
+            if value
+        )
         response["address_info"] = {
             "address": instance.address,
             "city": instance.city,
@@ -376,6 +404,7 @@ class DivisionSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
+            "active",
         ]
 
     def to_representation(self, instance):
@@ -406,11 +435,15 @@ class GradeLevelSerializer(serializers.ModelSerializer):
         }
         # Use prefetched currencies (already loaded in view)
         currency = Currency.objects.first()
-        response["currency"] = {
-            "id": currency.id,
-            "name": currency.name,
-            "symbol": currency.symbol,
-        }
+        response["currency"] = (
+            {
+                "id": currency.id,
+                "name": currency.name,
+                "symbol": currency.symbol,
+            }
+            if currency
+            else None
+        )
         # Use prefetched filtered_sections if available (set by view Prefetch), else fallback
         sections = getattr(instance, 'filtered_sections', None)
         if sections is None:

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== DIVISION SIGNALS ====================
 
-@receiver([post_save, post_delete], sender='academics.Division')
+@receiver([post_save, post_delete], sender='core.Division')
 def invalidate_division_cache(sender, instance, **kwargs):
     """Invalidate division cache when a division is saved or deleted."""
     try:

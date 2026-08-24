@@ -1,62 +1,31 @@
-import uuid
-
-from django.db import connection
-from django_tenants.utils import get_public_schema_name, schema_context
-from django.db.models import Q
 from rest_framework import status
+from rest_framework.permissions import AllowAny, IsAuthenticated, SAFE_METHODS
 from rest_framework.exceptions import NotFound
+from django.db.models.deletion import ProtectedError
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import AcademicsAccessPolicy
 
 from common.utils import update_model_fields
 from common.cache_service import DataCache
+from common.permissions import IsSuperAdmin
 
-from ..models import Division
+from core.models import Division
 from ..serializers import DivisionSerializer
 
-
-def _default_divisions():
-    from defaults.data.division_list import division_list
-
-    return [
-        {
-            "id": uuid.uuid5(uuid.NAMESPACE_URL, f"ezyschool:division:{item['name'].lower()}"),
-            "name": item["name"],
-            "description": item.get("description", ""),
-            "active": item.get("status", "active") == "active",
-        }
-        for item in division_list
-    ]
 
 # Business logic imports
 from business.core.services import division_service
 from business.core.adapters import division_adapter
 
 class DivisionListView(APIView):
-    permission_classes = [AcademicsAccessPolicy]
-    # permission_classes = [AllowAny]
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAuthenticated(), IsSuperAdmin()]
 
     def get(self, request):
-        tenant_schema = request.query_params.get("tenant_schema")
-        if connection.schema_name == get_public_schema_name():
-            if tenant_schema:
-                from core.models import Tenant
-
-                tenant = Tenant.objects.filter(schema_name=tenant_schema).first()
-                if tenant:
-                    with schema_context(tenant.schema_name):
-                        divisions = list(
-                            Division.objects.all()
-                            # .order_by("name")
-                            .values("id", "name", "description", "active")
-                        )
-                    return Response(divisions, status=status.HTTP_200_OK)
-            return Response(_default_divisions(), status=status.HTTP_200_OK)
-
-        # Use cached divisions for better performance
         force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
-        divisions = DataCache.get_divisions(force_refresh)
+        divisions = DataCache.get_divisions(force_refresh, request=request)
         
         return Response(divisions, status=status.HTTP_200_OK)
 
@@ -77,6 +46,7 @@ class DivisionListView(APIView):
             return Response({"detail": "Division already exists"}, status=400)
 
         try:
+            validation_result["data"]["active"] = req_data.get("active", True)
             division = division_adapter.create_division_in_db(
                 data=validation_result["data"],
                 user=request.user
@@ -87,13 +57,15 @@ class DivisionListView(APIView):
             return Response({"detail": str(e)}, status=400)
 
 class DivisionDetailView(APIView):
-    permission_classes = [AcademicsAccessPolicy]
-    # permission_classes = [IsAuthenticatedOrReadOnly, IsAdminOrSystemAdmin]
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAuthenticated(), IsSuperAdmin()]
     def get_object(self, id):
-        try:
-            return Division.objects.filter(id=id).first()
-        except Division.DoesNotExist:
+        division = Division.objects.filter(id=id).first()
+        if division is None:
             raise NotFound("Division does not exist with this id")
+        return division
 
     def get(self, request, id):
         division = self.get_object(id)
@@ -111,7 +83,7 @@ class DivisionDetailView(APIView):
 
         name = request.data.get("name")
         if name:
-            if Division.objects.filter(name__iexact=name).exists():
+            if Division.objects.filter(name__iexact=name).exclude(pk=division.pk).exists():
                 return Response(
                     {"detail": f"Division named '{name}' already exists"}, status=400
                 )
@@ -121,8 +93,15 @@ class DivisionDetailView(APIView):
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    patch = put
+
     def delete(self, request, id):
         division = self.get_object(id)
+
+        if division.schools.exists():
+            return Response(
+                {"detail": "Cannot delete a division assigned to a school."}, status=400
+            )
         
         # Check if division has grade levels using business logic
         if division_adapter.check_division_has_grade_levels(str(division.id)):
@@ -131,7 +110,12 @@ class DivisionDetailView(APIView):
             )
         
         # Delete using adapter
-        if division_adapter.delete_division_from_db(str(division.id)):
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        else:
+        try:
+            if division_adapter.delete_division_from_db(str(division.id)):
+                return Response(status=status.HTTP_204_NO_CONTENT)
             return Response({"detail": "Division not found"}, status=404)
+        except ProtectedError:
+            return Response(
+                {"detail": "Cannot delete a division used by configured grade levels."},
+                status=400,
+            )

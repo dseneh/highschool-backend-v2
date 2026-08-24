@@ -124,22 +124,26 @@ class DataCache:
     
     @staticmethod
     def get_divisions(force_refresh: bool = False, request=None) -> List[Dict[str, Any]]:
-        """Get all divisions for a tenant from cache or database."""
-        from academics.models import Division
-        
-        def query():
-            return list(
-                Division.objects.all()
-                .order_by('name')
-                .values('id', 'name', 'description', 'active')
-            )
-        
-        return DataCache._get_cached_data("divisions", query, force_refresh=force_refresh, request=request)
+        """Get shared platform divisions from cache or database."""
+        from core.models import Division
+
+        cache_key = "shared:divisions"
+        if not force_refresh:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
+        divisions = list(
+            Division.objects.all()
+            .order_by('name')
+            .values('id', 'name', 'description', 'active')
+        )
+        cache.set(cache_key, divisions, DataCache._get_timeout())
+        return divisions
 
     @staticmethod
     def invalidate_divisions(request=None):
-        """Invalidate divisions cache for a tenant."""
-        DataCache._invalidate_cache("divisions", request=request)
+        """Invalidate the shared platform Division cache."""
+        cache.delete("shared:divisions")
 
     # ==================== GRADE LEVELS ====================
     

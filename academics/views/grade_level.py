@@ -1,7 +1,6 @@
 from django.shortcuts import get_object_or_404
 from django.db.models import Prefetch
 from django_tenants.utils import schema_context, get_public_schema_name
-from django.core.cache import cache
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,6 +13,7 @@ from common.cache_service import DataCache
 from ..models import GradeLevel, Section
 from core.models import Tenant
 from ..serializers import GradeLevelSerializer
+from ..services.grade_level_range import grade_levels_through_division
 
 logger = logging.getLogger(__name__)
 
@@ -31,25 +31,12 @@ class GradeLevelListView(APIView):
         include_all = request.query_params.get("include_all_divisions", "false").lower() == "true"
         user_role = str(getattr(request.user, "role", "") or "").lower()
         include_all = include_all and user_role in {"admin", "superadmin"}
-        division_id = None
+        school_division = None
         if tenant and not include_all:
             with schema_context(get_public_schema_name()):
-                tenant_record = Tenant.objects.filter(schema_name=tenant).first()
-                division_id = getattr(tenant_record, "school_division_id", None)
+                tenant_record = Tenant.objects.select_related("school_division").filter(schema_name=tenant).first()
+                school_division = getattr(tenant_record, "school_division", None)
         
-        # Generate cache key based on academic year
-        cache_key = f"grade_levels:{tenant}"
-        if academic_year_id:
-            cache_key += f":ay:{academic_year_id}"
-        cache_key += f":division:{division_id or 'all'}"
-        
-        # Try to get from cache first
-        cached_data = cache.get(cache_key)
-        if cached_data:
-            logger.debug(f"Cache HIT: grade_levels for tenant {tenant}, academic_year={academic_year_id}")
-            return Response(cached_data)
-        
-        logger.debug(f"Cache MISS: grade_levels for tenant {tenant}, academic_year={academic_year_id}")
         
         # Build optimized query with Prefetch objects
         # Conditionally prefetch sections based on academic year
@@ -73,8 +60,8 @@ class GradeLevelListView(APIView):
             'tuition_fees',
             sections_prefetch
         ).order_by('level')
-        if division_id:
-            grade_levels = grade_levels.filter(division_id=division_id)
+        if school_division:
+            grade_levels = grade_levels_through_division(grade_levels, school_division)
         
         # Serialize the grade levels
         serializer = GradeLevelSerializer(
@@ -83,12 +70,7 @@ class GradeLevelListView(APIView):
             context={'request': request, 'academic_year_id': academic_year_id}
         )
         
-        data = serializer.data
-        
-        # Cache the result for 5 minutes (300 seconds)
-        cache.set(cache_key, data, 300)
-        
-        return Response(data)
+        return Response(serializer.data)
 
     def post(self, request):
         req_data: dict = request.data
@@ -142,14 +124,9 @@ class GradeLevelListView(APIView):
         # Invalidate base cache key and all academic year variations
         # Note: This is a simple approach. For production, consider using cache.delete_pattern
         # or maintaining a set of cache keys
-        cache_keys = [
-            f"grade_levels:{tenant}",  # Without academic year
-        ]
         # Also invalidate ReferenceDataCache
         DataCache.invalidate_grade_levels(request=request)
         
-        for key in cache_keys:
-            cache.delete(key)
         logger.debug(f"Invalidated grade_levels cache for tenant {tenant}")
 
 class GradeLevelDetailView(APIView):
@@ -206,12 +183,7 @@ class GradeLevelDetailView(APIView):
     def _invalidate_cache(self, tenant, request):
         """Invalidate all grade level cache entries for a tenant"""
         # Invalidate base cache key and all academic year variations
-        cache_keys = [
-            f"grade_levels:{tenant}",  # Without academic year
-        ]
         # Also invalidate ReferenceDataCache
         DataCache.invalidate_grade_levels(request=request)
         
-        for key in cache_keys:
-            cache.delete(key)
         logger.debug(f"Invalidated grade_levels cache for tenant {tenant}")

@@ -25,7 +25,12 @@ from rest_framework import status
 
 from core.models import Tenant
 from common.permissions import IsAdminOrSuperAdmin
-from defaults.services import build_initial_plan, apply_onboarding_plan, get_completion_status
+from defaults.services import (
+    apply_onboarding_plan,
+    build_grade_structure_payload,
+    build_initial_plan,
+    get_completion_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +143,30 @@ def save_onboarding_step(request: Request, schema_name: str) -> Response:
     else:
         step_entry["status"] = "in_progress"
     plan["steps"][step_key] = step_entry
+
+    if step_key == "school_profile" and "school_division" in payload:
+        from core.models import Division
+
+        division = Division.objects.filter(
+            id=payload.get("school_division"),
+            active=True,
+        ).first()
+        if division is None:
+            return Response(
+                {"detail": "Selected school division does not exist."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        grade_step = plan["steps"].get(
+            "grade_structure",
+            {"status": "pending", "payload": {}, "apply_result": None},
+        )
+        grade_step["payload"] = build_grade_structure_payload(
+            division,
+            existing_payload=grade_step.get("payload", {}),
+        )
+        if grade_step.get("status") == "completed":
+            grade_step["status"] = "pending"
+        plan["steps"]["grade_structure"] = grade_step
 
     # Advance current_step pointer to the next pending step
     step_order = plan.get("step_order", list(plan["steps"].keys()))

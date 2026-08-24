@@ -130,7 +130,7 @@ class TenantViewSet(ModelViewSet):
         "name",
         "short_name",
         "funding_type",
-        "school_division_id",
+        "school_division",
         "slogan",
         "emis_number",
         "description",
@@ -230,7 +230,7 @@ class TenantViewSet(ModelViewSet):
             return Tenant.objects.none()
 
         public_schema = get_public_schema_name()
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related("school_division")
 
         # Exclude public tenant (always)
         queryset = queryset.exclude(schema_name=public_schema)
@@ -449,13 +449,11 @@ class TenantViewSet(ModelViewSet):
         instance = self.get_object()
         before_state = self._capture_control_state(instance)
 
-        response = update_model_fields(
-            request,
-            instance,
-            self.ALLOWED_UPDATE_FIELDS,
-            TenantSerializer,
-            context={"request": request},
-        )
+        data = {key: value for key, value in request.data.items() if key in self.ALLOWED_UPDATE_FIELDS}
+        serializer = TenantSerializer(instance, data=data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        response = Response(serializer.data)
         return self._log_control_change_if_needed(request, instance, before_state, response)
 
     def partial_update(self, request, *args, **kwargs):
@@ -468,13 +466,11 @@ class TenantViewSet(ModelViewSet):
         instance = self.get_object()
         before_state = self._capture_control_state(instance)
 
-        response = update_model_fields(
-            request,
-            instance,
-            self.ALLOWED_UPDATE_FIELDS,
-            TenantSerializer,
-            context={"request": request},
-        )
+        data = {key: value for key, value in request.data.items() if key in self.ALLOWED_UPDATE_FIELDS}
+        serializer = TenantSerializer(instance, data=data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        response = Response(serializer.data)
         return self._log_control_change_if_needed(request, instance, before_state, response)
 
     def perform_destroy(self, instance):

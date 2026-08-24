@@ -2,15 +2,27 @@
 Serializers for core models (Tenant)
 """
 from rest_framework import serializers
-from core.models import Tenant, Domain, SignupRequest
+from core.models import Division, Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
 from django_tenants.utils import schema_context
 from django.db import transaction
 import logging
-import uuid
 
 
 logger = logging.getLogger(__name__)
+
+
+class DivisionReferenceField(serializers.PrimaryKeyRelatedField):
+    def __init__(self, **kwargs):
+        if not kwargs.get("read_only"):
+            kwargs.setdefault("queryset", Division.objects.filter(active=True))
+        super().__init__(**kwargs)
+
+    def use_pk_only_optimization(self):
+        return False
+
+    def to_representation(self, value):
+        return {"id": str(value.pk), "name": value.name}
 
 
 def get_signup_request_linked_tenant(instance: SignupRequest):
@@ -183,7 +195,7 @@ class BaseTenantSerializer(TenantDomainMixin, serializers.ModelSerializer):
     """
     domain = serializers.SerializerMethodField()
     domains = serializers.SerializerMethodField()
-    school_division = serializers.UUIDField(source="school_division_id", allow_null=True, required=False)
+    school_division = DivisionReferenceField(allow_null=True, required=False)
     
     class Meta:
         model = Tenant
@@ -294,7 +306,7 @@ class TenantSerializer(BaseTenantSerializer):
     """
     schema_name = serializers.CharField(read_only=True)
     id_number = serializers.CharField(read_only=True)  # ID number should not be changed after creation
-    school_division = serializers.UUIDField(source="school_division_id", allow_null=True, required=False)
+    school_division = DivisionReferenceField(allow_null=True, required=False)
     
     class Meta:
         model = Tenant
@@ -373,6 +385,7 @@ class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
     Used for public pages like login, registration, etc.
     """
     domain = serializers.SerializerMethodField(method_name="get_domain")
+    school_division = DivisionReferenceField(read_only=True)
     
     class Meta:
         model = Tenant
@@ -380,6 +393,7 @@ class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
             "id",
             "name",
             "schema_name",
+            "school_division",
             "domain",
             "logo",
             "active",
@@ -437,7 +451,7 @@ class CreateTenantSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
     website = serializers.URLField(required=False, allow_blank=True)
     funding_type = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    school_division = serializers.UUIDField(required=False, allow_null=True)
+    school_division = DivisionReferenceField(required=False, allow_null=True)
     slogan = serializers.CharField(max_length=250, required=False, allow_blank=True)
     emis_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
@@ -594,7 +608,6 @@ class CreateTenantSerializer(serializers.Serializer):
             )
         
         # Prepare tenant data with all profile fields
-        skip_default_divisions = bool(self.context.get("skip_default_divisions"))
         tenant_data = {
             "name": name,
             "short_name": short_name,
@@ -602,7 +615,7 @@ class CreateTenantSerializer(serializers.Serializer):
             "owner": owner,
             # Identity fields
             "funding_type": validated_data.get("funding_type"),
-            "school_division_id": validated_data.get("school_division"),
+            "school_division": validated_data.get("school_division"),
             "slogan": validated_data.get("slogan"),
             "emis_number": validated_data.get("emis_number"),
             "description": validated_data.get("description"),
@@ -650,37 +663,6 @@ class CreateTenantSerializer(serializers.Serializer):
             # any step fails, the exception handler below removes the schema.
             with transaction.atomic():
                 with schema_context(tenant.schema_name):
-                    if not skip_default_divisions:
-                        from academics.models import Division
-                        from defaults.data.division_list import division_list
-
-                        for division_data in division_list:
-                            Division.objects.get_or_create(
-                                name=division_data["name"],
-                                defaults={"description": division_data.get("description", "")},
-                            )
-
-                        requested_division_id = tenant.school_division_id
-                        if requested_division_id:
-                            selected_division = Division.objects.filter(id=requested_division_id).first()
-                            if selected_division is None:
-                                for division_data in division_list:
-                                    catalog_id = uuid.uuid5(
-                                        uuid.NAMESPACE_URL,
-                                        f"ezyschool:division:{division_data['name'].lower()}",
-                                    )
-                                    if catalog_id == requested_division_id:
-                                        selected_division = Division.objects.filter(
-                                            name__iexact=division_data["name"]
-                                        ).first()
-                                        break
-                                if selected_division is None:
-                                    raise serializers.ValidationError(
-                                        {"school_division": "Selected school division does not exist."}
-                                    )
-                                tenant.school_division_id = selected_division.id
-                                tenant.save(update_fields=["school_division_id"])
-
                     if owner_needs_creation:
                         owner_id_number = generate_entity_id_number(
                             User, ID_ENTITY_EMPLOYEE, tenant=tenant

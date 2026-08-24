@@ -189,22 +189,12 @@ def create_marking_periods(semesters, tenant, user):
 
 def create_divisions(tenant, user):
     """
-    Create divisions in the tenant's schema.
+    Return the shared platform divisions used by tenant grade levels.
     """
-    from django_tenants.utils import schema_context
-    from academics.models import Division
-    
-    divisions = []
-    with schema_context(tenant.schema_name):
-        for division in division_list:
-            division_obj = Division.objects.create(
-                name=division["name"],
-                description=division["description"],
-                created_by=user,
-                updated_by=user,
-            )
-            divisions.append(division_obj)
-    print("Created divisions...")
+    from academics.services.grade_level_range import default_divisions_in_order
+
+    divisions = default_divisions_in_order()
+    print("Loaded shared divisions...")
     return divisions
 
 

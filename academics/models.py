@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 from common.models import BaseModel
+from core.models import Division
 
 class AcademicYear(BaseModel):
     class YearType(models.TextChoices):
@@ -339,23 +340,6 @@ class MarkingPeriod(BaseModel):
         ]
 
 
-class Division(BaseModel):
-    name = models.CharField(max_length=100)
-    description = models.TextField(blank=True, null=True, default=None)
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        db_table = 'division'
-        verbose_name = "Division"
-        verbose_name_plural = "Divisions"
-        ordering = ["name"]
-        indexes = [
-            models.Index(fields=["name"]),
-        ]
-
-
 class GradeLevel(BaseModel):
     level = models.PositiveIntegerField(
         default=1, help_text="Grade level number (e.g., 1 for 1st grade)"
@@ -363,7 +347,7 @@ class GradeLevel(BaseModel):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True, default=None)
     division = models.ForeignKey(
-        Division, on_delete=models.CASCADE, related_name="grade_levels"
+        Division, on_delete=models.PROTECT, related_name="grade_levels"
     )  # elementary, middle, high school
     max_class_capacity = models.PositiveIntegerField(
         default=30, help_text="Maximum number of students in a class"

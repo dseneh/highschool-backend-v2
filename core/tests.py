@@ -190,10 +190,13 @@ class TenantCloneIntegrationTests(TenantTestCase):
 					cloned_assignment.pk,
 					cloned_assignment.section_id,
 					cloned_assignment.section.grade_level_id,
-					cloned_assignment.section.grade_level.division_id,
 					cloned_assignment.subject_id,
 				}
 				self.assertTrue(source_ids.isdisjoint(destination_ids))
+				self.assertEqual(
+					cloned_assignment.section.grade_level.division_id,
+					division.id,
+				)
 				self.assertEqual(cloned_assignment.section.grade_level.name, "Grade 1")
 				self.assertEqual(cloned_assignment.subject.code, "MATH")
 				self.assertEqual(GradeLetter.objects.count(), 0)
@@ -223,7 +226,9 @@ class TenantCloneIntegrationTests(TenantTestCase):
 					service.clone(snapshot)
 
 			with schema_context(destination.schema_name):
-				self.assertEqual(Division.objects.count(), 0)
+				from academics.models import GradeLevel
+
+				self.assertEqual(GradeLevel.objects.count(), 0)
 		finally:
 			from core.services.tenant_deletion import hard_delete_tenant_workspace
 
@@ -314,30 +319,87 @@ class TenantCloneIntegrationTests(TenantTestCase):
 			with schema_context("public"):
 				hard_delete_tenant_workspace(created)
 
-	def test_tenant_creation_seeds_divisions_in_the_new_workspace_schema(self):
-		from core.serializers import CreateTenantSerializer
-		from academics.models import Division
+	def test_tenant_creation_maps_shared_division_and_onboarding_preserves_it(self):
+		from core.serializers import CreateTenantSerializer, TenantSerializer
+		from core.models import Division
+		from defaults.services import build_initial_plan
 
 		suffix = uuid.uuid4().hex[:10]
-		schema_name = f"division_seed_{suffix}"
+		division = Division.objects.order_by("name").first()
+		self.assertIsNotNone(division)
 		request = type("TestRequest", (), {"user": self.tenant.owner})()
 		serializer = CreateTenantSerializer(
 			data={
 				"name": f"Division Seed Tenant {suffix}",
 				"short_name": f"div-{suffix}",
-				"schema_name": schema_name,
-				"domain": f"{schema_name}.localhost",
+				"schema_name": f"division_seed_{suffix}",
+				"domain": f"division_seed_{suffix}.localhost",
+				"school_division": str(division.id),
 			},
 			context={"request": request},
 		)
 		serializer.is_valid(raise_exception=True)
-		with schema_context("public"):
-			created = serializer.save()
-		try:
-			with schema_context(created.schema_name):
-				self.assertGreater(Division.objects.count(), 0)
-		finally:
-			from core.services.tenant_deletion import hard_delete_tenant_workspace
+		self.assertEqual(serializer.validated_data["school_division"], division)
+		captured_tenant_data = {}
 
-			with schema_context("public"):
-				hard_delete_tenant_workspace(created)
+		def capture_create(**kwargs):
+			captured_tenant_data.update(kwargs)
+			raise RuntimeError("stop before schema creation")
+
+		with patch("core.models.Tenant.objects.create", side_effect=capture_create):
+			with self.assertRaisesMessage(RuntimeError, "stop before schema creation"):
+				serializer.save()
+		self.assertEqual(captured_tenant_data["school_division"], division)
+
+		self.tenant.school_division = division
+		self.tenant.save(update_fields=["school_division"])
+		self.assertEqual(
+			TenantSerializer(self.tenant).data["school_division"],
+			{"id": str(division.id), "name": division.name},
+		)
+		plan = build_initial_plan(self.tenant)
+		self.assertEqual(
+			plan["steps"]["school_profile"]["payload"]["school_division"],
+			str(division.id),
+		)
+
+	def test_tenant_update_persists_and_returns_shared_division_object(self):
+		from academics.serializers import SchoolSerializer
+		from core.models import Division
+		from core.serializers import PublicTenantSerializer, TenantSerializer
+		from core.views import TenantViewSet
+		from defaults.services import _apply_school_profile
+
+		division = Division.objects.order_by("name").last()
+		serializer = TenantSerializer(
+			self.tenant,
+			data={"school_division": str(division.id)},
+			partial=True,
+		)
+		serializer.is_valid(raise_exception=True)
+		updated = serializer.save()
+		updated.refresh_from_db()
+
+		self.assertEqual(updated.school_division_id, division.id)
+		self.assertIn("school_division", TenantViewSet.ALLOWED_UPDATE_FIELDS)
+		self.assertEqual(
+			serializer.data["school_division"],
+			{"id": str(division.id), "name": division.name},
+		)
+		self.assertEqual(
+			SchoolSerializer(updated).data["school_division"],
+			{"id": str(division.id), "name": division.name},
+		)
+		self.assertEqual(
+			PublicTenantSerializer(updated).data["school_division"],
+			{"id": str(division.id), "name": division.name},
+		)
+
+		other_division = Division.objects.exclude(pk=division.pk).first()
+		result = _apply_school_profile(
+			updated, {"school_division": str(other_division.id)}
+		)
+		updated.refresh_from_db()
+
+		self.assertTrue(result["ok"])
+		self.assertEqual(updated.school_division_id, other_division.id)

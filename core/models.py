@@ -17,6 +17,7 @@ from django_tenants.models import DomainMixin
 from tenant_users.tenants.models import TenantBase
 from core.validators import ValidateImageFile
 from common.status import SchoolFundingType
+from common.models import BaseModel
 
 
 def generate_unique_id_number():
@@ -54,6 +55,20 @@ def tenant_logo_upload_path(instance, filename):
     return f"tenants/{instance.schema_name}/logo/{new_filename}"
 
 
+class Division(BaseModel):
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True, null=True, default=None)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        db_table = "school_division"
+        ordering = ["name"]
+        verbose_name = "Division"
+        verbose_name_plural = "Divisions"
+
+
 class Tenant(TenantBase):
     """
     Tenant model for multi-tenant application.
@@ -78,10 +93,13 @@ class Tenant(TenantBase):
         default=SchoolFundingType.PRIVATE,
         help_text="Funding type: private, public, charter, etc."
     )
-    school_division_id = models.UUIDField(
+    school_division = models.ForeignKey(
+        Division,
+        on_delete=models.PROTECT,
+        related_name="schools",
         null=True,
         blank=True,
-        help_text="ID of the configured Division in this tenant's schema.",
+        help_text="Platform division that defines the school's highest grade-level range.",
     )
     slogan = models.CharField(max_length=250, blank=True, null=True, help_text="School motto/slogan")
     emis_number = models.CharField(

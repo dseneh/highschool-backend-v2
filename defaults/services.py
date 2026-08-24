@@ -127,6 +127,39 @@ def _build_step_entry(status: str = "pending", payload: dict | None = None) -> d
     }
 
 
+def build_grade_structure_payload(division, existing_payload: dict | None = None) -> dict:
+    from academics.services.grade_level_range import (
+        default_divisions_in_order,
+        default_grade_levels_through_division,
+    )
+
+    existing_labels = {
+        item.get("level"): item
+        for item in (existing_payload or {}).get("grade_levels", [])
+        if isinstance(item, dict)
+    }
+    grade_levels = []
+    for item in default_grade_levels_through_division(division):
+        existing = existing_labels.get(item["level"], {})
+        grade_levels.append(
+            {
+                "name": existing.get("name") or item["name"],
+                "short_name": existing.get("short_name") or item["short_name"],
+                "description": item["description"],
+                "level": item["level"],
+                "division_index": item["division"],
+            }
+        )
+
+    return {
+        "divisions": [
+            {"name": item.name, "description": item.description or ""}
+            for item in default_divisions_in_order()
+        ],
+        "grade_levels": grade_levels,
+    }
+
+
 def build_initial_plan(tenant) -> dict:
     """
     Generate a starter onboarding plan populated with system defaults
@@ -136,7 +169,6 @@ def build_initial_plan(tenant) -> dict:
     from defaults.data.semester import get_semester_list
     from defaults.data.marking_period import get_marking_periods_dict
     from defaults.data.division_list import division_list
-    from defaults.data.gade_level import grade_level_data
     from defaults.data.subjects import subjects
     from defaults.data.currency import currency
     from defaults.data.payment_methods import payment_method_data
@@ -211,22 +243,7 @@ def build_initial_plan(tenant) -> dict:
 
     # Step: grade_structure
     steps["grade_structure"] = _build_step_entry(
-        payload={
-            "divisions": [
-                {"name": d["name"], "description": d["description"]}
-                for d in division_list
-            ],
-            "grade_levels": [
-                {
-                    "name": g["name"],
-                    "short_name": g["short_name"],
-                    "description": g["description"],
-                    "level": g["level"],
-                    "division_index": g["division"],
-                }
-                for g in grade_level_data
-            ],
-        }
+        payload=build_grade_structure_payload(tenant.school_division)
     )
 
     # Step: subjects
@@ -488,33 +505,37 @@ def _fail(step: str, error: str) -> dict:
 
 def _apply_school_profile(tenant, payload: dict) -> dict:
     try:
-        from django_tenants.utils import schema_context
-        from academics.models import Division
+        from core.models import Division
 
         fields_to_update = [
-            "name", "short_name", "slogan", "school_division_id", "funding_type",
+            "name", "short_name", "slogan", "funding_type",
             "emis_number", "description", "address", "city", "state",
             "country", "postal_code", "phone", "email", "website",
         ]
         updated = False
         payload_fields = {**payload}
-        if "school_division" in payload_fields:
-            payload_fields["school_division_id"] = payload_fields.pop("school_division")
+        division_provided = "school_division" in payload_fields
+        division_id = payload_fields.pop("school_division", None)
 
         for field in fields_to_update:
             if field in payload_fields and payload_fields[field] is not None:
                 value = payload_fields[field]
-                if field == "school_division_id" and value:
-                    with schema_context(tenant.schema_name):
-                        if not Division.objects.filter(id=value, active=True).exists():
-                            raise ValueError("Selected school division does not exist in this workspace.")
-                setattr(tenant, field, value or None if field == "school_division_id" else value)
+                setattr(tenant, field, value)
                 updated = True
+        if division_provided:
+            if division_id:
+                division = Division.objects.filter(id=division_id, active=True).first()
+                if division is None:
+                    raise ValueError("Selected school division does not exist.")
+                tenant.school_division = division
+            else:
+                tenant.school_division = None
+            updated = True
         if payload.get("date_est"):
             tenant.date_est = payload["date_est"]
             updated = True
         if updated:
-            tenant.save(update_fields=fields_to_update + ["date_est", "updated_at"])
+            tenant.save(update_fields=fields_to_update + ["school_division", "date_est", "updated_at"])
         return _ok("school_profile", records_updated=1 if updated else 0)
     except Exception as exc:
         return _fail("school_profile", str(exc))
@@ -590,9 +611,11 @@ def _apply_academic_calendar(tenant, user, payload: dict) -> dict:
 
 
 def _apply_grade_structure(tenant, user, payload: dict) -> dict:
-    from academics.models import Division, GradeLevel, GradeLevelTuitionFee, Section
-    from defaults.data.division_list import division_list
-    from defaults.data.gade_level import grade_level_data
+    from academics.models import GradeLevel, GradeLevelTuitionFee, Section
+    from academics.services.grade_level_range import (
+        default_divisions_in_order,
+        default_grade_levels_through_division,
+    )
 
     created = 0
     submitted_grade_labels = {
@@ -604,22 +627,25 @@ def _apply_grade_structure(tenant, user, payload: dict) -> dict:
         if isinstance(grade, dict) and isinstance(grade.get("level"), int)
     }
 
-    division_objs = []
-    for div_data in division_list:
-        div, div_created = Division.objects.get_or_create(
-            name=div_data.get("name", ""),
-            defaults={
-                "description": div_data.get("description", ""),
-                "created_by": user,
-                "updated_by": user,
-            },
+    try:
+        division_objs = default_divisions_in_order()
+    except ValueError as exc:
+        raise OnboardingConfigurationError(
+            str(exc),
+            "MISSING_SHARED_DIVISION",
+        ) from exc
+
+    allowed_grade_levels = default_grade_levels_through_division(
+        tenant.school_division
+    )
+    if not allowed_grade_levels:
+        raise OnboardingConfigurationError(
+            "The selected school division has no configured grade levels.",
+            "NO_GRADE_LEVELS_FOR_DIVISION",
         )
-        division_objs.append(div)
-        if div_created:
-            created += 1
 
     grade_level_objs = []
-    for gl_data in grade_level_data:
+    for gl_data in allowed_grade_levels:
         div_idx = gl_data.get("division", 0)
         div_obj = division_objs[div_idx] if div_idx < len(division_objs) else (division_objs[0] if division_objs else None)
         level = gl_data.get("level", 1)

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 AUDIT_FIELDS = {"created_at", "updated_at", "created_by", "updated_by"}
+SHARED_REFERENCE_MODELS = {"core.Division"}
 
 
 @dataclass(frozen=True)
@@ -41,9 +42,9 @@ MODULES = (
     CloneModule(
         "grade_levels",
         "Grade levels",
-        "Divisions, grade levels, and grade-level tuition master data.",
+        "Grade levels and grade-level tuition master data.",
         (),
-        ("academics.Division", "academics.GradeLevel", "academics.GradeLevelTuitionFee"),
+        ("academics.GradeLevel", "academics.GradeLevelTuitionFee"),
     ),
     CloneModule(
         "sections",
@@ -168,7 +169,11 @@ class TenantCloneService:
                         if isinstance(model_field, models.ForeignKey):
                             target_label = model_field.remote_field.model._meta.label
                             source_id = getattr(obj, model_field.attname)
-                            if source_id is not None and target_label not in selected_models:
+                            if (
+                                source_id is not None
+                                and target_label not in selected_models
+                                and target_label not in SHARED_REFERENCE_MODELS
+                            ):
                                 if model_field.null:
                                     source_id = None
                                 else:
@@ -197,6 +202,8 @@ class TenantCloneService:
                         target = (relation[0], relation[1])
                         mapped = self.id_map.get(target)
                         model_field = model._meta.get_field(field_name)
+                        if mapped is None and relation[0] in SHARED_REFERENCE_MODELS:
+                            mapped = relation[1]
                         if mapped is None and not model_field.null:
                             raise ValidationError(f"Missing cloned dependency for {label}.{field_name}.")
                         values[f"{field_name}_id"] = mapped

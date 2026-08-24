@@ -7,7 +7,7 @@ Django-specific database operations for divisions.
 from typing import Optional, List, Dict, Any
 from django.db import transaction
 
-from academics.models import Division
+from core.models import Division
 from business.core.core_models import DivisionData
 
 
@@ -37,6 +37,7 @@ def create_division_in_db(data: Dict[str, Any], user=None) -> Division:
     division = Division.objects.create(
         name=data['name'],
         description=data.get('description'),
+        active=data.get('active', True),
         created_by=user,
         updated_by=user,
     )
