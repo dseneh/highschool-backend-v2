@@ -12,7 +12,6 @@ from decimal import Decimal
 from datetime import timedelta
 
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import Count, Q, F, Case, When, Value as V, CharField, Avg, FloatField, ExpressionWrapper, DecimalField
@@ -21,6 +20,8 @@ from django.core.cache import cache
 from django.utils import timezone
 from academics.models import AcademicYear, GradeLevel
 from students.models import Student, Enrollment, Attendance
+from students.access_policies import StudentRecordAccessPolicy
+from students.authorization import user_has_all_student_view_scope
 from students.services.daily_attendance_stats import (
     build_attendance_status_distribution,
     build_attendance_trend,
@@ -31,6 +32,15 @@ import logging
 DASHBOARD_CACHE_TTL = 3600  # 1 hour — dashboard aggregates change infrequently
 
 logger = logging.getLogger(__name__)
+
+
+def _require_all_student_view_scope(request):
+    if user_has_all_student_view_scope(request):
+        return None
+    return Response(
+        {"detail": "School-wide student distributions require all student view scope."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 def _resolve_academic_year(request):
@@ -67,7 +77,7 @@ def invalidate_dashboard_payment_summary_cache(request, academic_year) -> None:
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_grade_level_distribution(request):
     """
     Get student distribution by grade level.
@@ -83,6 +93,8 @@ def get_grade_level_distribution(request):
         ...
     ]
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
         cache_key = DataCache._get_cache_key(
@@ -153,7 +165,7 @@ def get_grade_level_distribution(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_payment_status_distribution(request):
     """
     Get student distribution by payment status.
@@ -169,6 +181,8 @@ def get_payment_status_distribution(request):
         ...
     ]
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
         cache_key = DataCache._get_cache_key(
@@ -259,13 +273,15 @@ def _empty_attendance_distribution():
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_attendance_distribution(request):
     """
     Today's attendance distribution across active enrollments.
 
     Students without a saved attendance row for the date are counted as present.
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
         target_date = _parse_distribution_date(request)
@@ -316,11 +332,13 @@ def _parse_trend_school_days(request) -> int:
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_attendance_trend(request):
     """
     Daily attendance counts for dashboard line chart (instructional days only).
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
         end_date = _parse_distribution_date(request)
@@ -352,7 +370,7 @@ def get_attendance_trend(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_section_distribution(request):
     """
     Get student distribution by section/class.
@@ -369,6 +387,8 @@ def get_section_distribution(request):
         ...
     ]
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
         if not current_academic_year:
@@ -505,7 +525,7 @@ def _build_payment_summary_trends(academic_year, decimal_zero) -> dict | None:
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_payment_summary(request):
     """
     Get financial summary: total billed vs total paid vs outstanding.
@@ -529,6 +549,8 @@ def get_payment_summary(request):
         }
     }
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
         cache_key = DataCache._get_cache_key(
@@ -696,7 +718,7 @@ def get_payment_summary(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_top_students_by_grade(request):
     """
     Get top 5 students by cumulative final grade average.
@@ -718,6 +740,8 @@ def get_top_students_by_grade(request):
         ...
     ]
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         marking_period_id = request.GET.get('marking_period') or None
         current_academic_year = _resolve_academic_year(request)
@@ -794,7 +818,7 @@ def get_top_students_by_grade(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([StudentRecordAccessPolicy])
 def get_honor_distribution(request):
     """
     Distribute students across the school's configured honor categories based on
@@ -818,6 +842,8 @@ def get_honor_distribution(request):
         ...
     ]
     """
+    if denied := _require_all_student_view_scope(request):
+        return denied
     try:
         current_academic_year = _resolve_academic_year(request)
 

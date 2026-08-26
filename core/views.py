@@ -57,7 +57,7 @@ from common.utils import update_model_fields
 from common.audit_utils import log_tenant_control_change
 from common.permissions import IsSuperAdmin
 from core.services.tenant_deletion import hard_delete_tenant_workspace
-from core.services.tenant_clone import module_metadata, resolve_modules, start_clone_job
+from core.services.tenant_clone import module_metadata, resolve_modules, start_tenant_creation_job
 from common.email_service import send_tenant_owner_activation_email
 from users.utils import build_activation_url
 from students.models import Student
@@ -348,28 +348,30 @@ class TenantViewSet(ModelViewSet):
         serializer.save()
 
     def create(self, request, *args, **kwargs):
-        """Preserve default creation and enqueue clone-based creation."""
+        """Queue tenant creation. Default and clone share one background workflow."""
         validate_tenant_is_in_public_schema()
         initialization_source = request.data.get("initialization_source", "default")
-        if initialization_source == "default":
-            return super().create(request, *args, **kwargs)
-        if initialization_source != "clone":
+        if initialization_source not in {"default", "clone"}:
             raise ValidationError({"initialization_source": "Use 'default' or 'clone'."})
+        is_clone = initialization_source == "clone"
 
-        source_schema = str(request.data.get("source_tenant") or "").strip()
-        selected_modules = request.data.get("clone_modules") or []
-        if not source_schema:
-            raise ValidationError({"source_tenant": "A source tenant is required."})
-        if not isinstance(selected_modules, list) or not selected_modules:
-            raise ValidationError({"clone_modules": "Select at least one supported module."})
-        resolve_modules(selected_modules)
+        source = None
+        selected_modules = []
+        if is_clone:
+            source_schema = str(request.data.get("source_tenant") or "").strip()
+            selected_modules = request.data.get("clone_modules") or []
+            if not source_schema:
+                raise ValidationError({"source_tenant": "A source tenant is required."})
+            if not isinstance(selected_modules, list) or not selected_modules:
+                raise ValidationError({"clone_modules": "Select at least one supported module."})
+            resolve_modules(selected_modules)
 
-        source = Tenant.objects.filter(
-            schema_name=source_schema,
-            active=True,
-        ).exclude(status=Tenant.STATUS_DELETED).first()
-        if source is None:
-            raise ValidationError({"source_tenant": "The source tenant does not exist or is not accessible."})
+            source = Tenant.objects.filter(
+                schema_name=source_schema,
+                active=True,
+            ).exclude(status=Tenant.STATUS_DELETED).first()
+            if source is None:
+                raise ValidationError({"source_tenant": "The source tenant does not exist or is not accessible."})
 
         creation_payload = {
             key: value
@@ -386,7 +388,7 @@ class TenantViewSet(ModelViewSet):
                 if character.isalnum() or character == "_"
             )
             creation_payload["schema_name"] = destination_schema
-        if source.schema_name == destination_schema:
+        if source is not None and source.schema_name == destination_schema:
             raise ValidationError({"schema_name": "Destination must differ from the source tenant."})
 
         active_statuses = [TenantCreationJob.Status.PENDING, TenantCreationJob.Status.IN_PROGRESS]
@@ -400,8 +402,9 @@ class TenantViewSet(ModelViewSet):
         try:
             with transaction.atomic():
                 job = TenantCreationJob.objects.create(
+                    initialization_source=initialization_source,
                     source_tenant=source,
-                    source_schema=source.schema_name,
+                    source_schema=source.schema_name if source else "",
                     destination_schema=destination_schema,
                     requested_by=request.user,
                     selected_modules=selected_modules,
@@ -412,13 +415,14 @@ class TenantViewSet(ModelViewSet):
                 destination_schema=destination_schema,
                 status__in=active_statuses,
             )
-        start_clone_job(job)
+        start_tenant_creation_job(job)
         return Response(self._creation_job_data(job), status=status.HTTP_202_ACCEPTED)
 
     @staticmethod
     def _creation_job_data(job):
         return {
             "job_id": str(job.pk),
+            "initialization_source": job.initialization_source,
             "status": job.status,
             "stage": job.stage,
             "progress_percent": job.progress_percent,
@@ -461,7 +465,7 @@ class TenantViewSet(ModelViewSet):
         if job is None:
             raise NotFound("Tenant creation job was not found.")
         if job.status == TenantCreationJob.Status.PENDING:
-            start_clone_job(job)
+            start_tenant_creation_job(job)
         return Response(self._creation_job_data(job))
 
     def update(self, request, *args, **kwargs):
@@ -1084,8 +1088,7 @@ def search_tenant_info(request):
                 tenant_infos = []
                 is_platform_superadmin = is_global_superadmin(user)
 
-                # Platform superadmins and public-schema superusers get admin workspace.
-                if is_platform_superadmin or user.is_superuser:
+                if is_platform_superadmin:
                     tenant_infos.append(public_tenant_info)
 
                 if is_platform_superadmin:

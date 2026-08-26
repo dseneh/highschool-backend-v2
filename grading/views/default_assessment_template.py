@@ -10,11 +10,16 @@ from grading.utils import (
     paginate_qs,
     generate_default_assessments_for_gradebook,
     generate_default_assessments_for_academic_year,
-    preview_default_assessments_for_gradebook,
+    preview_assessments_for_gradebook_with_settings,
     generate_assessments_for_gradebook_with_settings
 )
 
 from grading.models import DefaultAssessmentTemplate, GradeBook
+from grading.services.scope_authorization import (
+    require_all_grading_scope,
+    require_scope_access,
+    user_can_view_gradebook,
+)
 from grading.serializers import (
     DefaultAssessmentTemplateOut,
     DefaultAssessmentTemplateIn,
@@ -25,6 +30,7 @@ from grading.serializers import (
 from academics.models import AcademicYear
 
 class DefaultAssessmentTemplateListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET: List all default assessment templates for a school
     POST: Create a new default assessment template
@@ -32,6 +38,7 @@ class DefaultAssessmentTemplateListCreateView(APIView):
 
     def get(self, request, school_id=None):
         """List all templates"""
+        require_all_grading_scope(request, "grades.view")
         
         # Optional filters
         is_active = request.query_params.get('is_active')
@@ -53,6 +60,7 @@ class DefaultAssessmentTemplateListCreateView(APIView):
     @transaction.atomic
     def post(self, request, school_id=None):
         """Create a new template"""
+        require_all_grading_scope(request, "grades.enter")
         
         # Extract data from request
         name = request.data.get('name')
@@ -130,12 +138,14 @@ class DefaultAssessmentTemplateDetailView(APIView):
     
     def get(self, request, pk):
         """Retrieve template details"""
+        require_all_grading_scope(request, "grades.view")
         obj = self.get_object(pk)
         return Response(DefaultAssessmentTemplateOut(obj).data)
 
     @transaction.atomic
     def patch(self, request, pk):
         """Update template"""
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
         
         allowed_fields = [
@@ -151,11 +161,13 @@ class DefaultAssessmentTemplateDetailView(APIView):
     @transaction.atomic
     def delete(self, request, pk):
         """Delete template"""
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
         obj.delete()
         return Response(status=204)
 
 class GenerateAssessmentsForGradebookView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     Generate assessments for a gradebook based on school settings.
     
@@ -165,7 +177,7 @@ class GenerateAssessmentsForGradebookView(APIView):
     def get_gradebook(self, gradebook_id):
         try:
             return GradeBook.objects.select_related(
-                'section_subject__section__school',
+                'section_subject__section__grade_level',
                 'academic_year'
             ).get(pk=gradebook_id)
         except GradeBook.DoesNotExist:
@@ -181,24 +193,29 @@ class GenerateAssessmentsForGradebookView(APIView):
         - Multiple Entry: Uses assessment templates
         """
         gradebook = self.get_gradebook(gradebook_id)
+        require_scope_access(user_can_view_gradebook(gradebook, request))
         
         # Check if dry_run mode
         dry_run = request.data.get('dry_run', False)
         
-        if dry_run:
-            # Preview mode - don't create
-            preview = preview_default_assessments_for_gradebook(gradebook)
-            return Response(
-                AssessmentGenerationPreviewOut(preview).data,
-                status=200
+        try:
+            if dry_run:
+                # Preview mode - don't create.
+                preview = preview_assessments_for_gradebook_with_settings(gradebook)
+                return Response(
+                    AssessmentGenerationPreviewOut(preview).data,
+                    status=200
+                )
+
+            # Apply the same explicit style/config validation when callers skip preview.
+            preview_assessments_for_gradebook_with_settings(gradebook)
+            result = generate_assessments_for_gradebook_with_settings(
+                gradebook,
+                created_by=request.user
             )
-        
-        # Generate assessments based on settings
-        result = generate_assessments_for_gradebook_with_settings(
-            gradebook,
-            created_by=request.user
-        )
-        
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=400)
+
         return Response({
             'success': True,
             'gradebook_id': str(gradebook.id),
@@ -210,6 +227,7 @@ class GenerateAssessmentsForGradebookView(APIView):
         }, status=201)
 
 class GenerateAssessmentsForAcademicYearView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     POST: Generate default assessments for all gradebooks in an academic year
     """
@@ -230,6 +248,7 @@ class GenerateAssessmentsForAcademicYearView(APIView):
         - regenerate: If true, delete all existing assessments and regenerate
         - override_existing: If true, allow regeneration even if grades exist (DANGEROUS!)
         """
+        require_all_grading_scope(request, "grades.enter")
         academic_year = self.get_academic_year(academic_year_id)
         
         # Check for regenerate mode
@@ -280,6 +299,7 @@ class GenerateAssessmentsForAcademicYearView(APIView):
             )
 
 class PreviewAssessmentsForGradebookView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET: Preview what assessments would be generated for a gradebook
     """
@@ -287,18 +307,22 @@ class PreviewAssessmentsForGradebookView(APIView):
     def get_gradebook(self, gradebook_id):
         try:
             return GradeBook.objects.select_related(
-                'section_subject__section__school',
+                'section_subject__section__grade_level',
                 'academic_year'
             ).get(pk=gradebook_id)
         except GradeBook.DoesNotExist:
             raise NotFound("This gradebook does not exist.")
     
     def get(self, request, gradebook_id):
-        """Preview assessment generation"""
+        """Preview the style-resolved assessment generation plan."""
         gradebook = self.get_gradebook(gradebook_id)
-        
-        preview = preview_default_assessments_for_gradebook(gradebook)
-        
+        require_scope_access(user_can_view_gradebook(gradebook, request))
+
+        try:
+            preview = preview_assessments_for_gradebook_with_settings(gradebook)
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=400)
+
         return Response(
             AssessmentGenerationPreviewOut(preview).data,
             status=200

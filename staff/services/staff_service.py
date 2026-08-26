@@ -1,6 +1,7 @@
 """Staff service layer for business logic"""
 
-from django.db import transaction
+from django.db import connection, transaction
+from django_tenants.utils import get_tenant_model
 from rest_framework.exceptions import ValidationError
 
 from common.email_validation import require_valid_email
@@ -269,12 +270,11 @@ class StaffService:
             user: User creating the staff
         """
         from users.models import User
-        from common.status import Roles, PersonStatus, UserAccountType
-        
+        from common.status import PersonStatus, UserAccountType
+
         # Use provided username or default to staff id_number
         username = data.get("username") or staff.id_number
-        role = data.get("role", Roles.VIEWER)
-        
+
         # Check if username already exists
         if User.objects.filter(username=username).exists():
             raise ValidationError(f"Username '{username}' already exists")
@@ -299,8 +299,6 @@ class StaffService:
             first_name=staff.first_name,
             last_name=staff.last_name,
             gender=staff.gender,
-            role=role,
-            school=staff.school,
             account_type=UserAccountType.STAFF,
             status=PersonStatus.CREATED,
             created_by=user,
@@ -311,6 +309,26 @@ class StaffService:
         # Set default password to id_number
         user_account.set_password(staff.id_number)
         user_account.save()
+
+        if connection.schema_name != "public":
+            tenant = get_tenant_model().objects.filter(
+                schema_name=connection.schema_name
+            ).first()
+            if tenant is not None:
+                tenant.add_user(user_account, is_staff=True, is_superuser=False)
+
+                from authorization.models import Role
+                from authorization.services import assign_user_role
+
+                tenant_role = Role.objects.filter(
+                    system_key=str(role).strip().lower(),
+                    is_active=True,
+                ).first()
+                if tenant_role is None:
+                    raise ValidationError(
+                        {"role": [f"The tenant role '{role}' is not configured."]}
+                    )
+                assign_user_role(user=user_account, role=tenant_role, actor=user)
         
         # Link user account to staff (loose coupling via id_number)
         staff.user_account_id_number = user_account.id_number

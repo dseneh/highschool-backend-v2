@@ -16,15 +16,11 @@ class UserData:
     last_name: Optional[str] = None
     gender: Optional[str] = None
     id_number: Optional[str] = None
-    role: Optional[str] = None
     status: Optional[str] = None
     account_type: Optional[str] = None
-    school_id: Optional[str] = None
-    is_staff: bool = False
-    is_superuser: bool = False
+    is_platform_superuser: bool = False
     is_active: bool = True
     is_default_password: bool = False
-    special_privileges: Optional[List[str]] = None
     last_login: Optional[datetime] = None
     photo: Optional[str] = None
 

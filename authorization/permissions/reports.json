@@ -1,0 +1,15 @@
+{
+  "module": "reports",
+  "label": "Reports",
+  "description": "Academic, financial, payroll, and transcript reporting",
+  "permissions": [
+    {"code": "reports.academic.view", "name": "View Academic Reports", "scopes": ["assigned", "all"]},
+    {"code": "reports.academic.export", "name": "Export Academic Reports", "risk": "medium", "scopes": ["all"], "requires": ["reports.academic.view"]},
+    {"code": "reports.finance.view", "name": "View Finance Reports", "risk": "high", "scopes": ["all"]},
+    {"code": "reports.finance.export", "name": "Export Finance Reports", "risk": "high", "scopes": ["all"], "requires": ["reports.finance.view"]},
+    {"code": "reports.payroll.view", "name": "View Payroll Reports", "risk": "high", "scopes": ["all"]},
+    {"code": "reports.payroll.export", "name": "Export Payroll Reports", "risk": "critical", "scopes": ["all"], "requires": ["reports.payroll.view"]},
+    {"code": "reports.transcript.view", "name": "View Transcripts", "risk": "medium", "scopes": ["own", "assigned", "all"]},
+    {"code": "reports.transcript.generate", "name": "Generate Transcripts", "risk": "high", "scopes": ["all"], "requires": ["reports.transcript.view"]}
+  ]
+}

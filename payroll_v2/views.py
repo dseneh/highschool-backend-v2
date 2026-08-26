@@ -819,8 +819,9 @@ class SalaryAdvanceViewSet(BasePayrollViewSet):
     def record_payment(self, request, pk=None):
         if response := self.require_payroll_feature(SALARY_ADVANCE_FEATURE):
             return response
-        role = (getattr(request.user, "role", "") or "").strip().lower()
-        if role not in {"superadmin", "admin", "finance", "accountant"}:
+        from authorization.runtime import user_has_permission
+
+        if not user_has_permission(request.user, "payroll.process"):
             return Response({"detail": "Only finance users can request early repayments."}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = SalaryAdvancePaymentRecordSerializer(data=request.data)

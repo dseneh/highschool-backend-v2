@@ -1,0 +1,13 @@
+{
+  "module": "academics",
+  "label": "Academics",
+  "description": "Academic configuration, years, and scheduling",
+  "permissions": [
+    {"code": "academics.view", "name": "View Academics", "scopes": ["all"]},
+    {"code": "academics.manage", "name": "Manage Academics", "risk": "high", "scopes": ["all"], "requires": ["academics.view"]},
+    {"code": "academics.schedule.view", "name": "View Schedules", "scopes": ["own", "assigned", "all"], "requires": ["academics.view"]},
+    {"code": "academics.schedule.manage", "name": "Manage Schedules", "risk": "high", "scopes": ["all"], "requires": ["academics.schedule.view"]},
+    {"code": "academic_year.manage", "name": "Manage Academic Years", "risk": "high", "scopes": ["all"], "requires": ["academics.view"]},
+    {"code": "academic_year.close", "name": "Close Academic Years", "risk": "critical", "scopes": ["all"], "requires": ["academic_year.manage"]}
+  ]
+}

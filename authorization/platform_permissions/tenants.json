@@ -1,0 +1,11 @@
+{
+  "module": "tenants",
+  "label": "Platform Tenants",
+  "description": "Platform tenant administration",
+  "permissions": [
+    {"code": "platform.tenants.view", "name": "View Tenants", "risk": "high", "scopes": ["all"]},
+    {"code": "platform.tenants.manage", "name": "Manage Tenants", "risk": "critical", "scopes": ["all"], "requires": ["platform.tenants.view"]},
+    {"code": "platform.users.view", "name": "View Platform Users", "risk": "high", "scopes": ["all"]},
+    {"code": "platform.audit.view", "name": "View Platform Audit", "risk": "high", "scopes": ["all"]}
+  ]
+}

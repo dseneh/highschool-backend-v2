@@ -53,12 +53,12 @@ class Command(BaseCommand):
         if superadmin_email:
             try:
                 superadmins = [User.objects.get(email=superadmin_email)]
-                if superadmins[0].role != Roles.SUPERADMIN:
-                    raise CommandError(f"User {superadmin_email} is not a superadmin (role={superadmins[0].role})")
+                if not superadmins[0].is_platform_superuser:
+                    raise CommandError(f"User {superadmin_email} is not a platform superuser")
             except User.DoesNotExist:
                 raise CommandError(f"Superadmin user with email '{superadmin_email}' not found")
         else:
-            superadmins = list(User.objects.filter(role=Roles.SUPERADMIN))
+            superadmins = list(User.objects.filter(is_platform_superuser=True))
             if not superadmins:
                 self.stdout.write(self.style.WARNING("No superadmin users found"))
                 return

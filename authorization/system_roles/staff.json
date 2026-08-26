@@ -1,0 +1,18 @@
+{
+  "key": "staff",
+  "name": "Staff",
+  "description": "Non-teaching employee self-service",
+  "grants": [
+    {"permission": "profile.view", "scope": "own"},
+    {"permission": "profile.update", "scope": "own"},
+    {"permission": "academics.view", "scope": "all"},
+    {"permission": "academics.schedule.view", "scope": "own"},
+    {"permission": "employees.view", "scope": "own"},
+    {"permission": "employee.documents.view", "scope": "own"},
+    {"permission": "employee.payslip.view", "scope": "own"},
+    {"permission": "employee.leave.view", "scope": "own"},
+    {"permission": "employee.leave.request", "scope": "own"},
+    {"permission": "employee.benefits.view", "scope": "own"},
+    {"permission": "notifications.view", "scope": "own"}
+  ]
+}

@@ -1,15 +1,21 @@
 """Regression tests for student list filtering contracts."""
 
 from datetime import date
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from academics.models import AcademicYear, Division, GradeLevel, Section
+from authorization.models import Role
+from authorization.services import assign_user_role
 from common.status import EnrollmentStatus, StudentStatus, YearEndOutcome
 from reports.views.students import _build_students_queryset
-from students.models import Enrollment, Student
+from students.models import Enrollment, Student, StudentGuardian
+from students.authorization import filter_students_for_view_scope, user_can_view_student
 from students.views.student import StudentListView
+from staff.models import Staff, TeacherSection
 from users.models import User
 
 
@@ -23,7 +29,7 @@ class StudentListFilterTests(TenantTestCase):
             defaults={
                 "username": "student-list-owner",
                 "id_number": "STUDENT-LIST-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "List",
                 "last_name": "Owner",
             },
@@ -32,6 +38,12 @@ class StudentListFilterTests(TenantTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
         self.admin = User.objects.get(email="student-list-owner@example.com")
+        self.tenant.add_user(self.admin)
+        assign_user_role(
+            user=self.admin,
+            role=Role.objects.get(system_key="admin"),
+            actor=self.admin,
+        )
         self.previous_year = AcademicYear.objects.create(
             name="2024-2025",
             start_date=date(2024, 9, 2),
@@ -167,6 +179,72 @@ class StudentListFilterTests(TenantTestCase):
         row = self._list(search=self.new_student.id_number)["results"][0]
         self.assertNotIn("balance", row)
         self.assertNotIn("has_balance", row)
+
+    def test_assigned_rbac_scope_only_returns_current_assigned_section_students(self):
+        other_section = Section.objects.create(name="12B", grade_level=self.grade)
+        other_student = self._create_student("Other", "Student", "90005")
+        Enrollment.objects.create(
+            student=other_student,
+            academic_year=self.current_year,
+            grade_level=self.grade,
+            section=other_section,
+            status=EnrollmentStatus.ENROLLED,
+        )
+        teacher, _ = User.objects.get_or_create(
+            email="assigned-teacher@example.com",
+            defaults={
+                "username": "assigned-teacher",
+                "id_number": "ASSIGNED-TEACHER-001",
+                "account_type": "staff",
+            },
+        )
+        staff = Staff.objects.create(
+            first_name="Assigned",
+            last_name="Teacher",
+            id_number="ASSIGNED-STAFF-001",
+            user_account_id_number=teacher.id_number,
+            is_teacher=True,
+        )
+        TeacherSection.objects.create(teacher=staff, section=self.section)
+        request = SimpleNamespace(
+            user=teacher,
+            permission_scope=Mock(return_value="assigned"),
+            authorization=SimpleNamespace(
+                context=SimpleNamespace(membership_id="membership-1")
+            ),
+        )
+
+        students = filter_students_for_view_scope(Student.objects.all(), request)
+
+        self.assertEqual(
+            set(students.values_list("id_number", flat=True)),
+            {self.new_student.id_number},
+        )
+        self.assertTrue(user_can_view_student(self.new_student, request))
+        self.assertFalse(user_can_view_student(other_student, request))
+
+    def test_own_scope_includes_guardian_linked_child_only(self):
+        parent = User.objects.create(
+            email="student-list-parent@example.com",
+            username="student-list-parent",
+            id_number="STUDENT-LIST-PARENT-001",
+            account_type="parent",
+        )
+        StudentGuardian.objects.create(
+            student=self.new_student,
+            first_name="Parent",
+            last_name="Account",
+            user_account_id_number=parent.id_number,
+            active=True,
+        )
+        request = SimpleNamespace(
+            user=parent,
+            permission_scope=Mock(return_value="own"),
+        )
+
+        students = filter_students_for_view_scope(Student.objects.all(), request)
+
+        self.assertEqual(list(students), [self.new_student])
 
     def test_balance_fields_are_returned_when_requested(self):
         row = self._list(

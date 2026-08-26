@@ -25,7 +25,7 @@ class DivisionGradeLevelRangeTests(TenantTestCase):
             defaults={
                 "username": "division-range",
                 "id_number": "DIVISION-RANGE-001",
-                "role": "admin",
+                "account_type": "staff",
             },
         )
 

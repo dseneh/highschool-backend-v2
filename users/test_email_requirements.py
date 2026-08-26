@@ -108,11 +108,13 @@ class UserViewSetEmailRequirementTests(SimpleTestCase):
         with patch("users.viewsets.connection", SimpleNamespace(schema_name="tenant1")):
             with patch("users.viewsets.schema_context", side_effect=lambda _schema: nullcontext()):
                 with patch("users.viewsets.UserRecreateSerializer", return_value=self._lookup_serializer()):
-                    with patch("students.models.Student.objects.filter", return_value=self._student_filter_result(source)):
-                        with patch("users.viewsets.User.objects.filter", return_value=user_filter_qs):
-                            with patch("core.models.Tenant.objects.get", return_value=tenant):
-                                with patch("users.viewsets.UserSerializer", return_value=serializer):
-                                    response = viewset.create(request)
+                    with patch("authorization.services.resolve_assignable_role", return_value=MagicMock()):
+                        with patch.object(UserViewSet, "_assign_role"):
+                            with patch("students.models.Student.objects.filter", return_value=self._student_filter_result(source)):
+                                with patch("users.viewsets.User.objects.filter", return_value=user_filter_qs):
+                                    with patch("core.models.Tenant.objects.get", return_value=tenant):
+                                        with patch("users.viewsets.UserSerializer", return_value=serializer):
+                                            response = viewset.create(request)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["detail"], "User account already exists")

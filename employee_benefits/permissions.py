@@ -1,15 +1,12 @@
 from rest_framework.exceptions import PermissionDenied
 
-from users.tenant_access import is_global_superadmin
+from authorization.runtime import user_has_permission
 
 
 def user_can_manage_employee_benefit_assignments(user) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if is_global_superadmin(user) or getattr(user, "is_superuser", False):
-        return True
-    role = (getattr(user, "role", "") or "").strip().lower()
-    return role in {"admin", "accountant", "superadmin"}
+    return user_has_permission(user, "hr.manage")
 
 
 def require_manage_employee_benefit_assignments(user) -> None:

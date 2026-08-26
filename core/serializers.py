@@ -559,6 +559,7 @@ class CreateTenantSerializer(serializers.Serializer):
         signup_request_id = validated_data.get("signup_request_id")
         owner_created = False
         owner_needs_creation = False
+        owner_temporary_password = ""
         
         # Priority: workspace > schema_name > auto-generate from name
         # Workspace is the preferred identifier that becomes the schema_name
@@ -579,40 +580,36 @@ class CreateTenantSerializer(serializers.Serializer):
         if not domain:
             domain = f"{schema_name}.localhost"
         
-        # Get owner user
+        # Resolve the owner account. Never invent a placeholder account here:
+        # the tenant must end up with exactly one intended owner user.
         request = self.context.get("request")
+        actor = getattr(request, "user", None) if request else None
+        if actor is not None and not getattr(actor, "is_authenticated", False):
+            actor = None
+
         if owner_email:
             owner_email = owner_email.strip().lower()
             owner = User.objects.filter(email__iexact=owner_email).first()
             if owner is None:
                 owner_needs_creation = True
-                owner = request.user if request and request.user.is_authenticated else None
-        elif request and request.user.is_authenticated:
-            owner = request.user
         else:
-            # Try to get or create a default admin user
-            owner, _ = User.objects.get_or_create(
-                email='admin@example.com',
-                defaults={
-                    'id_number': 'admin001',
-                    'username': 'admin',
-                    'first_name': 'System',
-                    'last_name': 'Admin'
-                }
-            )
+            owner = actor
 
-        if owner_needs_creation and owner is None:
-            owner, _ = User.objects.get_or_create(
-                email="admin@example.com",
-                defaults={"id_number": "admin001", "username": "admin"},
-            )
+        # ``Tenant.owner`` is required, but the real owner's id_number can only
+        # be allocated once the tenant exists. Bootstrap with the acting user
+        # and hand ownership over to the created owner in the same transaction.
+        bootstrap_owner = owner or actor
+        if bootstrap_owner is None:
+            raise serializers.ValidationError({
+                "owner_email": "A tenant owner is required. Provide owner_email or authenticate the request."
+            })
         
         # Prepare tenant data with all profile fields
         tenant_data = {
             "name": name,
             "short_name": short_name,
             "schema_name": schema_name,
-            "owner": owner,
+            "owner": bootstrap_owner,
             # Identity fields
             "funding_type": validated_data.get("funding_type"),
             "school_division": validated_data.get("school_division"),
@@ -675,13 +672,13 @@ class CreateTenantSerializer(serializers.Serializer):
                             last_name=owner_last_name,
                             gender=owner_gender,
                             account_type=UserAccountType.GLOBAL,
-                            role=Roles.ADMIN,
                             is_active=True,
                             is_default_password=True,
                         )
                         owner.set_password(owner_id_number)
                         owner.save(update_fields=["password"])
                         owner_created = True
+                        owner_temporary_password = owner_id_number
                         tenant.owner = owner
                         tenant.save(update_fields=["owner"])
 
@@ -703,8 +700,13 @@ class CreateTenantSerializer(serializers.Serializer):
                         permissions.save(update_fields=["is_superuser", "is_staff"])
                     owner.tenants.add(tenant)
 
-                    from common.status import Roles
-                    for superadmin in User.objects.filter(role=Roles.SUPERADMIN):
+                    # Runs after the permission grant, which seeds the default
+                    # viewer membership for non-superadmin owners.
+                    from authorization.services import ensure_tenant_owner_membership
+
+                    ensure_tenant_owner_membership(owner)
+
+                    for superadmin in User.objects.filter(is_platform_superuser=True):
                         if superadmin.id != owner.id:
                             existing_permissions, created = UserTenantPermissions.objects.get_or_create(
                                 profile=superadmin,
@@ -730,8 +732,7 @@ class CreateTenantSerializer(serializers.Serializer):
                     request=request,
                     actor=request.user if request and getattr(request.user, "is_authenticated", False) else None,
                 )
-        except Exception:
-            # Tenant schema creation is necessarily outside the transaction;
+        except Exception:            # Tenant schema creation is necessarily outside the transaction;
             # compensate for that boundary so failed creation leaves no tenant.
             if tenant is not None:
                 try:
@@ -744,7 +745,12 @@ class CreateTenantSerializer(serializers.Serializer):
         
         # Store domain for response
         self._domain = domain_obj
-        
+
+        if owner_created:
+            from users.utils import send_welcome_email
+
+            send_welcome_email(owner, owner_temporary_password, tenant)
+
         return tenant
     
     def to_representation(self, instance):

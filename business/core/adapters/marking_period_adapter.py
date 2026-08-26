@@ -122,11 +122,17 @@ def list_marking_periods_for_semester(semester_id: str) -> List[MarkingPeriod]:
     return list(MarkingPeriod.objects.filter(semester_id=semester_id).order_by('start_date'))
 
 
-def list_marking_periods_for_school() -> List[MarkingPeriod]:
+def list_marking_periods_for_academic_year(
+    academic_year_id: str,
+) -> List[MarkingPeriod]:
     """
-    List all marking periods
+    List marking periods for one academic year.
         
     Returns:
         List of MarkingPeriod instances
     """
-    return list(MarkingPeriod.objects.all().order_by('start_date'))
+    return list(
+        MarkingPeriod.objects.filter(
+            semester__academic_year_id=academic_year_id
+        ).order_by('start_date')
+    )

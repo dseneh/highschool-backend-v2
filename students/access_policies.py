@@ -3,6 +3,49 @@
 from users.access_policies.access import BaseSchoolAccessPolicy
 
 
+class StudentRecordAccessPolicy(BaseSchoolAccessPolicy):
+    """Authorization for the primary student list and detail resources."""
+
+    statements = [
+        {
+            "action": ["get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_student_permission:students.view",
+        },
+        {
+            "action": ["post"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_student_permission:students.create",
+        },
+        {
+            "action": ["put", "patch"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_student_permission:students.update",
+        },
+        {
+            "action": ["delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_student_permission:students.delete",
+        },
+    ]
+
+    def has_student_permission(self, request, view, action, permission_code) -> bool:
+        user = self._get_user(request)
+        if not user:
+            return False
+
+        from authorization.runtime import initialize_request_authorization
+
+        return initialize_request_authorization(
+            request,
+            user,
+        ).permission_scope(permission_code) is not None
+
+
 class StudentAccessPolicy(BaseSchoolAccessPolicy):
     """
     Permissions for student-related endpoints:
@@ -15,111 +58,77 @@ class StudentAccessPolicy(BaseSchoolAccessPolicy):
     """
 
     statements = [
-        # 0) Anonymous users: read-only access
-        {
-            "action": ["list", "retrieve"],
-            "principal": "anonymous",
-            "effect": "allow",
-        },
-
-        # 0.05) Any authenticated user: read-only HTTP methods
-        {
-            "action": ["*"],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_safe_method",
-        },
-
-        # 0.1) Any authenticated user: read-only access (supports ViewSet + APIView GET)
         {
             "action": ["list", "retrieve", "get", "head", "options"],
             "principal": "authenticated",
             "effect": "allow",
+            "condition": "has_student_permission:students.view",
         },
-
-        # 1) SUPERADMIN / TENANT_ADMIN: full access across tenants
         {
-            "action": ["*"],
+            "action": ["create_student"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:admin",
+            "condition": "has_student_permission:students.create",
         },
-
-        # 2) ADMIN & REGISTRAR: full manage rights by default
         {
-            "action": [
-                "list",
-                "retrieve",
-                "create",
-                "update",
-                "partial_update",
-            ],
+            "action": ["create", "post", "update", "partial_update", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:registrar,data_entry",
+            "condition": "has_student_permission:students.update",
         },
-
-        # 3) DATA_ENTRY: can list/retrieve and modify basic records (but not delete)
-        # {
-        #     "action": [
-        #         "list",
-        #         "retrieve",
-        #         "create",
-        #         "update",
-        #         "partial_update",
-        #     ],
-        #     "principal": "authenticated",
-        #     "effect": "allow",
-        #     "condition": "is_role_in:data_entry",
-        # },
-
-        # 4) Special privileges (per-user, can be granted/revoked dynamically)
-        # STUDENT_ENROLL -> create enrollment records
         {
-            "action": ["create"],
+            "action": ["enroll"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:STUDENT_ENROLL",
+            "condition": "has_student_permission:students.enroll",
         },
-
-        # STUDENT_EDIT -> update student/enrollment/attendance
         {
-            "action": ["update", "partial_update"],
+            "action": ["promote"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_any_privilege:STUDENT_EDIT,STUDENT_ENROLL",
+            "condition": "has_student_permission:students.promote",
         },
-
-        # STUDENT_DELETE -> delete student/enrollment/attendance records
         {
-            "action": ["destroy"],
+            "action": ["transfer"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:STUDENT_DELETE",
+            "condition": "has_student_permission:students.transfer",
         },
-
-        # Optionally: STUDETNS_MANAGE to cover all CRUD within students app
-        # {
-        #     "action": [
-        #         "list",
-        #         "retrieve",
-        #         "create",
-        #         "update",
-        #         "partial_update",
-        #         "destroy",
-        #     ],
-        #     "principal": "authenticated",
-        #     "effect": "allow",
-        #     "condition": "has_privilege:STUDENTS_MANAGE",
-        # },
-        # VIEWER: Read-only access (list and retrieve)
         {
-            "action": ["list", "retrieve"],
+            "action": ["withdraw"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:viewer",
+            "condition": "has_student_permission:students.withdraw",
+        },
+        {
+            "action": ["lifecycle"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_any_student_permission:students.promote,students.transfer",
+        },
+        {
+            "action": ["destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_student_permission:students.delete",
         },
     ]
+
+    has_student_permission = StudentRecordAccessPolicy.has_student_permission
+
+    def has_any_student_permission(self, request, view, action, permission_codes):
+        user = self._get_user(request)
+        if not user:
+            return False
+
+        from authorization.runtime import initialize_request_authorization
+
+        facade = initialize_request_authorization(request, user)
+        return any(
+            facade.permission_scope(code.strip()) is not None
+            for code in permission_codes.split(",")
+            if code.strip()
+        )
 
 
 class HistoricalGradeAccessPolicy(BaseSchoolAccessPolicy):
@@ -130,35 +139,133 @@ class HistoricalGradeAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["list", "retrieve", "get", "head", "options"],
             "principal": "authenticated",
             "effect": "allow",
+            "condition": "has_domain_permission:grades.view",
         },
         {
-            "action": ["*"],
+            "action": ["create", "update", "partial_update", "post", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:admin",
+            "condition": "has_domain_permission:grades.enter",
         },
         {
-            "action": [
-                "list",
-                "retrieve",
-                "get",
-                "head",
-                "options",
-                "create",
-                "update",
-                "partial_update",
-                "post",
-                "put",
-                "patch",
-            ],
+            "action": ["verify"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:registrar,data_entry",
+            "condition": "has_domain_permission:grades.review",
         },
         {
-            "action": ["destroy", "delete"],
+            "action": ["unverify", "destroy", "delete"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:admin",
+            "condition": "has_domain_permission:grades.unlock",
         },
     ]
+
+    has_domain_permission = StudentRecordAccessPolicy.has_student_permission
+
+
+class AttendanceAccessPolicy(BaseSchoolAccessPolicy):
+    statements = [
+        {
+            "action": ["list", "retrieve", "get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:attendance.view",
+        },
+        {
+            "action": ["take"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:attendance.take",
+        },
+        {
+            "action": ["update", "put", "patch"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:attendance.update",
+        },
+        {
+            "action": ["correct", "destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:attendance.correct",
+        },
+    ]
+
+    has_domain_permission = StudentRecordAccessPolicy.has_student_permission
+
+
+class BillingAccessPolicy(BaseSchoolAccessPolicy):
+    statements = [
+        {
+            "action": ["list", "retrieve", "get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:billing.view",
+        },
+        {
+            "action": ["manage", "create", "update", "partial_update", "post", "put", "patch", "destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:billing.manage",
+        },
+    ]
+
+    has_domain_permission = StudentRecordAccessPolicy.has_student_permission
+
+
+class StudentContactAccessPolicy(BaseSchoolAccessPolicy):
+    statements = [
+        {
+            "action": ["list", "retrieve", "get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:students.contacts.view",
+        },
+        {
+            "action": ["manage", "create", "update", "partial_update", "post", "put", "patch", "destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:students.contacts.manage",
+        },
+    ]
+
+    has_domain_permission = StudentRecordAccessPolicy.has_student_permission
+
+
+class StudentGuardianAccessPolicy(BaseSchoolAccessPolicy):
+    statements = [
+        {
+            "action": ["list", "retrieve", "get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:students.guardians.view",
+        },
+        {
+            "action": ["manage", "create", "update", "partial_update", "post", "put", "patch", "destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:students.guardians.manage",
+        },
+    ]
+
+    has_domain_permission = StudentRecordAccessPolicy.has_student_permission
+
+
+class StudentDisciplineAccessPolicy(BaseSchoolAccessPolicy):
+    statements = [
+        {
+            "action": ["list", "retrieve", "get", "head", "options"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:students.discipline.view",
+        },
+        {
+            "action": ["manage", "create", "update", "partial_update", "post", "put", "patch", "destroy", "delete"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_domain_permission:students.discipline.manage",
+        },
+    ]
+
+    has_domain_permission = StudentRecordAccessPolicy.has_student_permission

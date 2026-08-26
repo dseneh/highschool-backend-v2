@@ -19,12 +19,12 @@ class EmployeeDisbursementsAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_MANAGE",
+            "condition": "has_rbac_permission:hr.manage",
         },
         {
             "action": ["list", "retrieve", "ytd"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_VIEW",
+            "condition": "has_rbac_permission:hr.view",
         },
     ]

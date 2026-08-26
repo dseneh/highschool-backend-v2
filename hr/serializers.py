@@ -553,10 +553,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not user or not getattr(user, "is_authenticated", False):
             return False
-        if getattr(user, "is_superuser", False):
-            return True
-        role = str(getattr(user, "role", "") or "").lower()
-        return role in {"admin", "superadmin"}
+        from authorization.runtime import user_has_permission
+
+        return user_has_permission(user, "hr.manage") or user_has_permission(
+            user,
+            "payroll.configure",
+        )
 
     def _strip_salary_fields_if_unauthorized(self, validated_data):
         if self._is_admin_user():

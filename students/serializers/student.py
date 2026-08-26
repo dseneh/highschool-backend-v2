@@ -410,8 +410,20 @@ class StudentDetailSerializer(StudentSerializer):
             # except Exception:
             #     pass
         
-        # Roles removed - permission system has been removed
-        roles = []
+        rbac_role = None
+        if user_account:
+            from authorization.models import TenantMembership
+
+            membership = TenantMembership.objects.select_related("role").filter(
+                user=user_account,
+            ).first()
+            if membership:
+                rbac_role = {
+                    "id": str(membership.role_id),
+                    "name": membership.role.name,
+                    "system_key": membership.role.system_key,
+                    "is_active": membership.is_active and membership.role.is_active,
+                }
 
         response["user_account"] = (
             {
@@ -422,8 +434,9 @@ class StudentDetailSerializer(StudentSerializer):
                 "last_name": instance.last_name,
                 "email": user_account.email,
                 "is_active": user_account.is_active,
-                "is_staff": user_account.is_staff,
-                "role": user_account.role,
+                "account_type": user_account.account_type,
+                "is_platform_superuser": user_account.is_platform_superuser,
+                "rbac_role": rbac_role,
                 "status": user_account.status,
                 "last_login": user_account.last_login,
                 "last_password_updated": user_account.last_password_updated,

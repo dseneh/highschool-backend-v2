@@ -21,7 +21,7 @@ class AcademicYearRolloverAtomicityTests(TenantTestCase):
             defaults={
                 "username": "rollover-owner",
                 "id_number": "ROLLOVER-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Rollover",
                 "last_name": "Owner",
             },
@@ -191,7 +191,7 @@ class OverlapDetectionTests(TenantTestCase):
             defaults={
                 "username": "overlap-owner",
                 "id_number": "OVERLAP-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Overlap",
                 "last_name": "Owner",
             },

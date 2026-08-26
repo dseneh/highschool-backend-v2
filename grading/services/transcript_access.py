@@ -44,15 +44,11 @@ def _student_matches_user(student: Student, user) -> bool:
 def _is_transcript_admin(user) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if getattr(user, "is_superuser", False):
-        return True
-    if getattr(user, "is_admin", False):
-        return True
-    role = (getattr(user, "role", None) or "").upper()
-    if role in {"REGISTRAR", "SCHOOL_ADMINISTRATOR"}:
-        return True
-    privileges = set(getattr(user, "privileges", None) or [])
-    return "GRADING_APPROVE" in privileges or "GRADING_ENTER" in privileges
+    from authorization.runtime import user_has_permission
+
+    return user_has_permission(user, "grades.approve") or user_has_permission(
+        user, "grades.enter"
+    )
 
 
 def _student_eligible_for_self_service(student: Student, settings_obj: GradingSettings) -> bool:

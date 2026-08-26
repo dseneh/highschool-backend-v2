@@ -1,17 +1,40 @@
 from datetime import date
 
-from django.test import TestCase
+from django_tenants.test.cases import TenantTestCase
 
 from academics.models import AcademicYear, GradeLevel, Section
 from common.status import AttendanceStatus, EnrollmentStatus
+from core.models import Division
 from students.models import Attendance, Enrollment, Student
 from students.services.daily_attendance_stats import (
     build_attendance_status_distribution,
     build_daily_attendance_stats,
 )
+from users.models import User
 
 
-class DailyAttendanceStatsTests(TestCase):
+class DailyAttendanceStatsTests(TenantTestCase):
+    @classmethod
+    def get_test_schema_name(cls):
+        return "daily_attendance_stats"
+
+    @classmethod
+    def get_test_tenant_domain(cls):
+        return "daily-attendance-stats.tenant.test.com"
+
+    @classmethod
+    def setup_tenant(cls, tenant):
+        tenant.name = "Daily Attendance Stats Test School"
+        tenant.id_number = "DAS001"
+        tenant.owner, _ = User.objects.get_or_create(
+            email="daily-attendance-owner@example.com",
+            defaults={
+                "username": "daily-attendance-owner",
+                "id_number": "DAILY-ATTENDANCE-OWNER-001",
+                "account_type": "staff",
+            },
+        )
+
     def setUp(self):
         self.year = AcademicYear.objects.create(
             name="2025-2026",
@@ -19,7 +42,12 @@ class DailyAttendanceStatsTests(TestCase):
             end_date=date(2026, 6, 30),
             current=True,
         )
-        self.grade = GradeLevel.objects.create(name="Grade 1", level=1)
+        self.division, _ = Division.objects.get_or_create(name="Elementary")
+        self.grade = GradeLevel.objects.create(
+            name="Grade 1",
+            level=1,
+            division=self.division,
+        )
         self.section = Section.objects.create(name="General A", grade_level=self.grade)
 
         self.student_male = Student.objects.create(
@@ -42,12 +70,14 @@ class DailyAttendanceStatsTests(TestCase):
         self.enrollment_male = Enrollment.objects.create(
             student=self.student_male,
             section=self.section,
+            grade_level=self.grade,
             academic_year=self.year,
             status=EnrollmentStatus.ENROLLED,
         )
         self.enrollment_female = Enrollment.objects.create(
             student=self.student_female,
             section=self.section,
+            grade_level=self.grade,
             academic_year=self.year,
             status=EnrollmentStatus.ENROLLED,
         )

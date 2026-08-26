@@ -2,11 +2,13 @@ from django.db.models import Q
 from django.db import connection
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_tenants.utils import get_public_schema_name, schema_context
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import BillingAccessPolicy
+from students.authorization import user_can_access_student_for_permission
 
 from common.utils import get_enrollment_bill_summary, get_object_by_uuid_or_fields
 from accounting.models import AccountingCashTransaction, AccountingStudentBill, AccountingStudentBillLine
@@ -27,7 +29,7 @@ class StudentBillPagination(PageNumberPagination):
 
 
 class StudentEnrollmentBillListView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     List student enrollment bills with filtering options
     """
@@ -51,6 +53,12 @@ class StudentEnrollmentBillListView(APIView):
             return Response(
                 {"detail": "Student not found"}, status=status.HTTP_404_NOT_FOUND
             )
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "billing.view",
+        ):
+            raise PermissionDenied("You cannot view billing for this student.")
 
         bill_filter = Q(student_bill__student=student)
         if not year_id or year_id == "current":
@@ -146,7 +154,7 @@ class StudentEnrollmentBillListView(APIView):
 
 
 class StudentEnrollmentBillDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     Retrieve a specific student enrollment bill
     """
@@ -165,10 +173,18 @@ class StudentEnrollmentBillDetailView(APIView):
                 ),
                 id=pk,
             )
+            if not user_can_access_student_for_permission(
+                bill.student_bill.student,
+                request,
+                "billing.view",
+            ):
+                raise PermissionDenied("You cannot view this bill.")
 
             serializer = StudentBillDetailSerializer(bill)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
+        except PermissionDenied:
+            raise
         except AccountingStudentBillLine.DoesNotExist:
             return Response(
                 {"detail": "Bill not found"}, status=status.HTTP_404_NOT_FOUND
@@ -181,7 +197,7 @@ class StudentEnrollmentBillDetailView(APIView):
 
 
 class StudentBillingPDFView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     Generate and download student billing financial statement PDF
     """
@@ -205,6 +221,12 @@ class StudentBillingPDFView(APIView):
                     Student.objects.all(), 
                     id_number=student_id
                 )
+            if not user_can_access_student_for_permission(
+                student,
+                request,
+                "billing.view",
+            ):
+                raise PermissionDenied("You cannot view billing for this student.")
 
             # Get current enrollment with related data
             enrollment = Enrollment.objects.select_related(
@@ -287,6 +309,8 @@ class StudentBillingPDFView(APIView):
 
             return response
 
+        except PermissionDenied:
+            raise
         except Student.DoesNotExist:
             return Response(
                 {"detail": "Student not found"},

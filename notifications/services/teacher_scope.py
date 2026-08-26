@@ -6,6 +6,7 @@ from typing import Optional
 from rest_framework.exceptions import PermissionDenied
 
 from hr.models import Employee, EmployeeTeacherSection
+from authorization.runtime import user_has_permission
 
 
 def get_employee_for_user(user) -> Optional[Employee]:
@@ -47,11 +48,11 @@ def get_section_ids_for_students(student_ids: list) -> set[uuid.UUID]:
 
 def assert_teacher_can_target_audience(user, audience: dict) -> None:
     """Raise PermissionDenied if teacher audience exceeds assigned sections."""
-    from common.status import Roles
-
-    role = (getattr(user, "role", "") or "").lower()
-    if role not in {Roles.TEACHER}:
+    if user_has_permission(user, "notifications.send"):
         return
+
+    if not user_has_permission(user, "notifications.send_class"):
+        raise PermissionDenied("You do not have permission to send notifications.")
 
     allowed = get_teacher_section_ids(user)
     if not allowed:

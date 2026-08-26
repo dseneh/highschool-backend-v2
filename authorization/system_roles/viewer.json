@@ -1,0 +1,11 @@
+{
+  "key": "viewer",
+  "name": "Viewer",
+  "description": "Limited institutional read-only access without personal or financial data",
+  "grants": [
+    {"permission": "academics.view", "scope": "all"},
+    {"permission": "academics.schedule.view", "scope": "all"},
+    {"permission": "reports.academic.view", "scope": "all"},
+    {"permission": "notifications.view", "scope": "own"}
+  ]
+}

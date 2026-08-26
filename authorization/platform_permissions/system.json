@@ -1,0 +1,8 @@
+{
+  "module": "system",
+  "label": "Platform System",
+  "description": "Platform-wide system configuration",
+  "permissions": [
+    {"code": "platform.system.configure", "name": "Configure Platform", "risk": "critical", "assignable": false, "scopes": ["all"]}
+  ]
+}

@@ -45,12 +45,11 @@ class Command(BaseCommand):
                 )
                 return
         else:
-            # Use first superuser if no user specified
-            user = User.objects.filter(is_superuser=True).first()
+            user = User.objects.filter(is_platform_superuser=True).first()
             if not user:
                 self.stdout.write(
                     self.style.ERROR(
-                        "No superuser found. Please create a superuser first."
+                        "No platform administrator found. Please create one first."
                     )
                 )
                 return

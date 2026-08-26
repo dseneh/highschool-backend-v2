@@ -18,7 +18,8 @@ from django.utils import timezone
 from academics.models import AcademicYear, Section, SectionSubject
 from grading.models import GradeBook
 from grading.utils import create_gradebook_with_assessments
-from users.models import CustomUser
+from common.status import UserAccountType
+from users.models import User
 
 
 class Command(BaseCommand):
@@ -70,14 +71,13 @@ class Command(BaseCommand):
             )
 
         try:
-            # Get a system user for created_by field (use first superuser or admin)
-            system_user = CustomUser.objects.filter(is_superuser=True).first()
+            system_user = User.objects.filter(is_platform_superuser=True).first()
             if not system_user:
-                system_user = CustomUser.objects.filter(is_staff=True).first()
+                system_user = User.objects.filter(account_type=UserAccountType.STAFF).first()
             
             if not system_user:
                 raise CommandError(
-                    'No superuser or staff user found. Please create an admin user first.'
+                    'No platform administrator or staff user found.'
                 )
 
             # Build querysets based on filters

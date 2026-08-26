@@ -12,6 +12,7 @@ from common.cache_service import DataCache
 
 from ..models import GradeLevel, Section
 from core.models import Tenant
+from authorization.runtime import user_has_permission
 from ..serializers import GradeLevelSerializer
 from ..services.grade_level_range import grade_levels_through_division
 
@@ -29,8 +30,10 @@ class GradeLevelListView(APIView):
         academic_year_id = request.query_params.get('academic_year_id')
         tenant = get_tenant_from_request(request)
         include_all = request.query_params.get("include_all_divisions", "false").lower() == "true"
-        user_role = str(getattr(request.user, "role", "") or "").lower()
-        include_all = include_all and user_role in {"admin", "superadmin"}
+        include_all = include_all and user_has_permission(
+            request.user,
+            "academics.manage",
+        )
         school_division = None
         if tenant and not include_all:
             with schema_context(get_public_schema_name()):

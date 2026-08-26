@@ -443,12 +443,22 @@ class DataCache:
     
     @staticmethod
     def get_marking_periods(
+        academic_year_id: Optional[str],
         semester_id: Optional[str] = None,
         force_refresh: bool = False,
         request=None,
     ) -> List[Dict[str, Any]]:
-        """Get marking periods, optionally filtered by semester."""
-        suffix = f"sem_{semester_id}" if semester_id else "all"
+        """Get marking periods for one academic year, optionally narrowed by semester."""
+        from academics.models import AcademicYear, MarkingPeriod
+
+        if not academic_year_id or academic_year_id == "current":
+            academic_year = AcademicYear.get_current_academic_year()
+            academic_year_id = str(academic_year.id) if academic_year else None
+
+        if not academic_year_id:
+            return []
+
+        suffix = f"ay_{academic_year_id}_sem_{semester_id or 'all'}"
         cache_key = DataCache._get_cache_key("marking_periods", suffix, request)
         
         if not force_refresh:
@@ -459,9 +469,9 @@ class DataCache:
         
             logger.debug(f"Cache MISS: marking_periods for scope {cache_key}")
         
-        from academics.models import MarkingPeriod
-        
-        queryset = MarkingPeriod.objects.all().select_related('semester', 'semester__academic_year')
+        queryset = MarkingPeriod.objects.filter(
+            semester__academic_year_id=academic_year_id
+        ).select_related('semester', 'semester__academic_year')
         
         if semester_id:
             queryset = queryset.filter(semester_id=semester_id)
@@ -478,16 +488,20 @@ class DataCache:
         return marking_periods
 
     @staticmethod
-    def invalidate_marking_periods(semester_id: Optional[str] = None, request=None):
+    def invalidate_marking_periods(
+        academic_year_id: Optional[str] = None,
+        semester_id: Optional[str] = None,
+        request=None,
+    ):
         """Invalidate marking periods cache."""
+        if not academic_year_id:
+            return
+
+        suffixes = [f"ay_{academic_year_id}_sem_all"]
         if semester_id:
-            suffix = f"sem_{semester_id}"
-            cache_key = DataCache._get_cache_key("marking_periods", suffix, request)
-            cache.delete(cache_key)
-        
-        cache_key = DataCache._get_cache_key("marking_periods", "all", request)
-        cache.delete(cache_key)
-        logger.debug(f"Invalidated cache: marking_periods for scope {cache_key}")
+            suffixes.append(f"ay_{academic_year_id}_sem_{semester_id}")
+
+        DataCache._invalidate_cache("marking_periods", *suffixes, request=request)
 
     # ==================== SUBJECTS ====================
     

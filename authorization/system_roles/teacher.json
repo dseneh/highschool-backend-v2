@@ -1,0 +1,26 @@
+{
+  "key": "teacher",
+  "name": "Teacher",
+  "description": "Assigned students, classes, attendance, and grade entry",
+  "grants": [
+    {"permission": "profile.view", "scope": "own"},
+    {"permission": "profile.update", "scope": "own"},
+    {"permission": "academics.view", "scope": "all"},
+    {"permission": "academics.schedule.view", "scope": "assigned"},
+    {"permission": "students.view", "scope": "assigned"},
+    {"permission": "students.contacts.view", "scope": "assigned"},
+    {"permission": "students.guardians.view", "scope": "assigned"},
+    {"permission": "students.discipline.view", "scope": "assigned"},
+    {"permission": "students.discipline.manage", "scope": "assigned"},
+    {"permission": "attendance.view", "scope": "assigned"},
+    {"permission": "attendance.take", "scope": "assigned"},
+    {"permission": "attendance.update", "scope": "assigned"},
+    {"permission": "grades.view", "scope": "assigned"},
+    {"permission": "grades.enter", "scope": "assigned"},
+    {"permission": "reports.academic.view", "scope": "assigned"},
+    {"permission": "reports.transcript.view", "scope": "assigned"},
+    {"permission": "employee.payslip.view", "scope": "own"},
+    {"permission": "notifications.view", "scope": "assigned"},
+    {"permission": "notifications.send_class", "scope": "assigned"}
+  ]
+}

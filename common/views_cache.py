@@ -148,7 +148,8 @@ def invalidate_cache(request):
         {
             "data_type": "all" | "grade_levels" | "sections" | "academic_years" | 
                         "semesters" | "marking_periods" | "subjects" | 
-                        "payment_methods" | "transaction_types" | "installments"
+                        "payment_methods" | "transaction_types" | "installments",
+            "academic_year_id": "optional year scope for marking_periods"
         }
     """
     try:
@@ -170,7 +171,10 @@ def invalidate_cache(request):
             DataCache.invalidate_semesters(request=request)
             message = "Invalidated semesters cache"
         elif data_type == 'marking_periods':
-            DataCache.invalidate_marking_periods(request=request)
+            DataCache.invalidate_marking_periods(
+                academic_year_id=request.data.get('academic_year_id'),
+                request=request,
+            )
             message = "Invalidated marking periods cache"
         elif data_type == 'subjects':
             DataCache.invalidate_subjects(request=request)

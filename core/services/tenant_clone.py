@@ -12,6 +12,7 @@ from django.utils import timezone
 from django_tenants.utils import schema_context
 from rest_framework.exceptions import ValidationError
 
+from academics.services.grade_level_range import default_max_level_for_division
 from core.models import Tenant, TenantCreationJob
 from core.services.tenant_deletion import hard_delete_tenant_workspace
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 AUDIT_FIELDS = {"created_at", "updated_at", "created_by", "updated_by"}
 SHARED_REFERENCE_MODELS = {"core.Division"}
+GRADE_LEVEL_LABEL = "academics.GradeLevel"
 
 
 @dataclass(frozen=True)
@@ -142,16 +144,43 @@ class CloneSnapshot:
 
 
 class TenantCloneService:
-    def __init__(self, source_schema: str, destination_schema: str, modules: list[CloneModule]):
+    def __init__(
+        self,
+        source_schema: str,
+        destination_schema: str,
+        modules: list[CloneModule],
+        destination_division=None,
+    ):
         self.source_schema = source_schema
         self.destination_schema = destination_schema
         self.modules = modules
+        self.destination_division = destination_division
+        self.destination_max_level = (
+            default_max_level_for_division(destination_division) if destination_division else None
+        )
         self.id_map: dict[tuple[str, str], object] = {}
         self.pending_relations: list[tuple[str, object, str, tuple[str, str]]] = []
+        self.skipped_sources: set[tuple[str, str]] = set()
 
     @property
     def model_labels(self) -> list[str]:
         return [label for module in self.modules for label in module.model_labels]
+
+    def _is_out_of_division_range(self, label: str, obj) -> bool:
+        """Grade levels above the destination division's highest level do not belong there."""
+        if label != GRADE_LEVEL_LABEL or self.destination_max_level is None:
+            return False
+        return (getattr(obj, "level", None) or 0) > self.destination_max_level
+
+    def _resolve_relation(self, label: str, field_name: str, target_label: str, source_id: str):
+        """Point cloned grade levels at the destination school's shared division."""
+        if (
+            label == GRADE_LEVEL_LABEL
+            and field_name == "division"
+            and self.destination_division is not None
+        ):
+            return (target_label, str(self.destination_division.pk))
+        return (target_label, source_id)
 
     def snapshot_source(self) -> CloneSnapshot:
         snapshot = CloneSnapshot()
@@ -161,8 +190,12 @@ class TenantCloneService:
                 model = _model(label)
                 rows = []
                 for obj in model.objects.all().iterator():
+                    if self._is_out_of_division_range(label, obj):
+                        self.skipped_sources.add((label, str(obj.pk)))
+                        continue
                     values = {}
                     relations = {}
+                    skip_row = False
                     for model_field in model._meta.concrete_fields:
                         if model_field.primary_key or model_field.name in AUDIT_FIELDS:
                             continue
@@ -180,9 +213,21 @@ class TenantCloneService:
                                     raise ValidationError(
                                         f"{label}.{model_field.name} requires unsupported model {target_label}."
                                     )
-                            relations[model_field.name] = (target_label, str(source_id)) if source_id is not None else None
+                            if source_id is not None and (target_label, str(source_id)) in self.skipped_sources:
+                                if not model_field.null:
+                                    skip_row = True
+                                    break
+                                source_id = None
+                            relations[model_field.name] = (
+                                self._resolve_relation(label, model_field.name, target_label, str(source_id))
+                                if source_id is not None
+                                else None
+                            )
                         else:
                             values[model_field.name] = getattr(obj, model_field.name)
+                    if skip_row:
+                        self.skipped_sources.add((label, str(obj.pk)))
+                        continue
                     rows.append({"source_id": str(obj.pk), "values": values, "relations": relations})
                 snapshot.records[label] = rows
         return snapshot
@@ -238,7 +283,18 @@ def _update_job(job_id, stage, progress, **updates):
     TenantCreationJob.objects.filter(pk=job_id).update(stage=stage, progress_percent=progress, **updates)
 
 
-def run_clone_job(job_id: str) -> None:
+def _set_provisioning(tenant, status, step, progress, **extra):
+    for name, value in {"provisioning_status": status, "provisioning_step": step, "provisioning_progress": progress, **extra}.items():
+        setattr(tenant, name, value)
+    tenant.save(update_fields=["provisioning_status", "provisioning_step", "provisioning_progress", *extra])
+
+
+def run_tenant_creation_job(job_id: str) -> None:
+    """Shared workflow for default and clone tenant creation.
+
+    Only the initialization source differs: default setup seeds nothing extra,
+    clone copies the selected modules from the source tenant.
+    """
     close_old_connections()
     tenant = None
     try:
@@ -254,41 +310,56 @@ def run_clone_job(job_id: str) -> None:
         if not claimed:
             return
         job = TenantCreationJob.objects.select_related("source_tenant", "requested_by").get(pk=job_id)
+        is_clone = job.initialization_source == TenantCreationJob.InitializationSource.CLONE
 
-        modules = resolve_modules(job.selected_modules)
-        source = Tenant.objects.get(pk=job.source_tenant_id, active=True)
-        clone_service = TenantCloneService(source.schema_name, job.destination_schema, modules)
-        snapshot = clone_service.snapshot_source()
+        source = None
+        modules: list[CloneModule] = []
+        if is_clone:
+            modules = resolve_modules(job.selected_modules)
+            source = Tenant.objects.get(pk=job.source_tenant_id, active=True)
 
         from core.serializers import CreateTenantSerializer
         from users.models import User
 
-        actor = User.objects.get(pk=job.requested_by_id)
+        actor = User.objects.filter(pk=job.requested_by_id).first()
         request = type("JobRequest", (), {"user": actor})()
         serializer = CreateTenantSerializer(
             data=job.request_payload,
-            context={"request": request, "skip_default_divisions": True},
+            context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
         _update_job(job.pk, "Creating Schema", 15)
         tenant = serializer.save()
         TenantCreationJob.objects.filter(pk=job.pk).update(destination_tenant=tenant)
-        tenant.provisioning_status = "in_progress"
-        tenant.provisioning_step = "Applying Base Setup"
-        tenant.provisioning_progress = 25
-        tenant.provisioning_payload = {"source_schema": source.schema_name, "modules": job.selected_modules}
-        tenant.save(update_fields=["provisioning_status", "provisioning_step", "provisioning_progress", "provisioning_payload"])
-
+        _set_provisioning(
+            tenant,
+            "in_progress",
+            "Applying Base Setup",
+            25,
+            provisioning_payload={
+                "initialization_source": job.initialization_source,
+                "source_schema": source.schema_name if source else "",
+                "modules": job.selected_modules,
+            },
+        )
         _update_job(job.pk, "Applying Base Setup", 25)
-        _update_job(job.pk, "Cloning Selected Modules", 40)
-        counts = clone_service.clone(snapshot)
-        _update_job(job.pk, "Validating Clone", 85)
 
-        tenant.provisioning_status = "completed"
-        tenant.provisioning_step = "Completed"
-        tenant.provisioning_progress = 100
-        tenant.provisioning_error = ""
-        tenant.save(update_fields=["provisioning_status", "provisioning_step", "provisioning_progress", "provisioning_error"])
+        counts: dict[str, int] = {}
+        if is_clone:
+            _update_job(job.pk, "Cloning Selected Modules", 40)
+            clone_service = TenantCloneService(
+                source.schema_name,
+                tenant.schema_name,
+                modules,
+                destination_division=tenant.school_division,
+            )
+            snapshot = clone_service.snapshot_source()
+            counts = clone_service.clone(snapshot)
+        else:
+            _update_job(job.pk, "Preparing Default Setup", 40)
+        _update_job(job.pk, "Validating Workspace", 85)
+
+        _set_provisioning(tenant, "completed", "Completed", 100, provisioning_error="")
         _update_job(job.pk, "Finalizing", 95)
         _update_job(
             job.pk,
@@ -299,7 +370,7 @@ def run_clone_job(job_id: str) -> None:
             completed_at=timezone.now(),
         )
     except Exception as exc:
-        logger.exception("Tenant clone job %s failed", job_id)
+        logger.exception("Tenant creation job %s failed", job_id)
         cleanup_error = ""
         if tenant is not None:
             try:
@@ -313,7 +384,7 @@ def run_clone_job(job_id: str) -> None:
                     provisioning_step="Failed",
                     provisioning_error=str(exc),
                 )
-                logger.exception("Failed to clean up tenant clone destination %s", tenant.schema_name)
+                logger.exception("Failed to clean up tenant creation destination %s", tenant.schema_name)
         _update_job(
             job_id,
             "Failed",
@@ -326,10 +397,10 @@ def run_clone_job(job_id: str) -> None:
         close_old_connections()
 
 
-def start_clone_job(job: TenantCreationJob) -> None:
+def start_tenant_creation_job(job: TenantCreationJob) -> None:
     threading.Thread(
-        target=run_clone_job,
+        target=run_tenant_creation_job,
         args=(str(job.pk),),
         daemon=True,
-        name=f"tenant-clone-{job.pk}",
+        name=f"tenant-creation-{job.pk}",
     ).start()

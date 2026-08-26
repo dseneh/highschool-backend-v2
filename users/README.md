@@ -64,7 +64,7 @@ Authenticate user and receive JWT access and refresh tokens.
     "photo": "http://localhost:8000/media/users/photo.jpg",
     "is_active": true,
     "last_login": "2026-01-03T09:00:00Z",
-    "date_joined": "2026-01-01T00:00:00Z"
+    "created_at": "2026-01-01T00:00:00Z"
   }
 }
 ```
@@ -197,7 +197,7 @@ Get a list of all users (tenant-scoped based on permissions).
       "name": "Super Admin",
       "photo": "http://localhost:8000/media/users/photo.jpg",
       "is_active": true,
-      "date_joined": "2024-01-01T00:00:00Z"
+      "created_at": "2024-01-01T00:00:00Z"
     }
   ]
 }
@@ -259,7 +259,7 @@ Get details of a specific user.
   "name": "Super Admin",
   "photo": "http://localhost:8000/media/users/photo.jpg",
   "is_active": true,
-  "date_joined": "2024-01-01T00:00:00Z"
+  "created_at": "2024-01-01T00:00:00Z"
 }
 ```
 
@@ -414,7 +414,7 @@ Reset user's password to a default password (admin action).
 - `is_active` (boolean): Whether the user is active
 - `is_staff` (boolean): Whether the user is staff (tenant-specific)
 - `is_superuser` (boolean): Whether the user is a superuser (tenant-specific)
-- `date_joined` (datetime): Account creation timestamp
+- `created_at` (datetime, nullable): Account creation timestamp. Existing accounts created before this field was introduced may return `null`.
 - `last_login` (datetime): Last login timestamp
 
 ### Multi-Tenant User Architecture

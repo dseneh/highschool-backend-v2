@@ -1,0 +1,9 @@
+{
+  "module": "billing",
+  "label": "Platform Billing",
+  "description": "SaaS subscription and billing administration",
+  "permissions": [
+    {"code": "platform.billing.view", "name": "View Platform Billing", "risk": "high", "scopes": ["all"]},
+    {"code": "platform.billing.manage", "name": "Manage Platform Billing", "risk": "critical", "scopes": ["all"], "requires": ["platform.billing.view"]}
+  ]
+}

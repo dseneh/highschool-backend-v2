@@ -19,9 +19,15 @@ from grading.utils import (
 )
 from grading.services.pdf_report import generate_student_report_card_pdf
 from grading.services.grade_access import enforce_grade_access
+from grading.services.scope_authorization import (
+    require_scope_access,
+    user_can_view_section_grades,
+    user_can_view_student_grades,
+)
 from students.models import Student, Enrollment
 
 class StudentFinalGradeView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET /students/<student_id>/final-grades/gradebook/<gradebook_id>/?marking_period=<period_id>&status=<status>
 
@@ -57,6 +63,14 @@ class StudentFinalGradeView(APIView):
 
         # Get gradebook
         gradebook = get_object_or_404(GradeBook, pk=gradebook_id)
+        require_scope_access(
+            user_can_view_student_grades(
+                student,
+                request,
+                academic_year=gradebook.academic_year,
+                gradebook=gradebook,
+            )
+        )
         enforce_grade_access(student, gradebook.academic_year)
 
         # Get all marking periods for this gradebook's academic year
@@ -119,6 +133,7 @@ class StudentFinalGradeView(APIView):
         return Response(serializer.data)
 
 class StudentFinalGradesView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     Unified endpoint for student final grades with flexible filtering.
 
@@ -210,6 +225,13 @@ class StudentFinalGradesView(APIView):
                         )
         # Get academic year
         academic_year = get_object_or_404(AcademicYear, pk=academic_year_id)
+        require_scope_access(
+            user_can_view_student_grades(
+                student,
+                request,
+                academic_year=academic_year,
+            )
+        )
         enforce_grade_access(student, academic_year)
 
         # Get marking period if specified
@@ -311,6 +333,7 @@ class StudentFinalGradesView(APIView):
         return Response(serializer.data)
 
 class SectionFinalGradesView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET /sections/<section_id>/final-grades/?academic_year=<year_id>&data_by=subject&subject=<subject_id>&marking_period=<period_id>&status=<status>&include_average=<bool>&include_assessment=<bool>&student=<id_or_id_number>
     GET /sections/<section_id>/final-grades/?academic_year=<year_id>&data_by=all_subjects&marking_period=<period_id>&status=<status>&include_average=<bool>&include_assessment=<bool>&student=<id_or_id_number>
@@ -396,6 +419,14 @@ class SectionFinalGradesView(APIView):
             request.query_params.get("include_assessment", "true").lower() == "true"
         )
         student_filter = request.query_params.get("student")  # Can be ID or ID number
+
+        require_scope_access(
+            user_can_view_section_grades(
+                section_id,
+                request,
+                subject_id=subject_id,
+            )
+        )
 
         if not academic_year_id:
             return Response(
@@ -683,7 +714,14 @@ class StudentReportCardPDFView(APIView):
                     status=404,
                 )
 
-            enforce_grade_access(student, academic_year)
+        require_scope_access(
+            user_can_view_student_grades(
+                student,
+                request,
+                academic_year=academic_year,
+            )
+        )
+        enforce_grade_access(student, academic_year)
 
         # Get enrollment
         try:

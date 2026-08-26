@@ -106,12 +106,11 @@ def get_user_full_name(user: UserData) -> str:
 
 def is_system_admin(user: UserData) -> bool:
     """Check if user is a system administrator"""
-    return user.is_superuser or user.role == 'admin'
+    return user.is_platform_superuser
 
 
 def filter_users_by_criteria(
     users: List[UserData],
-    role: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None
 ) -> List[UserData]:
@@ -119,9 +118,6 @@ def filter_users_by_criteria(
     Filter users by various criteria (for in-memory filtering)
     """
     filtered = users
-    
-    if role:
-        filtered = [u for u in filtered if u.role == role]
     
     if status:
         filtered = [u for u in filtered if u.status == status]
@@ -205,10 +201,6 @@ def can_reset_password(user_data: UserData) -> tuple[bool, Optional[str]]:
     Returns:
         (can_reset, error_message)
     """
-    # Users without a school (except admins) can't reset
-    if not user_data.school_id and user_data.role not in ['systemadmin', 'admin']:
-        return False, "User account is not properly configured. Please contact support."
-    
     # Inactive users can't reset
     if not user_data.is_active:
         return False, "Account is inactive. Please contact support."
@@ -259,11 +251,6 @@ def validate_user_creation_data(data: dict) -> tuple[bool, list[str]]:
     if data.get('account_type') and data['account_type'] not in valid_account_types:
         errors.append(f"Invalid account type. Must be one of: {', '.join(valid_account_types)}")
     
-    # Role validation
-    account_type = data.get('account_type')
-    if account_type not in ['student', 'parent'] and not data.get('role'):
-        errors.append("Role is required for this account type.")
-    
     # ID number validation
     if not data.get('id_number'):
         errors.append("ID number is required.")
@@ -282,25 +269,6 @@ def validate_user_creation_data(data: dict) -> tuple[bool, list[str]]:
             errors.append("Invalid email format.")
     
     return len(errors) == 0, errors
-
-
-def get_role_for_account_type(account_type: str, provided_role: Optional[str] = None) -> str:
-    """
-    Business rule: Map account type to role
-    
-    Args:
-        account_type: The account type
-        provided_role: Role explicitly provided (optional)
-        
-    Returns:
-        The role to use
-    """
-    # Auto-map for students and parents
-    if account_type in ['student', 'parent']:
-        return account_type
-    
-    # Use provided role for others
-    return provided_role or 'viewer'
 
 
 def should_auto_generate_username(username: Optional[str], id_number: str) -> tuple[bool, str]:
@@ -356,9 +324,8 @@ def can_delete_user(user_data: UserData, has_created_records: bool = False, is_s
     if is_self_deletion:
         return False, "You cannot delete yourself"
     
-    # System admins typically shouldn't be deleted
-    if user_data.is_superuser:
-        return False, "Cannot delete superuser accounts"
+    if user_data.is_platform_superuser:
+        return False, "Cannot delete platform administrator accounts"
     
     # Users with created records might have data integrity issues
     if has_created_records:
@@ -367,13 +334,17 @@ def can_delete_user(user_data: UserData, has_created_records: bool = False, is_s
     return True, None
 
 
-def should_allow_own_profile_field_update(field_name: str, user_role: str, is_own_profile: bool) -> bool:
+def should_allow_own_profile_field_update(
+    field_name: str,
+    can_manage_account: bool,
+    is_own_profile: bool,
+) -> bool:
     """
     Business rule: Can a user update a specific field on their own profile?
     
     Args:
         field_name: Field being updated
-        user_role: Role of the user
+        can_manage_account: Whether the caller may manage account metadata
         is_own_profile: Is this their own profile?
         
     Returns:
@@ -382,21 +353,24 @@ def should_allow_own_profile_field_update(field_name: str, user_role: str, is_ow
     if not is_own_profile:
         return True  # Not own profile, use other rules
     
-    if user_role != Roles.VIEWER:
-        return True  # Non-viewers can update their own profile
+    if can_manage_account:
+        return True
     
     # VIEWER restrictions for own profile
-    restricted_fields = ["role", "account_type", "status", "active"]
+    restricted_fields = ["account_type", "status", "active"]
     return field_name not in restricted_fields
 
 
-def get_allowed_update_fields(is_own_profile: bool, user_role: str) -> list[str]:
+def get_allowed_update_fields(
+    is_own_profile: bool,
+    can_manage_account: bool,
+) -> list[str]:
     """
     Business rule: What fields can be updated?
     
     Args:
         is_own_profile: Is user updating their own profile?
-        user_role: Role of the user
+        can_manage_account: Whether the caller may manage account metadata
         
     Returns:
         List of allowed field names
@@ -409,9 +383,8 @@ def get_allowed_update_fields(is_own_profile: bool, user_role: str) -> list[str]
         "username",
     ]
     
-    # VIEWERs cannot change these on own profile
-    if is_own_profile and user_role == Roles.VIEWER:
+    if is_own_profile and not can_manage_account:
         return basic_fields
     
     # Others can change additional fields
-    return basic_fields + ["status", "active", "account_type", "role"]
+    return basic_fields + ["status", "active", "account_type"]

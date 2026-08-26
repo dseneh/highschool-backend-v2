@@ -32,7 +32,7 @@ class OnboardingGradingSetupTests(TenantTestCase):
 			defaults={
 				"username": "onboarding-grading",
 				"id_number": "ONBOARDING-GRADING-001",
-				"role": "admin",
+				"account_type": "staff",
 			},
 		)
 

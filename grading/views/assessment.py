@@ -14,10 +14,15 @@ from grading.utils import paginate_qs, parse_decimal
 from grading.models import AssessmentType, Grade, GradeBook, Assessment
 from common.status import EnrollmentStatus
 from grading.serializers import AssessmentOut
+from grading.services.scope_authorization import (
+    require_scope_access,
+    user_can_view_gradebook,
+)
 
 from academics.models import MarkingPeriod
 
 class AssessmentListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET  /assessments/?gradebook=&marking_period=&include_stats=
     POST /assessments/
@@ -49,6 +54,7 @@ class AssessmentListCreateView(APIView):
             return Response({"detail": "marking_period query param is required."}, status=400)
 
         gradebook = self.get_object(gradebook_id)
+        require_scope_access(user_can_view_gradebook(gradebook, request))
 
         qs = gradebook.assessments.select_related(
             "gradebook", "assessment_type", "marking_period"
@@ -101,6 +107,7 @@ class AssessmentListCreateView(APIView):
 
         # Get gradebook with prefetched relationships
         gb = self.get_object(gradebook_id)
+        require_scope_access(user_can_view_gradebook(gb, request))
         
         # Validate related objects in a single query each
         try:
@@ -206,10 +213,12 @@ class AssessmentDetailView(APIView):
 
     def get(self, request, pk):
         item = self.get_object(pk)
+        require_scope_access(user_can_view_gradebook(item.gradebook, request))
         return Response(AssessmentOut(item, context={'request': request}).data)
 
     def put(self, request, pk):
         item = self.get_object(pk)
+        require_scope_access(user_can_view_gradebook(item.gradebook, request))
 
         allowed_fields = ["name", "assessment_type_id", "marking_period_id", "max_score", "weight", "due_date"]
 
@@ -218,5 +227,6 @@ class AssessmentDetailView(APIView):
     @transaction.atomic
     def delete(self, request, pk):
         item = self.get_object(pk)
+        require_scope_access(user_can_view_gradebook(item.gradebook, request))
         item.delete()
         return Response(status=204)

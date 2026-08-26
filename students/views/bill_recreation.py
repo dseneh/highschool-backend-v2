@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import BillingAccessPolicy
 
 from academics.models import GradeLevel, Section
 
@@ -16,7 +16,8 @@ from ..models import Enrollment, Student, StudentEnrollmentBill
 from ..views.utils import create_student_bill
 
 class BillRecreationView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
+    policy_action_map = {"post": "manage"}
     """
     Recreate student bills by grade level, section, or individual student.
     
@@ -347,7 +348,8 @@ class BillRecreationView(APIView):
         }
 
 class BillRecreationPreviewView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
+    policy_action_map = {"get": "manage"}
     """
     Preview what bills would be recreated without actually making changes.
     
@@ -560,7 +562,8 @@ class BillRecreationPreviewView(APIView):
             return "critical"
 
 class BillRecreationStatusView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
+    policy_action_map = {"get": "manage"}
     """
     Check the status of background bill recreation tasks
     """

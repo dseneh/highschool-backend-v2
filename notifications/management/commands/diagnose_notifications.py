@@ -109,8 +109,13 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("  user not found in public schema."))
             return
 
+        from authorization.models import TenantMembership
+
+        membership = TenantMembership.objects.select_related("role").filter(user=user).first()
+        role_name = membership.role.name if membership else "unassigned"
         self.stdout.write(
-            f"  id={user.id}  role={user.role}  account_type={user.account_type}\n"
+            f"  id={user.id}  rbac_role={role_name}  account_type={user.account_type}\n"
+            f"  platform_superuser={user.is_platform_superuser}\n"
             f"  email={user.email}  is_active={user.is_active}  status={user.status}"
         )
 

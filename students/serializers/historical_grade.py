@@ -205,6 +205,22 @@ class HistoricalGradeRecordWriteSerializer(serializers.ModelSerializer):
                 {"academic_year_label": "Academic year label is required."}
             )
 
+        marking_period = attrs.get("marking_period")
+        if marking_period is None and self.instance is not None:
+            marking_period = self.instance.marking_period
+        if (
+            academic_year
+            and marking_period
+            and marking_period.semester.academic_year_id != academic_year.id
+        ):
+            raise serializers.ValidationError(
+                {
+                    "marking_period": (
+                        "The marking period must belong to the selected academic year."
+                    )
+                }
+            )
+
         period_end_date = attrs.get("period_end_date")
         if period_end_date is None and self.instance is not None:
             period_end_date = self.instance.period_end_date

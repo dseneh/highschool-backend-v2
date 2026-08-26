@@ -4,32 +4,13 @@ from __future__ import annotations
 
 from django.db.models import Q
 
-from common.status import Roles
 from hr.models import Employee
-from users.tenant_access import is_global_superadmin
-
-_DISBURSEMENT_MANAGER_ROLES = {
-    Roles.ADMIN,
-    Roles.SUPERADMIN,
-    Roles.REGISTRAR,
-    Roles.DATA_ENTRY,
-}
-
+from authorization.runtime import user_has_permission
 
 def user_can_manage_disbursements(user) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if is_global_superadmin(user) or getattr(user, "is_superuser", False):
-        return True
-
-    role = (getattr(user, "role", "") or "").strip().lower()
-    if role in _DISBURSEMENT_MANAGER_ROLES:
-        return True
-
-    if hasattr(user, "has_privilege") and user.has_privilege("CORE_MANAGE"):
-        return True
-
-    return False
+    return user_has_permission(user, "hr.manage")
 
 
 def employee_for_portal_user(user) -> Employee | None:

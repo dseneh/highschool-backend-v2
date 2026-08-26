@@ -79,6 +79,10 @@ echo "📦 Step 5: Running tenant schema migrations..."
 python manage.py migrate_schemas --fake-initial
 echo "✅ Tenant schema migrations complete"
 
+echo "🔐 Synchronizing default system roles..."
+python manage.py sync_permissions
+echo "✅ Default system roles synchronized"
+
 # Step 6: Collect static files
 echo ""
 echo "📦 Step 6: Collecting static files..."

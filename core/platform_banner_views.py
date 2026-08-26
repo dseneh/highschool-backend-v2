@@ -29,7 +29,7 @@ from core.platform_banner_serializers import (
 )
 
 
-def _active_banners_for_user(user):
+def _active_banners_for_user(user, role_key=None):
     """Return the queryset of platform banners that should currently be
     visible to ``user`` (active, in-window, targeting matches, not yet
     dismissed by the user). Must be called inside the public schema."""
@@ -42,12 +42,11 @@ def _active_banners_for_user(user):
         models_q_or_null("ends_at", now, greater_than=True)
     )
 
-    # Role targeting — empty list = ALL roles.
-    role = (getattr(user, "role", "") or "").lower() or None
-    if role:
+    # RBAC system-role targeting — empty list = all users.
+    if role_key:
         from django.db.models import Q
 
-        qs = qs.filter(Q(target_roles=[]) | Q(target_roles__contains=[role]))
+        qs = qs.filter(Q(target_roles=[]) | Q(target_roles__contains=[role_key]))
     else:
         qs = qs.filter(target_roles=[])
 
@@ -144,8 +143,16 @@ class MyPlatformBannersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        role_key = None
+        if connection.schema_name != "public":
+            from authorization.models import TenantMembership
+
+            membership = TenantMembership.objects.select_related("role").filter(user=request.user).first()
+            role_key = membership.role.system_key if membership else None
+        elif getattr(request.user, "is_platform_superuser", False):
+            role_key = "platform_superuser"
         with schema_context("public"):
-            qs = _active_banners_for_user(request.user)
+            qs = _active_banners_for_user(request.user, role_key)
             data = PlatformBannerPublicSerializer(qs, many=True).data
         return Response({"banners": data})
 

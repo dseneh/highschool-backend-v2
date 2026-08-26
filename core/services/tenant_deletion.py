@@ -30,6 +30,9 @@ def hard_delete_tenant_workspace(tenant: Tenant) -> None:
     # Drop the isolated schema directly, then remove the public tenant row.
     with transaction.atomic():
         with connection.cursor() as cursor:
+            # Schema provisioning leaves deferred FK triggers pending, and
+            # PostgreSQL refuses DDL while they are queued.
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
             quoted_schema = connection.ops.quote_name(schema_name)
             cursor.execute(f"DROP SCHEMA IF EXISTS {quoted_schema} CASCADE")
 

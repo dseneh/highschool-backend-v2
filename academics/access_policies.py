@@ -96,7 +96,7 @@ class AcademicsAccessPolicy(BaseSchoolAccessPolicy):
             ],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_MANAGE",
+            "condition": "has_rbac_permission:academics.manage",
         },
 
         # 6) Special privilege: CORE_VIEW -> read-only access
@@ -104,7 +104,7 @@ class AcademicsAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["list", "retrieve"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_VIEW",
+            "condition": "has_rbac_permission:academics.view",
         },
 
         # 7) VIEWER: Read-only access (list and retrieve)

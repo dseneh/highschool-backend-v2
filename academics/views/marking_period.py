@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import NotFound
@@ -8,29 +9,13 @@ from rest_framework.views import APIView
 from ..access_policies import AcademicsAccessPolicy
 
 from common.utils import get_object_by_uuid_or_fields, update_model_fields
-from common.cache_service import DataCache
 
-from ..models import MarkingPeriod, Semester
+from ..models import AcademicYear, MarkingPeriod, Semester
 from ..serializers import MarkingPeriodSerializer
 
 # Business logic imports
 from business.core.services import marking_period_service
 from business.core.adapters import marking_period_adapter
-
-class MarkingPeriodListAllView(APIView):
-    def get(self, request):
-        
-        # Use cached marking periods for better performance
-        force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
-        marking_periods = DataCache.get_marking_periods(force_refresh=force_refresh)
-        
-        if not marking_periods:
-            return Response(
-                {"detail": "No marking periods found for this tenant"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        
-        return Response(marking_periods, status=status.HTTP_200_OK)
 
 class MarkingPeriodListView(APIView):
     permission_classes = [AcademicsAccessPolicy]
@@ -149,9 +134,35 @@ class MarkingPeriodDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 class MarkingPeriodListAllView(APIView):
-    # permission_classes = [IsAuthenticatedOrReadOnly, IsAdminOrSystemAdmin]
+    permission_classes = [AcademicsAccessPolicy]
 
     def get(self, request):
-        marking_periods = MarkingPeriod.objects.all()
+        academic_year_id = (
+            request.query_params.get("academic_year")
+            or request.query_params.get("academic_year_id")
+        )
+        if not academic_year_id:
+            return Response(
+                {"detail": "academic_year query param is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if academic_year_id == "current":
+            academic_year = AcademicYear.get_current_academic_year()
+        else:
+            try:
+                academic_year = AcademicYear.objects.filter(pk=academic_year_id).first()
+            except (DjangoValidationError, TypeError, ValueError):
+                academic_year = None
+
+        if not academic_year:
+            return Response(
+                {"detail": "The requested academic year does not exist."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        marking_periods = MarkingPeriod.objects.filter(
+            semester__academic_year=academic_year
+        ).select_related("semester", "semester__academic_year")
         serializer = MarkingPeriodSerializer(marking_periods, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

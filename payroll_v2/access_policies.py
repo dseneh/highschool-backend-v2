@@ -54,12 +54,12 @@ class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_MANAGE",
+            "condition": "has_rbac_permission:payroll.configure",
         },
         {
             "action": ["list", "retrieve"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_VIEW",
+            "condition": "has_rbac_permission:payroll.view",
         },
     ]

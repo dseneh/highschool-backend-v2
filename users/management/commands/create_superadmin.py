@@ -104,8 +104,7 @@ class Command(BaseCommand):
             # Generate username from email (e.g., admin@example.com -> admin)
             username = email.split('@')[0] if email else 'admin'
             
-            # Import Roles and UserAccountType
-            from common.status import Roles, UserAccountType
+            from common.status import UserAccountType
             
             # Create superuser using the same approach as setup.py
             # This passes all extra fields as kwargs to create_superuser
@@ -117,11 +116,8 @@ class Command(BaseCommand):
                 last_name=last_name,
                 id_number=id_number,
                 account_type=UserAccountType.GLOBAL,
-                role=Roles.SUPERADMIN,
             )
 
-            # Note: is_superuser and is_staff are properties in django-tenant-users
-            # that check UserTenantPermissions, not direct fields
             self.stdout.write(
                 self.style.SUCCESS(
                     f"✓ Successfully created global superadmin:\n"
@@ -129,8 +125,7 @@ class Command(BaseCommand):
                     f"  Username: {user.username}\n"
                     f"  ID Number: {user.id_number}\n"
                     f"  Name: {user.first_name} {user.last_name}\n"
-                    f"  Role: {user.role}\n"
-                    f"  User created with superuser privileges in public tenant"
+                    f"  User created with platform superuser privileges"
                 )
             )
         except Exception as e:

@@ -7,7 +7,7 @@ from django.contrib.auth import authenticate, get_user_model
 from django.conf import settings
 from django.utils import timezone
 
-from common.status import Roles, UserAccountType
+from common.status import UserAccountType
 
 User = get_user_model()
 
@@ -26,8 +26,8 @@ class UserSerializer(serializers.ModelSerializer):
     tenants = serializers.SerializerMethodField()
     # Add flag to identify the currently logged-in user
     is_current_user = serializers.SerializerMethodField()
-    # Add effective privileges (role defaults + special grants)
-    privileges = serializers.SerializerMethodField()
+    rbac_role = serializers.SerializerMethodField()
+    profile_updated_by = serializers.SerializerMethodField()
     
     class Meta:
         model = User
@@ -41,26 +41,54 @@ class UserSerializer(serializers.ModelSerializer):
             'account_type',
             'photo',
             'is_active',
+            'status',
             'last_login',
             'tenants',
-            'role',
+            'rbac_role',
             'gender',
             'last_password_updated',
+            'created_at',
+            'profile_updated_at',
+            'profile_updated_by',
             'is_default_password',
-            'is_staff',
-            'is_superuser',
+            'is_platform_superuser',
             'is_current_user',
-            'privileges',
-            # 'date_joined',
         ]
         read_only_fields = fields
 
-    def get_privileges(self, obj):
+    def get_rbac_role(self, obj):
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name
+
+        if connection.schema_name == get_public_schema_name():
+            return None
         try:
-            return obj.get_privileges()
+            from authorization.models import TenantMembership
+
+            membership = TenantMembership.objects.select_related("role").filter(user=obj).first()
+            if membership is None:
+                return None
+            return {
+                "id": str(membership.role_id),
+                "name": membership.role.name,
+                "system_key": membership.role.system_key,
+                "is_active": membership.is_active and membership.role.is_active,
+            }
         except Exception:
-            return []
-    
+            return None
+
+    def get_profile_updated_by(self, obj):
+        actor = getattr(obj, "profile_updated_by", None)
+        if actor is None:
+            return None
+        full_name = f"{actor.first_name} {actor.last_name}".strip()
+        return {
+            "id": str(actor.pk),
+            "id_number": actor.id_number,
+            "full_name": full_name or actor.username or actor.email,
+            "email": actor.email,
+        }
+
     def _tenant_list_payload(self, tenant, *, schema_name=None, workspace=None):
         """Build a tenant dict for login/workspace picker responses."""
         schema = schema_name or tenant.schema_name
@@ -344,7 +372,7 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
     
     MultiFieldAuthBackend will automatically try all three fields to find the user.
     
-    Includes custom claims (role, account_type) in token payload for stateless JWT authentication
+    Includes identity claims in token payload for stateless JWT authentication.
     and access policy checking.
     """
     
@@ -353,12 +381,11 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         """
         Override to add custom claims to the token payload.
         
-        Includes role and account_type for stateless JWT authentication and access policies.
+        Includes identity information for stateless JWT authentication.
         These claims are used by JWTStatelessUserAuthentication to construct the user object
         without database queries.
         """
         token = super().get_token(user)
-        token['role'] = user.role
         token['account_type'] = user.account_type
         token['email'] = user.email
         token['username'] = user.username or ''
@@ -366,9 +393,7 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['first_name'] = user.first_name or ''
         token['last_name'] = user.last_name or ''
         token['is_active'] = user.is_active
-        # Global superadmin role must not depend on tenant-scoped UserTenantPermissions.
-        token['is_superuser'] = user.role == Roles.SUPERADMIN or bool(user.is_superuser)
-        token['is_staff'] = user.role == Roles.SUPERADMIN or bool(user.is_staff)
+        token['is_platform_superuser'] = bool(user.is_platform_superuser)
         return token
     
     def __init__(self, *args, **kwargs):
@@ -397,14 +422,22 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         
         if not user:
             raise serializers.ValidationError({
-                'non_field_errors': ['No active account found with the given credentials']
+                'detail': ['No active account found with the given credentials']
             })
         
         if not user.is_active:
             raise serializers.ValidationError({
-                'non_field_errors': ['User account is disabled.']
+                'detail': ['User account is disabled.']
             })
-        
+
+        from authorization.exceptions import NoAssignedRole
+        from authorization.services import has_assigned_role
+
+        # Checked before any token is built so an unassigned account never
+        # receives credentials.
+        if not has_assigned_role(user):
+            raise NoAssignedRole()
+
         refresh = self.get_token(user)
         data = {
             'refresh': str(refresh),
@@ -433,21 +466,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'last_name',
             'gender',
             'account_type',
-            'role',
             'is_active',
-            'is_staff',
-            'is_superuser',
+            'is_platform_superuser',
         ]
         read_only_fields = ['id']
 
     def validate_account_type(self, value):
         if value not in UserAccountType.all():
             raise serializers.ValidationError('Invalid account_type.')
-        return value
-
-    def validate_role(self, value):
-        if value not in Roles.all():
-            raise serializers.ValidationError('Invalid role.')
         return value
 
     def create(self, validated_data):
@@ -470,10 +496,8 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'last_name',
             'gender',
             'account_type',
-            'role',
             'is_active',
-            'is_staff',
-            'is_superuser',
+            'is_platform_superuser',
             'photo',
         ]
 
@@ -494,10 +518,6 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Invalid account_type.')
         return value
 
-    def validate_role(self, value):
-        if value not in Roles.all():
-            raise serializers.ValidationError('Invalid role.')
-        return value
 
 
 class PasswordChangeSerializer(serializers.Serializer):
@@ -539,9 +559,16 @@ class UserRecreateSerializer(serializers.Serializer):
         UserAccountType.PARENT,
     ])
     id_number = serializers.CharField(required=True)
-    date_of_birth = serializers.DateField(required=True)
+    # Optional: the Users page picks the record from a dialog, so the
+    # id_number alone identifies it. Kept as an extra check when supplied.
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
     username = serializers.CharField(required=False, allow_blank=True, help_text="Defaults to id_number if not provided")
     notify_user = serializers.BooleanField(required=False, default=True)
+    role = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Role system key or id. Required for staff accounts; student and parent accounts use their fixed role.",
+    )
 
     def validate(self, attrs):
         if not attrs.get('id_number'):

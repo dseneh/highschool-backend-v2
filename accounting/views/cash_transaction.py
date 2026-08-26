@@ -297,12 +297,14 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         return False
 
     def _can_complete_transaction(self, user):
-        role = str(getattr(user, "role", "") or "").strip().lower()
-        return role in {"admin", "superadmin"}
+        from authorization.runtime import user_has_permission
+
+        return user_has_permission(user, "finance.transactions.complete")
 
     def _can_override_limit_warning(self, user):
-        role = str(getattr(user, "role", "") or "").strip().lower()
-        return role in {"admin", "superadmin"}
+        from authorization.runtime import user_has_permission
+
+        return user_has_permission(user, "finance.transactions.approve")
 
     def _override_flag_from_request(self, request):
         return self._to_bool(request.data.get("override_warning_limits", False))

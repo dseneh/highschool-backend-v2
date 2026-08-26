@@ -18,6 +18,7 @@ from openpyxl import load_workbook
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font
 from rest_framework import status as http_status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -28,6 +29,13 @@ from academics.models import Section, AcademicYear, MarkingPeriod
 from common.utils import get_object_by_uuid_or_fields
 from students.models import Student
 from grading.models import Assessment, Grade
+from authorization.runtime import initialize_request_authorization
+from grading.services.authorization import enforce_teacher_grade_access
+from grading.services.scope_authorization import (
+    require_all_grading_scope,
+    require_scope_access,
+    user_can_view_section_grades,
+)
 
 class BulkGradeUploadView(APIView):
     """
@@ -67,6 +75,7 @@ class BulkGradeUploadView(APIView):
     """
     
     parser_classes = (MultiPartParser, FormParser)
+    permission_classes = [GradebookAccessPolicy]
 
     @staticmethod
     def _parse_bool(value, default=False):
@@ -100,6 +109,9 @@ class BulkGradeUploadView(APIView):
     
     @transaction.atomic
     def post(self, request, section_id):
+        initialize_request_authorization(request, request.user).require_permission(
+            "grades.enter"
+        )
         # Read override flag from query params first, then form body for robustness.
         override_raw = request.query_params.get('override_grades')
         if override_raw is None:
@@ -175,6 +187,8 @@ class BulkGradeUploadView(APIView):
 
             return Response(result, status=http_status.HTTP_200_OK)
 
+        except PermissionDenied:
+            raise
         except Exception as e:
             return Response({
                 'detail': f'Error processing file: {str(e)}'
@@ -436,6 +450,7 @@ class BulkGradeUploadView(APIView):
             )
 
         subject = subject_candidates.first()
+        enforce_teacher_grade_access(user, section.id, subject.id)
         
         # Statistics
         stats = {
@@ -885,6 +900,7 @@ class BulkGradeUploadView(APIView):
                 f"Subject '{subject_identifier}' is ambiguous. Multiple gradebooks matched."
             )
         subject = subject_candidates.first()
+        enforce_teacher_grade_access(user, section.id, subject.id)
 
         # =====================================================================
         # STEP 4: Resolve marking periods and their single-entry assessments
@@ -1311,10 +1327,12 @@ def _sanitize_sheet_title(raw: str, used: set, fallback: str) -> str:
 class BulkGradeTemplateDownloadView(APIView):
     """Download a styled bulk grade template using the bundled workbook file."""
 
+    permission_classes = [GradebookAccessPolicy]
     parser_classes = (JSONParser,)
 
     def post(self, request, section_id):
         section = get_object_or_404(Section, pk=section_id)
+        require_scope_access(user_can_view_section_grades(section.id, request))
 
         template_type = str(request.data.get('template_type', 'marking_period_columns')).strip()
         if template_type != 'marking_period_columns':
@@ -1390,6 +1408,7 @@ class BulkGradeAllSubjectsTemplateDownloadView(APIView):
       - one row per enrolled student (id_number + "Last, First Middle" + grades)
     """
 
+    permission_classes = [GradebookAccessPolicy]
     parser_classes = (JSONParser,)
 
     def post(self, request, section_id):
@@ -1397,6 +1416,7 @@ class BulkGradeAllSubjectsTemplateDownloadView(APIView):
             Section.objects.select_related('grade_level'),
             pk=section_id,
         )
+        require_scope_access(user_can_view_section_grades(section.id, request))
 
         academic_year, error_response = _resolve_template_academic_year(request)
         if error_response is not None:
@@ -1623,10 +1643,13 @@ class GradebookTemplateBatchDownloadView(APIView):
       - multiple matching sections => return .zip containing one .xlsx per section
     """
 
+    permission_classes = [GradebookAccessPolicy]
     parser_classes = (JSONParser,)
 
     def post(self, request):
         from grading.models import GradeBook
+
+        require_all_grading_scope(request, "grades.enter")
 
         academic_year, error_response = _resolve_template_academic_year(request)
         if error_response is not None:

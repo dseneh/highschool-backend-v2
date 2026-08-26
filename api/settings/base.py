@@ -104,6 +104,7 @@ TENANT_APPS = [
     "reports",  # Reports (transaction reporting, exports, placeholders)
     "defaults",  # Default data creation for new tenants
     "notifications",  # In-app notifications, announcements, email delivery
+    "authorization",  # Tenant roles, memberships, scoped grants, and permission registry
 ]
 
 # INSTALLED_APPS: Automatically constructed from SHARED_APPS and TENANT_APPS

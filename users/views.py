@@ -127,12 +127,14 @@ class MultiFieldTokenObtainPairView(TokenObtainPairView):
 
         from users.tenant_access import is_global_superadmin
 
-        user_role = str(getattr(user, 'role', '') or '').lower()
-        is_tenant_admin = (
-            is_global_superadmin(user)
-            or bool(getattr(user, 'is_superuser', False))
-            or user_role in {Roles.ADMIN, Roles.SUPERADMIN}
-        )
+        from authorization.models import TenantMembership
+
+        is_tenant_admin = is_global_superadmin(user) or TenantMembership.objects.filter(
+            user=user,
+            is_active=True,
+            role__is_active=True,
+            role__system_key="admin",
+        ).exists()
 
         # Maintenance mode: only tenant admins may log in.
         if getattr(tenant, 'maintenance_mode', False):
@@ -221,7 +223,6 @@ class CurrentUserView(APIView):
         "first_name": "Admin",
         "last_name": "User",
         "account_type": "SUPERADMIN",
-        "role": "SUPERADMIN",
         "photo": "http://...",
         "is_active": true,
         "tenants": [
@@ -256,7 +257,6 @@ class VerifyTokenView(APIView):
         "valid": true,
         "user_id": 1,
         "username": "admin01",
-        "role": "SUPERADMIN"
     }
     
     Response (invalid token):
@@ -271,7 +271,6 @@ class VerifyTokenView(APIView):
             "valid": True,
             "user_id": request.user.id,
             "username": request.user.username,
-            "role": request.user.role,
             "account_type": request.user.account_type,
         }, status=status.HTTP_200_OK)
 
@@ -303,7 +302,7 @@ class TenantUsersView(APIView):
     - is_staff: filter by staff status (true/false)
     - is_superuser: filter by superuser status (true/false)
     - is_default_password: filter by default password status (true/false)
-    - ordering: sort results (default: -date_joined)
+    - ordering: sort results (default: -created_at)
     
     POST payload requires:
     - account_type: STUDENT, STAFF, or PARENT
@@ -355,18 +354,13 @@ class TenantUsersView(APIView):
                         Q(id_number__icontains=search)
                     )
                 
-                # Apply role filter (multi-value support)
-                roles = request.query_params.getlist('role')
-                if roles:
-                    users_queryset = users_queryset.filter(role__in=roles)
-                
                 # Apply account_type filter (multi-value support)
                 account_types = request.query_params.getlist('account_type')
                 if account_types:
                     users_queryset = users_queryset.filter(account_type__in=account_types)
                 
                 # Apply boolean filters
-                for field in ['is_active', 'is_staff', 'is_superuser', 'is_default_password']:
+                for field in ['is_active', 'is_platform_superuser', 'is_default_password']:
                     value = request.query_params.get(field)
                     if value is not None:
                         bool_value = value.lower() in ['true', '1', 'yes']
@@ -379,7 +373,6 @@ class TenantUsersView(APIView):
                     'last_name', '-last_name',
                     'username', '-username',
                     'email', '-email',
-                    'role', '-role',
                     'id', '-id',
                     'last_login', '-last_login',
                     'id_number', '-id_number',
@@ -628,7 +621,6 @@ class TenantUsersView(APIView):
                     'last_name': source_last_name,
                     'gender': source_gender,
                     'account_type': account_type,
-                    'role': resolve_role(),
                     'is_active': True,
                 }
 
@@ -706,15 +698,14 @@ class GlobalUserCreateView(APIView):
 
     This endpoint creates a user that exists globally but is not assigned to any
     per-tenant person record. The admin workspace uses it to provision platform
-    accounts (global admins, viewers, and superadmins).
+    accounts and platform superusers.
 
     Username defaults to id_number if not provided. Password defaults to
     id_number (with is_default_password=True) unless one is explicitly provided.
 
-    When ``role == "superadmin"``, the user is provisioned via
-    ``User.objects.create_superuser`` so they receive ``is_staff=True`` and
-    ``is_superuser=True`` on the public tenant's UserTenantPermissions. The
-    auth middleware will then auto-link them into other tenants on demand.
+    When ``is_platform_superuser=true``, the user is provisioned through
+    ``User.objects.create_superuser`` and the auth middleware auto-links the
+    platform account into tenant workspaces on demand.
 
     POST /api/v1/auth/users/global/
     {
@@ -724,7 +715,7 @@ class GlobalUserCreateView(APIView):
         "last_name": "Doe",
         "gender": "female",
         "account_type": "global",
-        "role": "admin" | "superadmin" | "viewer",
+        "is_platform_superuser": false,
         "username": "jane.doe",     # Optional, defaults to id_number
         "password": "...",           # Optional, defaults to id_number
         "notify_user": true          # (reserved for future email notification)
@@ -744,25 +735,18 @@ class GlobalUserCreateView(APIView):
             if not data.get('username'):
                 data['username'] = build_unique_username(str(id_number))
 
-            # Normalize account_type / role to lowercase since the enums on
-            # the backend are lowercase. The UI sometimes sends them in mixed
-            # case (legacy STUDENT/STAFF etc.); we accept both.
+            # Account type identifies the global account category only.
             account_type = str(data.get('account_type') or '').strip().lower()
             if not account_type:
                 account_type = UserAccountType.GLOBAL
             data['account_type'] = account_type
-
-            role = str(data.get('role') or '').strip().lower()
-            if not role:
-                role = Roles.VIEWER
-            data['role'] = role
 
             raw_password = data.pop('password', None)
             password = raw_password or id_number
             mark_default_password = not raw_password
 
             try:
-                if role == Roles.SUPERADMIN:
+                if data.get('is_platform_superuser') is True:
                     user = self._create_superadmin(data, password)
                 else:
                     user = self._create_global_user(data, password)
@@ -785,6 +769,11 @@ class GlobalUserCreateView(APIView):
                 user.is_default_password = True
                 user.last_password_updated = None
                 user.save(update_fields=['is_default_password', 'last_password_updated'])
+
+            if str(data.get('notify_user', True)).lower() not in {'false', '0'}:
+                from users.utils import send_welcome_email
+
+                send_welcome_email(user, password)
 
             response_serializer = UserSerializer(user, context={'request': request})
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
@@ -817,7 +806,7 @@ class GlobalUserCreateView(APIView):
             id_number=validated['id_number'],
             gender=validated.get('gender', 'male'),
             account_type=UserAccountType.GLOBAL,
-            role=Roles.SUPERADMIN,
+            is_platform_superuser=True,
         )
 
 
@@ -846,7 +835,9 @@ class UserDetailView(APIView):
         """Retrieve a user by id_number."""
         with schema_context('public'):
             try:
-                user = User.objects.get(id_number=id_number)
+                user = User.objects.select_related('profile_updated_by').get(
+                    id_number=id_number
+                )
                 serializer = UserSerializer(user, context={'request': request})
                 return Response(serializer.data, status=status.HTTP_200_OK)
             except User.DoesNotExist:
@@ -862,7 +853,10 @@ class UserDetailView(APIView):
                 user = User.objects.get(id_number=id_number)
                 serializer = UserUpdateSerializer(user, data=request.data, partial=True)
                 if serializer.is_valid():
-                    serializer.save()
+                    serializer.save(
+                        profile_updated_at=timezone.now(),
+                        profile_updated_by=request.user,
+                    )
                     response_serializer = UserSerializer(user, context={'request': request})
                     return Response(response_serializer.data, status=status.HTTP_200_OK)
                 return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
@@ -1612,7 +1606,6 @@ class UserRecreateView(APIView):
                 'last_name': source_last_name,
                 'gender': source_gender,
                 'account_type': account_type,
-                'role': self._resolve_role(account_type),
                 'is_active': True,
             }
 

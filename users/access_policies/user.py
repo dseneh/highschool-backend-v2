@@ -15,13 +15,6 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
     """
 
     statements = [
-        # SUPERADMIN: Full access to all users
-        {
-            "action": ["*"],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_role_in:superadmin",
-        },
         # Any signed-in user can read their own profile from GET /auth/users/current/
         {
             "action": ["get"],
@@ -29,12 +22,42 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
             "effect": "allow",
             "condition": "is_current_user_endpoint",
         },
-        # ADMIN: Can list, retrieve, create, update, delete, and recreate users in their tenant
+        # User management is permission-based for all non-superadmins.
         {
-            "action": ["list", "retrieve", "create", "update", "partial_update", "delete", "current", "password_change", "change_status", "password_default", "password_admin_set", "password_reset_request", "password_reset_confirm", "recreate", "privileges_catalog", "special_privileges", "tenants", "remove_tenant", "get", "post", "put", "patch"],
+            "action": ["list", "retrieve", "tenants"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:admin",
+            "condition": "has_rbac_permission:users.view",
+        },
+        {
+            "action": ["create", "recreate"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_rbac_permission:users.create",
+        },
+        {
+            "action": ["post"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "can_create_global_user",
+        },
+        {
+            "action": ["update", "partial_update", "password_admin_set", "password_default"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_rbac_permission:users.update",
+        },
+        {
+            "action": ["destroy", "delete", "change_status"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_rbac_permission:users.deactivate",
+        },
+        {
+            "action": ["remove_tenant"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_rbac_permission:roles.assign_users",
         },
         # Users can view their own profile
         {
@@ -63,11 +86,24 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
         """True for the stateless current-user API (no id in the URL path)."""
         return view.__class__.__name__ == "CurrentUserView"
 
+    def can_create_global_user(self, request, view, action) -> bool:
+        if view.__class__.__name__ != "GlobalUserCreateView":
+            return False
+        return self.has_rbac_permission(
+            request,
+            view,
+            action,
+            "users.create",
+        )
+
     def is_own_profile(self, request, view, action) -> bool:
         """Check if user is accessing their own profile"""
         user = self._get_user(request)
         if not user:
             return False
+
+        if action == "current":
+            return True
         
         # Check if the id_number in the URL matches the current user
         id_number = view.kwargs.get('id_number') or view.kwargs.get('pk')
@@ -102,84 +138,5 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
                     return True
         except Exception:
             pass
-        
-        return False
-
-    def can_assign_role(self, request, view, action, target_role: str = None) -> bool:
-        """
-        Check if user can assign a specific role.
-        This is used for field-level validation in views.
-        
-        Args:
-            target_role: The role being assigned (from request.data)
-        """
-        user = self._get_user(request)
-        if not user:
-            return False
-        
-        # SUPERADMIN can assign any role
-        if user.role == Roles.SUPERADMIN or user.is_superuser:
-            return True
-        
-        # ADMIN can assign roles (except superadmin) to users in their tenant
-        if user.role == Roles.ADMIN:
-            # Cannot assign superadmin role
-            if target_role == Roles.SUPERADMIN:
-                return False
-            return True
-        
-        return False
-
-    def can_assign_role_to_user(self, request, view, action, target_user_id: str = None, target_role: str = None) -> bool:
-        """
-        Check if user can assign a specific role to a specific user.
-        This checks both role assignment permission and tenant restrictions.
-        
-        Args:
-            target_user_id: ID of the user being updated
-            target_role: The role being assigned
-        """
-        user = self._get_user(request)
-        if not user:
-            return False
-        
-        # SUPERADMIN can assign any role to any user
-        if user.role == Roles.SUPERADMIN or user.is_superuser:
-            return True
-        
-        # ADMIN can assign roles (except superadmin) to users in their tenant
-        if user.role == Roles.ADMIN:
-            # Cannot assign superadmin role
-            if target_role == Roles.SUPERADMIN:
-                return False
-            
-            # Check if target user is in the same tenant (multi-tenant check)
-            if target_user_id:
-                try:
-                    from users.models import User
-                    from django_tenants.utils import schema_context
-                    from tenant_users.permissions.models import UserTenantPermissions
-                    
-                    with schema_context('public'):
-                        target_user = User.objects.filter(
-                            Q(id=target_user_id) | Q(id_number=target_user_id) | Q(username=target_user_id)
-                        ).first()
-                        
-                        if not target_user:
-                            return False
-                    
-                    # Check if both users are in the current tenant
-                    if connection.schema_name != 'public':
-                        user_in_tenant = UserTenantPermissions.objects.filter(profile=user).exists()
-                        target_in_tenant = UserTenantPermissions.objects.filter(profile=target_user).exists()
-                        
-                        if user_in_tenant and target_in_tenant:
-                            return True
-                        return False
-                    
-                except Exception:
-                    return False
-            
-            return True
         
         return False

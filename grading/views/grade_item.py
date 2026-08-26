@@ -16,6 +16,7 @@ from grading.serializers import AssessmentOut
 from academics.models import MarkingPeriod
 
 class AssessmentsListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET  /assessments/?gradebook=&marking_period=&include_stats=
     POST /assessments/
@@ -180,6 +181,7 @@ class AssessmentsListCreateView(APIView):
         return Response(AssessmentOut(obj, context={'request': request}).data, status=201)
 
 class AssessmentsDetailView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     def get_object(self, pk):
         try:
             return Assessment.objects.select_related("gradebook", "assessment_type", "marking_period").get(pk=pk)

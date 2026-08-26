@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, pre_delete, post_delete
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
 import logging
@@ -31,10 +31,7 @@ GUARDIAN_TO_CONTACT_RELATIONSHIP = {
 
 @receiver(post_save, sender="students.StudentGuardian")
 def sync_guardian_to_contact(sender, instance, created, **kwargs):
-    """
-    When a guardian is created or updated, upsert a matching StudentContact.
-    The contact is linked via meta.guardian_id to avoid duplicates.
-    """
+    """When a guardian is saved, upsert the corresponding student contact."""
     from students.models import StudentContact
 
     contact_rel = GUARDIAN_TO_CONTACT_RELATIONSHIP.get(
@@ -55,10 +52,12 @@ def sync_guardian_to_contact(sender, instance, created, **kwargs):
     }
 
     try:
-        # Look up by guardian_id stored in meta
         contact = StudentContact.objects.filter(
             student=instance.student,
-            meta__guardian_id=str(instance.id),
+            first_name=instance.first_name,
+            last_name=instance.last_name,
+            email=instance.email,
+            phone_number=instance.phone_number,
         ).first()
 
         if contact:
@@ -69,29 +68,11 @@ def sync_guardian_to_contact(sender, instance, created, **kwargs):
         else:
             contact = StudentContact.objects.create(
                 student=instance.student,
-                meta={"guardian_id": str(instance.id)},
                 **defaults,
             )
             logger.info(f"Created contact {contact.id} from guardian {instance.id}")
     except Exception as e:
         logger.error(f"Error syncing guardian {instance.id} to contact: {e}", exc_info=True)
-
-
-@receiver(post_delete, sender="students.StudentGuardian")
-def delete_synced_contact(sender, instance, **kwargs):
-    """When a guardian is deleted, also delete its synced contact."""
-    from students.models import StudentContact
-
-    try:
-        deleted_count, _ = StudentContact.objects.filter(
-            student=instance.student,
-            meta__guardian_id=str(instance.id),
-        ).delete()
-        if deleted_count:
-            logger.info(f"Deleted synced contact for guardian {instance.id}")
-    except Exception as e:
-        logger.error(f"Error deleting synced contact for guardian {instance.id}: {e}")
-
 
 # Signal to handle default photo upload and replacement
 @receiver(post_save, sender=User)

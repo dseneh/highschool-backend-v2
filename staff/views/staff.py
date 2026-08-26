@@ -1,4 +1,4 @@
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Q
 from django_tenants.utils import get_tenant_model
 from rest_framework import viewsets, status, serializers
@@ -8,6 +8,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import NotFound
 
 from common.email_validation import require_valid_email
+from common.account_link import filter_by_user_account
 from common.utils import get_object_by_uuid_or_fields
 from users.models import User
 from ..models import Staff
@@ -97,6 +98,10 @@ class StaffViewSet(viewsets.ModelViewSet):
             elif len(genders) > 1:
                 queryset = queryset.filter(gender__in=genders)
 
+        queryset = filter_by_user_account(
+            queryset, self.request.query_params.get("has_user_account")
+        )
+
         # Apply ordering
         ordering = self.request.query_params.get("ordering", "-created_at")
         queryset = queryset.order_by_default(ordering)
@@ -125,6 +130,7 @@ class StaffViewSet(viewsets.ModelViewSet):
             return StaffDetailSerializer
         return StaffSerializer
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         """Create staff using business logic"""
         # Validate using business logic
@@ -265,11 +271,10 @@ class StaffViewSet(viewsets.ModelViewSet):
     
     def _create_user_account_for_staff(self, staff, data, user):
         """Helper to create user account for staff"""
-        from common.status import Roles, PersonStatus, UserAccountType
-        
+        from common.status import PersonStatus, UserAccountType
+
         username = data.get("username") or staff.id_number
-        role = data.get("role", Roles.VIEWER)
-        
+
         # Check if username already exists
         if User.objects.filter(username=username).exists():
             raise serializers.ValidationError(f"Username '{username}' already exists")
@@ -296,7 +301,6 @@ class StaffViewSet(viewsets.ModelViewSet):
             first_name=staff.first_name,
             last_name=staff.last_name,
             gender=staff.gender,
-            role=role,
             account_type=UserAccountType.STAFF,
             status=PersonStatus.CREATED,
             created_by=user,
@@ -318,6 +322,23 @@ class StaffViewSet(viewsets.ModelViewSet):
                 except Exception as exc:
                     if "already" not in str(exc).lower() and "exists" not in str(exc).lower():
                         raise
+
+                from authorization.models import Role
+                from authorization.services import assign_user_role
+
+                tenant_role = Role.objects.filter(
+                    system_key=str(role).strip().lower(),
+                    is_active=True,
+                ).first()
+                if tenant_role is None:
+                    raise serializers.ValidationError(
+                        {"role": [f"The tenant role '{role}' is not configured."]}
+                    )
+                assign_user_role(
+                    user=user_account,
+                    role=tenant_role,
+                    actor=user,
+                )
         
         # Link user account to staff (loose coupling via id_number)
         staff.user_account_id_number = user_account.id_number

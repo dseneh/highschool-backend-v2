@@ -1,0 +1,18 @@
+{
+  "module": "employees",
+  "label": "Employees and HR",
+  "description": "Employee records and human resources",
+  "permissions": [
+    {"code": "employees.view", "name": "View Employees", "risk": "medium", "scopes": ["own", "all"]},
+    {"code": "employees.create", "name": "Create Employees", "risk": "high", "scopes": ["all"], "requires": ["employees.view"]},
+    {"code": "employees.update", "name": "Update Employees", "risk": "high", "scopes": ["all"], "requires": ["employees.view"]},
+    {"code": "employees.deactivate", "name": "Deactivate Employees", "risk": "critical", "scopes": ["all"], "requires": ["employees.view"]},
+    {"code": "employee.documents.view", "name": "View Employee Documents", "risk": "high", "scopes": ["own", "all"], "requires": ["employees.view"]},
+    {"code": "employee.payslip.view", "name": "View Payslips", "risk": "high", "scopes": ["own", "all"]},
+    {"code": "employee.leave.view", "name": "View Leave", "scopes": ["own", "all"]},
+    {"code": "employee.leave.request", "name": "Request Leave", "risk": "medium", "scopes": ["own"], "requires": ["employee.leave.view"]},
+    {"code": "employee.benefits.view", "name": "View Benefits", "risk": "medium", "scopes": ["own", "all"]},
+    {"code": "hr.view", "name": "View HR", "risk": "high", "scopes": ["all"], "requires": ["employees.view"]},
+    {"code": "hr.manage", "name": "Manage HR", "risk": "critical", "scopes": ["all"], "requires": ["hr.view"]}
+  ]
+}

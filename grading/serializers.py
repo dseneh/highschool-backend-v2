@@ -58,6 +58,17 @@ def normalize_condition_status_value(condition_status):
     return condition_status
 
 
+def normalize_grade_workflow_status(status):
+    """Return a valid grade workflow status, or None for missing/legacy values."""
+    if status is None:
+        return None
+
+    normalized = str(status).strip().lower()
+    if normalized in dict(Grade.Status.choices):
+        return normalized
+    return None
+
+
 def get_condition_status_code(condition_status, condition_reason=None):
     """Return short condition codes for non-numeric grade displays."""
     condition_status = normalize_condition_status_value(condition_status)
@@ -661,7 +672,7 @@ class StudentFinalGradeOut(serializers.Serializer):
                             if grade.score is not None
                             else None
                         )
-                        status = grade.status
+                        status = normalize_grade_workflow_status(grade.status)
 
                         # Set marking period status from first assessment with a grade
                         if marking_period_status is None and status:
@@ -846,7 +857,7 @@ class StudentAllFinalGradesOut(serializers.Serializer):
                             if grade.score is not None
                             else None
                         )
-                        student_status = grade.status
+                        student_status = normalize_grade_workflow_status(grade.status)
                         student_comment = (
                             grade.comment if hasattr(grade, "comment") else None
                         )
@@ -1321,7 +1332,9 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                     student_grade = grades_dict.get((student.id, assessment.id))
 
                     score = student_grade.score if student_grade else None
-                    status = student_grade.status if student_grade else None
+                    status = normalize_grade_workflow_status(
+                        student_grade.status if student_grade else None
+                    )
                     comment = student_grade.comment if student_grade else None
 
                     # Track grade IDs and correction status
@@ -1409,9 +1422,13 @@ class SimplifiedSectionFinalGradesOut(serializers.Serializer):
                 # Use first calculated grade status for this marking period.
                 marking_period_status = next(
                     (
-                        grade.status
+                        normalize_grade_workflow_status(grade.status)
                         for grade in mp_grades
-                        if grade.assessment and grade.assessment.is_calculated and grade.status
+                        if (
+                            grade.assessment
+                            and grade.assessment.is_calculated
+                            and normalize_grade_workflow_status(grade.status)
+                        )
                     ),
                     None,
                 )
@@ -1829,6 +1846,9 @@ class DefaultAssessmentTemplateIn(serializers.ModelSerializer):
 class AssessmentGenerationPreviewOut(serializers.Serializer):
     """Serializer for preview of what assessments would be generated"""
 
+    grading_style = serializers.ChoiceField(
+        choices=["single_entry", "multiple_entry"], required=False
+    )
     will_create = serializers.ListField(child=serializers.DictField())
     already_exists = serializers.ListField(child=serializers.DictField())
     skipped_by_target_mismatch = serializers.ListField(child=serializers.DictField())
@@ -2127,7 +2147,7 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                             and grade.assessment.is_calculated
                             and grade.status
                         ):
-                            status = grade.status
+                            status = normalize_grade_workflow_status(grade.status)
                             break
 
                 # Get subject rank for this marking period
@@ -2198,7 +2218,9 @@ class UnifiedStudentFinalGradesOut(serializers.Serializer):
                                 if grade_obj and grade_obj.score is not None
                                 else None
                             ),
-                            "status": grade_obj.status if grade_obj else None,
+                            "status": normalize_grade_workflow_status(
+                                grade_obj.status if grade_obj else None
+                            ),
                             "comment": grade_obj.comment if grade_obj else None,
                             "grade_id": str(grade_obj.id) if grade_obj else None,
                             "percentage": (

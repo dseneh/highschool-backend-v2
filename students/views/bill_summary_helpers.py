@@ -1,9 +1,11 @@
 from django.db.models import Q, Sum, Count
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import BillingAccessPolicy
+from students.authorization import permission_scope
 
 from academics.models import GradeLevel, AcademicYear
 from finance.models import Currency
@@ -11,13 +13,15 @@ from finance.models import Currency
 from ..models import StudentEnrollmentBill
 
 class BillSummaryMetadataView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     Get metadata for bill summary filtering including available academic years,
     grade levels, and sections.
     """
 
     def get(self, request):
+        if permission_scope(request, "billing.view") != "all":
+            raise PermissionDenied("Billing metadata requires billing.view:all.")
         try:
             # Get currency information (tenant-filtered)
             currency = self._get_school_currency()
@@ -74,13 +78,15 @@ class BillSummaryMetadataView(APIView):
             return None
 
 class BillSummaryQuickStatsView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     Get quick statistics for bill summary including totals
     for the current academic year.
     """
 
     def get(self, request):
+        if permission_scope(request, "billing.view") != "all":
+            raise PermissionDenied("Billing statistics require billing.view:all.")
         try:
             current_year = AcademicYear.objects.filter(active=True).first()
             

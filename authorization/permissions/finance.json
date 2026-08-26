@@ -1,0 +1,20 @@
+{
+  "module": "finance",
+  "label": "Finance and Accounting",
+  "description": "Billing, transactions, accounting, and financial controls",
+  "permissions": [
+    {"code": "billing.view", "name": "View Billing", "risk": "medium", "scopes": ["own", "all"]},
+    {"code": "billing.manage", "name": "Manage Billing", "risk": "high", "scopes": ["all"], "requires": ["billing.view"]},
+    {"code": "finance.transactions.view", "name": "View Transactions", "risk": "medium", "scopes": ["all"]},
+    {"code": "finance.transactions.create", "name": "Create Transactions", "risk": "high", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "finance.transactions.update", "name": "Update Transactions", "risk": "high", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "finance.transactions.delete", "name": "Delete Transactions", "risk": "critical", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "finance.transactions.approve", "name": "Approve Transactions", "risk": "critical", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "finance.transactions.cancel", "name": "Cancel Transactions", "risk": "critical", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "finance.transactions.complete", "name": "Complete Transactions", "risk": "high", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "finance.settings.manage", "name": "Manage Finance Settings", "risk": "critical", "scopes": ["all"], "requires": ["finance.transactions.view"]},
+    {"code": "accounting.view", "name": "View Accounting", "risk": "medium", "scopes": ["all"]},
+    {"code": "accounting.manage", "name": "Manage Accounting", "risk": "high", "scopes": ["all"], "requires": ["accounting.view"]},
+    {"code": "accounting.close_period", "name": "Close Accounting Periods", "risk": "critical", "scopes": ["all"], "requires": ["accounting.view", "accounting.manage"]}
+  ]
+}

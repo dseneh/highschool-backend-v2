@@ -22,6 +22,7 @@ from finance.models import BankAccount, PaymentMethod, Transaction, TransactionT
 from finance.serializers import TransactionDetailSerializer, TransactionSerializer
 from finance.validators import validate_transaction_data, get_student_net_remaining_balance
 from students.models import Student
+from authorization.runtime import user_has_permission
 
 
 class TransactionPageNumberPagination(PageNumberPagination):
@@ -50,8 +51,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _can_complete_transaction(user) -> bool:
-        role = str(getattr(user, "role", "") or "").strip().lower()
-        return role in {"admin", "superadmin"}
+        return user_has_permission(user, "finance.transactions.complete")
 
     def _ensure_tenant_context(self):
         """Reject tenant-specific finance operations in public schema."""
@@ -558,7 +558,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
     def complete(self, request, pk=None, *args, **kwargs):
         if not self._can_complete_transaction(request.user):
             return Response(
-                {"detail": "Only superadmin/admin can complete transactions."},
+                {"detail": "You do not have permission to complete transactions."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:
@@ -1196,7 +1196,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
         """
         if not self._can_complete_transaction(request.user):
             return Response(
-                {"detail": "Only superadmin/admin can complete transactions."},
+                {"detail": "You do not have permission to complete transactions."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

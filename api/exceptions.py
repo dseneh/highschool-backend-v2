@@ -25,8 +25,14 @@ def custom_exception_handler(exc, context):
     response = exception_handler(exc, context)
     
     if response is not None:
-        response.data = {"detail": detail_from_error(response.data)}
-        
+        payload = {"detail": detail_from_error(response.data)}
+        error_code = getattr(exc, "error_code", None)
+        if not error_code and isinstance(response.data, dict):
+            raw_code = response.data.get("error_code")
+            error_code = raw_code[0] if isinstance(raw_code, list) and raw_code else raw_code
+        if error_code:
+            payload["error_code"] = str(error_code)
+        response.data = payload
         return response
     
     # Handle Django Http404 exceptions (from middleware, etc.)

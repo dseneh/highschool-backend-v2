@@ -1,0 +1,11 @@
+{
+  "module": "attendance",
+  "label": "Attendance",
+  "description": "Student attendance recording and correction",
+  "permissions": [
+    {"code": "attendance.view", "name": "View Attendance", "scopes": ["own", "assigned", "all"]},
+    {"code": "attendance.take", "name": "Take Attendance", "risk": "medium", "scopes": ["assigned", "all"], "requires": ["attendance.view"]},
+    {"code": "attendance.update", "name": "Update Attendance", "risk": "medium", "scopes": ["assigned", "all"], "requires": ["attendance.view"]},
+    {"code": "attendance.correct", "name": "Correct Attendance", "risk": "high", "scopes": ["all"], "requires": ["attendance.view"]}
+  ]
+}

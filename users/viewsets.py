@@ -12,13 +12,14 @@ from rest_framework_simplejwt.authentication import JWTStatelessUserAuthenticati
 from api.authentication import TenantAwareJWTAuthentication
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q, Count
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection
 from django_tenants.utils import schema_context
 from django.utils import timezone
 
 from common.utils import get_object_by_uuid_or_fields
 from common.email_validation import require_valid_email
-from users.models import User, SpecialPrivilege
+from users.models import User
 from users.serializers import (
     UserSerializer,
     UserCreateSerializer,
@@ -30,7 +31,6 @@ from users.serializers import (
 )
 from common.api_response import error_response
 from users.access_policies import UserAccessPolicy
-from users.access_policies.permissions import PRIVILEGES
 from common.status import UserAccountType, Roles
 from django.conf import settings
 
@@ -94,6 +94,7 @@ class UserViewSet(viewsets.ModelViewSet):
         return linked_id_numbers
 
     def _apply_user_filters(self, queryset):
+        queryset = queryset.select_related('profile_updated_by')
         search = self.request.query_params.get('search')
         if search:
             queryset = queryset.filter(
@@ -104,15 +105,11 @@ class UserViewSet(viewsets.ModelViewSet):
                 Q(id_number__icontains=search)
             )
 
-        roles = self.request.query_params.getlist('role')
-        if roles:
-            queryset = queryset.filter(role__in=roles)
-
         account_types = self.request.query_params.getlist('account_type')
         if account_types:
             queryset = queryset.filter(account_type__in=account_types)
 
-        for field in ['is_active', 'is_staff', 'is_superuser', 'is_default_password']:
+        for field in ['is_active', 'is_platform_superuser', 'is_default_password']:
             value = self.request.query_params.get(field)
             if value is not None:
                 bool_value = value.lower() in ['true', '1', 'yes']
@@ -124,9 +121,9 @@ class UserViewSet(viewsets.ModelViewSet):
             'last_name', '-last_name',
             'username', '-username',
             'email', '-email',
-            'role', '-role',
             'id', '-id',
             'last_login', '-last_login',
+            'created_at', '-created_at',
             'id_number', '-id_number',
         ]
 
@@ -204,7 +201,7 @@ class UserViewSet(viewsets.ModelViewSet):
         # that aren't a per-tenant person record. That covers two cases:
         #   1. Users with no tenant membership at all, AND
         #   2. Users that are inherently global regardless of tenant access:
-        #      account_type=GLOBAL or role=superadmin. Superadmins are
+        #      account_type=GLOBAL or is_platform_superuser=True. Platform superusers are
         #      auto-linked into tenants for access, so without this they
         #      would be incorrectly hidden from the admin list.
         with schema_context('public'):
@@ -214,7 +211,7 @@ class UserViewSet(viewsets.ModelViewSet):
             queryset = User.objects.filter(
                 ~Q(pk__in=tenant_member_ids)
                 | Q(account_type__iexact=UserAccountType.GLOBAL)
-                | Q(role__iexact=Roles.SUPERADMIN)
+                | Q(is_platform_superuser=True)
             ).distinct()
             return self._apply_user_filters(queryset)
     
@@ -233,7 +230,7 @@ class UserViewSet(viewsets.ModelViewSet):
         which unlinks tenants and sets is_active=False (django-tenant-users contract).
 
         Hard delete (?hard=true): unlinks the user from every tenant, clears
-        any tenant-scoped FK references (SpecialPrivilege etc.), then deletes
+        any tenant-scoped foreign-key references, then deletes
         the row in public. We can't rely on Django's collector here because
         tenant-scoped tables don't exist in the public schema.
         """
@@ -246,6 +243,23 @@ class UserViewSet(viewsets.ModelViewSet):
         with schema_context('public'):
             if hard_delete:
                 from core.models import Tenant
+
+                owned_schemas = list(
+                    Tenant.objects.filter(owner_id=user.pk)
+                    .exclude(status=Tenant.STATUS_DELETED)
+                    .values_list('schema_name', flat=True)
+                )
+                if owned_schemas:
+                    return Response(
+                        {
+                            "detail": (
+                                "This user owns "
+                                f"{', '.join(owned_schemas)}. Transfer workspace ownership "
+                                "before deleting the account."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
 
                 username = user.username
                 user_pk = user.pk
@@ -331,7 +345,7 @@ class UserViewSet(viewsets.ModelViewSet):
         Django enforces `on_delete` behavior in Python via the Collector, so
         the underlying Postgres FK constraints have no cascade rule. That
         means a low-level `_raw_delete` of the user row is blocked by any
-        table still holding a reference (SpecialPrivilege, auditlog
+        table still holding a reference (audit log records, for example)
         LogEntry.actor, created_by/updated_by audit columns, etc.).
 
         Walk every registered model, find FKs to `users.User`, and apply the
@@ -391,7 +405,12 @@ class UserViewSet(viewsets.ModelViewSet):
         import logging
         from django.db import connection, transaction
 
+        from core.models import Tenant
+
         logger = logging.getLogger(__name__)
+        # Owner references are resolved explicitly before this runs; a blind
+        # purge here would delete workspaces.
+        protected_tables = {Tenant._meta.db_table}
 
         with connection.cursor() as cur:
             cur.execute(
@@ -419,6 +438,8 @@ class UserViewSet(viewsets.ModelViewSet):
             refs = cur.fetchall()
 
         for source_schema, source_table, source_column, not_null in refs:
+            if source_table in protected_tables:
+                continue
             qualified = f'"{source_schema}"."{source_table}"'
             col = f'"{source_column}"'
             try:
@@ -524,6 +545,10 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(user, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
+        with schema_context('public'):
+            user.profile_updated_at = timezone.now()
+            user.profile_updated_by = request.user
+            user.save(update_fields=['profile_updated_at', 'profile_updated_by'])
 
         new_email = serializer.validated_data.get('email')
         if new_email and new_email != old_email:
@@ -562,9 +587,13 @@ class UserViewSet(viewsets.ModelViewSet):
         
         account_type = lookup_serializer.validated_data['account_type']
         id_number = lookup_serializer.validated_data['id_number']
-        date_of_birth = lookup_serializer.validated_data['date_of_birth']
+        date_of_birth = lookup_serializer.validated_data.get('date_of_birth')
         notify_user = lookup_serializer.validated_data.get('notify_user', True)
-        
+        requested_role = lookup_serializer.validated_data.get('role')
+        record_filters = {'id_number': id_number}
+        if date_of_birth:
+            record_filters['date_of_birth'] = date_of_birth
+
         # Lookup source record
         source_record = None
         matched_student_id = None
@@ -572,31 +601,19 @@ class UserViewSet(viewsets.ModelViewSet):
         try:
             if account_type == UserAccountType.STUDENT:
                 from students.models import Student
-                source_record = Student.objects.filter(
-                    id_number=id_number,
-                    date_of_birth=date_of_birth,
-                ).first()
+                source_record = Student.objects.filter(**record_filters).first()
             
             elif account_type == UserAccountType.STAFF:
                 from staff.models import Staff
-                source_record = Staff.objects.filter(
-                    id_number=id_number,
-                    date_of_birth=date_of_birth,
-                ).first()
+                source_record = Staff.objects.filter(**record_filters).first()
                 if not source_record:
                     from hr.models import Employee
 
-                    source_record = Employee.objects.filter(
-                        id_number=id_number,
-                        date_of_birth=date_of_birth,
-                    ).first()
+                    source_record = Employee.objects.filter(**record_filters).first()
             
             elif account_type == UserAccountType.PARENT:
                 from students.models import Student
-                student = Student.objects.filter(
-                    id_number=id_number,
-                    date_of_birth=date_of_birth,
-                ).first()
+                student = Student.objects.filter(**record_filters).first()
                 
                 if student:
                     matched_student_id = student.id
@@ -610,7 +627,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         if not source_record:
             return Response(
-                {"detail": f"No {account_type} record found for id_number={id_number} and date_of_birth={date_of_birth}"},
+                {"detail": f"No {account_type} record found for id_number={id_number}"},
                 status=status.HTTP_404_NOT_FOUND,
             )
         
@@ -632,7 +649,19 @@ class UserViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
+        from authorization.services import resolve_assignable_role
+
+        try:
+            assigned_role = resolve_assignable_role(
+                requested_role, account_type=account_type
+            )
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": exc.messages[0], "errors": {"role": exc.messages}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Check if user already exists
         with schema_context('public'):
             existing_user = User.objects.filter(id_number=id_number).first()
@@ -663,7 +692,9 @@ class UserViewSet(viewsets.ModelViewSet):
                             {"detail": f"User exists but tenant assignment failed: {str(e)}"},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         )
-                
+
+                self._assign_role(existing_user, assigned_role, request, tenant_schema_name)
+
                 serializer = UserSerializer(existing_user, context={'request': request})
                 return Response(
                     {"detail": "User account already exists", "user": serializer.data},
@@ -680,16 +711,6 @@ class UserViewSet(viewsets.ModelViewSet):
             
             username = request.data.get('username') or self._generate_unique_username(str(id_number))
             
-            # Determine role
-            if account_type == UserAccountType.STUDENT:
-                role = Roles.STUDENT
-            elif account_type == UserAccountType.PARENT:
-                role = Roles.PARENT
-            elif account_type == UserAccountType.STAFF:
-                role = Roles.TEACHER
-            else:
-                role = Roles.VIEWER
-            
             # Create user
             user_data = {
                 'username': username,
@@ -699,7 +720,6 @@ class UserViewSet(viewsets.ModelViewSet):
                 'last_name': source_last_name,
                 'gender': source_gender,
                 'account_type': account_type,
-                'role': role,
                 'is_active': True,
             }
             
@@ -723,22 +743,12 @@ class UserViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     )
 
-            if notify_user:
-                from common.email_service import send_account_created_email
-                from users.utils import build_frontend_url
+            self._assign_role(user, assigned_role, request, tenant_schema_name)
 
-                login_url = build_frontend_url(tenant_schema_name, "/login")
-                email_sent = send_account_created_email(
-                    user=user,
-                    temporary_password=str(id_number),
-                    login_url=login_url,
-                    school=tenant,
-                )
-                if not email_sent:
-                    logger.warning(
-                        "Account-created email could not be sent to user %s",
-                        user.username,
-                    )
+            if notify_user:
+                from users.utils import send_welcome_email
+
+                send_welcome_email(user, str(id_number), tenant)
         
         # Update source record with user account id_number
         try:
@@ -756,6 +766,15 @@ class UserViewSet(viewsets.ModelViewSet):
         )
     
     @staticmethod
+    def _assign_role(user, role, request, tenant_schema_name) -> None:
+        """Role rows live in the tenant schema, not the public schema."""
+        from authorization.services import assign_user_role
+
+        actor = request.user if getattr(request.user, "is_authenticated", False) else None
+        with schema_context(tenant_schema_name):
+            assign_user_role(user=user, role=role, actor=actor)
+
+    @staticmethod
     def _generate_unique_username(base_username: str) -> str:
         """Generate unique username by appending numeric suffix if needed."""
         candidate = base_username
@@ -765,99 +784,6 @@ class UserViewSet(viewsets.ModelViewSet):
             index += 1
         return candidate
 
-    @action(detail=False, methods=['get'],
-            permission_classes=[UserAccessPolicy], url_path='privileges')
-    def privileges_catalog(self, request):
-        """Return all assignable special privilege definitions."""
-        data = [
-            {
-                "code": privilege.code,
-                "label": privilege.label,
-                "description": privilege.description,
-            }
-            for privilege in sorted(PRIVILEGES.values(), key=lambda item: item.code)
-        ]
-        return Response(data, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['get', 'put'],
-            permission_classes=[UserAccessPolicy], url_path='special-privileges')
-    def special_privileges(self, request, id_number=None):
-        """Get or replace user-specific special privilege assignments."""
-        user = self.get_object()
-
-        if request.method == 'GET':
-            assigned_codes = list(
-                SpecialPrivilege.objects.filter(user=user)
-                .values_list('code', flat=True)
-            )
-            return Response(
-                {
-                    "user_id_number": user.id_number,
-                    "assigned_codes": sorted(set(assigned_codes)),
-                    "effective_codes": user.get_privileges(),
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        raw_codes = request.data.get('codes', [])
-        if not isinstance(raw_codes, list):
-            return Response(
-                {"detail": "codes must be an array of privilege codes."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        requested_codes = sorted({str(code).strip().upper() for code in raw_codes if str(code).strip()})
-        invalid_codes = [code for code in requested_codes if code not in PRIVILEGES]
-        if invalid_codes:
-            return Response(
-                {"detail": "Invalid privilege code(s).", "invalid_codes": invalid_codes},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        current_codes = set(
-            SpecialPrivilege.objects.filter(user=user).values_list('code', flat=True)
-        )
-        requested_set = set(requested_codes)
-        to_add = requested_set - current_codes
-        to_remove = current_codes - requested_set
-
-        actor = request.user
-        unmanaged = [
-            code for code in sorted(to_add | to_remove)
-            if not actor.can_grant_privilege(code)
-        ]
-        if unmanaged:
-            return Response(
-                {
-                    "detail": "You are not allowed to grant or revoke one or more privileges.",
-                    "forbidden_codes": unmanaged,
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        for code in to_add:
-            SpecialPrivilege.objects.create(
-                user=user,
-                code=code,
-                granted_by=actor,
-            )
-
-        if to_remove:
-            SpecialPrivilege.objects.filter(user=user, code__in=list(to_remove)).delete()
-
-        assigned_codes = list(
-            SpecialPrivilege.objects.filter(user=user).values_list('code', flat=True)
-        )
-        return Response(
-            {
-                "detail": "Special privileges updated successfully.",
-                "user_id_number": user.id_number,
-                "assigned_codes": sorted(set(assigned_codes)),
-                "effective_codes": user.get_privileges(),
-            },
-            status=status.HTTP_200_OK,
-        )
-    
     @action(detail=False, methods=['get'], 
             authentication_classes=[TenantAwareJWTAuthentication],
             permission_classes=[UserAccessPolicy])
@@ -935,11 +861,7 @@ class UserViewSet(viewsets.ModelViewSet):
         }
         """
         actor = request.user
-        actor_role = str(getattr(actor, 'role', '') or '').lower()
-        is_actor_admin = bool(
-            getattr(actor, 'is_superuser', False)
-            or actor_role in {'admin', 'superadmin'}
-        )
+        is_actor_admin = bool(getattr(actor, 'is_platform_superuser', False) or request.can("users.update"))
         if not is_actor_admin:
             return Response(
                 {"detail": "Only admins can set another user's password."},
@@ -954,8 +876,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        target_role = str(getattr(target, 'role', '') or '').lower()
-        if target_role == 'superadmin' and actor_role != 'superadmin' and not getattr(actor, 'is_superuser', False):
+        if target.is_platform_superuser and not getattr(actor, 'is_platform_superuser', False):
             return Response(
                 {"detail": "Only a superadmin can reset another superadmin's password."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1007,20 +928,18 @@ class UserViewSet(viewsets.ModelViewSet):
         }
 
     def _is_target_superadmin(self, target) -> bool:
-        role = str(getattr(target, "role", "") or "").lower()
-        return role == "superadmin" or bool(getattr(target, "is_superuser", False))
+        return bool(getattr(target, "is_platform_superuser", False))
 
     def _require_admin_actor(self, request):
-        """Return (actor, error_response_or_None)."""
+        """Return (actor, error_response_or_None).
+
+        Tenant assignment crosses workspace boundaries, so it is reserved for
+        platform superadmins even though tenant admins may view the list.
+        """
         actor = request.user
-        actor_role = str(getattr(actor, "role", "") or "").lower()
-        is_admin = bool(
-            getattr(actor, "is_superuser", False)
-            or actor_role in {"admin", "superadmin"}
-        )
-        if not is_admin:
+        if not getattr(actor, "is_platform_superuser", False):
             return actor, Response(
-                {"detail": "Only admins can manage tenant assignments."},
+                {"detail": "Only platform superadmins can manage tenant assignments."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return actor, None
@@ -1093,7 +1012,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        is_staff_flag = bool(request.data.get('is_staff', False))
+        is_staff_flag = target.account_type == UserAccountType.STAFF
 
         with schema_context('public'):
             found_tenants = list(Tenant.objects.filter(schema_name__in=normalized))
