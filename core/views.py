@@ -3,6 +3,7 @@ Views for core models (Tenant management)
 """
 
 import secrets
+import re
 from datetime import timedelta
 
 from django.conf import settings
@@ -66,6 +67,73 @@ from staff.models import Staff
 User = get_user_model()
 
 ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+class PublicSchoolSearchView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from core.account_discovery import allow_request, public_school_results, request_ip
+
+        if not allow_request("schools-ip", request_ip(request), limit=60, window=60):
+            return Response({"detail": "Too many requests. Please try again shortly."}, status=429)
+        query = str(request.query_params.get("query") or "").strip()
+        if len(query) < 2:
+            return Response({"detail": "Enter at least two characters."}, status=400)
+        results = public_school_results(query, str(request.query_params.get("location") or ""))
+        return Response({"count": len(results), "results": results})
+
+
+class AccountDiscoveryStartView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from core.account_discovery import (
+            GENERIC_MESSAGE,
+            allow_request,
+            create_challenge,
+            identifier_digest,
+            normalize_identifier,
+            request_ip,
+        )
+
+        try:
+            identifier = normalize_identifier(
+                str(request.data.get("identifier") or ""), request.data.get("identifier_type")
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        allowed = allow_request("start-ip", request_ip(request), limit=10, window=900)
+        allowed = allowed and allow_request(
+            "start-identifier", identifier_digest(identifier), limit=3, window=900
+        )
+        if not allowed:
+            return Response({"detail": "Too many requests. Please try again later."}, status=429)
+        challenge_id = create_challenge(identifier)
+        response = {"message": GENERIC_MESSAGE, "challenge_id": challenge_id, "expires_in": 600}
+        return Response(response, status=202)
+
+
+class AccountDiscoveryVerifyView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from core.account_discovery import allow_request, request_ip, verify_challenge
+
+        challenge_id = str(request.data.get("challenge_id") or "").strip()
+        code = str(request.data.get("code") or "").strip()
+        if not challenge_id or not re.fullmatch(r"\d{6}", code):
+            return Response({"detail": "The verification code is invalid or has expired."}, status=400)
+        if not allow_request("verify-ip", request_ip(request), limit=30, window=900):
+            return Response({"detail": "Too many requests. Please try again later."}, status=429)
+        verified = verify_challenge(challenge_id, code)
+        if not verified:
+            return Response({"detail": "The verification code is invalid or has expired."}, status=400)
+        discovery_token, accounts = verified
+        return Response({"discovery_token": discovery_token, "expires_in": 300, "accounts": accounts})
 
 
 def _generate_activation_code(length: int = 8) -> str:
@@ -942,6 +1010,17 @@ def search_tenant_info(request):
         "data": {user/student/staff data}
     }
     """
+    return Response(
+        {
+            "detail": (
+                "This endpoint has been retired. Use the verified account-discovery "
+                "flow or the public school directory."
+            )
+        },
+        status=status.HTTP_410_GONE,
+    )
+
+    # Kept temporarily below for migration history; it is intentionally unreachable.
     from django.db.models import Q
     from django_tenants.utils import get_public_schema_name
 
