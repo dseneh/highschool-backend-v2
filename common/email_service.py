@@ -288,29 +288,6 @@ def send_password_reset_email(user, reset_url: str, school=None) -> bool:
     )
 
 
-def send_account_discovery_code_email(email: str, code: str) -> bool:
-    """Send the short-lived code used to reveal school associations."""
-    if not is_valid_email(email):
-        return False
-    context = {
-        "code": code,
-        "expires_minutes": 10,
-        "support_email": getattr(settings, "SUPPORT_EMAIL", "support@myezyschool.com"),
-    }
-    try:
-        html_body = render_to_string("emails/account_discovery_code.html", context)
-        text_body = render_to_string("emails/account_discovery_code.txt", context)
-    except Exception as exc:
-        logger.error("send_account_discovery_code_email: template render error - %s", exc)
-        return False
-    return ResendEmailService().send(
-        to=[email],
-        subject="Your EzySchool verification code",
-        html_body=html_body,
-        text_body=text_body,
-    )
-
-
 def send_password_reset_success_email(user, login_url: str = "", school=None) -> bool:
     """Send a confirmation email after a password has been reset successfully."""
     if not user.email:
