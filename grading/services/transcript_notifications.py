@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 
 _TRANSCRIPT_QUEUE_PATH = "/grading/transcript-requests"
 _STUDENT_REPORTS_PATH = "/my-reports"
-_TRANSCRIPT_ADMIN_ROLES = {"admin", "registrar", "superadmin", "school_administrator"}
-_TRANSCRIPT_ADMIN_PRIVILEGES = {"GRADING_APPROVE", "GRADING_ENTER"}
 
 
 def _student_display_name(student: Student) -> str:
@@ -36,18 +34,11 @@ def _resolve_transcript_admin_user_ids() -> list[str]:
     tenant_users = get_tenant_user_queryset()
 
     for user in tenant_users.iterator():
-        role = (getattr(user, "role", None) or "").lower()
-        if role in _TRANSCRIPT_ADMIN_ROLES:
-            recipient_ids.add(user.id)
-            continue
-        if getattr(user, "is_superuser", False) or getattr(user, "is_admin", False):
-            recipient_ids.add(user.id)
-            continue
-        try:
-            privileges = set(user.get_privileges() or [])
-        except Exception:
-            privileges = set()
-        if privileges & _TRANSCRIPT_ADMIN_PRIVILEGES:
+        from authorization.runtime import user_has_permission
+
+        if user_has_permission(user, "grades.approve") or user_has_permission(
+            user, "grades.enter"
+        ):
             recipient_ids.add(user.id)
 
     return [str(user_id) for user_id in recipient_ids]

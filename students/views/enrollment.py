@@ -24,6 +24,7 @@ from ..serializers import EnrollmentSerializer
 
 class EnrollmentListView(APIView):
     permission_classes = [StudentAccessPolicy]
+    policy_action_map = {"get": "get", "post": "enroll"}
     # permission_classes = [AllowAny]
     def get_object(self, id):
         try:
@@ -200,7 +201,7 @@ class EnrollmentListView(APIView):
 
 class EnrollmentDetailView(APIView):
     permission_classes = [StudentAccessPolicy]
-    # permission_classes = [IsAuthenticatedOrReadOnly, IsAdminOrSystemAdmin]
+    policy_action_map = {"get": "get", "put": "enroll", "delete": "delete"}
     def get_object(self, id):
         try:
             return Enrollment.objects.get(id=id)

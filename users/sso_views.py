@@ -37,6 +37,22 @@ from users.sso_serializers import (
 )
 from users.sso_utils import hash_value, verify_pkce_s256
 from users.tenant_access import user_has_tenant_workspace_access
+from authorization.services import (
+    NO_ASSIGNED_ROLE_CODE,
+    NO_ASSIGNED_ROLE_DETAIL,
+    get_assigned_role,
+)
+
+
+def _lacks_assigned_role(user, tenant) -> bool:
+    """Distinguish "no role assigned" from "not a member of this workspace"."""
+    from django_tenants.utils import schema_context
+
+    try:
+        with schema_context(tenant.schema_name):
+            return user.has_tenant_permissions() and get_assigned_role(user) is None
+    except Exception:
+        return False
 
 
 CENTRAL_SSO_COOKIE_NAMES = ("ezyschool_sso", "__Host-ezyschool_sso")
@@ -234,6 +250,11 @@ class SsoAuthorizeView(APIView):
             )
 
         if not user_has_tenant_workspace_access(auth_user, tenant):
+            if _lacks_assigned_role(auth_user, tenant):
+                return Response(
+                    {"detail": NO_ASSIGNED_ROLE_DETAIL, "error_code": NO_ASSIGNED_ROLE_CODE},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return Response(
                 {"detail": "No active membership for requested tenant.", "error_code": "TENANT_ACCESS_DENIED"},
                 status=status.HTTP_403_FORBIDDEN,
@@ -371,6 +392,11 @@ class SsoTokenExchangeView(APIView):
                 )
 
             if not user_has_tenant_workspace_access(user, tenant):
+                if _lacks_assigned_role(user, tenant):
+                    return Response(
+                        {"detail": NO_ASSIGNED_ROLE_DETAIL, "error_code": NO_ASSIGNED_ROLE_CODE},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
                 return Response(
                     {"detail": "User has no active membership for this tenant.", "error_code": "TENANT_ACCESS_DENIED"},
                     status=status.HTTP_403_FORBIDDEN,
@@ -392,12 +418,15 @@ class SsoTokenExchangeView(APIView):
                 global_session=auth_session,
             )
 
+            from authorization.runtime import resolve_authorization_context
+
+            authorization_context = resolve_authorization_context(user)
             tenant_session = TenantSession.objects.create(
                 session_key_hash=hash_value(secrets.token_urlsafe(48)),
                 user=user,
                 tenant=tenant,
                 membership_id="",
-                roles=[str(user.role)],
+                roles=[authorization_context.role_id] if authorization_context.role_id else [],
                 permission_version=1,
                 refresh_token_family=token_family,
                 global_session=auth_session,

@@ -112,32 +112,32 @@ class TransactionAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["destroy", "delete", "delete_by_reference"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:TRANSACTION_DELETE",
+            "condition": "has_rbac_permission:finance.transactions.delete",
         },
         {
             "action": ["approve", "set_status"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:TRANSACTION_APPROVE",
+            "condition": "has_rbac_permission:finance.transactions.approve",
         },
         {
             "action": ["cancel", "set_status"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:TRANSACTION_CANCEL",
+            "condition": "has_rbac_permission:finance.transactions.cancel",
         },
         {
             "action": ["complete", "bulk_complete"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "is_role_in:superadmin,admin",
+            "condition": "has_rbac_permission:finance.transactions.complete",
         },
         # 6) FINANCE_VIEW / FINANCE_MANAGE overrides for all finance models
         {
             "action": ["list", "retrieve"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:FINANCE_VIEW",
+            "condition": "has_rbac_permission:finance.transactions.view",
         },
         # VIEWER: Read-only access (list and retrieve)
         {

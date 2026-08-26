@@ -5,6 +5,7 @@ from pathlib import Path
 
 import msgspec
 
+from authorization.constants import SUPERADMIN_ROLE_KEYS
 from authorization.registry import PermissionRegistry, get_permission_registry
 from authorization.validators import (
     MODULE_PATTERN,
@@ -52,6 +53,13 @@ def load_system_roles(
     for role in roles:
         if not MODULE_PATTERN.fullmatch(role.key):
             raise RegistryValidationError(f"Invalid system role key: {role.key}")
+        # Superadmin bypasses the permission map, so grants would be meaningless.
+        if role.key in SUPERADMIN_ROLE_KEYS:
+            if role.grants:
+                raise RegistryValidationError(
+                    f"System role {role.key} is unrestricted and must not declare grants"
+                )
+            continue
         if not role.grants:
             raise RegistryValidationError(f"System role {role.key} has no grants")
 

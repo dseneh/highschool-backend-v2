@@ -5,22 +5,24 @@ from rest_framework.views import APIView
 from academics.models import AcademicYear
 from students.access_policies import StudentAccessPolicy
 from students.services.year_end_wizard import apply_year_end_wizard, build_year_end_wizard_preview
-from users.access_policies.access import BaseSchoolAccessPolicy
+from grading.services.authorization import get_teacher_allowed_section_ids
+from authorization.runtime import initialize_request_authorization
 
 
 class YearEndWizardView(APIView):
     permission_classes = [StudentAccessPolicy]
+    policy_action_map = {"post": "promote"}
 
     def _scope(self, request):
-        policy = BaseSchoolAccessPolicy()
-        if policy.is_role_in(request, self, "post", "admin,registrar"):
+        scope = initialize_request_authorization(
+            request,
+            request.user,
+        ).permission_scope("students.promote")
+        if scope == "all":
             return None
-        if not policy.is_role_in(request, self, "post", "teacher"):
-            return False
-        from staff.models import Staff, TeacherSection
-
-        staff = Staff.objects.filter(user_account_id_number=getattr(request.user, "id_number", "")).first()
-        return list(TeacherSection.objects.filter(teacher=staff).values_list("section_id", flat=True)) if staff else []
+        if scope == "assigned":
+            return list(get_teacher_allowed_section_ids(request.user) or [])
+        return False
 
     def post(self, request):
         allowed_section_ids = self._scope(request)

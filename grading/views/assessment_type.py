@@ -11,8 +11,10 @@ from grading.utils import paginate_qs
 
 from grading.models import AssessmentType
 from grading.serializers import AssessmentTypeOut
+from grading.services.scope_authorization import require_all_grading_scope
 
 class AssessmentTypeListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
 
     def get(self, request):
         qs = AssessmentType.objects.only(
@@ -23,6 +25,7 @@ class AssessmentTypeListCreateView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        require_all_grading_scope(request, "grades.enter")
         
         name = request.data.get("name")
         description = (request.data.get("description") or "").strip()
@@ -53,6 +56,7 @@ class AssessmentTypeDetailView(APIView):
 
     @transaction.atomic
     def patch(self, request, pk):
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
 
         allowed_fields = ["name", "description", "active"]
@@ -62,6 +66,7 @@ class AssessmentTypeDetailView(APIView):
 
     @transaction.atomic
     def delete(self, request, pk):
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
         
         # see if any Assessmentss exist with this type

@@ -14,8 +14,13 @@ from authorization.runtime import (
     initialize_request_authorization,
     resolve_authorization_context,
 )
-from authorization.services import replace_role_permissions
-from authorization.views import PermissionCatalogView, RoleViewSet, UserRoleView
+from authorization.services import assign_user_role, replace_role_permissions
+from authorization.views import (
+    BulkUserRoleAssignmentView,
+    PermissionCatalogView,
+    RoleViewSet,
+    UserRoleView,
+)
 from users.models import User
 
 
@@ -37,7 +42,6 @@ class AuthorizationPersistenceTests(TenantTestCase):
             defaults={
                 "username": "authorization-owner",
                 "id_number": "AUTHORIZATION-OWNER-001",
-                "role": "admin",
                 "first_name": "Authorization",
                 "last_name": "Owner",
             },
@@ -68,7 +72,7 @@ class AuthorizationPersistenceTests(TenantTestCase):
             verbosity=0,
         )
 
-        self.assertEqual(Role.objects.filter(is_system_role=True).count(), 8)
+        self.assertEqual(Role.objects.filter(is_system_role=True).count(), 9)
         admin = Role.objects.get(system_key="admin")
         self.assertEqual(
             admin.permission_grants.count(),
@@ -86,7 +90,7 @@ class AuthorizationPersistenceTests(TenantTestCase):
         self.assertEqual(admin.permission_version, original_version)
 
     def test_new_tenant_schema_is_seeded_automatically(self):
-        self.assertEqual(Role.objects.filter(is_system_role=True).count(), 8)
+        self.assertEqual(Role.objects.filter(is_system_role=True).count(), 9)
 
     def test_custom_role_accepts_valid_scoped_permission(self):
         role = Role.objects.create(name="Senior Teacher")
@@ -169,7 +173,6 @@ class AuthorizationPersistenceTests(TenantTestCase):
             defaults={
                 "username": "authorization-other",
                 "id_number": "AUTHORIZATION-OTHER-001",
-                "role": "viewer",
             },
         )
         membership.user = other_user
@@ -262,7 +265,6 @@ class AuthorizationPersistenceTests(TenantTestCase):
             defaults={
                 "username": "authorization-no-membership",
                 "id_number": "AUTHORIZATION-NO-MEMBER-001",
-                "role": "viewer",
             },
         )
 
@@ -363,9 +365,9 @@ class AuthorizationPersistenceTests(TenantTestCase):
             email="platform-superadmin@example.com",
             username="platform-superadmin",
             id_number="SUPER-001",
-            role="superadmin",
             first_name="Platform",
             last_name="Superadmin",
+            is_platform_superuser=True,
         )
         grants = {"grades.view": "own", "grades.review": "all", "students.view": "assigned"}
         validate_permission_delegation(superadmin, grants)
@@ -397,7 +399,6 @@ class AuthorizationPersistenceTests(TenantTestCase):
             defaults={
                 "username": "authorization-role-target",
                 "id_number": "AUTH-ROLE-TARGET-001",
-                "role": "viewer",
             },
         )
         self.tenant.add_user(target)
@@ -416,6 +417,55 @@ class AuthorizationPersistenceTests(TenantTestCase):
         membership = TenantMembership.objects.get(user=target)
         self.assertEqual(membership.role, staff_role)
         self.assertEqual(TenantMembership.objects.filter(user=target).count(), 1)
+
+    def test_bulk_user_role_api_assigns_one_role_to_multiple_users(self):
+        first = User.objects.create(
+            email="authorization-bulk-first@example.com",
+            username="authorization-bulk-first",
+            id_number="AUTH-BULK-001",
+        )
+        second = User.objects.create(
+            email="authorization-bulk-second@example.com",
+            username="authorization-bulk-second",
+            id_number="AUTH-BULK-002",
+        )
+        self.tenant.add_user(first)
+        self.tenant.add_user(second)
+        role = Role.objects.get(system_key="staff")
+
+        response = BulkUserRoleAssignmentView.as_view()(
+            self._request(
+                "post",
+                "/api/v1/authorization/users/roles/bulk/",
+                {"role_id": str(role.pk), "id_numbers": [first.id_number, second.id_number]},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["assignments"]), 2)
+        self.assertEqual(
+            set(TenantMembership.objects.filter(user__in=[first, second]).values_list("role_id", flat=True)),
+            {role.pk},
+        )
+
+    def test_role_users_api_lists_current_memberships(self):
+        role = Role.objects.get(system_key="staff")
+        target = User.objects.create(
+            email="authorization-role-list@example.com",
+            username="authorization-role-list",
+            id_number="AUTH-ROLE-LIST-001",
+        )
+        self.tenant.add_user(target)
+        assign_user_role(user=target, role=role, actor=self.tenant.owner)
+
+        response = RoleViewSet.as_view({"get": "users"})(
+            self._request("get", f"/api/v1/authorization/roles/{role.pk}/users/"),
+            pk=role.pk,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id_number"], target.id_number)
 
     def test_membership_version_changes_with_role(self):
         teacher = Role.objects.create(name="Versioned Teacher")

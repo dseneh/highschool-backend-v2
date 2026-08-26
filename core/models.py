@@ -537,7 +537,7 @@ class GradingBypassOperation(models.Model):
 
 
 class TenantCreationJob(models.Model):
-    """Public-schema state for asynchronous clone-based tenant creation."""
+    """Public-schema state for asynchronous tenant creation (default and clone)."""
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
@@ -545,7 +545,16 @@ class TenantCreationJob(models.Model):
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
 
+    class InitializationSource(models.TextChoices):
+        DEFAULT = "default", "Default setup"
+        CLONE = "clone", "Cloned from source tenant"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    initialization_source = models.CharField(
+        max_length=20,
+        choices=InitializationSource.choices,
+        default=InitializationSource.DEFAULT,
+    )
     source_tenant = models.ForeignKey(
         Tenant,
         on_delete=models.SET_NULL,

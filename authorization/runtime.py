@@ -15,6 +15,7 @@ from authorization.cache import (
     CachedRolePointer,
 )
 from authorization.models import RolePermission, TenantMembership
+from authorization.constants import SUPERADMIN_ROLE_KEYS
 from authorization.registry import get_permission_registry
 from users.tenant_access import is_global_superadmin
 
@@ -78,6 +79,7 @@ def _context_from_bundle(
         permission_version=role.permission_version if role else 0,
         permissions=role_permissions.permissions if active else {},
         active=active,
+        unrestricted=bool(active and role.system_key in SUPERADMIN_ROLE_KEYS),
         cache_hit=True,
     )
 
@@ -96,7 +98,7 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
 
     # Platform superadmins are intentionally not assigned tenant role grants.
     # They have unrestricted access in every tenant workspace.
-    if is_global_superadmin(user) or getattr(user, "is_superuser", False):
+    if is_global_superadmin(user):
         return AuthorizationContext(
             schema_name=schema_name,
             user_id=str(user_id),
@@ -135,6 +137,7 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
                 role_id=str(role.pk),
                 permission_version=role.permission_version,
                 active=role.is_active,
+                system_key=(role.system_key or "").strip().lower(),
             )
 
             if not membership.is_active or not role.is_active:
@@ -183,6 +186,10 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
                 permission_version=role.permission_version,
                 permissions=permissions,
                 active=True,
+                unrestricted=(
+                    (role.system_key or "").strip().lower()
+                    in SUPERADMIN_ROLE_KEYS
+                ),
             )
     except Exception:
         logger.exception(
@@ -191,6 +198,14 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
             schema_name,
         )
         return _denied_context(schema_name, user_id)
+
+
+def user_has_permission(user, permission_code: str, *, scope: str = "all") -> bool:
+    """Evaluate an RBAC permission outside a DRF request lifecycle."""
+    permission_scope = resolve_authorization_context(user).permission_scope(
+        permission_code
+    )
+    return permission_scope == "all" or permission_scope == scope
 
 
 class AuthorizationBindingError(RuntimeError):

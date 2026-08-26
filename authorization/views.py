@@ -8,10 +8,12 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from authorization.constants import SUPERADMIN_ROLE_KEYS
 from authorization.drf import RBACPermission
 from authorization.models import Role, RolePermission, TenantMembership
 from authorization.registry import get_permission_registry
 from authorization.serializers import (
+    BulkUserRoleAssignmentSerializer,
     RoleCloneSerializer,
     RolePermissionReplacementSerializer,
     RoleSerializer,
@@ -98,11 +100,12 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
         "destroy": "roles.delete",
         "clone": "roles.clone",
         "replace_permissions": "roles.assign_permissions",
+        "users": "roles.view",
     }
     lookup_field = "pk"
 
     def get_queryset(self):
-        return (
+        queryset = (
             Role.objects.annotate(user_count=Count("memberships"))
             .prefetch_related(
                 Prefetch(
@@ -112,6 +115,9 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
             )
             .order_by("name")
         )
+        # Keep the reserved superadmin role out of role-management surfaces so
+        # it is never offered for assignment or editing.
+        return queryset.exclude(system_key__in=SUPERADMIN_ROLE_KEYS)
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -245,6 +251,28 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
         role = self.get_queryset().get(pk=role.pk)
         return Response(RoleSerializer(role).data)
 
+    @action(detail=True, methods=["get"], url_path="users")
+    def users(self, request, pk=None):
+        role = self.get_object()
+        memberships = TenantMembership.objects.filter(role=role).select_related("user")
+        return Response(
+            {
+                "count": memberships.count(),
+                "results": [
+                    {
+                        "id": str(membership.user.pk),
+                        "id_number": membership.user.id_number,
+                        "first_name": membership.user.first_name,
+                        "last_name": membership.user.last_name,
+                        "email": membership.user.email,
+                        "account_type": membership.user.account_type,
+                        "is_active": membership.is_active,
+                    }
+                    for membership in memberships
+                ],
+            }
+        )
+
 
 class UserRoleView(TenantAuthorizationMixin, APIView):
     permission_classes = [RBACPermission]
@@ -302,3 +330,37 @@ class UserRoleView(TenantAuthorizationMixin, APIView):
                 "is_active": membership.is_active,
             }
         )
+
+
+class BulkUserRoleAssignmentView(UserRoleView):
+    permission_map = {"post": "roles.assign_users"}
+
+    @transaction.atomic
+    def post(self, request):
+        serializer = BulkUserRoleAssignmentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            role = Role.objects.get(pk=serializer.validated_data["role_id"])
+        except Role.DoesNotExist as exc:
+            raise ValidationError("Role not found.") from exc
+
+        users = [self._user(id_number) for id_number in serializer.validated_data["id_numbers"]]
+        assignments = []
+        try:
+            for user in users:
+                membership = assign_user_role(
+                    user=user,
+                    role=role,
+                    actor=request.user,
+                    metadata=_metadata(request),
+                )
+                assignments.append(
+                    {
+                        "user_id": str(user.pk),
+                        "id_number": user.id_number,
+                        "membership_id": str(membership.pk),
+                    }
+                )
+        except DjangoValidationError as exc:
+            _raise_api_validation(exc)
+        return Response({"role": RoleSerializer(role).data, "assignments": assignments})

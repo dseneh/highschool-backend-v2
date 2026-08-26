@@ -1,12 +1,13 @@
 from django.db.models import Q
 from rest_framework.exceptions import PermissionDenied
 
-from common.status import Roles
 from hr.models import Employee, EmployeeTeacherSection, EmployeeTeacherSubject
+from users.tenant_access import is_global_superadmin
 
 
-def _is_teacher_role(user) -> bool:
-    return (getattr(user, "role", "") or "").strip().lower() == Roles.TEACHER
+GRADE_ASSIGNMENT_DENIED_MESSAGE = (
+    "You are not assigned to teach this subject for this class/section."
+)
 
 
 def _find_employee_for_user(user):
@@ -35,8 +36,6 @@ def _find_employee_by_id_number(teacher_id_number):
 
 
 def _is_teacher_user(user) -> bool:
-    if _is_teacher_role(user):
-        return True
     employee = _find_employee_for_user(user)
     return bool(employee and employee.is_teacher)
 
@@ -51,17 +50,7 @@ def _get_teacher_employee(user):
 
     employee = _find_employee_for_user(user)
     has_teacher_flag = bool(employee and employee.is_teacher)
-
-    if not _is_teacher_role(user):
-        # Non-teacher roles are only treated as teacher when the HR employee record is marked as teacher.
-        if has_teacher_flag:
-            return employee
-        return None
-
-    if not has_teacher_flag:
-        raise PermissionDenied("Teacher profile not found or not marked as teacher.")
-
-    return employee
+    return employee if has_teacher_flag else None
 
 
 def _get_teacher_employee_by_id_number(teacher_id_number):
@@ -91,6 +80,9 @@ def get_teacher_allowed_section_ids_for_subject(user, subject_id):
     - Subject permission can be section-scoped (TeacherSubject.section_subject)
       or teacher-subject scoped (TeacherSubject.subject).
     """
+    if is_global_superadmin(user):
+        return None
+
     teacher_employee = _get_teacher_employee(user)
     if not teacher_employee:
         return None
@@ -132,9 +124,15 @@ def enforce_teacher_grade_access(user, section_id, subject_id):
     # while allowed_sections contains uuid.UUID objects from values_list().
     normalized = str(section_id)
     if normalized not in {str(s) for s in allowed_sections}:
-        raise PermissionDenied(
-            "You are not assigned to this class/subject."
-        )
+        raise PermissionDenied(GRADE_ASSIGNMENT_DENIED_MESSAGE)
+
+
+def can_edit_assigned_grades(user, section_id, subject_id):
+    """Return whether assignment scope permits grade edits for this user."""
+    allowed_sections = get_teacher_allowed_section_ids_for_subject(user, subject_id)
+    if allowed_sections is None:
+        return True
+    return str(section_id) in {str(value) for value in allowed_sections}
 
 
 def get_teacher_allowed_section_ids(user):

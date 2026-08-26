@@ -20,6 +20,11 @@ from grading.services.transcript_access import (
     list_transcript_requests,
     update_transcript_request_status,
 )
+from grading.services.scope_authorization import (
+    require_all_grading_scope,
+    require_scope_access,
+    user_can_view_student_grades,
+)
 from grading.tasks.transcript_worker import start_official_transcript_background_task
 from grading.services.grade_access import enforce_grade_access
 from reports.tasks import TaskManager
@@ -42,6 +47,7 @@ class OfficialTranscriptAccessStatusView(APIView):
         except Student.DoesNotExist:
             return Response({"detail": "Student does not exist."}, status=404)
 
+        require_scope_access(user_can_view_student_grades(student, request))
         status_payload = build_access_status(request.user, student)
         if not status_payload["is_admin_viewer"] and not status_payload["is_student_owner"]:
             return Response({"detail": "Not authorized to view transcript access."}, status=403)
@@ -267,6 +273,7 @@ class OfficialTranscriptRequestListView(APIView):
     permission_classes = [GradebookAccessPolicy]
 
     def get(self, request):
+        require_all_grading_scope(request, "grades.view")
         status_filter = (request.query_params.get("status") or "").strip() or None
         student_id = (request.query_params.get("student_id") or "").strip() or None
         results = list_transcript_requests(status=status_filter, student_id=student_id)

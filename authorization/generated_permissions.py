@@ -70,6 +70,7 @@ class Permissions:
         ENTER = "grades.enter"
         REVIEW = "grades.review"
         APPROVE = "grades.approve"
+        REJECT = "grades.reject"
         UNLOCK = "grades.unlock"
 
     class Notifications:
@@ -111,6 +112,15 @@ class Permissions:
         CREATE = "students.create"
         UPDATE = "students.update"
         DELETE = "students.delete"
+        class Contacts:
+            VIEW = "students.contacts.view"
+            MANAGE = "students.contacts.manage"
+        class Guardians:
+            VIEW = "students.guardians.view"
+            MANAGE = "students.guardians.manage"
+        class Discipline:
+            VIEW = "students.discipline.view"
+            MANAGE = "students.discipline.manage"
         ENROLL = "students.enroll"
         PROMOTE = "students.promote"
         TRANSFER = "students.transfer"

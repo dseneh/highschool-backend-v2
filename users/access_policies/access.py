@@ -18,8 +18,8 @@ class BaseSchoolAccessPolicy(AccessPolicy):
     Provides helper conditions:
       - is_role_in:SUPERADMIN,TENANT_ADMIN
             - is_teacher_user
-      - has_privilege:GRADING_APPROVE
-      - has_any_privilege:GRADING_ENTER,GRADING_REVIEW
+    - has_rbac_permission:grades.approve
+    - has_any_rbac_permission:grades.enter,grades.review
     """
 
     # Default: everything is denied unless explicitly allowed by subclass statements.
@@ -31,13 +31,31 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         }
     ]
 
+    def _has_unrestricted_access(self, request) -> bool:
+        user = self._get_user(request)
+        if not user:
+            return False
+        if is_global_superadmin(user):
+            return True
+
+        from authorization.runtime import initialize_request_authorization
+
+        return initialize_request_authorization(request, user).context.unrestricted
+
+    def has_permission(self, request, view) -> bool:
+        if self._has_unrestricted_access(request):
+            return True
+        return super().has_permission(request, view)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        if self._has_unrestricted_access(request):
+            return True
+        return super().has_object_permission(request, view, obj)
+
     # --- helper condition methods used by AccessPolicy JSON-like statements ---
 
     def _normalize_code(self, value: str) -> str:
         return (value or "").strip().upper()
-
-    def _normalize_role(self, value: str) -> str:
-        return (value or "").strip().lower()
 
     def _get_user(self, request) -> User | None:
         user: User | None = getattr(request, "user", None)
@@ -59,7 +77,11 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         request = getattr(view, "request", None)
         method = getattr(request, "method", None)
         if method:
-            return method.lower()
+            method = method.lower()
+            action_map = getattr(view, "policy_action_map", None)
+            if isinstance(action_map, dict):
+                return action_map.get(method, method)
+            return method
 
         return super()._get_invoked_action(view)
 
@@ -72,59 +94,72 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         if not user:
             return False
 
-        user_role = self._normalize_role(getattr(user, "role", ""))
-
-        if is_global_superadmin(user) or user.is_superuser:
+        if is_global_superadmin(user):
             return True
 
-        allowed: List[str] = [self._normalize_role(r) for r in roles.split(",") if r.strip()]
-        # underlying value of Roles.* should match User.role
-        return user_role in allowed
+        from authorization.runtime import initialize_request_authorization
 
-    def has_privilege(self, request, view, action, privilege_code: str) -> bool:
+        authorization = initialize_request_authorization(request, user)
+        role_key = authorization.context.role_id
+        if not role_key:
+            return False
+        from authorization.models import Role
+
+        system_key = Role.objects.filter(pk=role_key).values_list(
+            "system_key", flat=True
+        ).first()
+        allowed: List[str] = [r.strip().lower() for r in roles.split(",") if r.strip()]
+        return system_key in allowed
+
+    def has_rbac_permission(self, request, view, action, permission_code: str) -> bool:
         """
-        Returns True if the user has the given privilege code.
-        Usage: "condition": "has_privilege:GRADING_APPROVE"
+        Returns True if the user has the given RBAC permission at all scope.
+        Usage: "condition": "has_rbac_permission:grades.approve"
         """
         user = self._get_user(request)
         if not user:
             return False
 
-        if is_global_superadmin(user) or user.is_superuser:
+        if is_global_superadmin(user):
             return True
 
-        return user.has_privilege(self._normalize_code(privilege_code))
+        from authorization.runtime import initialize_request_authorization
 
-    def has_any_privilege(self, request, view, action, privilege_codes: str) -> bool:
+        return initialize_request_authorization(request, user).permission_scope(
+            permission_code
+        ) == "all"
+
+    def has_any_rbac_permission(self, request, view, action, permission_codes: str) -> bool:
         """
-        Returns True if the user has ANY of the given privilege codes.
-        Usage: "condition": "has_any_privilege:GRADING_ENTER,GRADING_REVIEW"
+        Returns True if the user has ANY listed RBAC permission at all scope.
+        Usage: "condition": "has_any_rbac_permission:grades.enter,grades.review"
         """
         user = self._get_user(request)
         if not user:
             return False
 
-        if is_global_superadmin(user) or user.is_superuser:
+        if is_global_superadmin(user):
             return True
 
-        codes = [self._normalize_code(c) for c in privilege_codes.split(",") if c.strip()]
-        user_privileges = set(user.get_privileges())
-        return any(code in user_privileges for code in codes)
+        from authorization.runtime import initialize_request_authorization
+
+        permission_scope = initialize_request_authorization(
+            request,
+            user,
+        ).permission_scope
+        codes = [code.strip() for code in permission_codes.split(",") if code.strip()]
+        return any(permission_scope(code) == "all" for code in codes)
 
     def is_teacher_user(self, request, view, action) -> bool:
         """
         True when the user is considered a teacher for grading access.
 
-        A user qualifies as teacher if either:
-        - user.role is teacher, OR
-        - the linked staff record is marked is_teacher=True.
+        A user qualifies as teacher when the linked staff or employee record is
+        marked ``is_teacher=True``. Authorization remains RBAC-based.
         """
         user = self._get_user(request)
         if not user:
             return False
-
-        if self._normalize_role(getattr(user, "role", "")) == self._normalize_role(Roles.TEACHER):
-            return True
 
         from hr.models import Employee
         from staff.models import Staff

@@ -12,7 +12,7 @@ django.setup()
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from common.status import Roles, UserAccountType
+from common.status import UserAccountType
 
 User = get_user_model()
 
@@ -31,7 +31,7 @@ def fix_or_create_superuser():
         
         # Force-update all fields
         user.username = username
-        user.role = Roles.SUPERADMIN
+        user.is_platform_superuser = True
         user.account_type = UserAccountType.GLOBAL
         user.first_name = "System"
         user.last_name = "Administrator"
@@ -52,7 +52,7 @@ def fix_or_create_superuser():
             last_name="Administrator",
             id_number="admin001",
             account_type=UserAccountType.GLOBAL,
-            role=Roles.SUPERADMIN,
+            is_platform_superuser=True,
         )
         print("  ✓ Created superuser with all fields")
     
@@ -65,7 +65,7 @@ def fix_or_create_superuser():
     print(f"Username:    {user.username}")
     print(f"Password:    {password}")
     print(f"ID Number:   {user.id_number}")
-    print(f"Role:        {user.role}")
+    print(f"Platform Administrator: {user.is_platform_superuser}")
     print(f"Name:        {user.first_name} {user.last_name}")
     print("="*60)
 

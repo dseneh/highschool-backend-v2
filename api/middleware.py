@@ -158,11 +158,9 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if not user:
             return False
 
-        role = str(getattr(user, 'role', '') or '').lower()
         is_tenant_admin = (
             is_global_superadmin(user)
-            or bool(getattr(user, 'is_superuser', False))
-            or role in {'admin', 'superadmin'}
+            or bool(getattr(request, 'can', lambda permission: False)('tenant.settings.manage'))
         )
         allow_tenant_admins = bool(getattr(tenant, 'disabled_access_allow_tenant_admins', True))
 
@@ -249,11 +247,9 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if getattr(tenant, 'maintenance_mode', False):
             user = self._resolve_api_user(request)
             if user:
-                role = str(getattr(user, 'role', '') or '').lower()
                 is_tenant_admin = (
                     is_global_superadmin(user)
-                    or bool(getattr(user, 'is_superuser', False))
-                    or role in {'admin', 'superadmin'}
+                    or bool(getattr(request, 'can', lambda permission: False)('tenant.settings.manage'))
                 )
                 if is_tenant_admin:
                     return None

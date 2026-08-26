@@ -38,13 +38,13 @@ class NotificationAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["create"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:NOTIFICATION_SEND",
+            "condition": "has_rbac_permission:notifications.send",
         },
         {
             "action": ["create"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:NOTIFICATION_SEND_CLASS",
+            "condition": "has_rbac_permission:notifications.send_class",
         },
         {
             "action": ["create"],
@@ -62,6 +62,6 @@ class NotificationAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:NOTIFICATION_MANAGE",
+            "condition": "has_rbac_permission:notifications.manage",
         },
     ]

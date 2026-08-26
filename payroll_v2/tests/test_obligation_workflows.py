@@ -659,6 +659,7 @@ class SalaryAdvanceLegacyRepairTests(SimpleTestCase):
 
 
 class SalaryAdvanceEarlyRepaymentWorkflowTests(TestCase):
+    @patch("payroll_v2.services.user_has_permission", return_value=True)
     @patch("payroll_v2.services.AccountingCashTransaction.objects.create")
     @patch("payroll_v2.services._salary_advance_repayment_bank_account")
     @patch("payroll_v2.services._salary_advance_repayment_tx_type")
@@ -671,6 +672,7 @@ class SalaryAdvanceEarlyRepaymentWorkflowTests(TestCase):
         tx_type_mock,
         bank_account_mock,
         cash_tx_create_mock,
+        _permission_mock,
     ):
         accounting_settings = SimpleNamespace(
             salary_advance_repayment_ledger_account_id="ledger-1",
@@ -706,7 +708,7 @@ class SalaryAdvanceEarlyRepaymentWorkflowTests(TestCase):
             payment_method=PaymentMethod.BANK_TRANSFER,
             reference="RCPT-1",
             notes="Pending finance review",
-            user=SimpleNamespace(role="finance"),
+            user=SimpleNamespace(),
         )
 
         self.assertEqual(advance.amount_paid, Decimal("1500.00"))

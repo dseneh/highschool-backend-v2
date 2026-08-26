@@ -2,9 +2,10 @@ from decimal import Decimal
 
 from django.db.models import Avg, Count, Sum
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import BillingAccessPolicy
 
 from academics.models import AcademicYear
 from accounting.models import (
@@ -17,6 +18,10 @@ from accounting.services.student_billing import sync_accounting_bill_concession_
 from common.utils import get_object_by_uuid_or_fields
 from students.views.distributions import invalidate_dashboard_payment_summary_cache
 from students.models import Student
+from students.authorization import (
+    permission_scope,
+    user_can_access_student_for_permission,
+)
 from students.serializers.concession import StudentConcessionSerializer
 
 
@@ -65,7 +70,8 @@ def _calculate_concession_amount(student, academic_year, concession_type, target
 
 
 class StudentConcessionListCreateView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
+    policy_action_map = {"get": "get", "post": "manage"}
     """List and create concessions for a student."""
     @staticmethod
     def _resolve_currency():
@@ -89,6 +95,14 @@ class StudentConcessionListCreateView(APIView):
                 student = self._get_student(student_id)
             except Student.DoesNotExist:
                 return Response({"detail": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
+            if not user_can_access_student_for_permission(
+                student,
+                request,
+                "billing.view",
+            ):
+                raise PermissionDenied("You cannot view billing for this student.")
+        elif permission_scope(request, "billing.view") != "all":
+            raise PermissionDenied("School-wide concession access requires billing.view:all.")
 
         # academic_year_id = request.query_params.get("academic_year_id")
         active = request.query_params.get("active")
@@ -179,7 +193,8 @@ class StudentConcessionListCreateView(APIView):
 
 
 class StudentConcessionDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
+    policy_action_map = {"get": "get", "put": "manage", "delete": "manage"}
     """Retrieve, update, or soft-disable a concession."""
 
     def _get_concession(self, id):
@@ -189,6 +204,12 @@ class StudentConcessionDetailView(APIView):
         concession = self._get_concession(id)
         if not concession:
             return Response({"detail": "Concession not found"}, status=status.HTTP_404_NOT_FOUND)
+        if not user_can_access_student_for_permission(
+            concession.student,
+            request,
+            "billing.view",
+        ):
+            raise PermissionDenied("You cannot view this concession.")
 
         serializer = StudentConcessionSerializer(concession)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -240,10 +261,12 @@ class StudentConcessionDetailView(APIView):
 
 
 class StudentConcessionStatsView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """Get concession statistics."""
 
     def get(self, request, academic_year_id='current'):
+        if permission_scope(request, "billing.view") != "all":
+            raise PermissionDenied("Concession statistics require billing.view:all.")
         # Filter by academic year
         queryset = AccountingConcession.objects.select_related("student", "academic_year")
         

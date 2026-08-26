@@ -56,7 +56,7 @@ class GradebookGenerationFixtureMixin:
             defaults={
                 "username": "gradebook-owner",
                 "id_number": "GRADEBOOK-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Gradebook",
                 "last_name": "Owner",
             },
@@ -82,9 +82,13 @@ class GradebookGenerationFixtureMixin:
             end_date=date(2025, 11, 30),
         )
 
-        division = Division.objects.create(name="Elementary")
-        self.grade_one = GradeLevel.objects.create(name="Grade 1", level=1, division=division)
-        self.grade_two = GradeLevel.objects.create(name="Grade 2", level=2, division=division)
+        division, _ = Division.objects.get_or_create(name="Elementary")
+        self.grade_one, _ = GradeLevel.objects.get_or_create(
+            name="Grade 1", level=1, division=division
+        )
+        self.grade_two, _ = GradeLevel.objects.get_or_create(
+            name="Grade 2", level=2, division=division
+        )
         self.section_one = Section.objects.create(name="1A", grade_level=self.grade_one)
         self.section_two = Section.objects.create(name="2A", grade_level=self.grade_two)
 
@@ -358,7 +362,7 @@ class CurrentAcademicYearResolutionTests(TenantTestCase):
             defaults={
                 "username": "current-year-owner",
                 "id_number": "CURRENT-YEAR-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Current",
                 "last_name": "Owner",
             },

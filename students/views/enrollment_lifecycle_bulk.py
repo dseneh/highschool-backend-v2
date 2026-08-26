@@ -14,22 +14,20 @@ from students.services.enrollment_lifecycle_bulk import (
     undo_promotions,
 )
 from students.services.promotion_rules import get_promotion_rules
-from users.access_policies.access import BaseSchoolAccessPolicy
+from authorization.runtime import initialize_request_authorization
 
 
 class EnrollmentLifecycleBulkAccessPolicy(StudentAccessPolicy):
-    """Bulk lifecycle endpoints (registrar/admin enforced in view)."""
+    """Bulk lifecycle endpoints."""
 
 
-def _require_registrar_or_admin(request, view) -> Response | None:
-    policy = BaseSchoolAccessPolicy()
-    if policy.is_role_in(request, view, "post", "admin,registrar"):
-        return None
-    return Response(
-        {
-            "detail": "Only administrators and registrars can run bulk enrollment lifecycle actions."
-        },
-        status=status.HTTP_403_FORBIDDEN,
+def _permission_for_bulk_action(action: str) -> str:
+    return "students.transfer" if action == "transfer_out" else "students.promote"
+
+
+def _require_bulk_action_permission(request, action: str) -> None:
+    initialize_request_authorization(request, request.user).require_permission(
+        _permission_for_bulk_action(action)
     )
 
 
@@ -69,14 +67,9 @@ class EnrollmentLifecycleRulesView(APIView):
     """GET /students/enrollment-lifecycle/rules/"""
 
     permission_classes = [EnrollmentLifecycleBulkAccessPolicy]
+    policy_action_map = {"get": "promote"}
 
     def get(self, request):
-        policy = BaseSchoolAccessPolicy()
-        if not policy.is_role_in(request, self, "get", "admin,registrar"):
-            return Response(
-                {"detail": "Only administrators and registrars can view promotion rules."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
         return Response(get_promotion_rules(), status=status.HTTP_200_OK)
 
 
@@ -87,12 +80,9 @@ class EnrollmentLifecycleBulkPreviewView(APIView):
     """
 
     permission_classes = [EnrollmentLifecycleBulkAccessPolicy]
+    policy_action_map = {"post": "lifecycle"}
 
     def post(self, request):
-        denied = _require_registrar_or_admin(request, self)
-        if denied:
-            return denied
-
         try:
             body = _parse_body(request)
             action = body["action"]
@@ -104,6 +94,7 @@ class EnrollmentLifecycleBulkPreviewView(APIView):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            _require_bulk_action_permission(request, action)
             if body["selection_mode"] not in ("ids", "filters"):
                 return Response(
                     {"detail": "selection.mode must be 'ids' or 'filters'."},
@@ -131,12 +122,9 @@ class EnrollmentLifecycleBulkApplyView(APIView):
     """
 
     permission_classes = [EnrollmentLifecycleBulkAccessPolicy]
+    policy_action_map = {"post": "lifecycle"}
 
     def post(self, request):
-        denied = _require_registrar_or_admin(request, self)
-        if denied:
-            return denied
-
         try:
             body = _parse_body(request)
             action = body["action"]
@@ -148,6 +136,7 @@ class EnrollmentLifecycleBulkApplyView(APIView):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            _require_bulk_action_permission(request, action)
 
             expected = body["expected_eligible_count"]
             if expected is None:
@@ -196,12 +185,9 @@ class EnrollmentLifecyclePromotedListView(APIView):
     """
 
     permission_classes = [EnrollmentLifecycleBulkAccessPolicy]
+    policy_action_map = {"get": "promote"}
 
     def get(self, request):
-        denied = _require_registrar_or_admin(request, self)
-        if denied:
-            return denied
-
         grade_level = (request.query_params.get("grade_level") or "").strip()
         section = (request.query_params.get("section") or "").strip()
         try:
@@ -221,12 +207,9 @@ class EnrollmentLifecycleUndoView(APIView):
     """
 
     permission_classes = [EnrollmentLifecycleBulkAccessPolicy]
+    policy_action_map = {"post": "promote"}
 
     def post(self, request):
-        denied = _require_registrar_or_admin(request, self)
-        if denied:
-            return denied
-
         data = request.data if isinstance(request.data, dict) else {}
         student_ids = data.get("student_ids") or []
         if not isinstance(student_ids, list):

@@ -301,9 +301,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
         data = serializer.validated_data
         audience = data.get("audience") or {}
 
-        role = (getattr(request.user, "role", "") or "").lower()
-        if role == Roles.TEACHER:
-            assert_teacher_can_target_audience(request.user, audience)
+        assert_teacher_can_target_audience(request.user, audience)
 
         campaign = create_and_send_campaign(
             title=data["title"],

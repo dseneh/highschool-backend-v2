@@ -199,11 +199,6 @@ urlpatterns = [
         name="marking_period-list",
     ),
     path(
-        "marking-periods/",
-        MarkingPeriodListAllView.as_view(),
-        name="marking_period-list-all",
-    ),
-    path(
         "marking-periods/<str:id>/",
         MarkingPeriodDetailView.as_view(),
         name="marking_period-detail",

@@ -1,0 +1,6 @@
+{
+  "key": "superadmin",
+  "name": "Super Admin",
+  "description": "Platform administration with unrestricted access to every workspace. Seeded for platform superusers only and not assignable through role management.",
+  "grants": []
+}

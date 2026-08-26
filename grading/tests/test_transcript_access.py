@@ -18,8 +18,9 @@ from grading.services.transcript_access import (
 
 
 class TranscriptAccessAuthorizationTests(SimpleTestCase):
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
     @patch("grading.services.transcript_access.get_active_approved_access")
-    def test_admin_can_download_with_granted_access(self, mock_active):
+    def test_admin_can_download_with_granted_access(self, mock_active, _mock_admin):
         mock_active.return_value = SimpleNamespace(
             is_download_active=True,
             allow_download=True,
@@ -29,8 +30,6 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
             is_superuser=False,
             is_admin=True,
             is_student_user=False,
-            role="ADMIN",
-            privileges=[],
             get_student=lambda: None,
         )
         student = SimpleNamespace(id="s1", status="active")
@@ -38,6 +37,7 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
         self.assertTrue(allowed)
         self.assertEqual(reason, "admin")
 
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
     @patch("grading.services.transcript_access.get_active_approved_access")
     @patch("grading.services.transcript_access.get_grading_settings")
     @patch("grading.services.transcript_access._student_eligible_for_self_service")
@@ -48,6 +48,7 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
         mock_eligible,
         mock_settings,
         mock_active,
+        _mock_admin,
     ):
         mock_active.return_value = None
         mock_settings.return_value = None
@@ -59,8 +60,6 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
             is_superuser=False,
             is_admin=True,
             is_student_user=False,
-            role="ADMIN",
-            privileges=[],
             get_student=lambda: None,
         )
         student = SimpleNamespace(id="s1", status="active")
@@ -93,7 +92,6 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
             is_superuser=False,
             is_admin=False,
             is_student_user=True,
-            role="STUDENT",
             privileges=[],
             get_student=lambda: SimpleNamespace(id="s1"),
         )
@@ -131,7 +129,6 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
             is_superuser=False,
             is_admin=False,
             is_student_user=True,
-            role="STUDENT",
             privileges=[],
             get_student=lambda: SimpleNamespace(id="s1"),
         )
@@ -162,7 +159,6 @@ class TranscriptAccessAuthorizationTests(SimpleTestCase):
             is_superuser=False,
             is_admin=False,
             is_student_user=True,
-            role="STUDENT",
             privileges=[],
             get_student=lambda: SimpleNamespace(id="s1"),
         )
@@ -244,7 +240,6 @@ class TranscriptRequestAdminMutationTests(SimpleTestCase):
             is_superuser=False,
             is_admin=True,
             is_student_user=False,
-            role="ADMIN",
             privileges=[],
         )
 

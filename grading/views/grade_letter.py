@@ -14,6 +14,7 @@ from grading.utils import paginate_qs
 
 from grading.models import GradeLetter
 from grading.serializers import GradeLetterOut
+from grading.services.scope_authorization import require_all_grading_scope
 
 
 def _get_grade_letters_fixture_path() -> str:
@@ -24,8 +25,10 @@ def _get_grade_letters_fixture_path() -> str:
     )
 
 class GradeLetterListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
 
     def get(self, request):
+        require_all_grading_scope(request, "grades.view")
         qs = GradeLetter.objects.only(
             "id", "active", "letter", "min_percentage", "max_percentage", 
             "order", "created_at", "updated_at"
@@ -36,6 +39,7 @@ class GradeLetterListCreateView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        require_all_grading_scope(request, "grades.enter")
         letter = request.data.get("letter")
         min_percentage = request.data.get("min_percentage")
         max_percentage = request.data.get("max_percentage")
@@ -72,11 +76,13 @@ class GradeLetterDetailView(APIView):
             raise NotFound("This grade letter does not exist.")
     
     def get(self, request, pk):
+        require_all_grading_scope(request, "grades.view")
         obj = self.get_object(pk)
         return Response(GradeLetterOut(obj).data)
 
     @transaction.atomic
     def patch(self, request, pk):
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
 
         allowed_fields = ["letter", "min_percentage", "max_percentage", "order", "active"]
@@ -86,6 +92,7 @@ class GradeLetterDetailView(APIView):
 
     @transaction.atomic
     def delete(self, request, pk):
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
         
         # Check if this is the only grade letter
@@ -97,6 +104,7 @@ class GradeLetterDetailView(APIView):
 
 
 class GenerateDefaultGradeLettersView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """POST /grading/grade-letters/generate-defaults/
     
     Upserts the standard A+…F grade scale from the fixture file.
@@ -105,6 +113,7 @@ class GenerateDefaultGradeLettersView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        require_all_grading_scope(request, "grades.enter")
         try:
             fixture_path = _get_grade_letters_fixture_path()
             with open(fixture_path, "r", encoding="utf-8") as f:

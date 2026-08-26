@@ -205,7 +205,7 @@ def create_public_tenant(dry_run=False):
         from django_tenants.utils import get_public_schema_name
         from tenant_users.tenants.utils import create_public_tenant
         from tenant_users.tenants.models import ExistsError
-        from common.status import UserAccountType, Roles
+        from common.status import UserAccountType
         from django.utils import timezone
         
         public_schema = get_public_schema_name()
@@ -314,7 +314,7 @@ def create_test_user(dry_run=False):
             last_name="Admin",
             id_number=id_number,
             account_type=UserAccountType.GLOBAL,
-            role=Roles.SUPERADMIN
+            is_platform_superuser=True,
         )
         
         print(f"  ✓ Test superuser created")

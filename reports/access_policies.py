@@ -56,7 +56,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["list", "retrieve", "get", "export", "download"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:STUDENTS_VIEW",
+            "condition": "has_rbac_permission:reports.academic.view",
         },
 
         # 6) Special privilege: FINANCE_VIEW -> can view finance reports
@@ -64,7 +64,7 @@ class ReportsAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["list", "retrieve", "get", "export", "download"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:FINANCE_VIEW",
+            "condition": "has_rbac_permission:reports.finance.view",
         },
 
         # 7) VIEWER: Read-only access (list and retrieve)

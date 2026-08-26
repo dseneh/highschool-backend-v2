@@ -4,35 +4,16 @@ from __future__ import annotations
 
 from django.db.models import Q
 
-from common.status import Roles
 from hr.models import Employee
-from users.tenant_access import is_global_superadmin
+from authorization.runtime import user_has_permission
 
 from .enums import PayrollStatus
-
-_PAYROLL_MANAGER_ROLES = {
-    Roles.ADMIN,
-    Roles.SUPERADMIN,
-    Roles.REGISTRAR,
-    Roles.DATA_ENTRY,
-}
-
 
 def user_can_manage_payroll_v2(user) -> bool:
     """True for school staff who manage payroll runs (not employee self-service)."""
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if is_global_superadmin(user) or getattr(user, "is_superuser", False):
-        return True
-
-    role = (getattr(user, "role", "") or "").strip().lower()
-    if role in _PAYROLL_MANAGER_ROLES:
-        return True
-
-    if hasattr(user, "has_privilege") and user.has_privilege("CORE_MANAGE"):
-        return True
-
-    return False
+    return user_has_permission(user, "payroll.configure")
 
 
 def employee_for_portal_user(user) -> Employee | None:

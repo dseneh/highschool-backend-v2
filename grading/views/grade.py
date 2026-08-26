@@ -25,6 +25,13 @@ from grading.services.authorization import (
     get_teacher_allowed_section_ids_for_subject,
     get_teacher_gradebook_scope,
 )
+from grading.services.scope_authorization import (
+    filter_grades_for_view_scope,
+    require_scope_access,
+    user_can_view_grade,
+    user_can_view_student_grades,
+)
+from authorization.runtime import initialize_request_authorization
 
 from students.models import Student
 
@@ -82,14 +89,6 @@ class GradeListCreateView(APIView):
 
     def get(self, request, assessment_id):
         assessment = self.get_object(assessment_id)
-        print("DEBUG: assessment", assessment.id)
-
-        # Enforce teacher scope for grade listing by assessment.
-        enforce_teacher_grade_access(
-            request.user,
-            assessment.gradebook.section_id,
-            assessment.gradebook.subject_id,
-        )
 
         qs = assessment.grades.select_related(
             "assessment", "student", "section", "subject"
@@ -107,6 +106,7 @@ class GradeListCreateView(APIView):
             "created_at",
             "updated_at",
         )
+        qs = filter_grades_for_view_scope(qs, request)
         student = request.query_params.get("student")
         if student:
             f = Q(student_id=student) | Q(student__id_number=student)
@@ -226,13 +226,16 @@ class GradeDetailView(APIView):
 
     def get(self, request, pk):
         grade = get_object(pk)
-        enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
+        require_scope_access(user_can_view_grade(grade, request))
         return Response(GradeOut(grade).data)
 
     @transaction.atomic
     def put(self, request, pk):
         grade = get_object(pk)
 
+        initialize_request_authorization(request, request.user).require_permission(
+            "grades.enter"
+        )
         # Teachers can only edit grades for their assigned section/subject.
         enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
 
@@ -332,6 +335,46 @@ def run_validation_checks(request, grade=None):
             )
 
 
+def require_grade_transition_permissions(request, target, source_statuses):
+    workflow = get_workflow_settings()
+    required_permissions = set()
+
+    for source in set(source_statuses):
+        if source == Grade.Status.APPROVED and target == Grade.Status.DRAFT:
+            required_permissions.add("grades.unlock")
+        elif target == Grade.Status.REJECTED:
+            required_permissions.add("grades.reject")
+        elif target == Grade.Status.DRAFT:
+            required_permissions.add("grades.reject")
+        elif target == Grade.Status.REVIEWED:
+            required_permissions.add("grades.review")
+        elif target == Grade.Status.SUBMITTED:
+            required_permissions.add(
+                "grades.review"
+                if source == Grade.Status.REVIEWED or workflow["require_grade_review"]
+                else "grades.enter"
+            )
+        elif target == Grade.Status.APPROVED:
+            if source == Grade.Status.SUBMITTED or workflow["require_grade_approval"]:
+                required_permissions.add("grades.approve")
+            elif source == Grade.Status.REVIEWED or workflow["require_grade_review"]:
+                required_permissions.add("grades.review")
+            else:
+                required_permissions.add("grades.enter")
+        elif target == Grade.Status.PENDING:
+            required_permissions.add(
+                "grades.enter"
+                if source in {None, Grade.Status.DRAFT, Grade.Status.REJECTED}
+                else "grades.review"
+            )
+        else:
+            required_permissions.add("grades.enter")
+
+    authorization = initialize_request_authorization(request, request.user)
+    for permission_code in required_permissions:
+        authorization.require_permission(permission_code)
+
+
 def has_submittable_grade_value(grade: Grade) -> bool:
     if grade.score is not None:
         return True
@@ -374,6 +417,7 @@ class GradeStatusTransitionView(APIView):
         #     required_permission =
 
         grade = get_object(pk)
+        require_grade_transition_permissions(request, target, [grade.status])
 
         # Teachers can only transition grades for assigned section/subject.
         enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
@@ -474,6 +518,12 @@ class SectionGradeStatusTransitionView(APIView):
                 },
                 status=404,
             )
+
+        require_grade_transition_permissions(
+            request,
+            target,
+            grades.values_list("status", flat=True).distinct(),
+        )
 
         updated_count = 0
         skipped_count = 0
@@ -607,6 +657,12 @@ class StudentMarkingPeriodGradeStatusTransitionView(APIView):
                 status=404,
             )
 
+        require_grade_transition_permissions(
+            request,
+            target,
+            grades.values_list("status", flat=True).distinct(),
+        )
+
         updated_count = 0
         skipped_count = 0
         skip_reasons = {"approved": 0, "no_score": 0, "invalid_transition": 0}
@@ -682,6 +738,14 @@ class FinalGradeView(APIView):
 
         gb = get_object_by_uuid_or_fields(GradeBook, gb_id)
         student = get_object_by_uuid_or_fields(Student.objects.only("id"), student_id)
+        require_scope_access(
+            user_can_view_student_grades(
+                student,
+                request,
+                academic_year=gb.academic_year,
+                gradebook=gb,
+            )
+        )
 
         final_pct = gb.final_percentage_for_student(student)
         return Response(
@@ -715,6 +779,8 @@ class GradeHistoryView(APIView):
                 error_code="GRADE_NOT_FOUND",
                 status=404
             )
+
+        require_scope_access(user_can_view_grade(grade, request))
         
         history = GradeHistory.objects.filter(grade=grade).select_related(
             'changed_by'
@@ -769,6 +835,15 @@ class GradeCorrectionView(APIView):
                 error_code="GRADE_NOT_FOUND",
                 status=404
             )
+
+        initialize_request_authorization(request, request.user).require_permission(
+            "grades.enter"
+        )
+        enforce_teacher_grade_access(
+            request.user,
+            grade.section_id,
+            grade.subject_id,
+        )
         
         # Extract correction data
         new_score = request.data.get('score')
@@ -920,6 +995,7 @@ class GradeMarkForCorrectionView(APIView):
     }
     """
     permission_classes = [GradebookAccessPolicy]
+    action = "review"
 
     def post(self, request, grade_id):
         from grading.response import GradingResponse
@@ -932,6 +1008,11 @@ class GradeMarkForCorrectionView(APIView):
                 error_code="GRADE_NOT_FOUND",
                 status=404
             )
+
+        initialize_request_authorization(request, request.user).require_permission(
+            "grades.review"
+        )
+        require_scope_access(user_can_view_grade(grade, request))
         
         needs_correction = request.data.get('needs_correction', True)
         reason = request.data.get('reason', '')
@@ -1013,6 +1094,8 @@ class AcademicYearCorrectionsQueueView(APIView):
                 "student__first_name",
             )
         )
+
+        grades = filter_grades_for_view_scope(grades, request)
 
         teacher_scope = get_teacher_gradebook_scope(request.user)
         if teacher_scope is not None:

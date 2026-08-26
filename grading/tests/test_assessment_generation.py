@@ -18,6 +18,7 @@ from grading.models import Assessment, AssessmentType, DefaultAssessmentTemplate
 from grading.utils import (
     generate_assessments_for_gradebook_with_settings,
     generate_default_assessments_for_academic_year,
+    preview_assessments_for_gradebook_with_settings,
     regenerate_assessments_for_academic_year,
 )
 from settings.models import GradingSettings
@@ -34,7 +35,7 @@ class AssessmentGenerationByStyleTests(TenantTestCase):
             defaults={
                 "username": "assessment-owner",
                 "id_number": "ASSESSMENT-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Assessment",
                 "last_name": "Owner",
             },
@@ -66,8 +67,8 @@ class AssessmentGenerationByStyleTests(TenantTestCase):
             end_date=date(2029, 1, 31),
         )
 
-        division = Division.objects.create(name="Elementary")
-        self.grade_level = GradeLevel.objects.create(
+        division, _ = Division.objects.get_or_create(name="Elementary")
+        self.grade_level, _ = GradeLevel.objects.get_or_create(
             name="Grade 1", level=1, division=division
         )
         self.section = Section.objects.create(name="General", grade_level=self.grade_level)
@@ -93,7 +94,7 @@ class AssessmentGenerationByStyleTests(TenantTestCase):
             defaults={
                 "username": "assessment-actor",
                 "id_number": "ASSESSMENT-ACTOR-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Assessment",
                 "last_name": "Actor",
             },
@@ -217,6 +218,36 @@ class AssessmentGenerationByStyleTests(TenantTestCase):
 
         self.assertEqual(stats["assessments_created"], 0)
         self.assertEqual(Assessment.objects.count(), 2)
+
+    def test_single_entry_preview_lists_missing_assessments_without_creating(self):
+        GradingSettings.objects.create(
+            grading_style="single_entry", single_entry_assessment_name="Final Grade"
+        )
+
+        preview = preview_assessments_for_gradebook_with_settings(self.gradebook)
+
+        self.assertEqual(preview["grading_style"], "single_entry")
+        self.assertEqual(len(preview["will_create"]), 2)
+        self.assertEqual({item["name"] for item in preview["will_create"]}, {"Final Grade"})
+        self.assertEqual(Assessment.objects.count(), 0)
+
+    def test_multiple_entry_preview_only_lists_missing_template_assessments(self):
+        GradingSettings.objects.create(grading_style="multiple_entry")
+        self._add_templates()
+        generate_assessments_for_gradebook_with_settings(self.gradebook)
+        Assessment.objects.filter(marking_period=self.exam_period).delete()
+
+        preview = preview_assessments_for_gradebook_with_settings(self.gradebook)
+
+        self.assertEqual(preview["grading_style"], "multiple_entry")
+        self.assertEqual([item["name"] for item in preview["will_create"]], ["Semester Exam"])
+        self.assertEqual([item["name"] for item in preview["already_exists"]], ["Quiz 1"])
+
+    def test_preview_requires_configured_grading_style(self):
+        with self.assertRaises(ValueError) as raised:
+            preview_assessments_for_gradebook_with_settings(self.gradebook)
+
+        self.assertIn("grading style is not configured", str(raised.exception).lower())
 
     def test_regeneration_respects_single_entry_style(self):
         GradingSettings.objects.create(grading_style="single_entry")

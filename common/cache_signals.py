@@ -76,7 +76,11 @@ def invalidate_semester_cache(sender, instance, **kwargs):
         DataCache.invalidate_semesters(request)
         
         # Also invalidate marking periods since they depend on semesters
-        DataCache.invalidate_marking_periods(request)
+        DataCache.invalidate_marking_periods(
+            academic_year_id=str(instance.academic_year_id),
+            semester_id=str(instance.id),
+            request=request,
+        )
     except Exception as e:
         logger.error(f"Error invalidating semester cache: {e}")
 
@@ -88,7 +92,11 @@ def invalidate_marking_period_cache(sender, instance, **kwargs):
     """Invalidate marking period cache when a marking period is saved or deleted."""
     try:
         request = kwargs.get("request")
-        DataCache.invalidate_marking_periods(request)
+        DataCache.invalidate_marking_periods(
+            academic_year_id=str(instance.semester.academic_year_id),
+            semester_id=str(instance.semester_id),
+            request=request,
+        )
     except Exception as e:
         logger.error(f"Error invalidating marking period cache: {e}")
 

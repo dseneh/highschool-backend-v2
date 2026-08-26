@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from django.db.models import Exists, OuterRef, Q, QuerySet
 
+from common.account_link import filter_by_user_account
 from hr.models import Employee
 
 
@@ -50,6 +51,8 @@ def apply_employee_list_filters(queryset: QuerySet, params) -> QuerySet:
     gender_values = _read_multi_values({"gender": gender_param}, "gender") if gender_param else []
     if gender_values:
         queryset = queryset.filter(gender__in=gender_values)
+
+    queryset = filter_by_user_account(queryset, params.get("has_user_account"))
 
     position_param = params.get("position")
     position_values = _read_multi_values({"position": position_param}, "position") if position_param else []

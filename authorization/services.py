@@ -6,10 +6,87 @@ from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 from django.db.models import F
 
+from authorization.constants import PLATFORM_SUPERADMIN_ROLE_KEY, SUPERADMIN_ROLE_KEYS
 from authorization.models import AuthorizationAuditLog, Role, RolePermission
 from authorization.registry import get_permission_registry
 from authorization.system_roles import get_system_roles
+from common.status import UserAccountType
 from users.tenant_access import is_global_superadmin
+
+
+FIXED_ACCOUNT_TYPE_ROLES = {
+    UserAccountType.STUDENT: "student",
+    UserAccountType.PARENT: "parent",
+}
+
+NO_ASSIGNED_ROLE_CODE = "NO_ASSIGNED_ROLE"
+NO_ASSIGNED_ROLE_DETAIL = (
+    "This account has no assigned role. An administrator must assign a role "
+    "before it can be used to sign in."
+)
+
+
+def get_assigned_role(user) -> Role | None:
+    """Return the role explicitly assigned to the user in the current schema.
+
+    Returns ``None`` when no usable assignment exists. There is deliberately no
+    fallback role: an unassigned account has no role at all.
+    """
+    from authorization.models import TenantMembership
+
+    user_id = getattr(user, "pk", None)
+    if not user_id:
+        return None
+    membership = (
+        TenantMembership.objects.select_related("role")
+        .filter(user_id=user_id, is_active=True, role__is_active=True)
+        .first()
+    )
+    return membership.role if membership else None
+
+
+def has_assigned_role(user) -> bool:
+    """Whether the account holds an explicit role grant it can sign in with.
+
+    Platform superadmins are granted platform-wide authority by an explicit
+    account flag rather than a tenant role, which is why they resolve here
+    without a membership.
+    """
+    from django_tenants.utils import get_public_schema_name, schema_context
+
+    if not getattr(user, "pk", None):
+        return False
+    if is_global_superadmin(user):
+        return True
+
+    public_schema = get_public_schema_name()
+    if connection.schema_name != public_schema:
+        return get_assigned_role(user) is not None
+
+    # Central sign-in resolves no single workspace, so require a role in at
+    # least one workspace the account belongs to.
+    workspaces = (
+        user.tenants.filter(active=True)
+        .exclude(schema_name=public_schema)
+        .values_list("schema_name", flat=True)
+    )
+    for schema_name in workspaces:
+        try:
+            with schema_context(schema_name):
+                if get_assigned_role(user) is not None:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def validate_role_for_account_type(*, user, role: Role) -> None:
+    account_type = str(getattr(user, "account_type", "") or "").strip().lower()
+    required_role = FIXED_ACCOUNT_TYPE_ROLES.get(account_type)
+    if required_role and role.system_key != required_role:
+        raise ValidationError(
+            f"{account_type.capitalize()} accounts must use the {required_role} role."
+        )
 
 
 def validate_role_grants(grants: Mapping[str, str]) -> None:
@@ -35,7 +112,7 @@ def validate_role_grants(grants: Mapping[str, str]) -> None:
 def validate_permission_delegation(actor, grants: Mapping[str, str]) -> None:
     if actor is None:
         return
-    if is_global_superadmin(actor) or getattr(actor, "is_superuser", False):
+    if is_global_superadmin(actor):
         return
     from authorization.models import TenantMembership
 
@@ -243,12 +320,52 @@ def replace_role_permissions(
     return locked_role
 
 
+def resolve_assignable_role(identifier, *, account_type=None) -> Role:
+    """Resolve a role from a system key or id, refusing reserved roles.
+
+    Student and parent accounts have a fixed role, so their identifier is
+    derived from the account type rather than supplied by the caller.
+    """
+    fixed_key = FIXED_ACCOUNT_TYPE_ROLES.get(
+        str(getattr(account_type, "value", account_type) or "").strip().lower()
+    )
+    if fixed_key:
+        return Role.objects.get(system_key=fixed_key)
+
+    lookup = str(identifier or "").strip()
+    if not lookup:
+        raise ValidationError("A role is required.")
+    if lookup.lower() in SUPERADMIN_ROLE_KEYS:
+        raise ValidationError(
+            "The superadmin role is reserved for platform superusers and cannot be assigned."
+        )
+
+    role = Role.objects.filter(system_key=lookup, is_active=True).first()
+    if role is None:
+        try:
+            role = Role.objects.filter(pk=lookup, is_active=True).first()
+        except (ValueError, ValidationError):
+            role = None
+    if role is None:
+        raise ValidationError(f"Unknown or inactive role: {lookup}")
+    if role.system_key in SUPERADMIN_ROLE_KEYS:
+        raise ValidationError(
+            "The superadmin role is reserved for platform superusers and cannot be assigned."
+        )
+    return role
+
+
 @transaction.atomic
 def assign_user_role(*, user, role: Role, actor=None, metadata=None):
     from authorization.models import TenantMembership
 
     if not role.is_active:
         raise ValidationError("Inactive roles cannot be assigned.")
+    if role.system_key in SUPERADMIN_ROLE_KEYS:
+        raise ValidationError(
+            "The superadmin role is reserved for platform superusers and cannot be assigned."
+        )
+    validate_role_for_account_type(user=user, role=role)
     membership = (
         TenantMembership.objects.select_for_update().filter(user=user).first()
     )
@@ -293,10 +410,44 @@ def ensure_tenant_owner_membership(owner) -> None:
     from authorization.models import TenantMembership
 
     admin_role = Role.objects.get(system_key="admin")
-    TenantMembership.objects.get_or_create(
+    membership, created = TenantMembership.objects.get_or_create(
         user=owner,
         defaults={"role": admin_role, "is_active": True},
     )
+    if created:
+        return
+    # The owner is often granted tenant permissions first, which seeds the
+    # default viewer role. Only that auto-assigned role may be upgraded.
+    if membership.role.system_key == "viewer" or not membership.is_active:
+        membership.role = admin_role
+        membership.is_active = True
+        membership.save(update_fields=("role", "is_active"))
+
+
+def ensure_tenant_user_membership(user) -> None:
+    """Seed the RBAC membership a user is entitled to when joining a tenant.
+
+    Platform superusers get the unrestricted superadmin role, which mirrors the
+    platform grant they already hold. Everyone else must be assigned a role
+    explicitly by an administrator — there is no default role.
+    """
+    if not user:
+        return
+    from authorization.models import TenantMembership
+
+    if not is_global_superadmin(user):
+        return
+
+    role = Role.objects.get(system_key=PLATFORM_SUPERADMIN_ROLE_KEY)
+    membership, created = TenantMembership.objects.get_or_create(
+        user=user,
+        defaults={"role": role, "is_active": True},
+    )
+    if created or membership.role_id == role.pk:
+        return
+    membership.role = role
+    membership.is_active = True
+    membership.save(update_fields=("role", "is_active"))
 
 
 @transaction.atomic

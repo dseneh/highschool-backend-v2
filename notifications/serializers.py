@@ -47,13 +47,10 @@ class NotificationSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None) if request else None
         if not user or not getattr(user, "is_authenticated", False):
             return False
-        role = (getattr(user, "role", "") or "").lower()
-        if role == "admin":
-            return True
-        try:
-            return bool(user.has_privilege("NOTIFICATION_MANAGE"))
-        except Exception:
-            return False
+        permission_scope = getattr(request, "permission_scope", None)
+        return callable(permission_scope) and permission_scope(
+            "notifications.manage"
+        ) == "all"
 
 
 class NotificationMarkReadSerializer(serializers.Serializer):

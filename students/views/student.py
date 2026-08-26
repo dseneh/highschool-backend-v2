@@ -14,9 +14,15 @@ from rest_framework.exceptions import NotFound
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import StudentAccessPolicy, StudentRecordAccessPolicy
+from students.authorization import (
+    filter_students_for_view_scope,
+    user_can_view_student,
+    user_has_all_student_view_scope,
+)
 
 from common.cache_service import DataCache
+from common.account_link import filter_by_user_account
 from common.filter import get_student_queryparams
 from common.images import update_model_image
 from common.utils import (
@@ -71,7 +77,7 @@ class StudentPageNumberPagination(PageNumberPagination):
 
 
 class StudentListView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentRecordAccessPolicy]
     def get(self, request):
         def _to_bool(value, default=False):
             if value is None:
@@ -121,6 +127,7 @@ class StudentListView(APIView):
         students = Student.objects.select_related(
             "grade_level"
         ).prefetch_related(current_enrollment_prefetch, active_discipline_prefetch)
+        students = filter_students_for_view_scope(students, request)
 
         # # Apply query string filters
         filter_fields = [
@@ -163,6 +170,8 @@ class StudentListView(APIView):
         ]
         query_params.pop("exclude_status", None)
         query_params.pop("graduation_year", None)
+
+        students = filter_by_user_account(students, query_params.pop("has_user_account", None))
 
         query = get_student_queryparams(query_params, filter_fields)
         if query:
@@ -674,6 +683,12 @@ class StudentSummaryView(APIView):
     def get(self, request):
         from academics.models import Section
 
+        if not user_has_all_student_view_scope(request):
+            return Response(
+                {"detail": "School-wide student summaries require all student view scope."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         default_summary = {
             "total_students": 0,
             "total_staff": 0,
@@ -859,7 +874,7 @@ class StudentSummaryView(APIView):
 
 
 class StudentDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentRecordAccessPolicy]
     def get_object(self, id):
         try:
             return get_object_by_uuid_or_fields(
@@ -872,6 +887,8 @@ class StudentDetailView(APIView):
 
     def get(self, request, id):
         student = self.get_object(id)
+        if not user_can_view_student(student, request):
+            raise NotFound("Student does not exist.")
         etag = student_detail_etag(student)
         not_modified = maybe_not_modified(request, etag)
         if not_modified is not None:
@@ -885,6 +902,8 @@ class StudentDetailView(APIView):
 
     def put(self, request, id):
         student = self.get_object(id)
+        if not user_can_view_student(student, request):
+            raise NotFound("Student does not exist.")
         
         # Convert to business data for validation
         student_data = django_student_to_data(student)
@@ -938,6 +957,8 @@ class StudentDetailView(APIView):
 
     def delete(self, request, id):
         student = self.get_object(id)
+        if not user_can_view_student(student, request):
+            raise NotFound("Student does not exist.")
         force_delete = request.query_params.get("force_delete", "false").lower()
         
         # Business logic: Check if student can be deleted
@@ -1114,6 +1135,7 @@ class StudentDetailView(APIView):
 
 class StudentWithdrawView(APIView):
     permission_classes = [StudentAccessPolicy]
+    policy_action_map = {"post": "withdraw"}
     """POST /students/<id>/withdraw — withdraw a student."""
 
     def get_object(self, id):
@@ -1165,6 +1187,7 @@ class StudentWithdrawView(APIView):
 
 class StudentReinstateView(APIView):
     permission_classes = [StudentAccessPolicy]
+    policy_action_map = {"post": "update"}
     """POST /students/<id>/reinstate — reinstate a withdrawn/transferred student."""
 
     def get_object(self, id):
@@ -1209,7 +1232,8 @@ class StudentReinstateView(APIView):
 
 
 class StudentImportView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [StudentAccessPolicy]
+    policy_action_map = {"post": "create_student"}
     parser_classes = [parsers.MultiPartParser]
 
     def post(self, request, grade_level_id):
@@ -1395,7 +1419,8 @@ class StudentImportView(APIView):
 
 
 class StudentImportStatusView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [StudentAccessPolicy]
+    policy_action_map = {"get": "get", "delete": "create_student"}
 
     def get(self, request, task_id):
         from students.tasks import StudentImportTaskManager

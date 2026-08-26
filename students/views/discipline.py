@@ -6,7 +6,12 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import StudentDisciplineAccessPolicy
+from students.authorization import (
+    filter_students_for_permission_scope,
+    permission_scope,
+    user_can_access_student_for_permission,
+)
 from ..services.discipline_attendance import (
     ALLOWED_RESOLUTIONS,
     apply_attendance_effect_for_discipline,
@@ -33,6 +38,20 @@ def _ensure_currently_enrolled_for_discipline(student):
         })
 
 
+def _require_discipline_student_access(student, request, permission_code):
+    if not user_can_access_student_for_permission(
+        student,
+        request,
+        permission_code,
+    ):
+        raise PermissionDenied("You cannot access discipline records for this student.")
+
+
+def _require_all_discipline_manage_scope(request):
+    if permission_scope(request, "students.discipline.manage") != "all":
+        raise PermissionDenied("Discipline configuration requires students.discipline.manage:all.")
+
+
 class StudentDisciplinaryActionPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
@@ -40,7 +59,8 @@ class StudentDisciplinaryActionPagination(PageNumberPagination):
 
 
 class DisciplinaryActionTypeListCreateView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentDisciplineAccessPolicy]
+    policy_action_map = {"get": "get", "post": "manage"}
 
     def get(self, request):
         include_inactive = str(request.query_params.get("include_inactive", "false")).lower() in {
@@ -56,6 +76,7 @@ class DisciplinaryActionTypeListCreateView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        _require_all_discipline_manage_scope(request)
         serializer = DisciplinaryActionTypeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(created_by=request.user, updated_by=request.user)
@@ -63,7 +84,8 @@ class DisciplinaryActionTypeListCreateView(APIView):
 
 
 class DisciplinaryActionTypeDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentDisciplineAccessPolicy]
+    policy_action_map = {"get": "get", "put": "manage", "delete": "manage"}
 
     def get_object(self, action_type_id):
         action_type = DisciplinaryActionType.objects.filter(id=action_type_id).first()
@@ -77,6 +99,7 @@ class DisciplinaryActionTypeDetailView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def put(self, request, id):
+        _require_all_discipline_manage_scope(request)
         action_type = self.get_object(id)
         serializer = DisciplinaryActionTypeSerializer(
             action_type,
@@ -88,6 +111,7 @@ class DisciplinaryActionTypeDetailView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):
+        _require_all_discipline_manage_scope(request)
         action_type = self.get_object(id)
         action_type.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -160,7 +184,8 @@ def _ensure_action_text_from_type(serializer):
 
 
 class StudentDisciplinaryActionListCreateView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentDisciplineAccessPolicy]
+    policy_action_map = {"get": "get", "post": "manage"}
     pagination_class = StudentDisciplinaryActionPagination
 
     def get(self, request):
@@ -168,7 +193,14 @@ class StudentDisciplinaryActionListCreateView(APIView):
         student_id = (request.query_params.get("student") or "").strip()
         search = (request.query_params.get("search") or "").strip()
 
-        queryset = StudentDisciplinaryAction.objects.select_related("student").all()
+        accessible_students = filter_students_for_permission_scope(
+            Student.objects.all(),
+            request,
+            "students.discipline.view",
+        )
+        queryset = StudentDisciplinaryAction.objects.select_related("student").filter(
+            student__in=accessible_students
+        )
         today = timezone.localdate()
 
         if student_id:
@@ -228,6 +260,11 @@ class StudentDisciplinaryActionListCreateView(APIView):
 
         serializer = StudentDisciplinaryActionSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
+        _require_discipline_student_access(
+            serializer.validated_data["student"],
+            request,
+            "students.discipline.manage",
+        )
         _ensure_currently_enrolled_for_discipline(serializer.validated_data["student"])
         _ensure_action_text_from_type(serializer)
         record = serializer.save(created_by=request.user, updated_by=request.user)
@@ -245,7 +282,8 @@ class StudentDisciplinaryActionListCreateView(APIView):
 
 
 class StudentDisciplinaryActionDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentDisciplineAccessPolicy]
+    policy_action_map = {"get": "get", "put": "manage", "delete": "manage"}
 
     def get_object(self, record_id):
         record = (
@@ -259,11 +297,21 @@ class StudentDisciplinaryActionDetailView(APIView):
 
     def get(self, request, id):
         record = self.get_object(id)
+        _require_discipline_student_access(
+            record.student,
+            request,
+            "students.discipline.view",
+        )
         serializer = StudentDisciplinaryActionSerializer(record)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def put(self, request, id):
         record = self.get_object(id)
+        _require_discipline_student_access(
+            record.student,
+            request,
+            "students.discipline.manage",
+        )
         _ensure_currently_enrolled_for_discipline(record.student)
         payload, _student_status_update, error_response = _extract_status_updates(
             request.data
@@ -328,13 +376,19 @@ class StudentDisciplinaryActionDetailView(APIView):
 
     def delete(self, request, id):
         record = self.get_object(id)
+        _require_discipline_student_access(
+            record.student,
+            request,
+            "students.discipline.manage",
+        )
         _ensure_currently_enrolled_for_discipline(record.student)
         record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class StudentDisciplinaryActionByStudentListCreateView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentDisciplineAccessPolicy]
+    policy_action_map = {"get": "get", "post": "manage"}
     pagination_class = StudentDisciplinaryActionPagination
 
     def get_student(self, student_id):
@@ -352,6 +406,11 @@ class StudentDisciplinaryActionByStudentListCreateView(APIView):
 
     def get(self, request, student_id):
         student = self.get_student(student_id)
+        _require_discipline_student_access(
+            student,
+            request,
+            "students.discipline.view",
+        )
         status_filter = (request.query_params.get("status") or "all").strip().lower()
         today = timezone.localdate()
 
@@ -381,6 +440,11 @@ class StudentDisciplinaryActionByStudentListCreateView(APIView):
 
     def post(self, request, student_id):
         student = self.get_student(student_id)
+        _require_discipline_student_access(
+            student,
+            request,
+            "students.discipline.manage",
+        )
         _ensure_currently_enrolled_for_discipline(student)
         request_payload, _student_status_update, error_response = _extract_status_updates(
             request.data

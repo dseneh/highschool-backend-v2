@@ -54,7 +54,7 @@ class SettingsAccessPolicy(BaseSchoolAccessPolicy):
             ],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:SETTINGS_GRADING_MANAGE",
+            "condition": "has_rbac_permission:tenant.settings.manage",
         },
 
         # 4) Special privilege: GRADING_MANAGE -> can view/update grading settings
@@ -67,7 +67,7 @@ class SettingsAccessPolicy(BaseSchoolAccessPolicy):
             ],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:GRADING_MANAGE",
+            "condition": "has_rbac_permission:grades.unlock",
         },
 
         # 5) VIEWER: Read-only access (list and retrieve)

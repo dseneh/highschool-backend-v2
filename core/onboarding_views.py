@@ -57,10 +57,9 @@ class OnboardingPermission:
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        if getattr(user, "is_superuser", False):
+        if getattr(user, "is_platform_superuser", False):
             return True
-        role = str(getattr(user, "role", "") or "").lower()
-        return role in ("admin", "superadmin")
+        return bool(getattr(request, "can", lambda permission: False)("tenant.settings.manage"))
 
 
 # ---------------------------------------------------------------------------
@@ -218,10 +217,8 @@ def apply_onboarding(request: Request, schema_name: str) -> Response:
 
     # Permission check
     user = request.user
-    if not user.is_superuser:
-        role = str(getattr(user, "role", "") or "").lower()
-        if role not in ("admin", "superadmin"):
-            return Response({"detail": "You don't have permission to provision this workspace."}, status=status.HTTP_403_FORBIDDEN)
+    if not getattr(user, "is_platform_superuser", False) and not getattr(request, "can", lambda permission: False)("tenant.settings.manage"):
+        return Response({"detail": "You don't have permission to provision this workspace."}, status=status.HTTP_403_FORBIDDEN)
 
     plan = tenant.onboarding_plan
     if not plan:
@@ -286,7 +283,9 @@ def reset_onboarding(request: Request, schema_name: str) -> Response:
     Admin-only: reset a tenant's onboarding plan so it can restart from scratch.
     Only allowed for superadmins.
     """
-    if not request.user.is_superuser:
+    from users.tenant_access import is_global_superadmin
+
+    if not is_global_superadmin(request.user):
         return Response({"detail": "Only platform superadmins can reset onboarding."}, status=status.HTTP_403_FORBIDDEN)
 
     tenant = _get_tenant(schema_name)

@@ -17,104 +17,21 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
     """
 
     statements = [
-        # 0) Anonymous users: read-only access
-        {
-            "action": ["list", "retrieve"],
-            "principal": "anonymous",
-            "effect": "allow",
-        },
-
-        # 0.05) Any authenticated user: read-only HTTP methods
-        {
-            "action": ["*"],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_safe_method",
-        },
-
-        # 0.1) Any authenticated user: read-only access (supports ViewSet + APIView GET)
+        # Read access requires a registered grades.view grant at any valid scope.
         {
             "action": ["list", "retrieve", "get", "head", "options"],
             "principal": "authenticated",
             "effect": "allow",
+            "condition": "has_grading_permission:grades.view",
         },
 
-        # 1) SUPERADMIN / TENANT_ADMIN: full grading control
-        {
-            "action": ["*"],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_role_in:admin",
-        },
-
-        # 2) SCHOOL_ADMINISTRATOR: full grading powers
-        # {
-        #     "action": [
-        #         "list",
-        #         "retrieve",
-        #         "create",
-        #         "update",
-        #         "partial_update",
-        #         "destroy",
-        #         "bulk_enter",
-        #         "review",
-        #         "approve",
-        #         "reject",
-        #     ],
-        #     "principal": "authenticated",
-        #     "effect": "allow",
-        #     "condition": "is_role_in:SCHOOL_ADMINISTRATOR",
-        # },
-
-        # 3a) REGISTRAR: enter only (review/approve require special privilege)
-        {
-            "action": [
-                "list",
-                "retrieve",
-                "get",
-                "head",
-                "options",
-                "create",
-                "update",
-                "partial_update",
-                "post",
-                "put",
-                "patch",
-                "bulk_enter",
-            ],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_role_in:registrar",
-        },
-
-        # 3b) TEACHER: role OR teaching-staff flag (Employee.is_teacher)
-        {
-            "action": [
-                "list",
-                "retrieve",
-                "get",
-                "head",
-                "options",
-                "create",
-                "update",
-                "partial_update",
-                "post",
-                "put",
-                "patch",
-                "bulk_enter",
-            ],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_teacher_user",
-        },
-
-        # 4) Special privileges (per-user)
+        # 4) RBAC permissions (all normal users, regardless of role)
         # GRADING_ENTER -> create/update/bulk
         {
             "action": ["create", "update", "partial_update", "post", "put", "patch", "bulk_enter"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:GRADING_ENTER",
+            "condition": "has_grading_permission:grades.enter",
         },
 
         # GRADING_REVIEW -> review action
@@ -122,7 +39,7 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["review", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:GRADING_REVIEW",
+            "condition": "has_grading_permission:grades.review",
         },
 
         # GRADING_APPROVE -> approve
@@ -130,7 +47,7 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["approve", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:GRADING_APPROVE",
+            "condition": "has_grading_permission:grades.approve",
         },
 
         # GRADING_REJECT -> reject
@@ -138,34 +55,25 @@ class GradebookAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["reject", "put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:GRADING_REJECT",
+            "condition": "has_grading_permission:grades.reject",
         },
 
-        # 5) GRADING_VIEW / GRADING_MANAGE for all grading models
         {
-            "action": ["list", "retrieve"],
+            "action": ["put", "patch"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:GRADING_VIEW",
+            "condition": "has_grading_permission:grades.unlock",
         },
-        # VIEWER: Read-only access (list and retrieve)
-        {
-            "action": ["list", "retrieve"],
-            "principal": "authenticated",
-            "effect": "allow",
-            "condition": "is_role_in:viewer",
-        },
-        # {
-        #     "action": [
-        #         "list",
-        #         "retrieve",
-        #         "create",
-        #         "update",
-        #         "partial_update",
-        #         "destroy",
-        #     ],
-        #     "principal": "authenticated",
-        #     "effect": "allow",
-        #     "condition": "has_privilege:GRADING_MANAGE",
-        # },
     ]
+
+    def has_grading_permission(self, request, view, action, permission_code):
+        user = self._get_user(request)
+        if not user:
+            return False
+
+        from authorization.runtime import initialize_request_authorization
+
+        return initialize_request_authorization(
+            request,
+            user,
+        ).permission_scope(permission_code) is not None

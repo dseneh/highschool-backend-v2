@@ -3,6 +3,7 @@ from ..access_policies import GradebookAccessPolicy
 from rest_framework.response import Response
 from rest_framework import serializers
 from grading.services.ranking import RankingService
+from grading.services.scope_authorization import require_all_grading_scope
 
 class RankingResultSerializer(serializers.Serializer):
     student = serializers.SerializerMethodField()
@@ -22,6 +23,7 @@ class RankingResultSerializer(serializers.Serializer):
         }
 
 class RankingView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """
     GET /grading/rankings/
 
@@ -36,6 +38,7 @@ class RankingView(APIView):
     """
 
     def get(self, request):
+        require_all_grading_scope(request, "grades.view")
         rank_type = request.query_params.get("type")
         scope_type = request.query_params.get("scope", "section")
         scope_id = request.query_params.get("scope_id")

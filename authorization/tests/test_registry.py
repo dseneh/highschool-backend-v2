@@ -171,6 +171,7 @@ class SystemRoleManifestTests(unittest.TestCase):
         self.assertEqual(
             {role.key for role in roles},
             {
+                "superadmin",
                 "admin",
                 "registrar",
                 "teacher",
@@ -181,6 +182,13 @@ class SystemRoleManifestTests(unittest.TestCase):
                 "viewer",
             },
         )
+
+    def test_superadmin_is_unrestricted_and_declares_no_grants(self):
+        superadmin = next(
+            role for role in get_system_roles() if role.key == "superadmin"
+        )
+
+        self.assertFalse(superadmin.grants)
 
     def test_admin_explicitly_grants_every_tenant_permission(self):
         registry = get_permission_registry()

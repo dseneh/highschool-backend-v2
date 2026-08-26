@@ -38,7 +38,7 @@ from django.conf import settings
 from django.db import connection
 from django.core.management import call_command
 from django.contrib.auth import get_user_model
-from common.status import Roles, UserAccountType
+from common.status import UserAccountType
 from django_tenants.utils import get_public_schema_name
 from django.utils import timezone
 
@@ -181,7 +181,7 @@ def create_public_tenant(dry_run=False):
             "first_name": "System",
             "last_name": "Administrator",
             "account_type": UserAccountType.GLOBAL,
-            "role": Roles.SUPERADMIN,
+            "is_platform_superuser": True,
             "gender": "male",
             "is_default_password": False,
             "last_password_updated": timezone.now(),
@@ -239,7 +239,7 @@ def ensure_superadmin_configured(dry_run=False):
         
         # Force-set all required fields
         user.username = "admin"
-        user.role = Roles.SUPERADMIN
+        user.is_platform_superuser = True
         user.account_type = UserAccountType.GLOBAL
         user.first_name = "System"
         user.last_name = "Administrator"
@@ -250,7 +250,7 @@ def ensure_superadmin_configured(dry_run=False):
         print(f"  ✓ Superadmin configured:")
         print(f"    Email: {user.email}")
         print(f"    Username: {user.username}")
-        print(f"    Role: {user.role}\n")
+        print(f"    Platform Administrator: {user.is_platform_superuser}\n")
     except User.DoesNotExist:
         print("  ⚠️  Superadmin not found - will be created by public tenant\n")
     except Exception as e:

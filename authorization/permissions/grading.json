@@ -7,6 +7,7 @@
     {"code": "grades.enter", "name": "Enter Grades", "risk": "medium", "scopes": ["assigned", "all"], "requires": ["grades.view"]},
     {"code": "grades.review", "name": "Review Grades", "risk": "high", "scopes": ["assigned", "all"], "requires": ["grades.view"]},
     {"code": "grades.approve", "name": "Approve Grades", "risk": "critical", "scopes": ["all"], "requires": ["grades.view", "grades.review"]},
+    {"code": "grades.reject", "name": "Reject Grades", "risk": "high", "scopes": ["assigned", "all"], "requires": ["grades.view", "grades.review"]},
     {"code": "grades.unlock", "name": "Unlock Gradebooks", "risk": "critical", "scopes": ["all"], "requires": ["grades.view"]}
   ]
 }

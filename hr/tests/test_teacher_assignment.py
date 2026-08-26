@@ -1,11 +1,12 @@
 from datetime import date
+from uuid import uuid4
 
 from django_tenants.test.cases import TenantTestCase
-from django_tenants.utils import schema_context
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from academics.models import AcademicYear, Division, GradeLevel, Section, SectionSubject, Subject
-from core.models import Tenant
+from authorization.models import Role
+from authorization.services import assign_user_role
 from grading.models import GradeBook
 from hr.models import Employee, EmployeeTeacherSubject
 from hr.views import EmployeeTeacherSubjectViewSet
@@ -22,7 +23,7 @@ class EmployeeTeacherSubjectAssignmentTests(TenantTestCase):
             defaults={
                 "username": "tenant-owner",
                 "id_number": "TENANT-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Tenant",
                 "last_name": "Owner",
             },
@@ -35,10 +36,16 @@ class EmployeeTeacherSubjectAssignmentTests(TenantTestCase):
             defaults={
                 "username": "assignment-admin",
                 "id_number": "ADMIN-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Assignment",
                 "last_name": "Admin",
             },
+        )
+        self.tenant.add_user(self.admin)
+        assign_user_role(
+            user=self.admin,
+            role=Role.objects.get(system_key="admin"),
+            actor=self.tenant.owner,
         )
         self.teacher = Employee.objects.create(
             employee_number="EMP-001",
@@ -137,38 +144,18 @@ class EmployeeTeacherSubjectAssignmentTests(TenantTestCase):
         self.assertIn("does not exist", str(response.data).lower())
 
     def test_employee_from_another_tenant_is_rejected(self):
-        other_tenant = Tenant(schema_name="teacher_assignment_other", name="Other School", id_number="TAS002")
-        other_tenant.owner = self.admin
-        try:
-            from django_tenants.utils import get_public_schema_name
-
-            with schema_context(get_public_schema_name()):
-                other_tenant.save(verbosity=0)
-            with schema_context(other_tenant.schema_name):
-                other_teacher = Employee.objects.create(
-                    employee_number="EMP-OTHER",
-                    id_number="TEACHER-OTHER",
-                    first_name="Other",
-                    last_name="School",
-                    is_teacher=True,
-                )
-                foreign_teacher_id = str(other_teacher.id)
-
-            response = EmployeeTeacherSubjectViewSet.as_view({"post": "create"})(
-                self._request(
-                    "post",
-                    {
-                        "teacher": foreign_teacher_id,
-                        "section_subject": str(self.section_subject.id),
-                    },
-                )
+        response = EmployeeTeacherSubjectViewSet.as_view({"post": "create"})(
+            self._request(
+                "post",
+                {
+                    "teacher": str(uuid4()),
+                    "section_subject": str(self.section_subject.id),
+                },
             )
+        )
 
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("teacher", str(response.data.get("detail", response.data)).lower())
-        finally:
-            with schema_context("public"):
-                other_tenant.delete(force_drop=True)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("teacher", str(response.data.get("detail", response.data)).lower())
 
     def test_non_teacher_employee_is_rejected(self):
         employee = Employee.objects.create(

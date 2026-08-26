@@ -1,8 +1,9 @@
 from rest_framework import status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import StudentContactAccessPolicy
+from students.authorization import user_can_access_student_for_permission
 
 from common.utils import (
     create_model_data,
@@ -17,18 +18,31 @@ from ..serializers import StudentContactSerializer
 
 
 class StudentContactListView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentContactAccessPolicy]
+    policy_action_map = {"get": "get", "post": "manage"}
     def get_student(self, student_id):
         return get_object_by_uuid_or_fields(Student, student_id, "id")
 
     def get(self, request, student_id):
         student = self.get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "students.contacts.view",
+        ):
+            raise PermissionDenied("You cannot view contacts for this student.")
         contacts = student.contacts.all()
         serializer = StudentContactSerializer(contacts, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request, student_id):
         student = self.get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "students.contacts.manage",
+        ):
+            raise PermissionDenied("You cannot manage contacts for this student.")
 
         # Guard: reject data entry for withdrawn / inactive students
         if student.status in (StudentStatus.WITHDRAWN, StudentStatus.GRADUATED, StudentStatus.TRANSFERRED, StudentStatus.DELETED):
@@ -65,17 +79,30 @@ class StudentContactListView(APIView):
 
 
 class StudentContactDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [StudentContactAccessPolicy]
+    policy_action_map = {"get": "get", "put": "manage", "delete": "manage"}
     def get_object(self, id):
         return get_object_by_uuid_or_fields(StudentContact, id, "id")
 
     def get(self, request, id):
         contact = self.get_object(id)
+        if not user_can_access_student_for_permission(
+            contact.student,
+            request,
+            "students.contacts.view",
+        ):
+            raise PermissionDenied("You cannot view this contact.")
         serializer = StudentContactSerializer(contact)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def put(self, request, id):
         contact = self.get_object(id)
+        if not user_can_access_student_for_permission(
+            contact.student,
+            request,
+            "students.contacts.manage",
+        ):
+            raise PermissionDenied("You cannot update this contact.")
 
         allowed_fields = [
             "first_name",
@@ -97,5 +124,11 @@ class StudentContactDetailView(APIView):
 
     def delete(self, request, id):
         contact = self.get_object(id)
+        if not user_can_access_student_for_permission(
+            contact.student,
+            request,
+            "students.contacts.manage",
+        ):
+            raise PermissionDenied("You cannot delete this contact.")
         contact.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

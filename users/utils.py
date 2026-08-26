@@ -122,3 +122,24 @@ def build_password_reset_url(school_workspace: str | None, uid: str, token: str)
 def build_activation_url(school_workspace: str | None) -> str:
     """Build the tenant-aware activate-account URL."""
     return build_frontend_url(school_workspace, "/activate-account")
+
+
+def send_welcome_email(user, temporary_password: str, tenant=None) -> bool:
+    """Send the account-created welcome email for any newly created account."""
+    import logging
+
+    from common.email_service import send_account_created_email
+
+    workspace = getattr(tenant, "schema_name", None)
+    sent = send_account_created_email(
+        user=user,
+        temporary_password=temporary_password,
+        login_url=build_frontend_url(workspace, "/login"),
+        school=tenant,
+    )
+    if not sent:
+        logging.getLogger(__name__).warning(
+            "Account-created email could not be sent to user %s",
+            getattr(user, "username", None) or getattr(user, "id_number", None),
+        )
+    return sent

@@ -8,6 +8,7 @@ from decimal import ROUND_DOWN
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from authorization.runtime import user_has_permission
 
 from hr.models import Employee
 from accounting.models import (
@@ -3651,8 +3652,7 @@ def _salary_advance_repayment_bank_account() -> AccountingBankAccount:
 
 
 def _ensure_finance_user(user):
-    role = (getattr(user, "role", "") or "").strip().lower()
-    if role not in {"superadmin", "admin", "finance", "accountant"}:
+    if not user_has_permission(user, "payroll.process"):
         raise ValueError("Only finance users can request early repayments.")
 
 

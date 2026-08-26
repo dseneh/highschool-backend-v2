@@ -13,7 +13,10 @@ from academics.models import AcademicYear, GradeLevel, MarkingPeriod, Subject
 from common.serializers import PhotoURLMixin
 from common.utils import get_object_by_uuid_or_fields, serializer_errors_to_detail
 from students.access_policies import HistoricalGradeAccessPolicy
-from users.access_policies.access import BaseSchoolAccessPolicy
+from students.authorization import (
+    filter_students_for_permission_scope,
+    user_can_access_student_for_permission,
+)
 
 from ..models import Student
 from ..models.enrollment import Enrollment
@@ -69,16 +72,6 @@ def _validation_error_response(serializer):
     return Response(
         {"detail": serializer_errors_to_detail(serializer.errors)},
         status=status.HTTP_400_BAD_REQUEST,
-    )
-
-
-def _require_admin(request, view) -> Response | None:
-    policy = BaseSchoolAccessPolicy()
-    if policy.is_role_in(request, view, "post", "admin"):
-        return None
-    return Response(
-        {"detail": "Only administrators can unverify historical grades."},
-        status=status.HTTP_403_FORBIDDEN,
     )
 
 
@@ -170,6 +163,11 @@ class HistoricalGradeStudentSummaryListView(APIView):
                 )
             )
             .order_by("last_name", "first_name")
+        )
+        students = filter_students_for_permission_scope(
+            students,
+            request,
+            "grades.view",
         )
 
         if search:
@@ -275,9 +273,16 @@ class HistoricalGradeStudentSummaryListView(APIView):
 
 class HistoricalGradeRecordListView(APIView):
     permission_classes = [HistoricalGradeAccessPolicy]
+    policy_action_map = {"get": "get", "post": "update"}
 
     def get(self, request, student_id):
         student = _get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "grades.view",
+        ):
+            return Response({"detail": "Not authorized to view this student."}, status=403)
         records = (
             HistoricalGradeRecord.objects.filter(student=student)
             .select_related("grade_level", "subject", "marking_period", "academic_year")
@@ -294,6 +299,12 @@ class HistoricalGradeRecordListView(APIView):
     @transaction.atomic
     def post(self, request, student_id):
         student = _get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "grades.enter",
+        ):
+            return Response({"detail": "Not authorized to enter grades for this student."}, status=403)
         payload = request.data
         items = payload if isinstance(payload, list) else [payload]
         created = []
@@ -326,13 +337,26 @@ class HistoricalGradeRecordListView(APIView):
 
 class HistoricalGradeRecordDetailView(APIView):
     permission_classes = [HistoricalGradeAccessPolicy]
+    policy_action_map = {"get": "get", "patch": "update", "delete": "delete"}
 
     def get(self, request, student_id, record_id):
         record = _get_record(student_id, record_id)
+        if not user_can_access_student_for_permission(
+            record.student,
+            request,
+            "grades.view",
+        ):
+            return Response({"detail": "Not authorized to view this student."}, status=403)
         return Response(HistoricalGradeRecordSerializer(record).data)
 
     def patch(self, request, student_id, record_id):
         record = _get_record(student_id, record_id)
+        if not user_can_access_student_for_permission(
+            record.student,
+            request,
+            "grades.enter",
+        ):
+            return Response({"detail": "Not authorized to edit grades for this student."}, status=403)
         if record.status == HistoricalGradeRecord.Status.VERIFIED:
             return Response(
                 {"detail": "Verified grades cannot be edited. Unverify first."},
@@ -359,6 +383,12 @@ class HistoricalGradeRecordDetailView(APIView):
 
     def delete(self, request, student_id, record_id):
         record = _get_record(student_id, record_id)
+        if not user_can_access_student_for_permission(
+            record.student,
+            request,
+            "grades.unlock",
+        ):
+            return Response({"detail": "Not authorized to delete grades for this student."}, status=403)
         if record.status == HistoricalGradeRecord.Status.VERIFIED:
             return Response(
                 {"detail": "Verified grades cannot be deleted. Unverify first."},
@@ -370,9 +400,16 @@ class HistoricalGradeRecordDetailView(APIView):
 
 class HistoricalGradeRecordVerifyView(APIView):
     permission_classes = [HistoricalGradeAccessPolicy]
+    policy_action_map = {"post": "verify"}
 
     def post(self, request, student_id, record_id):
         record = _get_record(student_id, record_id)
+        if not user_can_access_student_for_permission(
+            record.student,
+            request,
+            "grades.review",
+        ):
+            return Response({"detail": "Not authorized to verify grades for this student."}, status=403)
         if record.final_percentage is None:
             return Response(
                 {"detail": "Enter a year-end final grade before verifying."},
@@ -390,12 +427,16 @@ class HistoricalGradeRecordVerifyView(APIView):
 
 class HistoricalGradeRecordUnverifyView(APIView):
     permission_classes = [HistoricalGradeAccessPolicy]
+    policy_action_map = {"post": "unverify"}
 
     def post(self, request, student_id, record_id):
-        denied = _require_admin(request, self)
-        if denied:
-            return denied
         record = _get_record(student_id, record_id)
+        if not user_can_access_student_for_permission(
+            record.student,
+            request,
+            "grades.unlock",
+        ):
+            return Response({"detail": "Not authorized to unverify grades for this student."}, status=403)
         if record.status != HistoricalGradeRecord.Status.VERIFIED:
             return Response(
                 {"detail": "Only verified grades can be unverified."},
@@ -422,6 +463,12 @@ class StudentGradeHistoryView(APIView):
 
     def get(self, request, student_id):
         student = _get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "grades.view",
+        ):
+            return Response({"detail": "Not authorized to view this student."}, status=403)
         from academics.models import AcademicYear
         from grading.services.grade_access import enforce_grade_access
         from students.services.student_grade_history import StudentGradeHistoryService

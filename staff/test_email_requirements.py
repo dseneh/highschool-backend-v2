@@ -48,3 +48,5 @@ class StaffUserAccountEmailRequirementTests(SimpleTestCase):
                 StaffService._create_user_account(staff, data={}, user=SimpleNamespace(username="admin"))
 
         self.assertEqual(mock_create_user.call_args.kwargs["email"], "ada@example.org")
+        self.assertNotIn("role", mock_create_user.call_args.kwargs)
+        self.assertNotIn("school", mock_create_user.call_args.kwargs)

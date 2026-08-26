@@ -4,10 +4,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.exceptions import NotFound
 
+from ..access_policies import GradebookAccessPolicy
 from common.utils import update_model_fields
 from grading.utils import paginate_qs
 from grading.models import HonorCategory
 from grading.serializers import HonorCategoryOut
+from grading.services.scope_authorization import require_all_grading_scope
 
 
 FIELD_LABELS = {
@@ -37,9 +39,11 @@ def _format_validation_error(exc):
 
 
 class HonorCategoryListCreateView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     """List and create honor categories (e.g., Principal's List, Honor Roll)."""
 
     def get(self, request):
+        require_all_grading_scope(request, "grades.view")
         qs = HonorCategory.objects.only(
             "id", "active", "label", "min_average", "max_average",
             "color", "icon", "order", "created_at", "updated_at"
@@ -50,6 +54,7 @@ class HonorCategoryListCreateView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        require_all_grading_scope(request, "grades.enter")
         label = request.data.get("label")
         min_average = request.data.get("min_average")
         max_average = request.data.get("max_average")
@@ -83,6 +88,7 @@ class HonorCategoryListCreateView(APIView):
 
 
 class HonorCategoryDetailView(APIView):
+    permission_classes = [GradebookAccessPolicy]
     def get_object(self, pk):
         try:
             return HonorCategory.objects.get(pk=pk)
@@ -90,11 +96,13 @@ class HonorCategoryDetailView(APIView):
             raise NotFound("This honor category does not exist.")
 
     def get(self, request, pk):
+        require_all_grading_scope(request, "grades.view")
         obj = self.get_object(pk)
         return Response(HonorCategoryOut(obj).data)
 
     @transaction.atomic
     def patch(self, request, pk):
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
         allowed_fields = [
             "label",
@@ -113,6 +121,7 @@ class HonorCategoryDetailView(APIView):
 
     @transaction.atomic
     def delete(self, request, pk):
+        require_all_grading_scope(request, "grades.enter")
         obj = self.get_object(pk)
         obj.delete()
         return Response(status=204)

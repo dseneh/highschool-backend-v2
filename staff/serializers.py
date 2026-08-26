@@ -286,7 +286,6 @@ class StaffSerializer(PhotoURLMixin, serializers.ModelSerializer):
                 "email": user_account.email,
                 "is_active": user_account.is_active,
                 "is_staff": user_account.is_staff,
-                "role": user_account.role,
                 "status": user_account.status,
                 "last_login": user_account.last_login,
                 "last_password_updated": user_account.last_password_updated,

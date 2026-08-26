@@ -71,14 +71,14 @@ class StaffAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_MANAGE",
+            "condition": "has_rbac_permission:employees.update",
         },
         # Privilege-based: read-only access
         {
             "action": ["list", "retrieve"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:CORE_VIEW",
+            "condition": "has_rbac_permission:employees.view",
         },
     ]
 

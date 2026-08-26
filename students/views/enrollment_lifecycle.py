@@ -48,6 +48,7 @@ def _parse_optional_date(value, field_name: str):
 
 class StudentCompleteYearView(_StudentLifecycleMixin, APIView):
     """POST /students/<id>/enrollments/current/complete-year/"""
+    policy_action_map = {"post": "promote"}
 
     def post(self, request, id):
         student = self.get_student(id)
@@ -72,6 +73,7 @@ class StudentCompleteYearView(_StudentLifecycleMixin, APIView):
 
 class StudentGraduateView(_StudentLifecycleMixin, APIView):
     """POST /students/<id>/graduate/"""
+    policy_action_map = {"post": "promote"}
 
     def post(self, request, id):
         student = self.get_student(id)
@@ -91,6 +93,7 @@ class StudentGraduateView(_StudentLifecycleMixin, APIView):
 
 class StudentTransferOutView(_StudentLifecycleMixin, APIView):
     """POST /students/<id>/transfer/"""
+    policy_action_map = {"post": "transfer"}
 
     def post(self, request, id):
         student = self.get_student(id)

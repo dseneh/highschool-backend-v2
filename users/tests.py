@@ -46,7 +46,7 @@ class SsoTokenExchangeViewTests(TestCase):
 		code_obj.client = SimpleNamespace(client_id="ezyschool-web")
 		code_obj.tenant = SimpleNamespace(id="tenant-1", active=True, status="active")
 		code_obj.auth_session = None
-		code_obj.user = SimpleNamespace(is_active=True, status="active", role="admin")
+		code_obj.user = SimpleNamespace(is_active=True, status="active")
 		code_obj.save = MagicMock()
 		return code_obj
 
@@ -143,7 +143,6 @@ class SsoAuthorizeViewTests(SimpleTestCase):
 			is_authenticated=True,
 			is_active=True,
 			status="active",
-			role="admin",
 		)
 
 	@patch("users.sso_views.AuthenticationAuditEvent.objects.create")

@@ -4,10 +4,12 @@ from django.db.models import Avg, Count, Q, Sum, F, Case, When, DecimalField, Pr
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import BillingAccessPolicy
+from students.authorization import permission_scope
 
 from common.file_generators import FileGenerator, FileGeneratorConfig
 from academics.models import AcademicYear, GradeLevel, Section
@@ -27,7 +29,7 @@ class BillSummaryPagination(PageNumberPagination):
     max_page_size = 200
 
 class StudentBillSummaryView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     Get bill summary for students grouped by grade level, section, or individual students
     for a selected academic year.
@@ -47,6 +49,8 @@ class StudentBillSummaryView(APIView):
     pagination_class = BillSummaryPagination
 
     def get(self, request):
+        if permission_scope(request, "billing.view") != "all":
+            raise PermissionDenied("Bill summaries require billing.view:all.")
         try:
             
             # Get query parameters
@@ -508,7 +512,7 @@ class StudentBillSummaryView(APIView):
         return bill_summary
 
 class StudentBillSummaryDownloadView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [BillingAccessPolicy]
     """
     Download student billing summary as Excel or CSV file with optional filters.
     
@@ -530,6 +534,8 @@ class StudentBillSummaryDownloadView(APIView):
     """
     
     def get(self, request):
+        if permission_scope(request, "billing.view") != "all":
+            raise PermissionDenied("Bill summary downloads require billing.view:all.")
         try:
             
             # Get query parameters

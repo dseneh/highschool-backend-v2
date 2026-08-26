@@ -20,7 +20,7 @@ class SetCurrentAcademicYearTests(TenantTestCase):
             defaults={
                 "username": "current-year-owner",
                 "id_number": "CURRENT-YEAR-OWNER-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Current",
                 "last_name": "Owner",
             },

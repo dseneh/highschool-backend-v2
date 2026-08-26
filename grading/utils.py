@@ -409,6 +409,7 @@ def generate_assessments_for_gradebook_with_settings(
     ay = gradebook.academic_year
 
     grading_style = resolve_grading_style(grading_style)
+    validate_assessment_generation_config(ay, grading_style)
 
     created_assessments = []
     mode = grading_style
@@ -926,6 +927,73 @@ def preview_default_assessments_for_gradebook(gradebook: GradeBook) -> dict:
             else:
                 preview["will_create"].append(assessment_info)
 
+    return preview
+
+
+def preview_assessments_for_gradebook_with_settings(
+    gradebook: GradeBook, grading_style=None
+) -> dict:
+    """Return the style-resolved assessment plan without creating anything."""
+    from .models import Assessment, AssessmentType
+    from academics.models import MarkingPeriod
+    from settings.models import GradingSettings
+
+    grading_settings = GradingSettings.objects.first()
+    if grading_style is None and not getattr(grading_settings, "grading_style", None):
+        raise ValueError(
+            "A grading style is not configured. Configure grading settings before generating assessments."
+        )
+
+    resolved_style = resolve_grading_style(grading_style)
+    validate_assessment_generation_config(gradebook.academic_year, resolved_style)
+
+    if resolved_style == "multiple_entry":
+        preview = preview_default_assessments_for_gradebook(gradebook)
+    else:
+        assessment_name = (
+            getattr(grading_settings, "single_entry_assessment_name", None)
+            or "Final Grade"
+        )
+        assessment_type = AssessmentType.objects.filter(
+            is_single_entry=True, active=True
+        ).first() or AssessmentType.objects.filter(
+            name=assessment_name, active=True
+        ).first()
+        preview = {
+            "will_create": [],
+            "already_exists": [],
+            "skipped_by_target_mismatch": [],
+        }
+
+        marking_periods = MarkingPeriod.objects.filter(
+            semester__academic_year=gradebook.academic_year, active=True
+        ).order_by("start_date")
+        for marking_period in marking_periods:
+            assessment_info = {
+                "name": assessment_name,
+                "type": assessment_type.name if assessment_type else assessment_name,
+                "marking_period": marking_period.name,
+                "max_score": 100.0,
+                "weight": 1.0,
+                "due_date": marking_period.end_date,
+                "target": "marking_period",
+            }
+            existing = (
+                Assessment.objects.filter(
+                    gradebook=gradebook,
+                    marking_period=marking_period,
+                    assessment_type=assessment_type,
+                ).first()
+                if assessment_type
+                else None
+            )
+            if existing:
+                assessment_info["existing_id"] = str(existing.id)
+                preview["already_exists"].append(assessment_info)
+            else:
+                preview["will_create"].append(assessment_info)
+
+    preview["grading_style"] = resolved_style
     return preview
 
 

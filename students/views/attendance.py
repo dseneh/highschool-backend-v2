@@ -6,7 +6,12 @@ from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from ..access_policies import StudentAccessPolicy
+from ..access_policies import AttendanceAccessPolicy
+from students.authorization import (
+    permission_scope,
+    user_can_access_student_for_permission,
+)
+from grading.services.authorization import get_teacher_allowed_section_ids
 
 from common.status import AttendanceStatus
 from common.status import EnrollmentStatus, StudentStatus
@@ -107,7 +112,18 @@ def _build_section_roster_payload(section, marking_period, attendance_date, enro
 
 
 class AttendanceSectionRosterView(APIView):
-    permission_classes = [StudentAccessPolicy]
+    permission_classes = [AttendanceAccessPolicy]
+    policy_action_map = {"get": "get", "post": "take"}
+
+    def require_section_scope(self, request, section_id, permission_code):
+        scope = permission_scope(request, permission_code)
+        if scope == "all":
+            return
+        if scope == "assigned" and str(section_id) in {
+            str(value) for value in (get_teacher_allowed_section_ids(request.user) or [])
+        }:
+            return
+        raise PermissionDenied("You are not assigned to this section.")
 
     def get_section(self, section_id):
         section = Section.objects.filter(id=section_id).first()
@@ -143,6 +159,7 @@ class AttendanceSectionRosterView(APIView):
         )
 
     def get(self, request, section_id):
+        self.require_section_scope(request, section_id, "attendance.view")
         section = self.get_section(section_id)
         attendance_date = self.parse_date(request.query_params.get("date"))
         enrollments = self.get_enrollments(section)
@@ -167,6 +184,7 @@ class AttendanceSectionRosterView(APIView):
 
     @transaction.atomic
     def post(self, request, section_id):
+        self.require_section_scope(request, section_id, "attendance.take")
         section = self.get_section(section_id)
         serializer = AttendanceBulkUpsertSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -249,8 +267,8 @@ class AttendanceSectionRosterView(APIView):
         return Response(response_serializer.data, status=status.HTTP_200_OK)
 
 class AttendanceListView(APIView):
-    permission_classes = [StudentAccessPolicy]
-    # permission_classes = [AllowAny]
+    permission_classes = [AttendanceAccessPolicy]
+    policy_action_map = {"get": "get", "post": "take"}
     def get_student(self, student_id):
         try:
             student = get_object_by_uuid_or_fields(Student, student_id, fields=["id_number"])
@@ -292,6 +310,12 @@ class AttendanceListView(APIView):
 
     def get(self, request, student_id):
         student = self.get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "attendance.view",
+        ):
+            raise PermissionDenied("You cannot view attendance for this student.")
         academic_year = self.get_academic_year(student, request)
 
         attendance_filter = {"enrollment__student": student}
@@ -332,6 +356,12 @@ class AttendanceListView(APIView):
 
     def post(self, request, student_id):
         student = self.get_student(student_id)
+        if not user_can_access_student_for_permission(
+            student,
+            request,
+            "attendance.take",
+        ):
+            raise PermissionDenied("You cannot record attendance for this student.")
         enrollment = Enrollment.objects.filter(
             student=student,
             academic_year__current=True,
@@ -366,8 +396,8 @@ class AttendanceListView(APIView):
         return create_model_data(request, data, Attendance, AttendanceSerializer)
 
 class AttendanceDetailView(APIView):
-    permission_classes = [StudentAccessPolicy]
-    # permission_classes = [IsAuthenticatedOrReadOnly, IsAdminOrSystemAdmin]
+    permission_classes = [AttendanceAccessPolicy]
+    policy_action_map = {"get": "get", "put": "update", "delete": "correct"}
     def get_object(self, id):
         try:
             return Attendance.objects.get(id=id)
@@ -376,11 +406,23 @@ class AttendanceDetailView(APIView):
 
     def get(self, request, id):
         attendence = self.get_object(id)
+        if not user_can_access_student_for_permission(
+            attendence.enrollment.student,
+            request,
+            "attendance.view",
+        ):
+            raise PermissionDenied("You cannot view this attendance record.")
         serializer = AttendanceSerializer(attendence)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def put(self, request, id):
         attendence = self.get_object(id)
+        if not user_can_access_student_for_permission(
+            attendence.enrollment.student,
+            request,
+            "attendance.update",
+        ):
+            raise PermissionDenied("You cannot update this attendance record.")
         if not _is_current_active_enrollment(attendence.enrollment):
             raise PermissionDenied({
                 "code": "attendance_restricted_not_enrolled",
@@ -410,6 +452,12 @@ class AttendanceDetailView(APIView):
 
     def delete(self, request, id):
         attendence = self.get_object(id)
+        if not user_can_access_student_for_permission(
+            attendence.enrollment.student,
+            request,
+            "attendance.correct",
+        ):
+            raise PermissionDenied("You cannot correct this attendance record.")
         if not _is_current_active_enrollment(attendence.enrollment):
             raise PermissionDenied({
                 "code": "attendance_restricted_not_enrolled",

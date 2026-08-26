@@ -13,7 +13,11 @@ from authorization.registry import (
     get_platform_permission_registry,
 )
 from authorization.system_roles import get_system_roles
-from authorization.services import ensure_tenant_owner_membership, sync_system_roles
+from authorization.services import (
+    ensure_tenant_owner_membership,
+    ensure_tenant_user_membership,
+    sync_system_roles,
+)
 from core.models import Tenant
 
 
@@ -61,6 +65,12 @@ class Command(BaseCommand):
                 with schema_context(schema_name), transaction.atomic():
                     sync_system_roles()
                     ensure_tenant_owner_membership(owner)
+                    from tenant_users.permissions.models import UserTenantPermissions
+
+                    for tenant_user in UserTenantPermissions.objects.select_related(
+                        "profile"
+                    ):
+                        ensure_tenant_user_membership(tenant_user.profile)
             except ValidationError as exc:
                 raise CommandError(f"Failed to sync {schema_name}: {exc}") from exc
             self.stdout.write(

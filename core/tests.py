@@ -14,7 +14,7 @@ from core.services.tenant_clone import (
 	MODULE_REGISTRY,
 	TenantCloneService,
 	resolve_modules,
-	run_clone_job,
+	run_tenant_creation_job,
 )
 from core.models import Tenant, TenantCreationJob
 
@@ -147,13 +147,13 @@ class TenantCloneIntegrationTests(TenantTestCase):
 			defaults={
 				"username": "tenant-clone-test-owner",
 				"id_number": "TENANT-CLONE-TEST-OWNER",
-				"role": "admin",
+				"account_type": "staff",
 				"first_name": "Clone",
 				"last_name": "Owner",
 			},
 		)
 
-	def _destination(self):
+	def _destination(self, school_division=None):
 		suffix = uuid.uuid4().hex[:10]
 		with schema_context("public"):
 			return Tenant.objects.create(
@@ -161,6 +161,7 @@ class TenantCloneIntegrationTests(TenantTestCase):
 				short_name=f"dest-{suffix}",
 				schema_name=f"clone_dest_{suffix}",
 				owner=self.tenant.owner,
+				school_division=school_division,
 			)
 
 	def test_selected_models_get_new_ids_and_remapped_foreign_keys(self):
@@ -249,6 +250,7 @@ class TenantCloneIntegrationTests(TenantTestCase):
 			"domain": f"{destination_schema}.localhost",
 		}
 		job = TenantCreationJob.objects.create(
+			initialization_source=TenantCreationJob.InitializationSource.CLONE,
 			source_tenant=self.tenant,
 			source_schema=self.tenant.schema_name,
 			destination_schema=destination_schema,
@@ -260,7 +262,7 @@ class TenantCloneIntegrationTests(TenantTestCase):
 		with schema_context("public"), patch(
 			"core.services.tenant_clone.close_old_connections"
 		), patch.object(TenantCloneService, "clone", side_effect=RuntimeError("forced clone failure")):
-			run_clone_job(str(job.pk))
+			run_tenant_creation_job(str(job.pk))
 
 		job.refresh_from_db()
 		self.assertEqual(job.status, TenantCreationJob.Status.FAILED)
@@ -268,6 +270,7 @@ class TenantCloneIntegrationTests(TenantTestCase):
 		self.assertFalse(Tenant.objects.filter(schema_name=destination_schema).exists())
 
 		retry = TenantCreationJob.objects.create(
+			initialization_source=TenantCreationJob.InitializationSource.CLONE,
 			source_tenant=self.tenant,
 			source_schema=self.tenant.schema_name,
 			destination_schema=destination_schema,
@@ -277,7 +280,7 @@ class TenantCloneIntegrationTests(TenantTestCase):
 		)
 		self.assertEqual(retry.status, TenantCreationJob.Status.PENDING)
 		with schema_context("public"), patch("core.services.tenant_clone.close_old_connections"):
-			run_clone_job(str(retry.pk))
+			run_tenant_creation_job(str(retry.pk))
 		retry.refresh_from_db()
 		self.assertEqual(retry.status, TenantCreationJob.Status.COMPLETED)
 		self.assertEqual(retry.stage, "Completed")
@@ -403,3 +406,302 @@ class TenantCloneIntegrationTests(TenantTestCase):
 
 		self.assertTrue(result["ok"])
 		self.assertEqual(updated.school_division_id, other_division.id)
+
+	# ------------------------------------------------------------------
+	# Owner provisioning
+	# ------------------------------------------------------------------
+
+	def test_tenant_creation_creates_only_the_intended_owner_account(self):
+		from core.serializers import CreateTenantSerializer
+		from users.models import User
+
+		suffix = uuid.uuid4().hex[:10]
+		schema_name = f"owner_only_{suffix}"
+		owner_email = f"owner-{suffix}@example.com"
+		request = type("TestRequest", (), {"user": self.tenant.owner})()
+		serializer = CreateTenantSerializer(
+			data={
+				"name": f"Owner Only Tenant {suffix}",
+				"short_name": f"owner-{suffix}",
+				"schema_name": schema_name,
+				"domain": f"{schema_name}.localhost",
+				"owner_email": owner_email,
+				"owner_first_name": "Ada",
+				"owner_last_name": "Lovelace",
+			},
+			context={"request": request},
+		)
+		serializer.is_valid(raise_exception=True)
+
+		with schema_context("public"):
+			before = set(User.objects.values_list("pk", flat=True))
+			created = serializer.save()
+			new_users = User.objects.exclude(pk__in=before)
+		try:
+			self.assertEqual(new_users.count(), 1)
+			owner = new_users.get()
+			self.assertEqual(owner.email, owner_email)
+			self.assertEqual(created.owner_id, owner.pk)
+			self.assertEqual(owner.first_name, "Ada")
+		finally:
+			from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+			with schema_context("public"):
+				hard_delete_tenant_workspace(created)
+
+	def test_tenant_creation_never_creates_an_owner_placeholder_account(self):
+		from core.serializers import CreateTenantSerializer
+		from users.models import User
+
+		suffix = uuid.uuid4().hex[:10]
+		schema_name = f"no_placeholder_{suffix}"
+		request = type("TestRequest", (), {"user": self.tenant.owner})()
+		serializer = CreateTenantSerializer(
+			data={
+				"name": f"No Placeholder Tenant {suffix}",
+				"short_name": f"noph-{suffix}",
+				"schema_name": schema_name,
+				"domain": f"{schema_name}.localhost",
+				"owner_email": f"real-owner-{suffix}@example.com",
+				"owner_first_name": "Real",
+				"owner_last_name": "Owner",
+			},
+			context={"request": request},
+		)
+		serializer.is_valid(raise_exception=True)
+		with schema_context("public"):
+			created = serializer.save()
+		try:
+			with schema_context("public"):
+				self.assertFalse(User.objects.filter(username__startswith="owner_").exists())
+				self.assertFalse(User.objects.filter(email="admin@example.com").exists())
+				self.assertEqual(created.owner.email, f"real-owner-{suffix}@example.com")
+		finally:
+			from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+			with schema_context("public"):
+				hard_delete_tenant_workspace(created)
+
+	def test_existing_user_promoted_to_owner_gets_the_admin_role(self):
+		from authorization.models import TenantMembership
+		from core.serializers import CreateTenantSerializer
+		from users.models import User
+
+		suffix = uuid.uuid4().hex[:10]
+		schema_name = f"existing_owner_{suffix}"
+		with schema_context("public"):
+			existing_owner = User.objects.create(
+				email=f"existing-owner-{suffix}@example.com",
+				username=f"existing-owner-{suffix}",
+				id_number=f"EXISTING-OWNER-{suffix}",
+				first_name="Existing",
+				last_name="Owner",
+			)
+		request = type("TestRequest", (), {"user": self.tenant.owner})()
+		serializer = CreateTenantSerializer(
+			data={
+				"name": f"Existing Owner Tenant {suffix}",
+				"short_name": f"exown-{suffix}",
+				"schema_name": schema_name,
+				"domain": f"{schema_name}.localhost",
+				"owner_email": existing_owner.email,
+			},
+			context={"request": request},
+		)
+		serializer.is_valid(raise_exception=True)
+		with schema_context("public"):
+			created = serializer.save()
+		try:
+			self.assertEqual(created.owner_id, existing_owner.pk)
+			with schema_context(schema_name):
+				membership = TenantMembership.objects.select_related("role").get(user=existing_owner)
+				self.assertEqual(membership.role.system_key, "admin")
+				self.assertTrue(membership.is_active)
+		finally:
+			from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+			with schema_context("public"):
+				hard_delete_tenant_workspace(created)
+
+	def test_tenant_creation_requires_a_real_owner_instead_of_a_placeholder(self):
+		from core.serializers import CreateTenantSerializer
+
+		suffix = uuid.uuid4().hex[:10]
+		schema_name = f"no_owner_{suffix}"
+		serializer = CreateTenantSerializer(
+			data={
+				"name": f"No Owner Tenant {suffix}",
+				"short_name": f"noown-{suffix}",
+				"schema_name": schema_name,
+				"domain": f"{schema_name}.localhost",
+			},
+			context={},
+		)
+		serializer.is_valid(raise_exception=True)
+		with schema_context("public"), self.assertRaises(ValidationError):
+			serializer.save()
+
+	# ------------------------------------------------------------------
+	# Shared creation workflow
+	# ------------------------------------------------------------------
+
+	def _run_job(self, **overrides):
+		suffix = uuid.uuid4().hex[:10]
+		destination_schema = overrides.pop("destination_schema", f"shared_flow_{suffix}")
+		payload = {
+			"name": f"Shared Flow {suffix}",
+			"short_name": f"flow-{suffix}",
+			"schema_name": destination_schema,
+			"domain": f"{destination_schema}.localhost",
+			**overrides.pop("payload", {}),
+		}
+		job = TenantCreationJob.objects.create(
+			destination_schema=destination_schema,
+			requested_by=self.tenant.owner,
+			request_payload=payload,
+			**overrides,
+		)
+		with schema_context("public"), patch("core.services.tenant_clone.close_old_connections"):
+			run_tenant_creation_job(str(job.pk))
+		job.refresh_from_db()
+		return job
+
+	def test_default_and_clone_creation_share_the_same_job_workflow(self):
+		from academics.models import Division, GradeLevel
+		from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+		division = Division.objects.order_by("name").first()
+		GradeLevel.objects.create(name="Nursery 1", level=1, division=division)
+
+		default_job = self._run_job()
+		clone_job = self._run_job(
+			initialization_source=TenantCreationJob.InitializationSource.CLONE,
+			source_tenant=self.tenant,
+			source_schema=self.tenant.schema_name,
+			selected_modules=["grade_levels"],
+		)
+		try:
+			for job in (default_job, clone_job):
+				self.assertEqual(job.status, TenantCreationJob.Status.COMPLETED)
+				self.assertEqual(job.stage, "Completed")
+				self.assertEqual(job.progress_percent, 100)
+				self.assertIn("tenant_schema", job.result)
+				self.assertIsNotNone(job.destination_tenant_id)
+				self.assertEqual(job.destination_tenant.provisioning_status, "completed")
+
+			self.assertEqual(default_job.result["cloned_counts"], {})
+			self.assertTrue(clone_job.result["cloned_counts"])
+		finally:
+			with schema_context("public"):
+				for job in (default_job, clone_job):
+					tenant = Tenant.objects.filter(pk=job.destination_tenant_id).first()
+					if tenant:
+						hard_delete_tenant_workspace(tenant)
+
+	# ------------------------------------------------------------------
+	# Division and grade-level mapping
+	# ------------------------------------------------------------------
+
+	def _seed_default_grade_levels(self):
+		from academics.models import GradeLevel
+		from academics.services.grade_level_range import default_divisions_in_order
+		from defaults.data.gade_level import grade_level_data
+
+		divisions = default_divisions_in_order()
+		for item in grade_level_data:
+			GradeLevel.objects.create(
+				name=item["name"],
+				short_name=item["short_name"],
+				description=item["description"],
+				level=item["level"],
+				division=divisions[item["division"]],
+			)
+		return divisions
+
+	def test_clone_maps_grade_levels_to_the_destination_shared_division(self):
+		from academics.models import GradeLevel
+		from academics.services.grade_level_range import default_max_level_for_division
+		from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+		divisions = self._seed_default_grade_levels()
+		destination_division = divisions[1]  # Elementary
+		max_level = default_max_level_for_division(destination_division)
+		destination = self._destination(school_division=destination_division)
+		try:
+			service = TenantCloneService(
+				self.tenant.schema_name,
+				destination.schema_name,
+				resolve_modules(["grade_levels"]),
+				destination_division=destination_division,
+			)
+			service.clone(service.snapshot_source())
+
+			with schema_context(destination.schema_name):
+				cloned = list(GradeLevel.objects.all())
+				self.assertEqual(len(cloned), max_level)
+				self.assertLessEqual(max(item.level for item in cloned), max_level)
+				self.assertEqual(
+					{item.division_id for item in cloned},
+					{destination_division.id},
+				)
+		finally:
+			with schema_context("public"):
+				hard_delete_tenant_workspace(destination)
+
+	def test_clone_skips_records_that_depend_on_excluded_grade_levels(self):
+		from academics.models import GradeLevel, Section
+		from academics.services.grade_level_range import default_max_level_for_division
+		from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+		divisions = self._seed_default_grade_levels()
+		destination_division = divisions[0]  # Preschool
+		max_level = default_max_level_for_division(destination_division)
+		for grade_level in GradeLevel.objects.all():
+			Section.objects.create(name=f"{grade_level.short_name}-A", grade_level=grade_level)
+
+		destination = self._destination(school_division=destination_division)
+		try:
+			service = TenantCloneService(
+				self.tenant.schema_name,
+				destination.schema_name,
+				resolve_modules(["grade_levels", "sections"]),
+				destination_division=destination_division,
+			)
+			service.clone(service.snapshot_source())
+
+			with schema_context(destination.schema_name):
+				self.assertEqual(GradeLevel.objects.count(), max_level)
+				self.assertEqual(Section.objects.count(), max_level)
+				self.assertEqual(
+					{section.grade_level.division_id for section in Section.objects.all()},
+					{destination_division.id},
+				)
+		finally:
+			with schema_context("public"):
+				hard_delete_tenant_workspace(destination)
+
+	def test_clone_leaves_the_source_tenant_untouched(self):
+		from academics.models import GradeLevel
+		from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+		divisions = self._seed_default_grade_levels()
+		before = sorted(
+			GradeLevel.objects.values_list("id", "name", "level", "division_id")
+		)
+		destination = self._destination(school_division=divisions[0])
+		try:
+			service = TenantCloneService(
+				self.tenant.schema_name,
+				destination.schema_name,
+				resolve_modules(["grade_levels"]),
+				destination_division=divisions[0],
+			)
+			service.clone(service.snapshot_source())
+
+			after = sorted(
+				GradeLevel.objects.values_list("id", "name", "level", "division_id")
+			)
+			self.assertEqual(before, after)
+		finally:
+			with schema_context("public"):
+				hard_delete_tenant_workspace(destination)

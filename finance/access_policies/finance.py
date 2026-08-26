@@ -98,7 +98,7 @@ class FinanceAccessPolicy(BaseSchoolAccessPolicy):
             ],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:FINANCE_MANAGE",
+            "condition": "has_rbac_permission:finance.settings.manage",
         },
 
         # 6) Special privilege: FINANCE_VIEW -> read-only access
@@ -106,7 +106,7 @@ class FinanceAccessPolicy(BaseSchoolAccessPolicy):
             "action": ["list", "retrieve"],
             "principal": "authenticated",
             "effect": "allow",
-            "condition": "has_privilege:FINANCE_VIEW",
+            "condition": "has_rbac_permission:finance.transactions.view",
         },
 
         # 7) VIEWER: Read-only access (list and retrieve)

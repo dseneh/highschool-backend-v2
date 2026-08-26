@@ -11,7 +11,16 @@ from grading.utils import paginate_qs, generate_assessments_for_gradebook_with_s
 
 from grading.models import GradeBook
 from grading.serializers import GradeBookOut
-from grading.services.authorization import get_teacher_gradebook_scope
+from grading.services.authorization import (
+    can_edit_assigned_grades,
+    get_teacher_gradebook_scope,
+)
+from grading.services.scope_authorization import (
+    filter_gradebooks_for_view_scope,
+    require_scope_access,
+    user_can_view_gradebook,
+    user_can_view_section_grades,
+)
 
 from academics.models import AcademicYear, SectionSubject
 
@@ -55,8 +64,8 @@ class GradeBookListCreateView(APIView):
         
         if sct := request.query_params.get("section"):
             qs = qs.filter(section_id=sct)
-        # if ay := request.query_params.get("academic_year"):
-        #     qs = qs.filter(academic_year_id=ay)
+
+        qs = filter_gradebooks_for_view_scope(qs, request)
 
         # Check if stats should be included
         include_stats = request.query_params.get("include_stats", "").lower() in ("true", "1", "yes")
@@ -89,6 +98,14 @@ class GradeBookListCreateView(APIView):
         section_subject = SectionSubject.objects.select_related("section", "subject").filter(id=section_subject_id).first()
         if not section_subject:
             return Response({"detail": "The section subject does not exist."}, status=400)
+
+        require_scope_access(
+            user_can_view_section_grades(
+                section_subject.section_id,
+                request,
+                subject_id=section_subject.subject_id,
+            )
+        )
         
         if method not in dict(GradeBook.CalculationMethod.choices):
             return Response({"detail": "Invalid calculation_method."}, status=400)
@@ -134,13 +151,21 @@ class GradeBookDetailView(APIView):
 
     def get(self, request, pk):
         gb = self.get_object(pk)
+        require_scope_access(user_can_view_gradebook(gb, request))
         # Check if stats should be included
         include_stats = request.query_params.get("include_stats", "").lower() in ("true", "1", "yes")
-        return Response(GradeBookOut(gb, include_stats=include_stats).data)
+        data = GradeBookOut(gb, include_stats=include_stats).data
+        data["can_edit_grades"] = can_edit_assigned_grades(
+            request.user,
+            gb.section_subject.section_id,
+            gb.section_subject.subject_id,
+        )
+        return Response(data)
 
     @transaction.atomic
     def put(self, request, pk):
         gb = self.get_object(pk)
+        require_scope_access(user_can_view_gradebook(gb, request))
         
         allowed_fields = ["name", "calculation_method"]
 
@@ -154,6 +179,7 @@ class GradeBookDetailView(APIView):
     @transaction.atomic
     def delete(self, request, pk):
         gb = self.get_object(pk)
+        require_scope_access(user_can_view_gradebook(gb, request))
         # if gb.assessments.exists():
         #     gb.active = False
         #     gb.save(update_fields=["active", "updated_at"])
@@ -216,6 +242,8 @@ class TeacherGradebookListView(APIView):
             )
 
             qs = qs.filter(explicit_q | general_q).distinct()
+
+        qs = filter_gradebooks_for_view_scope(qs, request)
         
         # Check if stats should be included
         include_stats = request.query_params.get("include_stats", "").lower() in ("true", "1", "yes")

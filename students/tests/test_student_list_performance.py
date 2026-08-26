@@ -28,7 +28,7 @@ class StudentListQueryCountTests(TenantTestCase):
             defaults={
                 "username": "student-list-perf",
                 "id_number": "STUDENT-LIST-PERF-001",
-                "role": "admin",
+                "account_type": "staff",
                 "first_name": "Perf",
                 "last_name": "Owner",
             },

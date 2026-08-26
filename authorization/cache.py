@@ -28,6 +28,7 @@ class CachedRolePointer(msgspec.Struct, frozen=True):
     role_id: str
     permission_version: int
     active: bool
+    system_key: str = ""
 
 
 class CachedRolePermissions(msgspec.Struct, frozen=True):

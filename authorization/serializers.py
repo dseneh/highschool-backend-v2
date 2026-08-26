@@ -76,3 +76,16 @@ class RolePermissionReplacementSerializer(PermissionListValidationMixin, seriali
 
 class UserRoleAssignmentSerializer(serializers.Serializer):
     role_id = serializers.UUIDField()
+
+
+class BulkUserRoleAssignmentSerializer(UserRoleAssignmentSerializer):
+    id_numbers = serializers.ListField(
+        child=serializers.CharField(max_length=50),
+        allow_empty=False,
+    )
+
+    def validate_id_numbers(self, id_numbers):
+        normalized = [value.strip() for value in id_numbers if value.strip()]
+        if len(normalized) != len(set(normalized)):
+            raise serializers.ValidationError("Each user may only be assigned once.")
+        return normalized
