@@ -11,12 +11,32 @@ Usage:
 """
 
 import os
+import secrets
 from django.core.management.base import BaseCommand, CommandError
 from django.contrib.auth import get_user_model
 from django_tenants.utils import get_public_schema_name
 from django.db import connection
 
 User = get_user_model()
+
+
+def generate_platform_id() -> str:
+    """Return a unique five-character platform-user identifier."""
+    while True:
+        candidate = f"G{secrets.token_hex(2).upper()}"
+        if not User.objects.filter(id_number=candidate).exists():
+            return candidate
+
+
+def generate_username(email: str) -> str:
+    """Return an available username based on the email local part."""
+    base = email.split("@", 1)[0] or "admin"
+    candidate = base
+    index = 1
+    while User.objects.filter(username=candidate).exists():
+        candidate = f"{base}_{index}"
+        index += 1
+    return candidate
 
 
 class Command(BaseCommand):
@@ -56,7 +76,7 @@ class Command(BaseCommand):
         # Get credentials from arguments or environment variables
         email = options.get("email") or os.environ.get("DJANGO_SUPERUSER_EMAIL")
         password = options.get("password") or os.environ.get("DJANGO_SUPERUSER_PASSWORD")
-        id_number = options.get("id_number") or os.environ.get("DJANGO_SUPERUSER_ID_NUMBER", "admin001")
+        requested_id_number = options.get("id_number") or os.environ.get("DJANGO_SUPERUSER_ID_NUMBER")
         name = options.get("name") or os.environ.get("DJANGO_SUPERUSER_NAME", "System Administrator")
 
         if not email:
@@ -87,22 +107,41 @@ class Command(BaseCommand):
                 "This will create the public tenant and the first owner user."
             )
 
-        # Check if user with this email already exists
-        # Note: In django-tenant-users, is_superuser is stored in UserTenantPermissions, not on User model
-        if User.objects.filter(email=email).exists():
-            self.stdout.write(
-                self.style.WARNING(f"User with email '{email}' already exists.")
-            )
-            return
-
         try:
             # Split name into first_name and last_name
             name_parts = name.split(' ', 1) if name else ['Admin', '']
             first_name = name_parts[0]
             last_name = name_parts[1] if len(name_parts) > 1 else ''
             
-            # Generate username from email (e.g., admin@example.com -> admin)
-            username = email.split('@')[0] if email else 'admin'
+            existing_user = User.objects.filter(email__iexact=email).first()
+            if existing_user:
+                user = existing_user
+                user.is_active = True
+                user.is_platform_superuser = True
+                user.set_password(password)
+                user.save(update_fields=["is_active", "is_platform_superuser", "password"])
+                from core.models import Tenant
+                from tenant_users.permissions.models import UserTenantPermissions
+
+                public_tenant = Tenant.objects.get(schema_name=get_public_schema_name())
+                if not public_tenant.user_set.filter(pk=user.pk).exists():
+                    public_tenant.add_user(user, is_superuser=True, is_staff=True)
+                else:
+                    permissions = UserTenantPermissions.objects.get(profile=user)
+                    permissions.is_superuser = True
+                    permissions.is_staff = True
+                    permissions.save(update_fields=["is_superuser", "is_staff"])
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"User with email '{email}' already exists; upgraded it to a platform superadmin."
+                    )
+                )
+                return
+
+            username = generate_username(email)
+            id_number = requested_id_number or generate_platform_id()
+            if User.objects.filter(id_number=id_number).exists():
+                id_number = generate_platform_id()
             
             from common.status import UserAccountType
             
@@ -116,6 +155,7 @@ class Command(BaseCommand):
                 last_name=last_name,
                 id_number=id_number,
                 account_type=UserAccountType.GLOBAL,
+                is_platform_superuser=True,
             )
 
             self.stdout.write(
