@@ -110,7 +110,9 @@ class PositionViewSet(viewsets.ModelViewSet):
         # Validate using business logic
         is_valid, errors = staff_service.validate_position_creation(request.data)
         if not is_valid:
-            return Response({"errors": errors}, status=400)
+            from common.api_response import error_response
+
+            return error_response(errors, status_code=400)
         
         # Check for duplicate title in same department
         title = request.data.get('title')
@@ -158,7 +160,9 @@ class PositionViewSet(viewsets.ModelViewSet):
         if any(f in request.data for f in ['title', 'salary_min', 'salary_max']):
             is_valid, errors = staff_service.validate_position_creation(request.data)
             if not is_valid:
-                return Response({"errors": errors}, status=400)
+                from common.api_response import error_response
+
+                return error_response(errors, status_code=400)
         
         # Check for duplicate title if being updated
         title = request.data.get('title', position.title)

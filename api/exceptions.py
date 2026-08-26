@@ -6,6 +6,8 @@ from rest_framework.views import exception_handler
 from rest_framework.response import Response
 from rest_framework import status
 
+from common.api_response import detail_from_error
+
 
 def custom_exception_handler(exc, context):
     """
@@ -22,38 +24,8 @@ def custom_exception_handler(exc, context):
     # Call REST framework's default exception handler first
     response = exception_handler(exc, context)
     
-    # Normalize validation errors to use 'detail' field
     if response is not None:
-        # Check if we have field errors or non_field_errors
-        if isinstance(response.data, dict):
-            # Handle field-specific validation errors
-            if any(isinstance(v, list) for v in response.data.values()):
-                # Extract error message with field name for better context
-                error_message = None
-                error_field = None
-                
-                for key, value in response.data.items():
-                    if isinstance(value, list) and value:
-                        error_field = key
-                        error_message = value[0] if isinstance(value[0], str) else str(value[0])
-                        break
-                
-                if error_message:
-                    # Include field name in the message for clarity
-                    if error_field and error_field != "non_field_errors":
-                        error_message = f"{error_field}: {error_message}"
-                    response.data = {"detail": error_message}
-            
-            # Handle non_field_errors
-            elif "non_field_errors" in response.data:
-                non_field_errors = response.data.get("non_field_errors", [])
-                if non_field_errors:
-                    error_message = (
-                        non_field_errors[0] 
-                        if isinstance(non_field_errors[0], str) 
-                        else str(non_field_errors[0])
-                    )
-                    response.data = {"detail": error_message}
+        response.data = {"detail": detail_from_error(response.data)}
         
         return response
     

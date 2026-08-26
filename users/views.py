@@ -42,6 +42,7 @@ from common.status import UserAccountType, Roles
 from core.models import Tenant, TenantOwnerActivationCode
 from common.email_service import send_tenant_owner_activation_email
 from users.utils import build_activation_url
+from common.api_response import error_response
 
 
 ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -425,7 +426,7 @@ class TenantUsersView(APIView):
 
         lookup_serializer = UserRecreateSerializer(data=request_data)
         if not lookup_serializer.is_valid():
-            return Response(lookup_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(lookup_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
 
         account_type = lookup_serializer.validated_data['account_type']
         id_number = lookup_serializer.validated_data['id_number']
@@ -552,11 +553,6 @@ class TenantUsersView(APIView):
                         return Response(
                             {
                                 "detail": "Cannot attach account because source email is invalid.",
-                                "errors": {
-                                    "email": [
-                                        "A valid email is required on the source record before generating a user account."
-                                    ]
-                                },
                             },
                             status=status.HTTP_400_BAD_REQUEST,
                         )
@@ -568,11 +564,6 @@ class TenantUsersView(APIView):
                         return Response(
                             {
                                 "detail": "Cannot attach account because this email is already linked to another user.",
-                                "errors": {
-                                    "email": [
-                                        "A user with this email already exists."
-                                    ]
-                                },
                             },
                             status=status.HTTP_400_BAD_REQUEST,
                         )
@@ -597,11 +588,6 @@ class TenantUsersView(APIView):
                                 f"Cannot create {account_type} account because the source record "
                                 "does not have an email address."
                             ),
-                            "errors": {
-                                "email": [
-                                    "A valid email is required on the source record before generating a user account."
-                                ]
-                            },
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
@@ -615,11 +601,6 @@ class TenantUsersView(APIView):
                                 f"Cannot create {account_type} account because the source record "
                                 "email is invalid."
                             ),
-                            "errors": {
-                                "email": [
-                                    "A valid email is required on the source record before generating a user account."
-                                ]
-                            },
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
@@ -653,7 +634,7 @@ class TenantUsersView(APIView):
 
                 create_serializer = UserCreateSerializer(data=user_data)
                 if not create_serializer.is_valid():
-                    return Response(create_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    return error_response(create_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
                 user = create_serializer.save()
                 created = True
 
@@ -791,7 +772,9 @@ class GlobalUserCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             except serializers.ValidationError as exc:
-                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+                from common.api_response import error_response
+
+                return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
             except Exception as exc:
                 return Response(
                     {"detail": str(exc)},
@@ -882,7 +865,7 @@ class UserDetailView(APIView):
                     serializer.save()
                     response_serializer = UserSerializer(user, context={'request': request})
                     return Response(response_serializer.data, status=status.HTTP_200_OK)
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
             except User.DoesNotExist:
                 return Response(
                     {"detail": f"User with id_number {id_number} not found"},
@@ -992,7 +975,7 @@ class PasswordChangeView(APIView):
                         status=status.HTTP_200_OK
                     )
                 
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
                 
             except User.DoesNotExist:
                 return Response(
@@ -1037,7 +1020,7 @@ class PasswordResetRequestView(APIView):
 
         serializer = PasswordForgotSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
 
         user_identifier = serializer.validated_data['user_identifier']
 
@@ -1465,7 +1448,7 @@ class UserRecreateView(APIView):
         """Create user from Student/Staff/Parent record using id_number + DOB lookup."""
         serializer = UserRecreateSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
 
         if connection.schema_name == 'public':
             return Response(
@@ -1614,11 +1597,6 @@ class UserRecreateView(APIView):
                 return Response(
                     {
                         "detail": "Cannot create account because this email is already linked to another user.",
-                        "errors": {
-                            "email": [
-                                "A user with this email already exists."
-                            ]
-                        },
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -1640,7 +1618,7 @@ class UserRecreateView(APIView):
 
             create_serializer = UserCreateSerializer(data=user_data)
             if not create_serializer.is_valid():
-                return Response(create_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(create_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
 
             user = create_serializer.save()
 

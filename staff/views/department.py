@@ -57,7 +57,9 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         # Validate using business logic
         is_valid, errors = staff_service.validate_department_creation(request.data)
         if not is_valid:
-            return Response({"errors": errors}, status=400)
+            from common.api_response import error_response
+
+            return error_response(errors, status_code=400)
         
         # Prepare data
         data = {
@@ -82,7 +84,9 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         if 'name' in request.data:
             is_valid, errors = staff_service.validate_department_creation(request.data)
             if not is_valid:
-                return Response({"errors": errors}, status=400)
+                from common.api_response import error_response
+
+                return error_response(errors, status_code=400)
         
         # Prepare data
         data = {}

@@ -28,6 +28,7 @@ from users.serializers import (
     UserRecreateSerializer,
     AdminPasswordResetSerializer,
 )
+from common.api_response import error_response
 from users.access_policies import UserAccessPolicy
 from users.access_policies.permissions import PRIVILEGES
 from common.status import UserAccountType, Roles
@@ -557,7 +558,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         lookup_serializer = UserRecreateSerializer(data=request_data)
         if not lookup_serializer.is_valid():
-            return Response(lookup_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(lookup_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
         
         account_type = lookup_serializer.validated_data['account_type']
         id_number = lookup_serializer.validated_data['id_number']
@@ -628,7 +629,6 @@ class UserViewSet(viewsets.ModelViewSet):
                         f"Cannot create {account_type} account because the source record "
                         "does not have a valid email address."
                     ),
-                    "errors": {"email": [str(exc)]},
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -645,11 +645,6 @@ class UserViewSet(viewsets.ModelViewSet):
                         return Response(
                             {
                                 "detail": "Cannot attach account because this email is already linked to another user.",
-                                "errors": {
-                                    "email": [
-                                        "A user with this email already exists."
-                                    ]
-                                },
                             },
                             status=status.HTTP_400_BAD_REQUEST,
                         )
@@ -679,11 +674,6 @@ class UserViewSet(viewsets.ModelViewSet):
                 return Response(
                     {
                         "detail": "Cannot create account because this email is already linked to another user.",
-                        "errors": {
-                            "email": [
-                                "A user with this email already exists."
-                            ]
-                        },
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -715,7 +705,7 @@ class UserViewSet(viewsets.ModelViewSet):
             
             create_serializer = UserCreateSerializer(data=user_data)
             if not create_serializer.is_valid():
-                return Response(create_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    return error_response(create_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
             
             user = create_serializer.save()
             
@@ -897,7 +887,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         serializer = PasswordChangeSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
         
         # Validate current password
         if not user.check_password(serializer.validated_data['current_password']):
@@ -973,7 +963,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
         serializer = AdminPasswordResetSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
 
         new_password = serializer.validated_data['new_password']
         mark_as_default = serializer.validated_data.get('mark_as_default', False)
@@ -1311,7 +1301,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
         serializer = PasswordForgotSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
 
         user_identifier = serializer.validated_data['user_identifier']
 

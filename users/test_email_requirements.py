@@ -55,8 +55,9 @@ class UserViewSetEmailRequirementTests(SimpleTestCase):
                         response = viewset.create(request)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("errors", response.data)
-        self.assertIn("email", response.data["errors"])
+        self.assertIn("detail", response.data)
+        self.assertNotIn("errors", response.data)
+        self.assertIn("valid email address", response.data["detail"])
 
     def test_create_returns_400_when_source_email_invalid(self):
         request = self._build_request()
@@ -77,8 +78,9 @@ class UserViewSetEmailRequirementTests(SimpleTestCase):
                         response = viewset.create(request)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("errors", response.data)
-        self.assertIn("email", response.data["errors"])
+        self.assertIn("detail", response.data)
+        self.assertNotIn("errors", response.data)
+        self.assertIn("valid email address", response.data["detail"])
 
     def test_create_allows_valid_email_flow_for_existing_user(self):
         request = self._build_request()

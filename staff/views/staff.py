@@ -130,7 +130,9 @@ class StaffViewSet(viewsets.ModelViewSet):
         # Validate using business logic
         is_valid, errors = staff_service.validate_staff_creation(request.data)
         if not is_valid:
-            return Response({"errors": errors}, status=400)
+            from common.api_response import error_response
+
+            return error_response(errors, status_code=400)
         
         # Check for duplicates using business logic + adapter
         id_number = request.data.get('id_number')
@@ -197,7 +199,9 @@ class StaffViewSet(viewsets.ModelViewSet):
         # Validate using business logic
         is_valid, errors = staff_service.validate_staff_update(request.data, staff_data)
         if not is_valid:
-            return Response({"errors": errors}, status=400)
+            from common.api_response import error_response
+
+            return error_response(errors, status_code=400)
         
         # Check for duplicate ID number if being updated
         new_id_number = request.data.get('id_number')
