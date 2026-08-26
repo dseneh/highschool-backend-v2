@@ -66,12 +66,20 @@ def build_unique_username(base_username: str) -> str:
         build_unique_username('john_doe')      -> 'john_doe_1' (if 'john_doe' exists)
         build_unique_username('john_doe')      -> 'john_doe_2' (if both above exist)
     """
-    candidate = base_username
     index = 1
+    candidate = base_username
     while User.objects.filter(username=candidate).exists():
         candidate = f"{base_username}_{index}"
         index += 1
     return candidate
+
+
+def build_unique_platform_id() -> str:
+    """Generate a unique five-character identifier for a platform user."""
+    while True:
+        candidate = f"G{secrets.token_hex(2).upper()}"
+        if not User.objects.filter(id_number=candidate).exists():
+            return candidate
 
 
 class MultiFieldTokenObtainPairView(TokenObtainPairView):
@@ -749,11 +757,8 @@ class GlobalUserCreateView(APIView):
             data = request.data.copy()
 
             id_number = (data.get('id_number') or '').strip()
-            if not id_number:
-                return Response(
-                    {"id_number": ["ID number is required."]},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            id_number = build_unique_platform_id()
+            data['id_number'] = id_number
 
             if not data.get('username'):
                 data['username'] = build_unique_username(str(id_number))
