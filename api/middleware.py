@@ -87,6 +87,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         '/api/v1/divisions',
         '/api/v1/grade-levels/',
         '/api/v1/grade-levels',
+        '/api/v1/public/schools/',
+        '/api/v1/public/schools',
     }
 
     def _blocked_tenant_response(self, detail: str, error_code: str, status_code: int = 423):
@@ -386,7 +388,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                     or path.startswith('/api/v1/auth')
                     or path.startswith('/api/v1/tenants')
                     or path.startswith('/api/v1/search')
-                    or path.startswith('/api/v1/signup-requests')
+                        or path.startswith('/api/v1/signup-requests')
+                        or path.startswith('/api/v1/public/schools')
                     or path in ('/', '/health', '/health/')
                 )
 
