@@ -11,8 +11,6 @@ from core.views import (
     SignupRequestViewSet,
     ContactInquiryView,
     PublicSchoolSearchView,
-    AccountDiscoveryStartView,
-    AccountDiscoveryVerifyView,
 )
 from core.onboarding_views import (
     get_onboarding,
@@ -74,7 +72,5 @@ urlpatterns = [
     path('contact-inquiries/', ContactInquiryView.as_view(), name='contact-inquiry'),
     path('search/', search_tenant_info, name='search-tenant-info'),
     path('public/schools/', PublicSchoolSearchView.as_view(), name='public-school-search'),
-    path('auth/account-discovery/start/', AccountDiscoveryStartView.as_view(), name='account-discovery-start'),
-    path('auth/account-discovery/verify/', AccountDiscoveryVerifyView.as_view(), name='account-discovery-verify'),
     path('cache/invalidate/', invalidate_cache, name='invalidate-cache'),
 ]
