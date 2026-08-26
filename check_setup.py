@@ -15,7 +15,7 @@ from django_tenants.utils import get_public_schema_name
 def check_superuser_exists():
     """Check if superadmin user exists"""
     User = get_user_model()
-    exists = User.objects.filter(role='superadmin').exists()
+    exists = User.objects.filter(is_platform_superuser=True, is_active=True).exists()
     print('true' if exists else 'false')
 
 def check_public_tenant_exists():
