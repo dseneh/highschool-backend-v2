@@ -30,11 +30,6 @@ def _permission_codes(values: Iterable) -> set[str]:
 
 
 def can_manage_platform_access(actor) -> bool:
-    """Return whether actor may grant/revoke platform access.
-
-    Platform superadmins are always allowed. A shared public/global role may
-    delegate this later by containing ``users.manage_platform_access``.
-    """
     if not actor or not getattr(actor, "is_authenticated", False):
         return False
     if getattr(actor, "is_platform_superuser", False):
@@ -42,11 +37,10 @@ def can_manage_platform_access(actor) -> bool:
 
     from core.models import SharedRoleAssignment
 
-    public_schema = get_public_schema_name()
     actor_id = getattr(actor, "pk", None)
     if not actor_id:
         return False
-    with schema_context(public_schema):
+    with schema_context(get_public_schema_name()):
         assignment = (
             SharedRoleAssignment.objects.select_related("role")
             .filter(
@@ -70,7 +64,6 @@ def require_platform_access_manager(actor) -> None:
 
 
 def has_platform_role(user) -> bool:
-    """True when user has usable public/platform authorization."""
     if not user:
         return False
     if getattr(user, "is_platform_superuser", False):
@@ -114,8 +107,6 @@ def has_any_tenant_role(user) -> bool:
             .exclude(schema_name=public_schema)
             .values_list("schema_name", flat=True)
         )
-        # Defensive: stale through-table relationships should not make a scope
-        # tenant-capable after the tenant itself has been removed.
         existing_schemas = set(
             Tenant.objects.filter(schema_name__in=tenant_schemas)
             .exclude(status=Tenant.STATUS_DELETED)
@@ -134,12 +125,12 @@ def has_any_tenant_role(user) -> bool:
     return False
 
 
-def calculate_account_scope(user) -> str:
-    """Derive account scope from active authorization assignments.
+def has_any_assigned_role(user) -> bool:
+    """Central login guard for either platform or tenant authorization."""
+    return has_platform_role(user) or has_any_tenant_role(user)
 
-    An unassigned/non-platform identity defaults to TENANT eligibility so new
-    tenant accounts can be created before their first role is attached.
-    """
+
+def calculate_account_scope(user) -> str:
     platform = has_platform_role(user)
     tenant = has_any_tenant_role(user)
     if platform and tenant:
@@ -150,7 +141,6 @@ def calculate_account_scope(user) -> str:
 
 
 def sync_account_scope(user):
-    """Persist the derived scope and return the canonical public User."""
     from users.models import User
 
     user_id = getattr(user, "pk", None)
@@ -175,10 +165,7 @@ def _get_platform_role(role_identifier):
     if not lookup:
         raise ValidationError("A platform role is required.")
 
-    filters = {
-        "is_active": True,
-        "scope__in": ["PUBLIC", "GLOBAL"],
-    }
+    filters = {"is_active": True, "scope__in": ["PUBLIC", "GLOBAL"]}
     role = SharedRole.objects.filter(system_key=lookup, **filters).first()
     if role is None:
         try:
@@ -192,7 +179,6 @@ def _get_platform_role(role_identifier):
 
 @transaction.atomic
 def enable_platform_access(*, user, role, actor):
-    """Grant public workspace access without changing persona/employment data."""
     require_platform_access_manager(actor)
 
     from core.models import SharedRoleAssignment
@@ -213,7 +199,6 @@ def enable_platform_access(*, user, role, actor):
 
 @transaction.atomic
 def disable_platform_access(*, user, actor):
-    """Revoke public role access while preserving all linked profiles/history."""
     require_platform_access_manager(actor)
 
     from core.models import SharedRoleAssignment
@@ -222,9 +207,7 @@ def disable_platform_access(*, user, actor):
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
         db_user = User.objects.select_for_update().get(pk=user.pk)
-        SharedRoleAssignment.objects.filter(user=db_user, is_active=True).update(
-            is_active=False
-        )
+        SharedRoleAssignment.objects.filter(user=db_user, is_active=True).update(is_active=False)
 
     sync_account_scope(db_user)
     return db_user
@@ -232,16 +215,9 @@ def disable_platform_access(*, user, actor):
 
 @transaction.atomic
 def hire_platform_employee(
-    *,
-    user,
-    actor,
-    employee_number=None,
-    position="",
-    department="",
-    hire_date=None,
-    platform_role=None,
+    *, user, actor, employee_number=None, position="", department="",
+    hire_date=None, platform_role=None,
 ):
-    """Create/reactivate EzySchool employment without replacing tenant profiles."""
     require_platform_access_manager(actor)
 
     from users.models import PlatformEmployee, User
@@ -268,7 +244,6 @@ def hire_platform_employee(
 
 @transaction.atomic
 def terminate_platform_employee(*, user, actor, termination_date, revoke_access=False):
-    """End platform employment while retaining the historical employment row."""
     require_platform_access_manager(actor)
 
     from users.models import PlatformEmployee
