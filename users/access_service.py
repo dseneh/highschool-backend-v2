@@ -158,6 +158,76 @@ def sync_account_scope(user):
     return db_user
 
 
+def discover_linked_profile_types(user) -> list[str]:
+    """Discover domain personas across tenant schemas for one user detail view.
+
+    This is intentionally not used for user list serialization because it may
+    inspect multiple schemas. Historical profile rows remain discoverable even
+    after a user's active tenant authorization is removed.
+    """
+    from core.models import Tenant
+    from users.models import PlatformEmployee
+
+    user_id = getattr(user, "pk", None)
+    id_number = str(getattr(user, "id_number", "") or "").strip()
+    email = str(getattr(user, "email", "") or "").strip()
+    if not user_id:
+        return []
+
+    profiles: set[str] = set()
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        if PlatformEmployee.objects.filter(user_id=user_id).exists():
+            profiles.add("platform_employee")
+        schemas = list(
+            Tenant.objects.exclude(schema_name=public_schema)
+            .exclude(status=Tenant.STATUS_DELETED)
+            .values_list("schema_name", flat=True)
+        )
+
+    for schema_name in schemas:
+        try:
+            with schema_context(schema_name):
+                from django.db import connection
+                tables = set(connection.introspection.table_names())
+
+                if id_number and "staff" in tables:
+                    try:
+                        from staff.models import Staff
+                        if Staff.objects.filter(user_account_id_number=id_number).exists():
+                            profiles.add("staff")
+                    except Exception:
+                        pass
+
+                if id_number and "employee" in tables:
+                    try:
+                        from hr.models import Employee
+                        if Employee.objects.filter(user_account_id_number=id_number).exists():
+                            profiles.add("staff")
+                    except Exception:
+                        pass
+
+                try:
+                    from students.models import Student, StudentGuardian
+                    if id_number and Student.objects.filter(user_account_id_number=id_number).exists():
+                        profiles.add("student")
+                    guardian_filter = {}
+                    if id_number:
+                        guardian_filter["user_account_id_number"] = id_number
+                    guardian_exists = bool(guardian_filter) and StudentGuardian.objects.filter(**guardian_filter).exists()
+                    if not guardian_exists and email:
+                        guardian_exists = StudentGuardian.objects.filter(email__iexact=email).exists()
+                    if guardian_exists:
+                        profiles.add("parent")
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+    order = ["staff", "student", "parent", "platform_employee"]
+    return [profile for profile in order if profile in profiles]
+
+
 def _get_platform_role(role_identifier):
     from core.models import SharedRole
 
