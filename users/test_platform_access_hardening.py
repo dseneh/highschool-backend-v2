@@ -183,13 +183,31 @@ class PlatformLifecycleHardeningTests(TenantTestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("account_type", serializer.errors)
 
-    def test_tenant_only_role_cannot_login_to_public_workspace(self):
+    def test_central_sign_in_accepts_user_with_real_tenant_role(self):
+        from users.serializers import MultiFieldTokenObtainPairSerializer
+
+        user = self._user("tenant-central-login")
+        self._tenant_role(user)
+
+        with schema_context(get_public_schema_name()):
+            serializer = MultiFieldTokenObtainPairSerializer(
+                data={"username": user.username, "password": PASSWORD}
+            )
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.validated_data
+            self.assertIn("access", payload)
+            self.assertTrue(
+                any(
+                    tenant.get("schema_name") == self.tenant.schema_name
+                    for tenant in payload["user"]["tenants"]
+                )
+            )
+
+    def test_unassigned_user_cannot_sign_in(self):
         from authorization.exceptions import NoAssignedRole
         from users.serializers import MultiFieldTokenObtainPairSerializer
 
-        user = self._user("tenant-only-public-login")
-        self._tenant_role(user)
-
+        user = self._user("unassigned-login")
         with schema_context(get_public_schema_name()):
             serializer = MultiFieldTokenObtainPairSerializer(
                 data={"username": user.username, "password": PASSWORD}
