@@ -5,7 +5,7 @@ from django.contrib.auth import authenticate, get_user_model
 from django.conf import settings
 from django.utils import timezone
 
-from common.status import UserAccountType, UserAccountScope
+from common.status import UserAccountType
 
 User = get_user_model()
 
@@ -39,6 +39,7 @@ class UserSerializer(serializers.ModelSerializer):
                 from core.models import SharedRoleAssignment
                 assignment = SharedRoleAssignment.objects.select_related('role').filter(
                     user=obj, is_active=True, role__is_active=True,
+                    role__scope__in=['PUBLIC', 'GLOBAL'],
                 ).first()
                 if assignment is None:
                     return None
@@ -64,6 +65,8 @@ class UserSerializer(serializers.ModelSerializer):
                     'is_active': membership.is_active and role.is_active,
                     'role_type': role.role_type, 'scope': role.scope,
                 }
+            if membership.role is None:
+                return None
             return {
                 'id': str(membership.role_id), 'name': membership.role.name,
                 'system_key': membership.role.system_key,
@@ -79,11 +82,17 @@ class UserSerializer(serializers.ModelSerializer):
         if actor is None:
             return None
         full_name = f'{actor.first_name} {actor.last_name}'.strip()
-        return {'id': str(actor.pk), 'id_number': actor.id_number,
-                'full_name': full_name or actor.username or actor.email, 'email': actor.email}
+        return {
+            'id': str(actor.pk),
+            'id_number': actor.id_number,
+            'full_name': full_name or actor.username or actor.email,
+            'email': actor.email,
+        }
 
     def get_linked_profiles(self, obj):
         profiles = []
+        # Domain profile helpers resolve only in the active tenant schema. This
+        # prevents public list/detail requests from querying tenant-only tables.
         if obj.get_staff() is not None:
             profiles.append('staff')
         if obj.get_student() is not None:
@@ -91,8 +100,11 @@ class UserSerializer(serializers.ModelSerializer):
         guardians = obj.get_guardian_records()
         if guardians is not None and guardians.exists():
             profiles.append('parent')
-        if hasattr(obj, 'platform_employment'):
+        try:
+            obj.platform_employment
             profiles.append('platform_employee')
+        except Exception:
+            pass
         return profiles
 
     def get_platform_employment(self, obj):
@@ -101,9 +113,12 @@ class UserSerializer(serializers.ModelSerializer):
         except Exception:
             return None
         return {
-            'id': str(employment.pk), 'employee_number': employment.employee_number,
-            'position': employment.position, 'department': employment.department,
-            'status': employment.status, 'hire_date': employment.hire_date,
+            'id': str(employment.pk),
+            'employee_number': employment.employee_number,
+            'position': employment.position,
+            'department': employment.department,
+            'status': employment.status,
+            'hire_date': employment.hire_date,
             'termination_date': employment.termination_date,
         }
 
@@ -156,8 +171,10 @@ class UserSerializer(serializers.ModelSerializer):
                         payload['name'] = public_tenant.name or 'Admin'
                         result.append(payload)
                     except Tenant.DoesNotExist:
-                        result.append({'id': 'admin', 'schema_name': 'admin', 'workspace': 'admin',
-                                       'name': 'Admin', 'status': 'active', 'active': True})
+                        result.append({
+                            'id': 'admin', 'schema_name': 'admin', 'workspace': 'admin',
+                            'name': 'Admin', 'status': 'active', 'active': True,
+                        })
 
                 for tenant in Tenant.objects.exclude(schema_name=public_schema).exclude(status='deleted'):
                     try:
@@ -179,15 +196,16 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_is_current_user(self, obj):
         request = self.context.get('request')
-        return bool(request and hasattr(request, 'user') and request.user.is_authenticated and obj.id == request.user.id)
+        return bool(
+            request and hasattr(request, 'user') and request.user.is_authenticated
+            and obj.id == request.user.id
+        )
 
     def _resolve_profile_photo(self, instance, request):
         if instance.photo and hasattr(instance.photo, 'url'):
             return request.build_absolute_uri(instance.photo.url) if request else instance.photo.url
         if instance.photo and isinstance(instance.photo, str):
             return instance.photo
-        # Prefer the primary persona for display, but relationship lookup itself
-        # is no longer gated by account_type.
         if instance.account_type == UserAccountType.STAFF:
             source = instance.get_staff()
         elif instance.account_type == UserAccountType.STUDENT:
@@ -217,7 +235,8 @@ class UserSerializer(serializers.ModelSerializer):
         return {
             'first_name': getattr(source, 'first_name', None),
             'last_name': getattr(source, 'last_name', None),
-            'gender': getattr(source, 'gender', None), 'email': getattr(source, 'email', None),
+            'gender': getattr(source, 'gender', None),
+            'email': getattr(source, 'email', None),
         }
 
     def to_representation(self, instance):
@@ -228,13 +247,15 @@ class UserSerializer(serializers.ModelSerializer):
         for field in ['first_name', 'last_name', 'gender', 'email']:
             if source_bio.get(field) is not None:
                 data[field] = source_bio[field]
-        # User-level bio is editable only when no tenant persona is the source.
         data['is_bio_editable'] = instance.account_type == UserAccountType.OTHER
 
         from django.db import connection
         from django_tenants.utils import get_public_schema_name
         current_schema = connection.schema_name
-        data['workspace'] = current_schema if current_schema and current_schema != get_public_schema_name() else None
+        data['workspace'] = (
+            current_schema if current_schema and current_schema != get_public_schema_name()
+            else None
+        )
         return data
 
 
@@ -263,53 +284,76 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         username, password = attrs.get('username'), attrs.get('password')
         if not username or not password:
             errors = {}
-            if not username: errors['username'] = ['This field is required.']
-            if not password: errors['password'] = ['This field is required.']
+            if not username:
+                errors['username'] = ['This field is required.']
+            if not password:
+                errors['password'] = ['This field is required.']
             raise serializers.ValidationError(errors)
         user = authenticate(request=self.context.get('request'), username=username, password=password)
         if not user:
             raise serializers.ValidationError({'detail': ['No active account found with the given credentials']})
         if not user.is_active:
             raise serializers.ValidationError({'detail': ['User account is disabled.']})
+
         from authorization.exceptions import NoAssignedRole
-        from authorization.services import has_assigned_role
-        if not has_assigned_role(user):
+        from users.access_service import has_any_assigned_role
+        if not has_any_assigned_role(user):
             raise NoAssignedRole()
+
         refresh = self.get_token(user)
         data = {'refresh': str(refresh), 'access': str(refresh.access_token)}
         if hasattr(settings, 'SIMPLE_JWT') and settings.SIMPLE_JWT.get('UPDATE_LAST_LOGIN', False):
-            user.last_login = timezone.now(); user.save(update_fields=['last_login'])
+            user.last_login = timezone.now()
+            user.save(update_fields=['last_login'])
         data['user'] = UserSerializer(user, context=self.context).data
         return data
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    username = serializers.CharField(required=False, allow_blank=True, help_text='Defaults to id_number if not provided')
+    username = serializers.CharField(
+        required=False, allow_blank=True, help_text='Defaults to id_number if not provided'
+    )
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'id_number', 'first_name', 'last_name', 'gender',
-                  'account_type', 'is_active', 'is_platform_superuser']
+        fields = [
+            'id', 'username', 'email', 'id_number', 'first_name', 'last_name',
+            'gender', 'account_type', 'is_active',
+        ]
         read_only_fields = ['id']
+
     def validate_account_type(self, value):
-        if value not in UserAccountType.all(): raise serializers.ValidationError('Invalid account_type.')
+        if value not in UserAccountType.all():
+            raise serializers.ValidationError('Invalid account_type.')
         return value
+
     def create(self, validated_data):
-        id_number = validated_data['id_number']; user = User(**validated_data)
-        user.set_password(id_number); user.is_default_password = True; user.last_password_updated = None; user.save(); return user
+        id_number = validated_data['id_number']
+        user = User(**validated_data)
+        user.set_password(id_number)
+        user.is_default_password = True
+        user.last_password_updated = None
+        user.save()
+        return user
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['username', 'email', 'first_name', 'last_name', 'gender', 'account_type',
-                  'is_active', 'is_platform_superuser', 'photo']
+        fields = [
+            'username', 'email', 'first_name', 'last_name', 'gender',
+            'account_type', 'is_active', 'photo',
+        ]
+
     def update(self, instance, validated_data):
         if instance.account_type != UserAccountType.OTHER:
             for field in ['first_name', 'last_name', 'gender', 'photo']:
                 validated_data.pop(field, None)
         return super().update(instance, validated_data)
+
     def validate_account_type(self, value):
-        if value not in UserAccountType.all(): raise serializers.ValidationError('Invalid account_type.')
+        if value not in UserAccountType.all():
+            raise serializers.ValidationError('Invalid account_type.')
         return value
 
 
@@ -317,6 +361,7 @@ class PasswordChangeSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True, required=True)
     new_password = serializers.CharField(write_only=True, required=True, min_length=6)
     confirm_password = serializers.CharField(write_only=True, required=True)
+
     def validate(self, attrs):
         if attrs['new_password'] != attrs['confirm_password']:
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
@@ -331,6 +376,7 @@ class AdminPasswordResetSerializer(serializers.Serializer):
     new_password = serializers.CharField(write_only=True, required=True, min_length=6)
     confirm_password = serializers.CharField(write_only=True, required=True)
     mark_as_default = serializers.BooleanField(required=False, default=False)
+
     def validate(self, attrs):
         if attrs['new_password'] != attrs['confirm_password']:
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
@@ -338,12 +384,18 @@ class AdminPasswordResetSerializer(serializers.Serializer):
 
 
 class UserRecreateSerializer(serializers.Serializer):
-    account_type = serializers.ChoiceField(choices=[UserAccountType.STUDENT, UserAccountType.STAFF, UserAccountType.PARENT])
+    account_type = serializers.ChoiceField(
+        choices=[UserAccountType.STUDENT, UserAccountType.STAFF, UserAccountType.PARENT]
+    )
     id_number = serializers.CharField(required=True)
     date_of_birth = serializers.DateField(required=False, allow_null=True)
-    username = serializers.CharField(required=False, allow_blank=True, help_text='Defaults to id_number if not provided')
+    username = serializers.CharField(
+        required=False, allow_blank=True, help_text='Defaults to id_number if not provided'
+    )
     notify_user = serializers.BooleanField(required=False, default=True)
     role = serializers.CharField(required=False, allow_blank=True)
+
     def validate(self, attrs):
-        if not attrs.get('id_number'): raise serializers.ValidationError({'id_number': 'id_number is required.'})
+        if not attrs.get('id_number'):
+            raise serializers.ValidationError({'id_number': 'id_number is required.'})
         return attrs
