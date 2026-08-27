@@ -89,10 +89,23 @@ class UserSerializer(serializers.ModelSerializer):
             'email': actor.email,
         }
 
+    def _is_public_detail_request(self) -> bool:
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name
+
+        if connection.schema_name != get_public_schema_name():
+            return False
+        request = self.context.get('request')
+        parser_context = getattr(request, 'parser_context', None) or {}
+        view = parser_context.get('view')
+        return getattr(view, 'action', None) == 'retrieve'
+
     def get_linked_profiles(self, obj):
+        if self._is_public_detail_request():
+            from users.access_service import discover_linked_profile_types
+            return discover_linked_profile_types(obj)
+
         profiles = []
-        # Domain profile helpers resolve only in the active tenant schema. This
-        # prevents public list/detail requests from querying tenant-only tables.
         if obj.get_staff() is not None:
             profiles.append('staff')
         if obj.get_student() is not None:
