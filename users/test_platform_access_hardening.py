@@ -137,3 +137,32 @@ class PlatformLifecycleHardeningTests(TenantTestCase):
         )
         response = PlatformEmploymentView.as_view()(request, id_number=target.id_number)
         self.assertEqual(response.status_code, 409)
+
+    def test_normal_user_create_rejects_legacy_global_persona(self):
+        from users.serializers import UserCreateSerializer
+
+        serializer = UserCreateSerializer(
+            data={
+                "email": "legacy-global-create@example.com",
+                "username": "legacy-global-create",
+                "id_number": "LEGACY-GLOBAL-CREATE",
+                "first_name": "Legacy",
+                "last_name": "Global",
+                "account_type": "global",
+                "is_active": True,
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("account_type", serializer.errors)
+
+    def test_normal_user_update_rejects_legacy_global_persona(self):
+        from users.serializers import UserUpdateSerializer
+
+        target = self._user("legacy-global-update")
+        serializer = UserUpdateSerializer(
+            target,
+            data={"account_type": "global"},
+            partial=True,
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("account_type", serializer.errors)
