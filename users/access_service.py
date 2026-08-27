@@ -16,7 +16,7 @@ from django_tenants.utils import get_public_schema_name, schema_context
 
 from common.status import UserAccountScope
 
-MANAGE_PLATFORM_ACCESS_PERMISSION = "users.manage_platform_access"
+MANAGE_PLATFORM_ACCESS_PERMISSION = "platform.users.manage_access"
 
 
 def _permission_codes(values: Iterable) -> set[str]:
