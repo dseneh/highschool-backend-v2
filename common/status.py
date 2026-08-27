@@ -68,6 +68,7 @@ class SchoolFundingType:
     def choices(cls):
         return [(x.lower(), x.capitalize()) for x in cls.all()]
 
+
 class SchoolLevel:
     PRIMARY = "primary"
     SECONDARY = "secondary"
@@ -298,21 +299,3 @@ class UserAccountScope(str, Enum):
     @classmethod
     def choices(cls):
         return [(scope.value, scope.value.replace("_", " ").title()) for scope in cls]
-
-
-class AttendanceStatus(str, Enum):
-    PRESENT = "present"
-    ABSENT = "absent"
-    LATE = "late"
-    EXCUSED = "excused"
-    SICK = "sick"
-    ON_LEAVE = "on_leave"
-    HOLIDAY = "holiday"
-
-    @classmethod
-    def all(cls):
-        return [status.value for status in cls]
-
-    @classmethod
-    def choices(cls):
-        return [(status.value, status.value.capitalize()) for status in cls]
