@@ -309,22 +309,8 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise serializers.ValidationError({'detail': ['User account is disabled.']})
 
         from authorization.exceptions import NoAssignedRole
-        from django.db import connection
-        from django_tenants.utils import get_public_schema_name
-        from users.access_service import has_platform_role
-
-        if connection.schema_name == get_public_schema_name():
-            has_workspace_role = has_platform_role(user)
-        elif getattr(user, 'is_platform_superuser', False):
-            has_workspace_role = True
-        else:
-            from authorization.services import get_assigned_role
-            try:
-                has_workspace_role = get_assigned_role(user) is not None
-            except Exception:
-                has_workspace_role = False
-
-        if not has_workspace_role:
+        from users.access_service import has_any_assigned_role
+        if not has_any_assigned_role(user):
             raise NoAssignedRole()
 
         refresh = self.get_token(user)
