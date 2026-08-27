@@ -14,12 +14,7 @@ class Roles:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -36,12 +31,7 @@ class PersonStatus:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -57,16 +47,12 @@ class SchoolFundingType:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
         return [(x.lower(), x.capitalize()) for x in cls.all()]
+
 
 class SchoolLevel:
     PRIMARY = "primary"
@@ -75,12 +61,7 @@ class SchoolLevel:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -96,12 +77,7 @@ class UserAccountStatus:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -117,16 +93,11 @@ class StudentStatus:
     GRADUATED = "graduated"
     TRANSFERRED = "transferred"
     WITHDRAWN = "withdrawn"
-    NTR = "ntr"  # Not Returned
+    NTR = "ntr"
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -135,19 +106,14 @@ class StudentStatus:
 
 class EnrollmentStatus:
     PENDING = "pending"
-    ENROLLED = "enrolled"  # active seat for the academic year
-    COMPLETED = "completed"  # year-end closure (not an active seat)
+    ENROLLED = "enrolled"
+    COMPLETED = "completed"
     CANCELED = "canceled"
     WITHDRAWN = "withdrawn"
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -155,8 +121,6 @@ class EnrollmentStatus:
 
 
 class YearEndOutcome:
-    """Set on enrollment when status = completed (or on mid-year exit rows)."""
-
     PROMOTED = "promoted"
     DOUBLE_PROMOTED = "double_promoted"
     REPEATED = "repeated"
@@ -166,11 +130,7 @@ class YearEndOutcome:
 
     @classmethod
     def all(cls):
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -178,7 +138,6 @@ class YearEndOutcome:
 
     @classmethod
     def close_year_outcomes(cls):
-        """Outcomes allowed via complete-year progression."""
         return frozenset({cls.PROMOTED, cls.DOUBLE_PROMOTED, cls.REPEATED, cls.WITHDRAWN})
 
 
@@ -189,12 +148,7 @@ class EnrollmentType:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -213,15 +167,7 @@ class GradeStatus:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants (excludes None)."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper()
-            and isinstance(value, str)
-            and not callable(value)
-            and value is not None
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value) and value is not None]
 
     @classmethod
     def choices(cls):
@@ -240,12 +186,7 @@ class EmployeePosition:
 
     @classmethod
     def all(cls):
-        """Automatically collect all uppercase string constants."""
-        return [
-            value
-            for key, value in vars(cls).items()
-            if key.isupper() and isinstance(value, str) and not callable(value)
-        ]
+        return [value for key, value in vars(cls).items() if key.isupper() and isinstance(value, str) and not callable(value)]
 
     @classmethod
     def choices(cls):
@@ -272,7 +213,7 @@ class AttendanceStatus(str, Enum):
 
 class UserAccountType(str, Enum):
     STUDENT = "student"
-    GLOBAL = "global"
+    GLOBAL = "global"  # Legacy value; migrate to persona + account_scope before removal.
     STAFF = "staff"
     PARENT = "parent"
     OTHER = "other"
@@ -286,19 +227,15 @@ class UserAccountType(str, Enum):
         return [(status.value, status.value.capitalize()) for status in cls]
 
 
-class AttendanceStatus(str, Enum):
-    PRESENT = "present"
-    ABSENT = "absent"
-    LATE = "late"
-    EXCUSED = "excused"
-    SICK = "sick"
-    ON_LEAVE = "on_leave"
-    HOLIDAY = "holiday"
+class UserAccountScope(str, Enum):
+    TENANT = "tenant"
+    PLATFORM = "platform"
+    PLATFORM_AND_TENANT = "platform_and_tenant"
 
     @classmethod
     def all(cls):
-        return [status.value for status in cls]
+        return [scope.value for scope in cls]
 
     @classmethod
     def choices(cls):
-        return [(status.value, status.value.capitalize()) for status in cls]
+        return [(scope.value, scope.value.replace("_", " ").title()) for scope in cls]
