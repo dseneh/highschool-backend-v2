@@ -1,52 +1,47 @@
-"""
-URL configuration for users app (authentication and user management)
-"""
+"""URL configuration for users app (authentication and user management)."""
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import (
     MultiFieldTokenObtainPairView,
     VerifyTokenView,
-    GlobalUserCreateView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     TenantOwnerActivationResendCodeView,
     TenantOwnerActivationVerifyCodeView,
 )
-from users.viewsets import UserViewSet
+from users.scoped_viewset import ScopedUserViewSet
+from users.access_views import (
+    PlatformUserCreateView,
+    PlatformAccessView,
+    PlatformEmploymentView,
+)
 
-# Create router for viewset
 router = DefaultRouter()
-router.register(r'users', UserViewSet, basename='user')
+router.register(r'users', ScopedUserViewSet, basename='user')
 
 urlpatterns = [
-    # JWT Token endpoints
     path("login/", MultiFieldTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
-    
-    # User info and verification endpoints (stateless JWT authentication)
     path("verify/", VerifyTokenView.as_view(), name="verify_token"),
-    
-    # Global user creation (kept as APIView for now)
-    path("users/global/", GlobalUserCreateView.as_view(), name="global_user_create"),
-    
-    # Password reset endpoints (public – no auth required)
+    # Keep the existing URL temporarily for frontend/backward compatibility,
+    # but its semantics are now "create platform user", not account_type=global.
+    path("users/global/", PlatformUserCreateView.as_view(), name="platform_user_create"),
+
+    path(
+        "users/<str:id_number>/platform-access/",
+        PlatformAccessView.as_view(),
+        name="user_platform_access",
+    ),
+    path(
+        "users/<str:id_number>/platform-employment/",
+        PlatformEmploymentView.as_view(),
+        name="user_platform_employment",
+    ),
+
     path("password/forgot/", PasswordResetRequestView.as_view(), name="password_reset_request"),
     path("account-activation/verify-code/", TenantOwnerActivationVerifyCodeView.as_view(), name="tenant_owner_activation_verify_code"),
     path("account-activation/resend-code/", TenantOwnerActivationResendCodeView.as_view(), name="tenant_owner_activation_resend_code"),
     path("password/reset/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
-    
-    # ViewSet routes (includes all user CRUD + custom actions)
-    # - GET /users/ - list users
-    # - POST /users/ - create/attach user to tenant
-    # - GET /users/current/ - get current user
-    # - POST /users/recreate/ - create from source record
-    # - GET /users/{id_number}/ - retrieve user
-    # - PUT /users/{id_number}/ - update user
-    # - PATCH /users/{id_number}/ - partial update user
-    # - DELETE /users/{id_number}/ - delete user
-    # - POST /users/{id_number}/password/change/ - change password
-    # - POST /users/password/forgot/ - request password reset
     path("", include(router.urls)),
 ]
-

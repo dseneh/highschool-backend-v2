@@ -68,6 +68,7 @@ class SchoolFundingType:
     def choices(cls):
         return [(x.lower(), x.capitalize()) for x in cls.all()]
 
+
 class SchoolLevel:
     PRIMARY = "primary"
     SECONDARY = "secondary"
@@ -272,7 +273,7 @@ class AttendanceStatus(str, Enum):
 
 class UserAccountType(str, Enum):
     STUDENT = "student"
-    GLOBAL = "global"
+    GLOBAL = "global"  # Legacy value during the staged persona/scope migration.
     STAFF = "staff"
     PARENT = "parent"
     OTHER = "other"
@@ -286,19 +287,15 @@ class UserAccountType(str, Enum):
         return [(status.value, status.value.capitalize()) for status in cls]
 
 
-class AttendanceStatus(str, Enum):
-    PRESENT = "present"
-    ABSENT = "absent"
-    LATE = "late"
-    EXCUSED = "excused"
-    SICK = "sick"
-    ON_LEAVE = "on_leave"
-    HOLIDAY = "holiday"
+class UserAccountScope(str, Enum):
+    TENANT = "tenant"
+    PLATFORM = "platform"
+    PLATFORM_AND_TENANT = "platform_and_tenant"
 
     @classmethod
     def all(cls):
-        return [status.value for status in cls]
+        return [scope.value for scope in cls]
 
     @classmethod
     def choices(cls):
-        return [(status.value, status.value.capitalize()) for status in cls]
+        return [(scope.value, scope.value.replace("_", " ").title()) for scope in cls]

@@ -1,0 +1,14 @@
+{
+  "module": "users",
+  "label": "Platform Users",
+  "description": "Platform-level user identity, access, and employment administration",
+  "permissions": [
+    {
+      "code": "platform.users.manage_access",
+      "name": "Manage Platform User Access",
+      "risk": "critical",
+      "assignable": true,
+      "scopes": ["all"]
+    }
+  ]
+}
