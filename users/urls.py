@@ -10,7 +10,7 @@ from users.views import (
     TenantOwnerActivationResendCodeView,
     TenantOwnerActivationVerifyCodeView,
 )
-from users.viewsets import UserViewSet
+from users.scoped_viewset import ScopedUserViewSet
 from users.access_views import (
     PlatformUserCreateView,
     PlatformAccessView,
@@ -18,7 +18,7 @@ from users.access_views import (
 )
 
 router = DefaultRouter()
-router.register(r'users', UserViewSet, basename='user')
+router.register(r'users', ScopedUserViewSet, basename='user')
 
 urlpatterns = [
     path("login/", MultiFieldTokenObtainPairView.as_view(), name="token_obtain_pair"),
