@@ -42,7 +42,7 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
             "condition": "can_create_global_user",
         },
         {
-            "action": ["update", "partial_update", "password_admin_set", "password_default"],
+            "action": ["update", "partial_update", "password_admin_set", "password_default", "send_login_instructions"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_rbac_permission:users.update",

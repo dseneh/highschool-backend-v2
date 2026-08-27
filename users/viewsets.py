@@ -143,6 +143,11 @@ class UserViewSet(viewsets.ModelViewSet):
         Caller should pass the result through `_apply_user_filters`.
         """
         from tenant_users.permissions.models import UserTenantPermissions
+        request_user = getattr(getattr(self, "request", None), "user", None)
+        request_user_id = getattr(request_user, "pk", None)
+        request_user_is_superadmin = bool(
+            getattr(request_user, "is_platform_superuser", False)
+        )
 
         with schema_context(schema_name):
             permission_user_ids = set(
@@ -151,10 +156,25 @@ class UserViewSet(viewsets.ModelViewSet):
             linked_user_id_numbers = self._get_linked_user_id_numbers()
 
         with schema_context('public'):
-            return User.objects.filter(
+            tenant_membership_filter = (
                 Q(id__in=list(permission_user_ids)) |
                 Q(id_number__in=list(linked_user_id_numbers))
-            ).distinct()
+            )
+            # Global and platform-superadmin accounts are hidden from normal
+            # tenant lists. A platform superadmin may see those accounts only
+            # when they are assigned to this tenant; the tenant queryset above
+            # supplies that boundary. The current user is always visible.
+            restricted_identities = Q(
+                account_type__iexact=UserAccountType.GLOBAL
+            ) | Q(is_platform_superuser=True)
+            if request_user_is_superadmin:
+                visibility_filter = tenant_membership_filter | Q(pk=request_user_id)
+            else:
+                visibility_filter = (
+                    (tenant_membership_filter & ~restricted_identities)
+                    | Q(pk=request_user_id)
+                )
+            return User.objects.filter(visibility_filter).distinct()
 
     def get_queryset(self):
         """Get users based on context (tenant or global).
@@ -1256,6 +1276,57 @@ class UserViewSet(viewsets.ModelViewSet):
             return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
 
         return Response({"schema_name": schema, "role": role_data}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], permission_classes=[UserAccessPolicy],
+            url_path='send-login-instructions')
+    def send_login_instructions(self, request, id_number=None):
+        """Resend the user's initial login instructions using their ID password."""
+        from django.conf import settings
+        from common.email_service import send_account_created_email
+        from common.email_validation import is_valid_email
+        from users.utils import build_frontend_url
+
+        target = self.get_object()
+        if not is_valid_email(target.email):
+            return Response(
+                {"detail": "Login instructions could not be sent because this user does not have a valid email address."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        tenant = None
+        if connection.schema_name != 'public':
+            from core.models import Tenant
+
+            with schema_context('public'):
+                tenant = Tenant.objects.filter(schema_name=connection.schema_name).first()
+
+        email_sent = send_account_created_email(
+            user=target,
+            temporary_password=str(target.id_number),
+            login_url=build_frontend_url(
+                connection.schema_name if connection.schema_name != 'public' else None,
+                "/login",
+            ),
+            school=tenant,
+        )
+        if not email_sent:
+            resend_configured = bool(getattr(settings, "RESEND_API_KEY", "").strip())
+            smtp_configured = bool(
+                getattr(settings, "EMAIL_HOST_USER", "").strip()
+                and getattr(settings, "EMAIL_HOST_PASSWORD", "").strip()
+            )
+            if "smtp" in str(getattr(settings, "EMAIL_BACKEND", "")).lower() and not resend_configured and not smtp_configured:
+                return Response(
+                    {"detail": "Login instructions could not be sent because email delivery is not configured. Set RESEND_API_KEY or SMTP credentials."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response(
+                {"detail": "The email provider rejected the login-instructions message. Check the Resend API key, verify the configured sender domain, and review the backend email log."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(
+            {"detail": f"Login instructions sent to {target.email}."},
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=['post'],
             permission_classes=[UserAccessPolicy], url_path='password/default')

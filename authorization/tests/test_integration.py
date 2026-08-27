@@ -666,6 +666,55 @@ class AuthorizationPersistenceTests(TenantTestCase):
         self.assertEqual(denied_response.status_code, 403, denied_response.data)
         self.assertEqual(super_response.status_code, 201, super_response.data)
 
+    def test_tenant_user_list_hides_unassigned_global_users_and_preserves_current_user(self):
+        assigned_global = User.objects.create(
+            email="authorization-visible-global@example.com",
+            username="authorization-visible-global",
+            id_number="AUTH-VISIBLE-GLOBAL",
+            account_type="global",
+        )
+        unassigned_global = User.objects.create(
+            email="authorization-hidden-global@example.com",
+            username="authorization-hidden-global",
+            id_number="AUTH-HIDDEN-GLOBAL",
+            account_type="global",
+        )
+        assigned_superadmin = User.objects.create(
+            email="authorization-visible-super@example.com",
+            username="authorization-visible-super",
+            id_number="AUTH-VISIBLE-SUPER",
+            is_platform_superuser=True,
+        )
+        unassigned_superadmin = User.objects.create(
+            email="authorization-hidden-super@example.com",
+            username="authorization-hidden-super",
+            id_number="AUTH-HIDDEN-SUPER",
+            is_platform_superuser=True,
+        )
+        self.tenant.add_user(assigned_global)
+        self.tenant.add_user(assigned_superadmin)
+
+        normal_request = self._request("get", "/api/v1/auth/users/")
+        normal_response = UserViewSet.as_view({"get": "list"})(normal_request)
+        normal_ids = {user["id_number"] for user in normal_response.data["results"]}
+
+        self.assertIn(self.tenant.owner.id_number, normal_ids)
+        self.assertNotIn(assigned_global.id_number, normal_ids)
+        self.assertNotIn(unassigned_global.id_number, normal_ids)
+        self.assertNotIn(assigned_superadmin.id_number, normal_ids)
+        self.assertNotIn(unassigned_superadmin.id_number, normal_ids)
+
+        super_request = self.factory.get("/api/v1/auth/users/", {}, format="json")
+        super_request.tenant = self.tenant
+        force_authenticate(super_request, user=assigned_superadmin)
+        super_response = UserViewSet.as_view({"get": "list"})(super_request)
+        super_ids = {user["id_number"] for user in super_response.data["results"]}
+
+        self.assertIn(assigned_superadmin.id_number, super_ids)
+        self.assertIn(assigned_global.id_number, super_ids)
+        self.assertNotIn(unassigned_global.id_number, super_ids)
+        self.assertNotIn(unassigned_superadmin.id_number, super_ids)
+
     def test_bulk_user_role_api_assigns_one_role_to_multiple_users(self):
         first = User.objects.create(
             email="authorization-bulk-first@example.com",

@@ -507,7 +507,9 @@ def send_account_created_email(
 
     context = _build_branding_context(user, school)
     context["username"] = user.username
-    context["temporary_password"] = temporary_password
+    context["temporary_password_hint"] = (
+        "Your temporary password is the same as your username."
+    )
     context["login_url"] = login_url or context.get("school_website", "")
 
     try:

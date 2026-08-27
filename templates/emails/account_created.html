@@ -178,7 +178,7 @@
         <div class="content">
             <p>Hi {{ user_name }},</p>
 
-            <p>Your account on the <strong>{{ school_name|default:"EzySchool" }}</strong> portal has been created. Use the credentials below to sign in for the first time.</p>
+            <p>Your account on the <strong>{{ school_name|default:"EzySchool" }}</strong> portal has been created. Use the details below to sign in for the first time.</p>
 
             <div class="credentials">
                 <table>
@@ -188,7 +188,7 @@
                     </tr>
                     <tr>
                         <td>Temporary Password</td>
-                        <td>{{ temporary_password }}</td>
+                        <td>{{ temporary_password_hint }}</td>
                     </tr>
                 </table>
             </div>
