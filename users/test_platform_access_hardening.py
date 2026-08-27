@@ -5,6 +5,9 @@ from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 
+PASSWORD = "Workspace-role-pass-123"
+
+
 class PlatformLifecycleHardeningTests(TenantTestCase):
     @classmethod
     def setup_tenant(cls, tenant):
@@ -25,7 +28,7 @@ class PlatformLifecycleHardeningTests(TenantTestCase):
         from users.models import User
 
         with schema_context(get_public_schema_name()):
-            return User.objects.create(
+            user = User.objects.create(
                 email=f"{suffix}@example.com",
                 username=suffix,
                 id_number=suffix.upper(),
@@ -34,6 +37,19 @@ class PlatformLifecycleHardeningTests(TenantTestCase):
                 is_active=True,
                 is_platform_superuser=superadmin,
             )
+            user.set_password(PASSWORD)
+            user.save(update_fields=["password"])
+            return user
+
+    def _tenant_role(self, user):
+        from authorization.models import Role
+        from authorization.services import assign_user_role
+
+        self.tenant.add_user(user)
+        with schema_context(self.tenant.schema_name):
+            role = Role.objects.create(name=f"Tenant Role {user.id_number}")
+            assign_user_role(user=user, role=role)
+            return role
 
     def _request(self, method, path, actor, data=None):
         factory = APIRequestFactory()
@@ -166,3 +182,31 @@ class PlatformLifecycleHardeningTests(TenantTestCase):
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn("account_type", serializer.errors)
+
+    def test_tenant_only_role_cannot_login_to_public_workspace(self):
+        from authorization.exceptions import NoAssignedRole
+        from users.serializers import MultiFieldTokenObtainPairSerializer
+
+        user = self._user("tenant-only-public-login")
+        self._tenant_role(user)
+
+        with schema_context(get_public_schema_name()):
+            serializer = MultiFieldTokenObtainPairSerializer(
+                data={"username": user.username, "password": PASSWORD}
+            )
+            with self.assertRaises(NoAssignedRole):
+                serializer.is_valid(raise_exception=True)
+
+    def test_tenant_role_can_login_to_its_tenant_workspace(self):
+        from users.serializers import MultiFieldTokenObtainPairSerializer
+
+        user = self._user("tenant-workspace-login")
+        role = self._tenant_role(user)
+
+        with schema_context(self.tenant.schema_name):
+            serializer = MultiFieldTokenObtainPairSerializer(
+                data={"username": user.username, "password": PASSWORD}
+            )
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.validated_data
+            self.assertEqual(payload["user"]["rbac_role"]["id"], str(role.pk))
