@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from django.core.exceptions import ValidationError
-from django.db import connection, transaction
-from django.db.models import F
+from django.db import connection, models, transaction
+from django.db.models import Count, F, Prefetch
+from django_tenants.utils import get_public_schema_name, schema_context
 
 from authorization.constants import PLATFORM_SUPERADMIN_ROLE_KEY, SUPERADMIN_ROLE_KEYS
-from authorization.models import AuthorizationAuditLog, Role, RolePermission
+from authorization.models import AuthorizationAuditLog, Role, RolePermission, TenantMembership
 from authorization.registry import get_permission_registry
 from authorization.system_roles import get_system_roles
 from common.status import UserAccountType
@@ -26,6 +27,195 @@ NO_ASSIGNED_ROLE_DETAIL = (
 )
 
 
+def _normalize_role_name(name: str) -> str:
+    return " ".join(str(name or "").strip().split())
+
+
+def _role_name_key(name: str) -> str:
+    return _normalize_role_name(name).casefold()
+
+
+def serialize_shared_role(role) -> dict:
+    return {
+        "id": str(role.id),
+        "name": role.name,
+        "description": role.description,
+        "system_key": role.system_key,
+        "is_system_role": role.role_type == "SYSTEM",
+        "is_default": False,
+        "role_type": role.role_type,
+        "source": "shared",
+        "scope": role.scope,
+        "is_active": role.is_active,
+        "permission_version": role.permission_version,
+        "user_count": 0,
+        "permissions": role.permissions,
+        "created_at": role.created_at,
+        "updated_at": role.updated_at,
+    }
+
+
+def serialize_tenant_role(role) -> dict:
+    return {
+        "id": str(role.id),
+        "name": role.name,
+        "description": role.description,
+        "system_key": role.system_key,
+        "is_system_role": role.is_system_role,
+        "is_default": role.is_default,
+        "role_type": "SYSTEM" if role.is_system_role else "CUSTOM",
+        "source": "tenant",
+        "scope": "TENANT",
+        "is_active": role.is_active,
+        "permission_version": role.permission_version,
+        "user_count": getattr(role, "user_count", 0),
+        "permissions": [
+            {"code": grant.permission_code, "scope": grant.scope}
+            for grant in role.permission_grants.all()
+        ],
+        "created_at": role.created_at,
+        "updated_at": role.updated_at,
+    }
+
+
+def get_unified_role_payloads(*, schema_name: str | None = None) -> list[dict]:
+    """Return the role catalog for the active workspace without cross-tenant leakage."""
+    from core.models import SharedRole
+
+    schema = schema_name or connection.schema_name
+    public_schema = get_public_schema_name()
+    if schema == public_schema:
+        with schema_context(public_schema):
+            shared_roles = list(
+                SharedRole.objects.filter(
+                    scope__in=["PUBLIC", "GLOBAL"],
+                    is_active=True,
+                ).order_by("name")
+            )
+        return _dedupe_role_payloads(serialize_shared_role(role) for role in shared_roles)
+
+    with schema_context(public_schema):
+        shared_roles = list(
+            SharedRole.objects.filter(
+                scope__in=["TENANT", "GLOBAL"],
+                is_active=True,
+            ).order_by("name")
+        )
+    shared_name_keys = {_role_name_key(role.name) for role in shared_roles}
+    tenant_roles = list(
+        Role.objects.filter(is_system_role=False, system_key__isnull=True)
+        .annotate(user_count=Count("memberships"))
+        .prefetch_related(
+            Prefetch(
+                "permission_grants",
+                queryset=RolePermission.objects.order_by("permission_code"),
+            )
+        )
+        .order_by("name")
+    )
+    tenant_roles = [
+        role for role in tenant_roles if _role_name_key(role.name) not in shared_name_keys
+    ]
+    return _dedupe_role_payloads(
+        [serialize_shared_role(role) for role in shared_roles]
+        + [serialize_tenant_role(role) for role in tenant_roles]
+    )
+
+
+def _dedupe_role_payloads(payloads) -> list[dict]:
+    seen_identity: set[tuple[str, str]] = set()
+    seen_names: set[str] = set()
+    results: list[dict] = []
+    for payload in payloads:
+        source = str(payload.get("source") or "")
+        role_id = str(payload.get("id") or "")
+        identity = (source, role_id)
+        name_key = _role_name_key(str(payload.get("name") or ""))
+        if identity in seen_identity or name_key in seen_names:
+            continue
+        seen_identity.add(identity)
+        seen_names.add(name_key)
+        results.append(payload)
+    return results
+
+
+def _shared_role_name_exists(name: str) -> bool:
+    from core.models import SharedRole
+
+    name_key = _role_name_key(name)
+    with schema_context(get_public_schema_name()):
+        return any(
+            _role_name_key(candidate) == name_key
+            for candidate in SharedRole.objects.values_list("name", flat=True)
+        )
+
+
+def _validate_tenant_role_name_available(name: str, *, exclude_role_id=None) -> None:
+    name_key = _role_name_key(name)
+    if not name_key:
+        raise ValidationError("Role name is required.")
+    local_names = Role.objects.all()
+    if exclude_role_id:
+        local_names = local_names.exclude(pk=exclude_role_id)
+    if any(
+        _role_name_key(candidate) == name_key
+        for candidate in local_names.values_list("name", flat=True)
+    ):
+        raise ValidationError("A role with this name already exists in this tenant.")
+    if _shared_role_name_exists(name):
+        raise ValidationError("A shared/system role with this name already exists.")
+
+
+def get_applicable_shared_role(identifier, *, scopes=("TENANT", "GLOBAL")):
+    from core.models import SharedRole
+
+    lookup = str(identifier or "").strip()
+    if not lookup:
+        raise ValidationError("A role is required.")
+    with schema_context(get_public_schema_name()):
+        role = SharedRole.objects.filter(system_key=lookup, is_active=True, scope__in=scopes).first()
+        if role is None:
+            try:
+                role = SharedRole.objects.get(pk=lookup, is_active=True, scope__in=scopes)
+            except (SharedRole.DoesNotExist, ValueError, ValidationError):
+                role = None
+        if role is None:
+            raise ValidationError("Role not found.")
+        return role
+
+
+def _shared_role_ids_for_system_keys(system_keys) -> set:
+    from core.models import SharedRole
+
+    keys = {str(key or "").strip().lower() for key in system_keys if str(key or "").strip()}
+    if not keys:
+        return set()
+    with schema_context(get_public_schema_name()):
+        return set(
+            SharedRole.objects.filter(system_key__in=keys).values_list("pk", flat=True)
+        )
+
+
+def _membership_system_key(membership) -> str | None:
+    if not membership:
+        return None
+    if membership.role_id:
+        return membership.role.system_key
+    if membership.shared_role_id:
+        from core.models import SharedRole
+
+        with schema_context(get_public_schema_name()):
+            return SharedRole.objects.filter(pk=membership.shared_role_id).values_list("system_key", flat=True).first()
+    return None
+
+
+def _active_admin_membership_count() -> int:
+    admin_shared_role_ids = _shared_role_ids_for_system_keys({"admin"})
+    return TenantMembership.objects.filter(is_active=True).filter(
+        models.Q(role__system_key="admin") | models.Q(shared_role_id__in=admin_shared_role_ids)
+    ).count()
+
+
 def get_assigned_role(user) -> Role | None:
     """Return the role explicitly assigned to the user in the current schema.
 
@@ -42,7 +232,18 @@ def get_assigned_role(user) -> Role | None:
         .filter(user_id=user_id, is_active=True, role__is_active=True)
         .first()
     )
-    return membership.role if membership else None
+    if membership:
+        return membership.role
+    shared_membership = (
+        TenantMembership.objects.filter(user_id=user_id, is_active=True, shared_role_id__isnull=False)
+        .first()
+    )
+    if not shared_membership:
+        return None
+    try:
+        return get_applicable_shared_role(shared_membership.shared_role_id)
+    except ValidationError:
+        return None
 
 
 def has_assigned_role(user) -> bool:
@@ -156,10 +357,10 @@ def _audit_metadata(metadata: Mapping | None) -> dict:
 
 @transaction.atomic
 def create_role(*, name: str, description: str = "", actor=None, metadata=None) -> Role:
-    if Role.objects.filter(name__iexact=name).exists():
-        raise ValidationError("A role with this name already exists.")
+    name = _normalize_role_name(name)
+    _validate_tenant_role_name_available(name)
     role = Role.objects.create(
-        name=name.strip(),
+        name=name,
         description=description.strip(),
         created_by=actor,
     )
@@ -179,9 +380,8 @@ def update_role(*, role: Role, changes: Mapping, actor=None, metadata=None) -> R
     locked_role = Role.objects.select_for_update().get(pk=role.pk)
     if locked_role.is_system_role:
         raise ValidationError("System roles cannot be modified.")
-    name = str(changes.get("name", locked_role.name)).strip()
-    if Role.objects.filter(name__iexact=name).exclude(pk=locked_role.pk).exists():
-        raise ValidationError("A role with this name already exists.")
+    name = _normalize_role_name(str(changes.get("name", locked_role.name)))
+    _validate_tenant_role_name_available(name, exclude_role_id=locked_role.pk)
     before = {
         "name": locked_role.name,
         "description": locked_role.description,
@@ -357,8 +557,6 @@ def resolve_assignable_role(identifier, *, account_type=None) -> Role:
 
 @transaction.atomic
 def assign_user_role(*, user, role: Role, actor=None, metadata=None):
-    from authorization.models import TenantMembership
-
     if not role.is_active:
         raise ValidationError("Inactive roles cannot be assigned.")
     if role.system_key in SUPERADMIN_ROLE_KEYS:
@@ -373,16 +571,17 @@ def assign_user_role(*, user, role: Role, actor=None, metadata=None):
         raise ValidationError("You cannot change your own role.")
     if (
         membership
-        and membership.role.system_key == "admin"
+        and _membership_system_key(membership) == "admin"
         and role.system_key != "admin"
-        and TenantMembership.objects.filter(
-            role__system_key="admin", is_active=True
-        ).count()
-        <= 1
+        and _active_admin_membership_count() <= 1
     ):
         raise ValidationError("The tenant must retain at least one administrator.")
     before = (
-        {"role_id": str(membership.role_id), "active": membership.is_active}
+        {
+            "role_id": str(membership.role_id) if membership.role_id else None,
+            "shared_role_id": str(membership.shared_role_id) if membership.shared_role_id else None,
+            "active": membership.is_active,
+        }
         if membership
         else None
     )
@@ -390,6 +589,7 @@ def assign_user_role(*, user, role: Role, actor=None, metadata=None):
         membership = TenantMembership(user=user, role=role, is_active=True)
     else:
         membership.role = role
+        membership.shared_role_id = None
         membership.is_active = True
     membership.save()
     AuthorizationAuditLog.objects.create(
@@ -398,7 +598,52 @@ def assign_user_role(*, user, role: Role, actor=None, metadata=None):
         target_type="membership",
         target_id=str(membership.pk),
         before=before,
-        after={"user_id": str(user.pk), "role_id": str(role.pk), "active": True},
+        after={"user_id": str(user.pk), "role_id": str(role.pk), "shared_role_id": None, "active": True},
+        **_audit_metadata(metadata),
+    )
+    return membership
+
+
+@transaction.atomic
+def assign_user_shared_role(*, user, role, actor=None, metadata=None):
+    if not role.is_active:
+        raise ValidationError("Inactive roles cannot be assigned.")
+    if role.scope not in {"TENANT", "GLOBAL"}:
+        raise ValidationError("This shared role is not available in tenant workspaces.")
+    validate_role_for_account_type(user=user, role=role)
+    membership = TenantMembership.objects.select_for_update().filter(user=user).first()
+    if membership and actor and membership.user_id == actor.pk and membership.shared_role_id != role.pk:
+        raise ValidationError("You cannot change your own role.")
+    if (
+        membership
+        and _membership_system_key(membership) == "admin"
+        and role.system_key != "admin"
+        and _active_admin_membership_count() <= 1
+    ):
+        raise ValidationError("The tenant must retain at least one administrator.")
+    before = (
+        {
+            "role_id": str(membership.role_id) if membership.role_id else None,
+            "shared_role_id": str(membership.shared_role_id) if membership.shared_role_id else None,
+            "active": membership.is_active,
+        }
+        if membership
+        else None
+    )
+    if membership is None:
+        membership = TenantMembership(user=user, shared_role_id=role.pk, is_active=True)
+    else:
+        membership.role = None
+        membership.shared_role_id = role.pk
+        membership.is_active = True
+    membership.save()
+    AuthorizationAuditLog.objects.create(
+        actor=actor,
+        action="membership.role_changed",
+        target_type="membership",
+        target_id=str(membership.pk),
+        before=before,
+        after={"user_id": str(user.pk), "role_id": None, "shared_role_id": str(role.pk), "active": True},
         **_audit_metadata(metadata),
     )
     return membership
@@ -418,10 +663,11 @@ def ensure_tenant_owner_membership(owner) -> None:
         return
     # The owner is often granted tenant permissions first, which seeds the
     # default viewer role. Only that auto-assigned role may be upgraded.
-    if membership.role.system_key == "viewer" or not membership.is_active:
+    if not membership.role_id or membership.role.system_key == "viewer" or not membership.is_active:
         membership.role = admin_role
+        membership.shared_role_id = None
         membership.is_active = True
-        membership.save(update_fields=("role", "is_active"))
+        membership.save(update_fields=("role", "shared_role_id", "is_active"))
 
 
 def ensure_tenant_user_membership(user) -> None:
@@ -443,27 +689,49 @@ def ensure_tenant_user_membership(user) -> None:
         user=user,
         defaults={"role": role, "is_active": True},
     )
-    if created or membership.role_id == role.pk:
+    if created or (membership.role_id == role.pk and not membership.shared_role_id):
         return
     membership.role = role
+    membership.shared_role_id = None
     membership.is_active = True
-    membership.save(update_fields=("role", "is_active"))
+    membership.save(update_fields=("role", "shared_role_id", "is_active"))
 
 
 @transaction.atomic
 def sync_system_roles() -> None:
     from authorization.cache import schedule_role_invalidation
+    from core.models import SharedRole
+
+    if connection.schema_name == "public":
+        public_scopes = {
+            "superadmin": "PUBLIC",
+            "admin": "GLOBAL",
+            "viewer": "GLOBAL",
+        }
+        for role_spec in get_system_roles():
+            SharedRole.objects.update_or_create(
+                system_key=role_spec.key,
+                defaults={
+                    "role_type": "SYSTEM",
+                    "scope": public_scopes.get(role_spec.key, "TENANT"),
+                    "name": role_spec.name,
+                    "description": role_spec.description,
+                    "permissions": [
+                        {"code": grant.permission, "scope": grant.scope}
+                        for grant in role_spec.grants
+                    ],
+                    "is_active": True,
+                },
+            )
+        return
 
     for role_spec in get_system_roles():
         role = Role.objects.filter(system_key=role_spec.key).first()
         if role is None:
-            conflicting_role = Role.objects.filter(
-                name__iexact=role_spec.name
-            ).first()
+            conflicting_role = Role.objects.filter(name__iexact=role_spec.name).first()
             if conflicting_role is not None:
                 raise ValidationError(
-                    f"Custom role {conflicting_role.name!r} conflicts with "
-                    f"system role {role_spec.name!r}."
+                    f"Custom role {conflicting_role.name!r} conflicts with system role {role_spec.name!r}."
                 )
             role = Role(
                 name=role_spec.name,
@@ -482,27 +750,13 @@ def sync_system_roles() -> None:
             )
         schedule_role_invalidation(connection.schema_name, role.pk)
 
-        desired_grants = {
-            grant.permission: grant.scope for grant in role_spec.grants
-        }
-        current_grants = dict(
-            RolePermission.objects.filter(role=role).values_list(
-                "permission_code", "scope"
-            )
-        )
+        desired_grants = {grant.permission: grant.scope for grant in role_spec.grants}
+        current_grants = dict(RolePermission.objects.filter(role=role).values_list("permission_code", "scope"))
         if current_grants == desired_grants:
             continue
-
         RolePermission.objects.filter(role=role).application_delete()
         RolePermission.objects.application_bulk_create(
-            [
-                RolePermission(
-                    role=role,
-                    permission_code=permission_code,
-                    scope=scope,
-                )
-                for permission_code, scope in desired_grants.items()
-            ]
+            [RolePermission(role=role, permission_code=code, scope=scope) for code, scope in desired_grants.items()]
         )
         Role.objects.filter(pk=role.pk).application_update(
             permission_version=F("permission_version") + 1

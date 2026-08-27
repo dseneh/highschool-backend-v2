@@ -59,6 +59,12 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
             "effect": "allow",
             "condition": "has_rbac_permission:roles.assign_users",
         },
+        {
+            "action": ["tenant_role"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "has_rbac_permission:roles.assign_users",
+        },
         # Users can view their own profile
         {
             "action": ["retrieve", "current", "get"],

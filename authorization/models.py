@@ -355,6 +355,7 @@ class TenantMembershipQuerySet(models.QuerySet):
             "user_id",
             "role",
             "role_id",
+            "shared_role_id",
             "is_active",
             "membership_version",
         }.intersection(kwargs):
@@ -381,7 +382,10 @@ class TenantMembership(models.Model):
         Role,
         on_delete=models.PROTECT,
         related_name="memberships",
+        null=True,
+        blank=True,
     )
+    shared_role_id = models.UUIDField(null=True, blank=True, editable=False)
     is_active = models.BooleanField(default=True)
     membership_version = models.PositiveBigIntegerField(default=1, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -400,10 +404,14 @@ class TenantMembership(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.user} - {self.role}"
+        return f"{self.user} - {self.role or self.shared_role_id}"
 
     def clean(self) -> None:
         super().clean()
+        if bool(self.role_id) == bool(self.shared_role_id):
+            raise ValidationError(
+                "A membership must reference exactly one tenant role or shared role."
+            )
         if self.is_active and self.role_id and not self.role.is_active:
             raise ValidationError(
                 {"role": "An active membership requires an active role."}
@@ -414,7 +422,7 @@ class TenantMembership(models.Model):
         authorization_changed = False
         if not self._state.adding:
             previous = type(self).objects.filter(pk=self.pk).values(
-                "user_id", "role_id", "is_active", "membership_version"
+                "user_id", "role_id", "shared_role_id", "is_active", "membership_version"
             ).first()
             if previous and previous["user_id"] != self.user_id:
                 raise ValidationError("Membership ownership cannot be changed.")
@@ -427,6 +435,7 @@ class TenantMembership(models.Model):
                 )
             if previous and (
                 previous["role_id"] != self.role_id
+                or previous["shared_role_id"] != self.shared_role_id
                 or previous["is_active"] != self.is_active
             ):
                 authorization_changed = True

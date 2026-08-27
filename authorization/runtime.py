@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 from django.db import connection, transaction
-from django_tenants.utils import get_public_schema_name
+from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework.exceptions import PermissionDenied
 
 from authorization.cache import (
@@ -118,12 +118,46 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
         with transaction.atomic(savepoint=False):
             membership = (
                 TenantMembership.objects.select_for_update()
-                .select_related("role")
                 .filter(user_id=user_id)
                 .first()
             )
             if membership is None:
                 return _denied_context(schema_name, user_id)
+
+            if membership.shared_role_id:
+                from core.models import SharedRole
+
+                with schema_context(get_public_schema_name()):
+                    shared_role = SharedRole.objects.filter(
+                        pk=membership.shared_role_id,
+                        is_active=True,
+                        scope__in=["TENANT", "GLOBAL"],
+                    ).first()
+                if shared_role is None or not membership.is_active:
+                    return AuthorizationContext(
+                        schema_name=schema_name,
+                        user_id=str(user_id),
+                        membership_id=str(membership.pk),
+                        membership_version=membership.membership_version,
+                        role_id=str(membership.shared_role_id),
+                    )
+                registry = get_permission_registry()
+                permissions = {
+                    grant.get("code"): grant.get("scope")
+                    for grant in shared_role.permissions
+                    if registry.get(grant.get("code")) is not None
+                }
+                return AuthorizationContext(
+                    schema_name=schema_name,
+                    user_id=str(user_id),
+                    membership_id=str(membership.pk),
+                    membership_version=membership.membership_version,
+                    role_id=str(shared_role.pk),
+                    permission_version=shared_role.permission_version,
+                    permissions=permissions,
+                    active=True,
+                    unrestricted=False,
+                )
 
             cached_membership = CachedMembership(
                 exists=True,

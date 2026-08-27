@@ -7,6 +7,28 @@ from authorization.runtime import initialize_request_authorization
 
 logger = logging.getLogger(__name__)
 
+TENANT_ADMIN_ROLE_MANAGEMENT_PERMISSIONS = {
+    "roles.create",
+    "roles.assign_users",
+}
+
+
+def _is_tenant_admin_context(facade) -> bool:
+    context = facade.context
+    if not context.active or not context.role_id:
+        return False
+    try:
+        from authorization.models import Role
+
+        return Role.objects.filter(
+            pk=context.role_id,
+            system_key="admin",
+            is_active=True,
+        ).exists()
+    except Exception:
+        logger.exception("Tenant admin role fallback evaluation failed")
+        return False
+
 
 class RBACPermission(BasePermission):
     message = "You do not have permission to perform this action."
@@ -37,7 +59,10 @@ class RBACPermission(BasePermission):
             facade = initialize_request_authorization(request, user)
             scope = facade.permission_scope(permission_code)
             if scope is None:
-                return False
+                return (
+                    permission_code in TENANT_ADMIN_ROLE_MANAGEMENT_PERMISSIONS
+                    and _is_tenant_admin_context(facade)
+                )
             if scope == "all":
                 return True
 

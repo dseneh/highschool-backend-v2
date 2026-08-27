@@ -87,6 +87,10 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         '/api/v1/divisions',
         '/api/v1/grade-levels/',
         '/api/v1/grade-levels',
+        '/api/v1/authorization/roles/',
+        '/api/v1/authorization/roles',
+        '/api/v1/authorization/permissions/',
+        '/api/v1/authorization/permissions',
         '/api/v1/public/schools/',
         '/api/v1/public/schools',
     }
@@ -386,6 +390,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                     or path.startswith('/api/v1/search')
                         or path.startswith('/api/v1/signup-requests')
                         or path.startswith('/api/v1/public/schools')
+                    or path.startswith('/api/v1/authorization/roles')
+                    or path.startswith('/api/v1/authorization/permissions')
                     or path in ('/', '/health', '/health/')
                 )
 
@@ -416,8 +422,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                 )
             
             if tenant_header:
-                # Special case: "admin" is an alias for the public schema
-                if tenant_header.lower() == 'admin':
+                # Special case: admin/public are aliases for the public schema.
+                if tenant_header.lower() in {'admin', 'public'}:
                     try:
                         public_schema = get_public_schema_name()
                         return Tenant.objects.get(schema_name=public_schema)

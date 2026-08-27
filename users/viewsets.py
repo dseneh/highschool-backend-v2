@@ -927,6 +927,36 @@ class UserViewSet(viewsets.ModelViewSet):
             "logo": logo_url,
         }
 
+    @staticmethod
+    def _tenant_role_for_user(user, schema_name):
+        from authorization.models import TenantMembership
+
+        with schema_context(schema_name):
+            membership = TenantMembership.objects.select_related("role").filter(user=user).first()
+            if not membership:
+                return None
+            if membership.shared_role_id:
+                from authorization.services import get_applicable_shared_role
+
+                try:
+                    role = get_applicable_shared_role(membership.shared_role_id)
+                except Exception:
+                    return {"id": None, "name": "Shared role unavailable", "system_key": None, "is_active": False}
+                return {
+                    "id": str(role.pk),
+                    "name": role.name,
+                    "system_key": role.system_key,
+                    "is_active": membership.is_active and role.is_active,
+                }
+            if not membership.role_id:
+                return {"id": None, "name": "No role", "system_key": None, "is_active": False}
+            return {
+                "id": str(membership.role_id),
+                "name": membership.role.name,
+                "system_key": membership.role.system_key,
+                "is_active": membership.is_active and membership.role.is_active,
+            }
+
     def _is_target_superadmin(self, target) -> bool:
         return bool(getattr(target, "is_platform_superuser", False))
 
@@ -974,7 +1004,13 @@ class UserViewSet(viewsets.ModelViewSet):
                 tenants = list(Tenant.objects.filter(schema_name__in=assigned_schemas))
             return Response(
                 {
-                    "results": [self._serialize_tenant(t) for t in tenants],
+                    "results": [
+                        {
+                            **self._serialize_tenant(t),
+                            "role": self._tenant_role_for_user(target, t.schema_name),
+                        }
+                        for t in tenants
+                    ],
                     "is_superadmin": self._is_target_superadmin(target),
                 },
                 status=status.HTTP_200_OK,
@@ -1153,6 +1189,73 @@ class UserViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+    @action(detail=True, methods=['put'], permission_classes=[UserAccessPolicy],
+            url_path=r'tenants/(?P<schema_name>[^/.]+)/role')
+    def tenant_role(self, request, id_number=None, schema_name=None):
+        """Assign a user's role in one specific tenant workspace."""
+        from authorization.models import Role
+        from authorization.services import assign_user_role, assign_user_shared_role, get_applicable_shared_role
+        from core.models import Tenant
+
+        target = self.get_object()
+        actor, error = self._require_admin_actor(request)
+        if error is not None:
+            return error
+        if self._is_target_superadmin(target):
+            return Response(
+                {"detail": "Superadmin roles are managed automatically."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        schema = (schema_name or '').strip()
+        role_id = str(request.data.get('role_id') or '').strip()
+        if not schema or schema == 'public' or not role_id:
+            return Response(
+                {"detail": "A tenant schema and role are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with schema_context('public'):
+            tenant = Tenant.objects.filter(schema_name=schema, active=True).first()
+        if tenant is None:
+            return Response(
+                {"detail": "Tenant does not exist or is inactive."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            with schema_context(schema):
+                role = Role.objects.filter(system_key=role_id, is_active=True).first()
+                if role is None:
+                    try:
+                        role = Role.objects.get(pk=role_id, is_active=True)
+                    except Role.DoesNotExist:
+                        shared_role = get_applicable_shared_role(role_id)
+                        membership = assign_user_shared_role(user=target, role=shared_role, actor=actor)
+                        role_data = {
+                            "id": str(shared_role.pk),
+                            "name": shared_role.name,
+                            "system_key": shared_role.system_key,
+                            "is_active": membership.is_active and shared_role.is_active,
+                            "role_type": shared_role.role_type,
+                            "scope": shared_role.scope,
+                        }
+                        return Response({"schema_name": schema, "role": role_data}, status=status.HTTP_200_OK)
+                membership = assign_user_role(user=target, role=role, actor=actor)
+                role_data = {
+                    "id": str(role.pk),
+                    "name": role.name,
+                    "system_key": role.system_key,
+                    "is_active": membership.is_active and role.is_active,
+                    "role_type": "SYSTEM" if role.is_system_role else "CUSTOM",
+                    "scope": "TENANT",
+                }
+        except Role.DoesNotExist:
+            return Response({"detail": "Role does not exist or is inactive."}, status=status.HTTP_400_BAD_REQUEST)
+        except DjangoValidationError as exc:
+            return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"schema_name": schema, "role": role_data}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'],
             permission_classes=[UserAccessPolicy], url_path='password/default')

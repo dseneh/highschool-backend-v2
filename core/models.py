@@ -11,6 +11,7 @@ import uuid
 import random
 import json
 import os
+from django.conf import settings
 from django.db import models
 from django.contrib.postgres.fields import JSONField
 from django_tenants.models import DomainMixin
@@ -67,6 +68,51 @@ class Division(BaseModel):
         ordering = ["name"]
         verbose_name = "Division"
         verbose_name_plural = "Divisions"
+
+
+class SharedRole(models.Model):
+    """Centrally managed roles stored once in the public schema."""
+
+    class RoleType(models.TextChoices):
+        SYSTEM = "SYSTEM", "System"
+        CUSTOM = "CUSTOM", "Custom"
+
+    class Scope(models.TextChoices):
+        PUBLIC = "PUBLIC", "Public workspace"
+        TENANT = "TENANT", "Tenant workspace"
+        GLOBAL = "GLOBAL", "Public and tenant workspaces"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    role_type = models.CharField(max_length=10, choices=RoleType.choices)
+    scope = models.CharField(max_length=10, choices=Scope.choices)
+    system_key = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True, default="")
+    permissions = models.JSONField(default=list)
+    is_active = models.BooleanField(default=True)
+    permission_version = models.PositiveBigIntegerField(default=1)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_shared_roles",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "core_shared_role"
+        ordering = ("name",)
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(role_type="SYSTEM", system_key__isnull=False)
+                    | models.Q(role_type="CUSTOM", system_key__isnull=True)
+                ),
+                name="core_shared_role_type_key_consistent",
+            ),
+        ]
 
 
 class Tenant(TenantBase):
@@ -385,6 +431,23 @@ class Tenant(TenantBase):
     @property
     def is_operational(self):
         return self.active and self.status == self.STATUS_ACTIVE and not self.maintenance_mode
+
+
+class SharedRoleAssignment(models.Model):
+    """Assignment of a public/shared role to a global user."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="shared_role_assignment",
+    )
+    role = models.ForeignKey(SharedRole, on_delete=models.PROTECT, related_name="user_assignments")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "core_shared_role_assignment"
 
 
 class Feature(models.Model):

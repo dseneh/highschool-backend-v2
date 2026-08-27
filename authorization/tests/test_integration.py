@@ -5,6 +5,7 @@ from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.core.cache import cache
 from django.db import connection
+from django_tenants.utils import get_public_schema_name, schema_context
 from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
@@ -14,14 +15,20 @@ from authorization.runtime import (
     initialize_request_authorization,
     resolve_authorization_context,
 )
-from authorization.services import assign_user_role, replace_role_permissions
+from authorization.services import (
+    assign_user_role,
+    get_unified_role_payloads,
+    replace_role_permissions,
+)
 from authorization.views import (
     BulkUserRoleAssignmentView,
     PermissionCatalogView,
     RoleViewSet,
     UserRoleView,
 )
+from core.models import SharedRole
 from users.models import User
+from users.viewsets import UserViewSet
 
 
 class AuthorizationPersistenceTests(TenantTestCase):
@@ -117,6 +124,81 @@ class AuthorizationPersistenceTests(TenantTestCase):
 
         with self.assertRaisesMessage(ValidationError, "requires: grades.view"):
             replace_role_permissions(role, {"grades.enter": "assigned"})
+
+    def test_tenant_custom_role_name_cannot_duplicate_local_or_shared_role(self):
+        with schema_context(get_public_schema_name()):
+            SharedRole.objects.update_or_create(
+                system_key="student",
+                defaults={
+                    "role_type": "SYSTEM",
+                    "scope": "TENANT",
+                    "name": "Student",
+                    "description": "Student role",
+                    "permissions": [],
+                    "is_active": True,
+                },
+            )
+
+        shared_collision = RoleViewSet.as_view({"post": "create"})(
+            self._request(
+                "post",
+                "/api/v1/authorization/roles/",
+                {"name": " student "},
+            )
+        )
+        first = RoleViewSet.as_view({"post": "create"})(
+            self._request(
+                "post",
+                "/api/v1/authorization/roles/",
+                {"name": "Data   Entry"},
+            )
+        )
+        duplicate = RoleViewSet.as_view({"post": "create"})(
+            self._request(
+                "post",
+                "/api/v1/authorization/roles/",
+                {"name": " data entry "},
+            )
+        )
+
+        self.assertEqual(shared_collision.status_code, 400, shared_collision.data)
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(first.data["name"], "Data Entry")
+        self.assertEqual(duplicate.status_code, 400, duplicate.data)
+
+    def test_tenant_role_list_combines_shared_roles_and_custom_roles_without_duplicates(self):
+        with schema_context(get_public_schema_name()):
+            SharedRole.objects.update_or_create(
+                system_key="accountant",
+                defaults={
+                    "role_type": "SYSTEM",
+                    "scope": "TENANT",
+                    "name": "Accountant",
+                    "description": "Accountant role",
+                    "permissions": [],
+                    "is_active": True,
+                },
+            )
+        Role.objects.create(name="Data Entry")
+
+        response = RoleViewSet.as_view({"get": "list"})(
+            self._request("get", "/api/v1/authorization/roles/")
+        )
+        names = [role["name"] for role in response.data["results"]]
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(names.count("Accountant"), 1)
+        self.assertIn("Data Entry", names)
+        roles_by_name = {role["name"]: role for role in response.data["results"]}
+        self.assertEqual(roles_by_name["Accountant"]["source"], "shared")
+        self.assertEqual(roles_by_name["Data Entry"]["source"], "tenant")
+        self.assertEqual(roles_by_name["Data Entry"]["role_type"], "CUSTOM")
+        self.assertTrue(
+            all(role.get("role_type") != "SYSTEM" or role.get("scope") in {"TENANT", "GLOBAL"} for role in response.data["results"])
+        )
+
+        service_payload = get_unified_role_payloads(schema_name=connection.schema_name)
+        self.assertEqual(response.data["results"], service_payload)
 
     def test_system_roles_reject_queryset_mutations(self):
         admin = Role.objects.get(system_key="admin")
@@ -417,6 +499,172 @@ class AuthorizationPersistenceTests(TenantTestCase):
         membership = TenantMembership.objects.get(user=target)
         self.assertEqual(membership.role, staff_role)
         self.assertEqual(TenantMembership.objects.filter(user=target).count(), 1)
+
+    def test_user_role_api_assigns_applicable_shared_role_directly(self):
+        target = User.objects.create(
+            email="authorization-shared-role-target@example.com",
+            username="authorization-shared-role-target",
+            id_number="AUTH-SHARED-ROLE-TARGET",
+        )
+        self.tenant.add_user(target)
+        with schema_context(get_public_schema_name()):
+            shared_role = SharedRole.objects.create(
+                role_type="SYSTEM",
+                scope="TENANT",
+                system_key="shared_staff",
+                name="Shared Staff",
+                description="Shared staff role",
+                permissions=[{"code": "roles.view", "scope": "all"}],
+                is_active=True,
+            )
+
+        response = UserRoleView.as_view()(
+            self._request(
+                "put",
+                f"/api/v1/authorization/users/{target.id_number}/role/",
+                {"role_id": str(shared_role.pk)},
+            ),
+            id_number=target.id_number,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        membership = TenantMembership.objects.get(user=target)
+        self.assertIsNone(membership.role_id)
+        self.assertEqual(membership.shared_role_id, shared_role.pk)
+        self.assertEqual(response.data["role"]["id"], str(shared_role.pk))
+
+    def test_tenant_access_role_endpoint_assigns_shared_and_custom_roles_by_id(self):
+        target = User.objects.create(
+            email="authorization-tenant-access-target@example.com",
+            username="authorization-tenant-access-target",
+            id_number="AUTH-TENANT-ACCESS-TARGET",
+        )
+        superadmin = User.objects.create(
+            email="authorization-tenant-access-super@example.com",
+            username="authorization-tenant-access-super",
+            id_number="AUTH-TENANT-ACCESS-SUPER",
+            is_platform_superuser=True,
+        )
+        self.tenant.add_user(target)
+        custom_role = Role.objects.create(name="Tenant Access Custom")
+        with schema_context(get_public_schema_name()):
+            shared_role = SharedRole.objects.create(
+                role_type="SYSTEM",
+                scope="TENANT",
+                system_key="tenant_access_shared",
+                name="Tenant Access Shared",
+                description="Tenant access shared role",
+                permissions=[],
+                is_active=True,
+            )
+
+        shared_request = self._request(
+            "put",
+            f"/api/v1/auth/users/{target.id_number}/tenants/{self.tenant.schema_name}/role/",
+            {"role_id": str(shared_role.pk)},
+        )
+        force_authenticate(shared_request, user=superadmin)
+        shared_response = UserViewSet.as_view({"put": "tenant_role"})(
+            shared_request,
+            id_number=target.id_number,
+            schema_name=self.tenant.schema_name,
+        )
+        membership = TenantMembership.objects.get(user=target)
+
+        self.assertEqual(shared_response.status_code, 200, shared_response.data)
+        self.assertEqual(shared_response.data["role"]["id"], str(shared_role.pk))
+        self.assertIsNone(membership.role_id)
+        self.assertEqual(membership.shared_role_id, shared_role.pk)
+
+        custom_request = self._request(
+            "put",
+            f"/api/v1/auth/users/{target.id_number}/tenants/{self.tenant.schema_name}/role/",
+            {"role_id": str(custom_role.pk)},
+        )
+        force_authenticate(custom_request, user=superadmin)
+        custom_response = UserViewSet.as_view({"put": "tenant_role"})(
+            custom_request,
+            id_number=target.id_number,
+            schema_name=self.tenant.schema_name,
+        )
+        membership.refresh_from_db()
+
+        self.assertEqual(custom_response.status_code, 200, custom_response.data)
+        self.assertEqual(custom_response.data["role"]["id"], str(custom_role.pk))
+        self.assertEqual(membership.role_id, custom_role.pk)
+        self.assertIsNone(membership.shared_role_id)
+
+    def test_tenant_role_management_allows_permission_or_admin_or_superadmin(self):
+        staff_role = Role.objects.get(system_key="staff")
+        admin_role = Role.objects.get(system_key="admin")
+        RolePermission.objects.filter(
+            role=admin_role,
+            permission_code__in=["roles.create", "roles.assign_users"],
+        ).application_delete()
+        cache.clear()
+
+        target = User.objects.create(
+            email="authorization-admin-fallback-target@example.com",
+            username="authorization-admin-fallback-target",
+            id_number="AUTH-ADMIN-FALLBACK-TARGET",
+        )
+        staff_user = User.objects.create(
+            email="authorization-admin-fallback-staff@example.com",
+            username="authorization-admin-fallback-staff",
+            id_number="AUTH-ADMIN-FALLBACK-STAFF",
+        )
+        superadmin = User.objects.create(
+            email="authorization-admin-fallback-super@example.com",
+            username="authorization-admin-fallback-super",
+            id_number="AUTH-ADMIN-FALLBACK-SUPER",
+            is_platform_superuser=True,
+        )
+        self.tenant.add_user(target)
+        self.tenant.add_user(staff_user)
+        self.tenant.add_user(superadmin)
+        TenantMembership.objects.update_or_create(
+            user=staff_user,
+            defaults={"role": staff_role, "is_active": True},
+        )
+
+        create_response = RoleViewSet.as_view({"post": "create"})(
+            self._request(
+                "post",
+                "/api/v1/authorization/roles/",
+                {"name": "Admin Managed Role"},
+            )
+        )
+        assign_response = UserRoleView.as_view()(
+            self._request(
+                "put",
+                f"/api/v1/authorization/users/{target.id_number}/role/",
+                {"role_id": str(staff_role.pk)},
+            ),
+            id_number=target.id_number,
+        )
+
+        denied_request = self.factory.post(
+            "/api/v1/authorization/roles/",
+            {"name": "Denied Staff Role"},
+            format="json",
+        )
+        denied_request.tenant = self.tenant
+        force_authenticate(denied_request, user=staff_user)
+        denied_response = RoleViewSet.as_view({"post": "create"})(denied_request)
+
+        super_request = self.factory.post(
+            "/api/v1/authorization/roles/",
+            {"name": "Super Admin Managed Role"},
+            format="json",
+        )
+        super_request.tenant = self.tenant
+        force_authenticate(super_request, user=superadmin)
+        super_response = RoleViewSet.as_view({"post": "create"})(super_request)
+
+        self.assertEqual(create_response.status_code, 201, create_response.data)
+        self.assertEqual(assign_response.status_code, 200, assign_response.data)
+        self.assertEqual(denied_response.status_code, 403, denied_response.data)
+        self.assertEqual(super_response.status_code, 201, super_response.data)
 
     def test_bulk_user_role_api_assigns_one_role_to_multiple_users(self):
         first = User.objects.create(

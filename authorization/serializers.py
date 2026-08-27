@@ -37,6 +37,20 @@ class RoleSerializer(serializers.ModelSerializer):
         )
 
 
+class UnifiedRoleSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    description = serializers.CharField()
+    system_key = serializers.CharField(allow_null=True, required=False)
+    is_system_role = serializers.BooleanField()
+    role_type = serializers.CharField()
+    scope = serializers.CharField()
+    is_active = serializers.BooleanField()
+    permission_version = serializers.IntegerField()
+    user_count = serializers.IntegerField(default=0)
+    permissions = serializers.ListField(child=serializers.DictField(), default=list)
+
+
 class PermissionGrantInputSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=150)
     scope = serializers.ChoiceField(choices=("own", "assigned", "all"))

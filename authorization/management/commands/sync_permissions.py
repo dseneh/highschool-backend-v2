@@ -54,6 +54,9 @@ class Command(BaseCommand):
         if options["skip_database"]:
             return
 
+        with schema_context(get_public_schema_name()), transaction.atomic():
+            sync_system_roles()
+
         schemas = self._resolve_schemas(options.get("schemas"))
         for schema_name in schemas:
             try:

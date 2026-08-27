@@ -61,18 +61,51 @@ class UserSerializer(serializers.ModelSerializer):
         from django_tenants.utils import get_public_schema_name
 
         if connection.schema_name == get_public_schema_name():
-            return None
+            try:
+                from core.models import SharedRoleAssignment
+
+                assignment = SharedRoleAssignment.objects.select_related("role").filter(
+                    user=obj,
+                    is_active=True,
+                    role__is_active=True,
+                ).first()
+                if assignment is None:
+                    return None
+                return {
+                    "id": str(assignment.role_id),
+                    "name": assignment.role.name,
+                    "system_key": assignment.role.system_key,
+                    "is_active": assignment.is_active and assignment.role.is_active,
+                    "role_type": assignment.role.role_type,
+                    "scope": assignment.role.scope,
+                }
+            except Exception:
+                return None
+
         try:
             from authorization.models import TenantMembership
+            from authorization.services import get_applicable_shared_role
 
             membership = TenantMembership.objects.select_related("role").filter(user=obj).first()
             if membership is None:
                 return None
+            if membership.shared_role_id:
+                role = get_applicable_shared_role(membership.shared_role_id)
+                return {
+                    "id": str(role.pk),
+                    "name": role.name,
+                    "system_key": role.system_key,
+                    "is_active": membership.is_active and role.is_active,
+                    "role_type": role.role_type,
+                    "scope": role.scope,
+                }
             return {
                 "id": str(membership.role_id),
                 "name": membership.role.name,
                 "system_key": membership.role.system_key,
                 "is_active": membership.is_active and membership.role.is_active,
+                "role_type": "CUSTOM" if not membership.role.is_system_role else "SYSTEM",
+                "scope": "TENANT",
             }
         except Exception:
             return None
