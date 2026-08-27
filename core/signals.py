@@ -46,7 +46,7 @@ def _schedule_role_assignee_scope_sync(role_id) -> None:
 @receiver(
     post_save,
     sender=SharedRoleAssignment,
-    dispatch_uid="core_sync_account_scope_after_shared_role_save",
+    dispatch_uid="core_sync_account_scope_after_shared_role_assignment_save",
 )
 def sync_saved_shared_role_assignment_scope(sender, instance, **kwargs):
     _schedule_account_scope_sync(instance.user_id)
@@ -55,7 +55,7 @@ def sync_saved_shared_role_assignment_scope(sender, instance, **kwargs):
 @receiver(
     post_delete,
     sender=SharedRoleAssignment,
-    dispatch_uid="core_sync_account_scope_after_shared_role_delete",
+    dispatch_uid="core_sync_account_scope_after_shared_role_assignment_delete",
 )
 def sync_deleted_shared_role_assignment_scope(sender, instance, **kwargs):
     _schedule_account_scope_sync(instance.user_id)
