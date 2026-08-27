@@ -29,6 +29,28 @@ def _permission_codes(values: Iterable) -> set[str]:
     return codes
 
 
+def _audit_platform_event(*, event_type: str, target_user, actor=None, before=None, after=None):
+    """Write security-sensitive platform mutations to the shared auth audit log."""
+    from users.sso_models import AuthenticationAuditEvent
+
+    actor_id = str(getattr(actor, "pk", "") or "")
+    actor_identifier = (
+        getattr(actor, "id_number", None)
+        or getattr(actor, "email", None)
+        or getattr(actor, "username", None)
+    )
+    AuthenticationAuditEvent.objects.create(
+        event_type=event_type,
+        user=target_user,
+        metadata={
+            "actor_id": actor_id or None,
+            "actor": actor_identifier,
+            "before": before or {},
+            "after": after or {},
+        },
+    )
+
+
 def can_manage_platform_access(actor) -> bool:
     if not actor or not getattr(actor, "is_authenticated", False):
         return False
@@ -84,7 +106,6 @@ def has_platform_role(user) -> bool:
 
 
 def has_any_tenant_role(user) -> bool:
-    """Check whether user has an active RBAC role in at least one tenant."""
     if not user:
         return False
 
@@ -126,7 +147,6 @@ def has_any_tenant_role(user) -> bool:
 
 
 def has_any_assigned_role(user) -> bool:
-    """Central login guard for either platform or tenant authorization."""
     return has_platform_role(user) or has_any_tenant_role(user)
 
 
@@ -159,12 +179,7 @@ def sync_account_scope(user):
 
 
 def discover_linked_profile_types(user) -> list[str]:
-    """Discover domain personas across tenant schemas for one user detail view.
-
-    This is intentionally not used for user list serialization because it may
-    inspect multiple schemas. Historical profile rows remain discoverable even
-    after a user's active tenant authorization is removed.
-    """
+    """Discover historical/current domain personas across tenant schemas for detail views."""
     from core.models import Tenant
     from users.models import PlatformEmployee
 
@@ -188,33 +203,29 @@ def discover_linked_profile_types(user) -> list[str]:
     for schema_name in schemas:
         try:
             with schema_context(schema_name):
-                from django.db import connection
-                tables = set(connection.introspection.table_names())
+                try:
+                    from staff.models import Staff
+                    if id_number and Staff.objects.filter(user_account_id_number=id_number).exists():
+                        profiles.add("staff")
+                except Exception:
+                    pass
 
-                if id_number and "staff" in tables:
-                    try:
-                        from staff.models import Staff
-                        if Staff.objects.filter(user_account_id_number=id_number).exists():
-                            profiles.add("staff")
-                    except Exception:
-                        pass
-
-                if id_number and "employee" in tables:
-                    try:
-                        from hr.models import Employee
-                        if Employee.objects.filter(user_account_id_number=id_number).exists():
-                            profiles.add("staff")
-                    except Exception:
-                        pass
+                try:
+                    from hr.models import Employee
+                    if id_number and Employee.objects.filter(user_account_id_number=id_number).exists():
+                        profiles.add("staff")
+                except Exception:
+                    pass
 
                 try:
                     from students.models import Student, StudentGuardian
                     if id_number and Student.objects.filter(user_account_id_number=id_number).exists():
                         profiles.add("student")
-                    guardian_filter = {}
+                    guardian_exists = False
                     if id_number:
-                        guardian_filter["user_account_id_number"] = id_number
-                    guardian_exists = bool(guardian_filter) and StudentGuardian.objects.filter(**guardian_filter).exists()
+                        guardian_exists = StudentGuardian.objects.filter(
+                            user_account_id_number=id_number
+                        ).exists()
                     if not guardian_exists and email:
                         guardian_exists = StudentGuardian.objects.filter(email__iexact=email).exists()
                     if guardian_exists:
@@ -257,10 +268,23 @@ def enable_platform_access(*, user, role, actor):
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
         db_user = User.objects.select_for_update().get(pk=user.pk)
+        previous = SharedRoleAssignment.objects.select_related("role").filter(user=db_user).first()
+        before = {
+            "enabled": bool(previous and previous.is_active),
+            "role_id": str(previous.role_id) if previous else None,
+            "role_name": previous.role.name if previous else None,
+        }
         platform_role = _get_platform_role(role)
         assignment, _ = SharedRoleAssignment.objects.update_or_create(
             user=db_user,
             defaults={"role": platform_role, "is_active": True},
+        )
+        _audit_platform_event(
+            event_type="platform_access_enabled",
+            target_user=db_user,
+            actor=actor,
+            before=before,
+            after={"enabled": True, "role_id": str(platform_role.pk), "role_name": platform_role.name},
         )
 
     sync_account_scope(db_user)
@@ -277,7 +301,20 @@ def disable_platform_access(*, user, actor):
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
         db_user = User.objects.select_for_update().get(pk=user.pk)
+        previous = SharedRoleAssignment.objects.select_related("role").filter(user=db_user).first()
+        before = {
+            "enabled": bool(previous and previous.is_active),
+            "role_id": str(previous.role_id) if previous else None,
+            "role_name": previous.role.name if previous else None,
+        }
         SharedRoleAssignment.objects.filter(user=db_user, is_active=True).update(is_active=False)
+        _audit_platform_event(
+            event_type="platform_access_disabled",
+            target_user=db_user,
+            actor=actor,
+            before=before,
+            after={"enabled": False},
+        )
 
     sync_account_scope(db_user)
     return db_user
@@ -295,7 +332,10 @@ def hire_platform_employee(
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
         db_user = User.objects.select_for_update().get(pk=user.pk)
-        employment, _ = PlatformEmployee.objects.update_or_create(
+        previous = PlatformEmployee.objects.filter(user=db_user).values(
+            "employee_number", "position", "department", "status", "hire_date", "termination_date"
+        ).first()
+        employment, created = PlatformEmployee.objects.update_or_create(
             user=db_user,
             defaults={
                 "employee_number": employee_number,
@@ -304,6 +344,19 @@ def hire_platform_employee(
                 "hire_date": hire_date,
                 "termination_date": None,
                 "status": PlatformEmployee.EmploymentStatus.ACTIVE,
+            },
+        )
+        _audit_platform_event(
+            event_type="platform_employment_created" if created else "platform_employment_reactivated",
+            target_user=db_user,
+            actor=actor,
+            before=previous,
+            after={
+                "employee_number": employment.employee_number,
+                "position": employment.position,
+                "department": employment.department,
+                "status": employment.status,
+                "hire_date": str(employment.hire_date) if employment.hire_date else None,
             },
         )
 
@@ -316,18 +369,34 @@ def hire_platform_employee(
 def terminate_platform_employee(*, user, actor, termination_date, revoke_access=False):
     require_platform_access_manager(actor)
 
-    from users.models import PlatformEmployee
+    from users.models import PlatformEmployee, User
 
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
+        db_user = User.objects.get(pk=user.pk)
         try:
-            employment = PlatformEmployee.objects.select_for_update().get(user_id=user.pk)
+            employment = PlatformEmployee.objects.select_for_update().get(user_id=db_user.pk)
         except PlatformEmployee.DoesNotExist as exc:
             raise ValidationError("This user has no platform employment record.") from exc
+        before = {
+            "status": employment.status,
+            "termination_date": str(employment.termination_date) if employment.termination_date else None,
+        }
         employment.status = PlatformEmployee.EmploymentStatus.TERMINATED
         employment.termination_date = termination_date
         employment.save(update_fields=["status", "termination_date", "updated_at"])
+        _audit_platform_event(
+            event_type="platform_employment_terminated",
+            target_user=db_user,
+            actor=actor,
+            before=before,
+            after={
+                "status": employment.status,
+                "termination_date": str(employment.termination_date),
+                "revoke_access": bool(revoke_access),
+            },
+        )
 
     if revoke_access:
-        disable_platform_access(user=user, actor=actor)
+        disable_platform_access(user=db_user, actor=actor)
     return employment
