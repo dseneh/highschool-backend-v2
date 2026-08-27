@@ -1,10 +1,10 @@
 """
-Management command to create a global superadmin user.
+Management command to create a platform Super Admin.
 
-IMPORTANT: Before creating a superadmin, you must create the public tenant first:
+IMPORTANT: Before creating a Super Admin, you must create the public tenant first:
     python manage.py create_public_tenant --domain_url public.localhost --owner_email admin@example.com
 
-Then you can create additional superusers using this command.
+Then you can create additional platform Super Admins using this command.
 
 Usage:
     python manage.py create_superadmin --email admin@example.com --password changeme123
@@ -40,39 +40,39 @@ def generate_username(email: str) -> str:
 
 
 class Command(BaseCommand):
-    help = "Create a global superadmin user (for multi-tenant system)"
+    help = "Create a platform Super Admin user for the multi-tenant system"
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--email",
             type=str,
             default=None,
-            help="Superadmin email (required)",
+            help="Super Admin email (required)",
         )
         parser.add_argument(
             "--password",
             type=str,
             default=None,
-            help="Superadmin password (required)",
+            help="Super Admin password (required)",
         )
         parser.add_argument(
             "--id-number",
             type=str,
             default=None,
-            help="Superadmin ID number (optional, auto-generated if not provided)",
+            help="Super Admin ID number (optional, auto-generated if not provided)",
         )
         parser.add_argument(
             "--name",
             type=str,
             default=None,
-            help="Superadmin name (optional)",
+            help="Super Admin name (optional)",
         )
 
     def handle(self, *args, **options):
         # Ensure we're in the public schema
         if connection.schema_name != get_public_schema_name():
             connection.set_schema_to_public()
-        
+
         # Get credentials from arguments or environment variables
         email = options.get("email") or os.environ.get("DJANGO_SUPERUSER_EMAIL")
         password = options.get("password") or os.environ.get("DJANGO_SUPERUSER_PASSWORD")
@@ -98,6 +98,7 @@ class Command(BaseCommand):
         # Check if public tenant exists (required for django-tenant-users)
         try:
             from core.models import Tenant
+
             public_schema = get_public_schema_name()
             Tenant.objects.get(schema_name=public_schema)
         except Tenant.DoesNotExist:
@@ -109,10 +110,10 @@ class Command(BaseCommand):
 
         try:
             # Split name into first_name and last_name
-            name_parts = name.split(' ', 1) if name else ['Admin', '']
+            name_parts = name.split(" ", 1) if name else ["Admin", ""]
             first_name = name_parts[0]
-            last_name = name_parts[1] if len(name_parts) > 1 else ''
-            
+            last_name = name_parts[1] if len(name_parts) > 1 else ""
+
             existing_user = User.objects.filter(email__iexact=email).first()
             if existing_user:
                 user = existing_user
@@ -122,6 +123,7 @@ class Command(BaseCommand):
                 user.save(update_fields=["is_active", "is_platform_superuser", "password"])
                 from core.models import Tenant
                 from tenant_users.permissions.models import UserTenantPermissions
+                from users.access_service import sync_account_scope
 
                 public_tenant = Tenant.objects.get(schema_name=get_public_schema_name())
                 if not public_tenant.user_set.filter(pk=user.pk).exists():
@@ -131,9 +133,10 @@ class Command(BaseCommand):
                     permissions.is_superuser = True
                     permissions.is_staff = True
                     permissions.save(update_fields=["is_superuser", "is_staff"])
+                sync_account_scope(user)
                 self.stdout.write(
                     self.style.WARNING(
-                        f"User with email '{email}' already exists; upgraded it to a platform superadmin."
+                        f"User with email '{email}' already exists; upgraded it to a platform Super Admin."
                     )
                 )
                 return
@@ -142,11 +145,12 @@ class Command(BaseCommand):
             id_number = requested_id_number or generate_platform_id()
             if User.objects.filter(id_number=id_number).exists():
                 id_number = generate_platform_id()
-            
-            from common.status import UserAccountType
-            
-            # Create superuser using the same approach as setup.py
-            # This passes all extra fields as kwargs to create_superuser
+
+            from common.status import UserAccountScope, UserAccountType
+
+            # Platform authority is access metadata, not a user persona. A new
+            # platform-only identity therefore starts with the neutral OTHER
+            # persona and explicit PLATFORM scope.
             user = User.objects.create_superuser(
                 email=email,
                 username=username,
@@ -154,23 +158,23 @@ class Command(BaseCommand):
                 first_name=first_name,
                 last_name=last_name,
                 id_number=id_number,
-                account_type=UserAccountType.GLOBAL,
+                account_type=UserAccountType.OTHER,
+                account_scope=UserAccountScope.PLATFORM.value,
                 is_platform_superuser=True,
             )
 
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"✓ Successfully created global superadmin:\n"
+                    f"✓ Successfully created platform Super Admin:\n"
                     f"  Email: {user.email}\n"
                     f"  Username: {user.username}\n"
                     f"  ID Number: {user.id_number}\n"
                     f"  Name: {user.first_name} {user.last_name}\n"
-                    f"  User created with platform superuser privileges"
+                    f"  User created with platform Super Admin privileges"
                 )
             )
         except Exception as e:
-            self.stdout.write(
-                self.style.ERROR(f"Error creating superadmin: {e}")
-            )
+            self.stdout.write(self.style.ERROR(f"Error creating Super Admin: {e}"))
             import traceback
+
             traceback.print_exc()
