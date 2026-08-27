@@ -1,4 +1,5 @@
 from django.db import migrations
+from django.db.models import Q
 from django_tenants.utils import get_public_schema_name, schema_context
 
 
@@ -32,8 +33,8 @@ def reconcile_account_scope(apps, schema_editor):
                 tenant_user_ids.update(
                     TenantMembership.objects.filter(is_active=True)
                     .filter(
-                        migrations.Q(role__is_active=True)
-                        | migrations.Q(shared_role_id__isnull=False)
+                        Q(role__is_active=True)
+                        | Q(shared_role_id__isnull=False)
                     )
                     .values_list("user_id", flat=True)
                 )
