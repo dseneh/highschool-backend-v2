@@ -17,6 +17,8 @@ from users.access_service import (
     terminate_platform_employee,
 )
 
+PASSWORD = "Identity-access-pass-123"
+
 
 class IdentityAccessRefactorTests(TenantTestCase):
     @classmethod
@@ -40,7 +42,7 @@ class IdentityAccessRefactorTests(TenantTestCase):
         from users.models import User
 
         with schema_context(get_public_schema_name()):
-            return User.objects.create(
+            user = User.objects.create(
                 email=f"{suffix}@example.com",
                 username=suffix,
                 id_number=suffix.upper(),
@@ -51,6 +53,9 @@ class IdentityAccessRefactorTests(TenantTestCase):
                 is_active=True,
                 is_platform_superuser=superadmin,
             )
+            user.set_password(PASSWORD)
+            user.save(update_fields=["password"])
+            return user
 
     def _public_role(self, name="Platform Support"):
         from core.models import SharedRole
@@ -87,6 +92,24 @@ class IdentityAccessRefactorTests(TenantTestCase):
             self.assertEqual(user.account_scope, UserAccountScope.PLATFORM.value)
             self.assertTrue(has_platform_role(user))
             self.assertTrue(has_any_assigned_role(user))
+
+    def test_platform_only_user_can_login_with_public_role(self):
+        from users.serializers import MultiFieldTokenObtainPairSerializer
+
+        actor = self._user("login-admin", superadmin=True)
+        user = self._user("platform-only-login", account_type="other")
+        role = self._public_role("Platform Login Role")
+        enable_platform_access(user=user, role=role.pk, actor=actor)
+
+        with schema_context(get_public_schema_name()):
+            serializer = MultiFieldTokenObtainPairSerializer(
+                data={"username": user.username, "password": PASSWORD}
+            )
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.validated_data
+            self.assertIn("access", payload)
+            self.assertEqual(payload["user"]["account_scope"], UserAccountScope.PLATFORM.value)
+            self.assertEqual(payload["user"]["rbac_role"]["id"], str(role.pk))
 
     def test_platform_and_tenant_roles_produce_combined_scope(self):
         actor = self._user("combined-admin", superadmin=True)
@@ -166,6 +189,33 @@ class IdentityAccessRefactorTests(TenantTestCase):
 
         with self.assertRaises(PermissionDenied):
             enable_platform_access(user=target, role=role.pk, actor=actor)
+
+    def test_normal_user_serializers_cannot_set_platform_superuser(self):
+        from users.serializers import UserCreateSerializer, UserUpdateSerializer
+
+        create = UserCreateSerializer(data={
+            "email": "serializer-protected@example.com",
+            "username": "serializer-protected",
+            "id_number": "SERIALIZER-PROTECTED",
+            "first_name": "Protected",
+            "last_name": "User",
+            "gender": "male",
+            "account_type": "other",
+            "is_active": True,
+            "is_platform_superuser": True,
+        })
+        create.is_valid(raise_exception=True)
+        created = create.save()
+        self.assertFalse(created.is_platform_superuser)
+
+        update = UserUpdateSerializer(
+            created,
+            data={"is_platform_superuser": True},
+            partial=True,
+        )
+        update.is_valid(raise_exception=True)
+        updated = update.save()
+        self.assertFalse(updated.is_platform_superuser)
 
     def test_public_schema_profile_helpers_do_not_query_tenant_tables(self):
         user = self._user("schema-safe-profile")
