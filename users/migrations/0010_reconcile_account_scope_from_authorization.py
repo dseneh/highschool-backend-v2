@@ -58,6 +58,7 @@ def reconcile_account_scope(apps, schema_editor):
 class Migration(migrations.Migration):
     dependencies = [
         ("users", "0009_user_account_scope_platform_employee"),
+        ("core", "0025_shared_role_assignments"),
         ("authorization", "0003_tenant_membership_shared_role"),
     ]
 
