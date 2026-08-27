@@ -5,7 +5,7 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django_tenants.utils import get_public_schema_name, schema_context
 
-from core.models import SharedRoleAssignment
+from core.models import SharedRole, SharedRoleAssignment
 
 
 def _schedule_account_scope_sync(user_id) -> None:
@@ -30,6 +30,19 @@ def _schedule_account_scope_sync(user_id) -> None:
     transaction.on_commit(sync_scope)
 
 
+def _schedule_role_assignee_scope_sync(role_id) -> None:
+    """Refresh all assignees when role activity/scope changes effective access."""
+    if not role_id or connection.schema_name != get_public_schema_name():
+        return
+    user_ids = list(
+        SharedRoleAssignment.objects.filter(role_id=role_id)
+        .values_list("user_id", flat=True)
+        .distinct()
+    )
+    for user_id in user_ids:
+        _schedule_account_scope_sync(user_id)
+
+
 @receiver(
     post_save,
     sender=SharedRoleAssignment,
@@ -46,3 +59,12 @@ def sync_saved_shared_role_assignment_scope(sender, instance, **kwargs):
 )
 def sync_deleted_shared_role_assignment_scope(sender, instance, **kwargs):
     _schedule_account_scope_sync(instance.user_id)
+
+
+@receiver(
+    post_save,
+    sender=SharedRole,
+    dispatch_uid="core_sync_account_scope_after_shared_role_save",
+)
+def sync_shared_role_assignee_scopes(sender, instance, **kwargs):
+    _schedule_role_assignee_scope_sync(instance.pk)
