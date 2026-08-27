@@ -336,9 +336,18 @@ class UserCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
     def validate_account_type(self, value):
-        if value not in UserAccountType.all():
-            raise serializers.ValidationError('Invalid account_type.')
-        return value
+        allowed = {
+            UserAccountType.STUDENT.value,
+            UserAccountType.STAFF.value,
+            UserAccountType.PARENT.value,
+            UserAccountType.OTHER.value,
+        }
+        normalized = value.value if isinstance(value, UserAccountType) else value
+        if normalized not in allowed:
+            raise serializers.ValidationError(
+                'Legacy global is not a writable persona. Use platform access roles instead.'
+            )
+        return normalized
 
     def create(self, validated_data):
         id_number = validated_data['id_number']
@@ -365,9 +374,18 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
     def validate_account_type(self, value):
-        if value not in UserAccountType.all():
-            raise serializers.ValidationError('Invalid account_type.')
-        return value
+        allowed = {
+            UserAccountType.STUDENT.value,
+            UserAccountType.STAFF.value,
+            UserAccountType.PARENT.value,
+            UserAccountType.OTHER.value,
+        }
+        normalized = value.value if isinstance(value, UserAccountType) else value
+        if normalized not in allowed:
+            raise serializers.ValidationError(
+                'Legacy global is not a writable persona. Use platform access roles instead.'
+            )
+        return normalized
 
 
 class PasswordChangeSerializer(serializers.Serializer):
