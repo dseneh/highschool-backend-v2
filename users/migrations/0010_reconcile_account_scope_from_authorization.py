@@ -32,10 +32,7 @@ def reconcile_account_scope(apps, schema_editor):
             with schema_context(schema_name):
                 tenant_user_ids.update(
                     TenantMembership.objects.filter(is_active=True)
-                    .filter(
-                        Q(role__is_active=True)
-                        | Q(shared_role_id__isnull=False)
-                    )
+                    .filter(Q(role__is_active=True) | Q(shared_role_id__isnull=False))
                     .values_list("user_id", flat=True)
                 )
         except Exception:
@@ -59,7 +56,10 @@ def reconcile_account_scope(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("users", "0009_user_account_scope_platform_employee")]
+    dependencies = [
+        ("users", "0009_user_account_scope_platform_employee"),
+        ("authorization", "0003_tenant_membership_shared_role"),
+    ]
 
     operations = [
         migrations.RunPython(reconcile_account_scope, migrations.RunPython.noop),
