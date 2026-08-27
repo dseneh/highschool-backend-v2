@@ -24,7 +24,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'id_number', 'first_name', 'last_name',
             'account_type', 'account_scope', 'photo', 'is_active', 'status',
             'last_login', 'tenants', 'rbac_role', 'gender',
-            'last_password_updated', 'created_at', 'profile_updated_at,
+            'last_password_updated', 'created_at', 'profile_updated_at',
             'profile_updated_by', 'is_default_password', 'is_platform_superuser',
             'is_current_user', 'linked_profiles', 'platform_employment',
         ]
