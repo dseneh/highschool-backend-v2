@@ -1,20 +1,21 @@
-"""
-URL configuration for users app (authentication and user management)
-"""
+"""URL configuration for users app (authentication and user management)."""
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from users.views import (
     MultiFieldTokenObtainPairView,
     VerifyTokenView,
-    GlobalUserCreateView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     TenantOwnerActivationResendCodeView,
     TenantOwnerActivationVerifyCodeView,
 )
 from users.viewsets import UserViewSet
-from users.access_views import PlatformAccessView, PlatformEmploymentView
+from users.access_views import (
+    PlatformUserCreateView,
+    PlatformAccessView,
+    PlatformEmploymentView,
+)
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -23,10 +24,10 @@ urlpatterns = [
     path("login/", MultiFieldTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("verify/", VerifyTokenView.as_view(), name="verify_token"),
-    path("users/global/", GlobalUserCreateView.as_view(), name="global_user_create"),
+    # Keep the existing URL temporarily for frontend/backward compatibility,
+    # but its semantics are now "create platform user", not account_type=global.
+    path("users/global/", PlatformUserCreateView.as_view(), name="platform_user_create"),
 
-    # Elevated identity/access lifecycle. These operate on the canonical public
-    # User and preserve tenant persona/employment history.
     path(
         "users/<str:id_number>/platform-access/",
         PlatformAccessView.as_view(),
