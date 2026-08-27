@@ -6,8 +6,9 @@ and tenant authorization are intentionally separate concerns.
 """
 
 import uuid
-from django.db import models
+from django.db import connection, models
 from django.contrib.auth.models import Group, Permission
+from django_tenants.utils import get_public_schema_name
 from tenant_users.tenants.models import UserProfile
 from common.status import UserAccountType, UserAccountScope, PersonStatus
 from .sso_models import (  # noqa: F401
@@ -99,9 +100,18 @@ class User(UserProfile):
             UserAccountScope.PLATFORM_AND_TENANT,
         }
 
-    # Relationship resolution intentionally does not depend on primary account_type.
-    # A single identity may simultaneously be staff, student, guardian, and platform staff.
+    @staticmethod
+    def _tenant_schema_available() -> bool:
+        """Domain profile tables exist only when a real tenant schema is active."""
+        schema_name = getattr(connection, "schema_name", None)
+        return bool(schema_name and schema_name != get_public_schema_name())
+
+    # These helpers intentionally do not depend on primary account_type. They
+    # resolve profiles in the *current tenant schema*. Cross-tenant/public
+    # profile discovery belongs in a service that explicitly enters each schema.
     def get_student(self):
+        if not self._tenant_schema_available():
+            return None
         try:
             from students.models import Student
             return Student.objects.filter(user_account_id_number=self.id_number).first()
@@ -109,6 +119,8 @@ class User(UserProfile):
             return None
 
     def get_staff(self):
+        if not self._tenant_schema_available():
+            return None
         try:
             from staff.models import Staff
             return Staff.objects.filter(user_account_id_number=self.id_number).first()
@@ -116,6 +128,8 @@ class User(UserProfile):
             return None
 
     def get_children(self):
+        if not self._tenant_schema_available():
+            return None
         try:
             from students.models import Student, StudentGuardian
             student_ids = StudentGuardian.objects.filter(email=self.email).values_list("student_id", flat=True)
@@ -124,6 +138,8 @@ class User(UserProfile):
             return None
 
     def get_guardian_records(self):
+        if not self._tenant_schema_available():
+            return None
         try:
             from students.models import StudentGuardian
             return StudentGuardian.objects.filter(email=self.email)
