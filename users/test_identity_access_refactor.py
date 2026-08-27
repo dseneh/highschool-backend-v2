@@ -1,10 +1,13 @@
 """Regression coverage for single-identity, multi-scope access behavior."""
 
 from datetime import date
+from types import SimpleNamespace
 
 from django.core.exceptions import PermissionDenied
+from django.http import QueryDict
 from django_tenants.test.cases import TenantTestCase
 from django_tenants.utils import get_public_schema_name, schema_context
+from rest_framework.test import APIRequestFactory, force_authenticate
 
 from common.status import UserAccountScope
 from users.access_service import (
@@ -138,6 +141,79 @@ class IdentityAccessRefactorTests(TenantTestCase):
             self.assertEqual(user.account_scope, UserAccountScope.TENANT.value)
             self.assertFalse(has_platform_role(user))
             self.assertTrue(has_any_assigned_role(user))
+
+    def test_platform_operator_does_not_leak_into_normal_tenant_user_list(self):
+        from users.scoped_viewset import ScopedUserViewSet
+
+        tenant_viewer = self._user("tenant-viewer")
+        self._tenant_role(tenant_viewer)
+
+        operator = self._user("platform-operator", account_type="other")
+        self._tenant_role(operator)
+        platform_role = self._public_role("Cross Tenant Support")
+        platform_admin = self._user("list-platform-admin", superadmin=True)
+        enable_platform_access(user=operator, role=platform_role.pk, actor=platform_admin)
+
+        with schema_context(self.tenant.schema_name):
+            view = ScopedUserViewSet()
+            view.request = SimpleNamespace(user=tenant_viewer, query_params=QueryDict(""))
+            view.action = "list"
+            visible_ids = set(view.get_queryset().values_list("id_number", flat=True))
+            self.assertNotIn(operator.id_number, visible_ids)
+            self.assertIn(tenant_viewer.id_number, visible_ids)
+
+            superadmin_view = ScopedUserViewSet()
+            superadmin_view.request = SimpleNamespace(user=platform_admin, query_params=QueryDict(""))
+            superadmin_view.action = "list"
+            superadmin_ids = set(
+                superadmin_view.get_queryset().values_list("id_number", flat=True)
+            )
+            self.assertIn(operator.id_number, superadmin_ids)
+
+    def test_platform_and_tenant_user_remains_visible_in_public_admin_list(self):
+        from users.scoped_viewset import ScopedUserViewSet
+
+        actor = self._user("public-list-admin", superadmin=True)
+        user = self._user("public-combined-user")
+        self._tenant_role(user)
+        role = self._public_role("Public Combined Role")
+        enable_platform_access(user=user, role=role.pk, actor=actor)
+
+        with schema_context(get_public_schema_name()):
+            view = ScopedUserViewSet()
+            view.request = SimpleNamespace(user=actor, query_params=QueryDict(""))
+            view.action = "list"
+            visible_ids = set(view.get_queryset().values_list("id_number", flat=True))
+            self.assertIn(user.id_number, visible_ids)
+
+    def test_new_platform_user_is_not_created_as_global_or_superadmin(self):
+        from users.access_views import PlatformUserCreateView
+        from users.models import User
+
+        actor = self._user("create-platform-admin", superadmin=True)
+        role = self._public_role("New Platform User Role")
+        request = APIRequestFactory().post(
+            "/auth/users/global/",
+            {
+                "email": "new-platform-user@example.com",
+                "first_name": "Platform",
+                "last_name": "User",
+                "gender": "female",
+                "role": str(role.pk),
+                "notify_user": False,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=actor)
+        response = PlatformUserCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 201)
+        with schema_context(get_public_schema_name()):
+            created = User.objects.get(email="new-platform-user@example.com")
+            self.assertEqual(created.account_type, "other")
+            self.assertEqual(created.account_scope, UserAccountScope.PLATFORM.value)
+            self.assertFalse(created.is_platform_superuser)
+            self.assertTrue(has_platform_role(created))
 
     def test_platform_employment_does_not_replace_tenant_persona(self):
         actor = self._user("employment-admin", superadmin=True)
