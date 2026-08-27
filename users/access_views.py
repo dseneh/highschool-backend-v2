@@ -1,6 +1,9 @@
-"""Elevated endpoints for platform access and EzySchool employment management."""
+"""Elevated endpoints for platform identity, access, and employment management."""
+
+import secrets
 
 from django.core.exceptions import PermissionDenied, ValidationError as DjangoValidationError
+from django.db import transaction
 from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -11,9 +14,21 @@ from users.access_service import (
     disable_platform_access,
     enable_platform_access,
     hire_platform_employee,
+    require_platform_access_manager,
     terminate_platform_employee,
 )
 from users.serializers import UserSerializer
+
+
+class PlatformUserCreateSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    first_name = serializers.CharField(required=True, max_length=100)
+    last_name = serializers.CharField(required=True, max_length=100)
+    gender = serializers.ChoiceField(choices=["male", "female"], default="male")
+    username = serializers.CharField(required=False, allow_blank=True, max_length=150)
+    password = serializers.CharField(required=False, allow_blank=True, min_length=8, write_only=True)
+    notify_user = serializers.BooleanField(required=False, default=True)
+    role = serializers.CharField(required=True)
 
 
 class PlatformAccessSerializer(serializers.Serializer):
@@ -56,6 +71,104 @@ class PublicUserManagementAPIView(APIView):
             {"detail": messages[0] if messages else str(exc)},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+
+class PlatformUserCreateView(PublicUserManagementAPIView):
+    """Create a standalone platform identity with an explicit public role.
+
+    Existing tenant users must use PlatformAccessView instead so their existing
+    User identity and linked profiles are reused rather than duplicated.
+    """
+
+    @staticmethod
+    def _new_id_number(User) -> str:
+        while True:
+            candidate = f"P{secrets.token_hex(3).upper()}"
+            if not User.objects.filter(id_number=candidate).exists():
+                return candidate
+
+    @staticmethod
+    def _unique_username(User, preferred: str, fallback: str) -> str:
+        base = (preferred or fallback).strip()
+        candidate = base
+        suffix = 1
+        while User.objects.filter(username=candidate).exists():
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def post(self, request):
+        serializer = PlatformUserCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            require_platform_access_manager(request.user)
+        except PermissionDenied as exc:
+            return self._error(exc)
+
+        from common.status import UserAccountScope, UserAccountType
+        from users.models import User
+
+        public_schema = get_public_schema_name()
+        try:
+            with schema_context(public_schema), transaction.atomic():
+                email = str(data["email"]).strip().lower()
+                if User.objects.filter(email__iexact=email).exists():
+                    return Response(
+                        {
+                            "detail": (
+                                "A user with this email already exists. Enable platform "
+                                "access on the existing account instead of creating a duplicate."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                id_number = self._new_id_number(User)
+                username = self._unique_username(
+                    User,
+                    str(data.get("username") or ""),
+                    id_number,
+                )
+                raw_password = str(data.get("password") or "") or id_number
+                user = User(
+                    email=email,
+                    username=username,
+                    id_number=id_number,
+                    first_name=str(data["first_name"]).strip(),
+                    last_name=str(data["last_name"]).strip(),
+                    gender=data.get("gender") or "male",
+                    account_type=UserAccountType.OTHER.value,
+                    account_scope=UserAccountScope.PLATFORM.value,
+                    is_active=True,
+                    is_platform_superuser=False,
+                    is_default_password=not bool(data.get("password")),
+                )
+                user.set_password(raw_password)
+                user.save()
+
+                enable_platform_access(
+                    user=user,
+                    role=data["role"],
+                    actor=request.user,
+                )
+
+                if data.get("notify_user", True):
+                    try:
+                        from users.utils import send_welcome_email
+                        send_welcome_email(user, raw_password)
+                    except Exception:
+                        # Email delivery is not part of the identity transaction.
+                        pass
+
+                user.refresh_from_db()
+                return Response(
+                    UserSerializer(user, context={"request": request}).data,
+                    status=status.HTTP_201_CREATED,
+                )
+        except (DjangoValidationError, PermissionDenied) as exc:
+            return self._error(exc)
 
 
 class PlatformAccessView(PublicUserManagementAPIView):
