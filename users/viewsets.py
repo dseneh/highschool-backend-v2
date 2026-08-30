@@ -1282,7 +1282,7 @@ class UserViewSet(viewsets.ModelViewSet):
     def send_login_instructions(self, request, id_number=None):
         """Resend the user's initial login instructions using their ID password."""
         from django.conf import settings
-        from common.email_service import _service, send_account_created_email
+        from common.email_service import send_account_created_email
         from common.email_validation import is_valid_email
         from users.utils import build_frontend_url
 
@@ -1320,7 +1320,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
             return Response(
-                {"detail": "The email provider rejected the login-instructions message.", "provider_error": _service.last_error_code or "provider_rejected", "provider_message": _service.last_error_message},
+                {"detail": "The email provider rejected the login-instructions message. Check the Resend API key, verify the configured sender domain, and review the backend email log."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         return Response(

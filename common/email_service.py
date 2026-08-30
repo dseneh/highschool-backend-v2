@@ -11,7 +11,6 @@ Configuration (in .env):
 """
 
 import logging
-import json
 from urllib.parse import urlparse
 from typing import Optional
 
@@ -113,8 +112,6 @@ class ResendEmailService:
         self.email_host: str = getattr(settings, "EMAIL_HOST", "")
         self.email_host_user: str = getattr(settings, "EMAIL_HOST_USER", "").strip()
         self.email_host_password: str = getattr(settings, "EMAIL_HOST_PASSWORD", "").strip()
-        self.last_error_code = ""
-        self.last_error_message = ""
 
     @property
     def _from_address(self) -> str:
@@ -207,34 +204,15 @@ class ResendEmailService:
                 response.status_code,
                 response.text[:500],
             )
-            self._record_resend_error(response)
             return False
 
         except requests.exceptions.Timeout:
-            self.last_error_code = "timeout"
-            self.last_error_message = "The email provider timed out."
             logger.error("Resend: request timed out sending to %s", to)
             return False
 
         except requests.exceptions.RequestException as exc:
-            self.last_error_code = "request_error"
-            self.last_error_message = "The email provider could not be reached."
             logger.error("Resend: request error sending to %s - %s", to, exc)
             return False
-
-    def _record_resend_error(self, response) -> None:
-        self.last_error_code = f"http_{response.status_code}"
-        self.last_error_message = "The email provider rejected the message."
-        try:
-            payload = response.json()
-            provider_code = str(payload.get("name") or payload.get("code") or "").strip()
-            provider_message = str(payload.get("message") or "").strip()
-            if provider_code:
-                self.last_error_code = provider_code
-            if provider_message:
-                self.last_error_message = provider_message
-        except (ValueError, AttributeError, TypeError, json.JSONDecodeError):
-            pass
 
     # ------------------------------------------------------------------
     # Django email-backend fallback (dev/test)
@@ -541,7 +519,8 @@ def send_account_created_email(
         logger.error("send_account_created_email: template render error - %s", exc)
         return False
 
-    return _service.send(
+    service = ResendEmailService()
+    return service.send(
         to=[user.email],
         subject=f"Welcome to {context['school_name']} - Your Account Is Ready",
         html_body=html_body,

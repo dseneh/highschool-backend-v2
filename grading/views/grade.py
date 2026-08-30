@@ -522,7 +522,8 @@ class SectionGradeStatusTransitionView(APIView):
         require_grade_transition_permissions(
             request,
             target,
-            grades.values_list("status", flat=True).distinct(),
+            # dedupe in Python; .distinct() in SQL conflicts with select_for_update()
+            set(grades.values_list("status", flat=True)),
         )
 
         updated_count = 0
@@ -660,7 +661,8 @@ class StudentMarkingPeriodGradeStatusTransitionView(APIView):
         require_grade_transition_permissions(
             request,
             target,
-            grades.values_list("status", flat=True).distinct(),
+            # dedupe in Python; .distinct() in SQL conflicts with select_for_update()
+            set(grades.values_list("status", flat=True)),
         )
 
         updated_count = 0
