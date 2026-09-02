@@ -3,6 +3,7 @@ import os
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from django.test import SimpleTestCase, override_settings
 
 from common.crypto import decrypt_text, encrypt_text
@@ -26,6 +27,16 @@ class CryptoSecurityTests(SimpleTestCase):
         envelope["data"] = base64.b64encode(bytes(raw)).decode("ascii")
         with self.assertRaises(InvalidTag):
             decrypt_text(envelope)
+
+    def test_unversioned_gcm_envelope_remains_readable(self):
+        key = base64.b64decode(TEST_KEY)
+        nonce = os.urandom(12)
+        ciphertext = AESGCM(key).encrypt(nonce, b"old-gcm-value", None)
+        envelope = {
+            "iv": base64.b64encode(nonce).decode("ascii"),
+            "data": base64.b64encode(ciphertext).decode("ascii"),
+        }
+        self.assertEqual(decrypt_text(envelope), "old-gcm-value")
 
     def test_legacy_cfb_envelope_remains_readable(self):
         key = base64.b64decode(TEST_KEY)
