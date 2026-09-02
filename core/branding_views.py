@@ -36,8 +36,6 @@ def _tenant_or_404(schema_name: str) -> Tenant:
         except Tenant.DoesNotExist as exc:
             raise NotFound("Tenant not found.") from exc
 
-    # A request made from a school workspace may only manage that same school.
-    # Platform/public requests are checked separately by _require_branding_access.
     if current_schema != "public" and current_schema != tenant.schema_name:
         raise PermissionDenied("You cannot manage another workspace's login branding.")
 
@@ -65,6 +63,19 @@ def _require_branding_access(user, tenant: Tenant) -> None:
         )
 
 
+def _absolute_media_url(request, url: str) -> str:
+    """Return a browser-usable URL in both local storage and R2 environments.
+
+    Local TenantFileSystemStorage typically returns a relative /media/... URL.
+    The frontend runs on a different origin in development, so that relative URL
+    must be anchored to Django. R2/custom-domain storage already returns an
+    absolute URL and is left unchanged by build_absolute_uri().
+    """
+    if not url:
+        return ""
+    return request.build_absolute_uri(url)
+
+
 def _versioned_url(url: str) -> str:
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}v={int(timezone.now().timestamp())}"
@@ -81,13 +92,7 @@ def _login_experience(tenant: Tenant) -> dict:
 
 
 def _save_login_experience(tenant: Tenant, login_experience: dict) -> None:
-    """Persist login branding against the public Tenant table explicitly.
-
-    Branding endpoints can be called while Django is operating inside a tenant
-    schema. Tenant metadata itself lives in the public schema, so both the read
-    and write must be pinned there rather than relying on the caller's current
-    connection schema.
-    """
+    """Persist login branding against the public Tenant table explicitly."""
     with schema_context("public"):
         fresh_tenant = Tenant.objects.get(pk=tenant.pk)
         theme_config = dict(fresh_tenant.theme_config or {})
@@ -95,8 +100,6 @@ def _save_login_experience(tenant: Tenant, login_experience: dict) -> None:
         fresh_tenant.theme_config = theme_config
         fresh_tenant.save(update_fields=["theme_config", "updated_at"])
 
-    # Keep the in-memory instance synchronized for subsequent operations in
-    # the same request.
     tenant.theme_config = theme_config
 
 
@@ -138,9 +141,6 @@ class TenantLoginExperienceView(APIView):
         if not isinstance(subheading, str) or len(subheading.strip()) > 160:
             raise ValidationError({"subheading": "Subheading must be 160 characters or fewer."})
 
-        # Background URLs are intentionally not writable through this JSON
-        # endpoint. They are managed only by TenantAuthBackgroundView so the
-        # login page does not depend on arbitrary third-party image hosts.
         updated = {
             **current,
             "layout": layout,
@@ -160,8 +160,7 @@ class TenantAuthBackgroundView(APIView):
     """Upload, replace, or remove a tenant login background image.
 
     The logical storage name is always ``branding/auth-bg.webp``. Under the
-    production TenantAwareS3Storage backend that resolves to the canonical R2
-    object key:
+    production TenantAwareS3Storage backend that resolves to:
 
         tenants/<schema_name>/branding/auth-bg.webp
 
@@ -213,9 +212,6 @@ class TenantAuthBackgroundView(APIView):
         except (UnidentifiedImageError, OSError, ValueError) as exc:
             raise ValidationError({"background": "The selected file is not a valid image."}) from exc
 
-        # Switching into the target schema lets both TenantFileSystemStorage
-        # locally and TenantAwareS3Storage/R2 in production apply the tenant
-        # prefix themselves. The logical filename therefore stays canonical.
         with schema_context(tenant.schema_name):
             if default_storage.exists(AUTH_BACKGROUND_STORAGE_NAME):
                 default_storage.delete(AUTH_BACKGROUND_STORAGE_NAME)
@@ -224,8 +220,9 @@ class TenantAuthBackgroundView(APIView):
                 AUTH_BACKGROUND_STORAGE_NAME,
                 ContentFile(output.read(), name="auth-bg.webp"),
             )
-            background_url = _versioned_url(default_storage.url(saved_name))
+            storage_url = default_storage.url(saved_name)
 
+        background_url = _versioned_url(_absolute_media_url(request, storage_url))
         login_experience = _update_login_background(tenant, background_url)
         return Response(
             {
