@@ -64,13 +64,7 @@ def _require_branding_access(user, tenant: Tenant) -> None:
 
 
 def _absolute_media_url(request, url: str) -> str:
-    """Return a browser-usable URL in both local storage and R2 environments.
-
-    Local TenantFileSystemStorage typically returns a relative /media/... URL.
-    The frontend runs on a different origin in development, so that relative URL
-    must be anchored to Django. R2/custom-domain storage already returns an
-    absolute URL and is left unchanged by build_absolute_uri().
-    """
+    """Return a browser-usable URL in both local storage and R2 environments."""
     if not url:
         return ""
     return request.build_absolute_uri(url)
@@ -141,12 +135,16 @@ class TenantLoginExperienceView(APIView):
         if not isinstance(subheading, str) or len(subheading.strip()) > 160:
             raise ValidationError({"subheading": "Subheading must be 160 characters or fewer."})
 
+        background_image = current.get("background_image", "")
+        if isinstance(background_image, str) and background_image.startswith("/"):
+            background_image = _absolute_media_url(request, background_image)
+
         updated = {
             **current,
             "layout": layout,
             "heading": heading.strip(),
             "subheading": subheading.strip(),
-            "background_image": current.get("background_image", ""),
+            "background_image": background_image,
             "show_school_name": bool(
                 incoming.get("show_school_name", current.get("show_school_name", True))
             ),
