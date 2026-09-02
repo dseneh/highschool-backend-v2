@@ -1,57 +1,32 @@
-"""
-Multi-tenant storage configuration
-Supports both local file storage and S3-compatible storage (e.g., Cloudflare R2)
+"""Multi-tenant storage configuration for local and S3-compatible object storage."""
 
-Both storage backends automatically handle tenant-aware path prefixing,
-so models can use simple upload_to paths like "logo.jpg" or "users/{id}.jpg"
-"""
-
+from django.core.exceptions import ImproperlyConfigured
 from decouple import config
 
-# Accounting attachment policy
-# Upload keys are tenant-scoped automatically by TenantAwareS3Storage
-# (e.g. tenants/<schema_name>/accounting/attachments/...).
-ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES = config(
-    "ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES",
-    default=10 * 1024 * 1024,
-    cast=int,
-)
-ACCOUNTING_ATTACHMENT_ALLOWED_MIME_TYPES = [
-    "application/pdf",
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "image/gif",
-]
-ACCOUNTING_ATTACHMENT_ALLOWED_EXTENSIONS = [
-    ".pdf",
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".gif",
-]
-ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX = config(
-    "ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX",
-    default="accounting/attachments",
-)
+ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES = config("ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES", default=10 * 1024 * 1024, cast=int)
+ACCOUNTING_ATTACHMENT_ALLOWED_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"]
+ACCOUNTING_ATTACHMENT_ALLOWED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif"]
+ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX = config("ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX", default="accounting/attachments")
 
-# Storage Backend Selection
 USE_S3_STORAGE = config("USE_S3_STORAGE", default=False, cast=bool)
+PRIVATE_FILE_URL_EXPIRY_SECONDS = config("PRIVATE_FILE_URL_EXPIRY_SECONDS", default=300, cast=int)
 
 if USE_S3_STORAGE:
-    # S3-compatible storage (Cloudflare R2, AWS S3, etc.)
-    # TenantAwareS3Storage automatically prefixes paths with tenant schema
-    
-    # Support both R2_* (Cloudflare R2) and AWS_* (generic S3) env vars
-    # R2_* variables take precedence if present
     bucket_name = config("R2_BUCKET", default=config("AWS_STORAGE_BUCKET_NAME", default=""))
     access_key = config("R2_ACCESS_KEY_ID", default=config("AWS_ACCESS_KEY_ID", default=""))
     secret_key = config("R2_SECRET_ACCESS_KEY", default=config("AWS_SECRET_ACCESS_KEY", default=""))
     endpoint_url = config("R2_S3_ENDPOINT", default=config("AWS_S3_ENDPOINT_URL", default=None))
-    custom_domain = config("R2_CUSTOM_DOMAIN", default=config("AWS_S3_CUSTOM_DOMAIN", default=None))
     region_name = config("AWS_S3_REGION_NAME", default="auto")
-    
+
+    missing = [name for name, value in {
+        "R2_BUCKET/AWS_STORAGE_BUCKET_NAME": bucket_name,
+        "R2_ACCESS_KEY_ID/AWS_ACCESS_KEY_ID": access_key,
+        "R2_SECRET_ACCESS_KEY/AWS_SECRET_ACCESS_KEY": secret_key,
+        "R2_S3_ENDPOINT/AWS_S3_ENDPOINT_URL": endpoint_url,
+    }.items() if not value]
+    if missing:
+        raise ImproperlyConfigured(f"Object storage is enabled but required settings are missing: {', '.join(missing)}")
+
     STORAGES = {
         "default": {
             "BACKEND": "core.storage.TenantAwareS3Storage",
@@ -62,34 +37,25 @@ if USE_S3_STORAGE:
                 "endpoint_url": endpoint_url,
                 "region_name": region_name,
                 "file_overwrite": False,
-                "default_acl": "public-read",
-                "custom_domain": custom_domain,
+                "default_acl": None,
+                "querystring_auth": True,
+                "querystring_expire": PRIVATE_FILE_URL_EXPIRY_SECONDS,
             },
         },
-        "staticfiles": {
-            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
-        },
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
-    
-    # AWS Settings (used by django-storages)
-    # Map R2 variables to AWS variables for compatibility
+
     AWS_STORAGE_BUCKET_NAME = bucket_name
     AWS_ACCESS_KEY_ID = access_key
     AWS_SECRET_ACCESS_KEY = secret_key
     AWS_S3_ENDPOINT_URL = endpoint_url
     AWS_S3_REGION_NAME = region_name
-    AWS_S3_CUSTOM_DOMAIN = custom_domain
-    AWS_DEFAULT_ACL = "public-read"
+    AWS_DEFAULT_ACL = None
     AWS_S3_FILE_OVERWRITE = False
-    AWS_QUERYSTRING_AUTH = False
+    AWS_QUERYSTRING_AUTH = True
+    AWS_QUERYSTRING_EXPIRE = PRIVATE_FILE_URL_EXPIRY_SECONDS
 else:
-    # Local file storage with tenant-aware prefixing
-    # TenantFileSystemStorage automatically prefixes paths with tenant schema
     STORAGES = {
-        "default": {
-            "BACKEND": "django_tenants.files.storage.TenantFileSystemStorage",
-        },
-        "staticfiles": {
-            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
-        },
+        "default": {"BACKEND": "django_tenants.files.storage.TenantFileSystemStorage"},
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
