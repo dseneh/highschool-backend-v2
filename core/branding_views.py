@@ -24,6 +24,7 @@ AUTH_BACKGROUND_MAX_DIMENSION = 2560
 AUTH_BACKGROUND_MAX_PIXELS = 40_000_000
 AUTH_BACKGROUND_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 LOGIN_LAYOUTS = {"classic", "split", "hero", "minimal"}
+SPLIT_MESSAGE_MAX_LENGTH = 280
 
 
 def _tenant_or_404(schema_name: str) -> Tenant:
@@ -130,10 +131,25 @@ class TenantLoginExperienceView(APIView):
             "subheading",
             current.get("subheading", "Sign in to continue to your school workspace."),
         )
+        split_message = incoming.get(
+            "split_message",
+            current.get("split_message", ""),
+        )
+
         if not isinstance(heading, str) or len(heading.strip()) > 80:
             raise ValidationError({"heading": "Heading must be 80 characters or fewer."})
         if not isinstance(subheading, str) or len(subheading.strip()) > 160:
             raise ValidationError({"subheading": "Subheading must be 160 characters or fewer."})
+        if not isinstance(split_message, str):
+            raise ValidationError({"split_message": "Split message must be text."})
+        if len(split_message.strip()) > SPLIT_MESSAGE_MAX_LENGTH:
+            raise ValidationError(
+                {
+                    "split_message": (
+                        f"Split message must be {SPLIT_MESSAGE_MAX_LENGTH} characters or fewer."
+                    )
+                }
+            )
 
         background_image = current.get("background_image", "")
         if isinstance(background_image, str) and background_image.startswith("/"):
@@ -144,6 +160,7 @@ class TenantLoginExperienceView(APIView):
             "layout": layout,
             "heading": heading.strip(),
             "subheading": subheading.strip(),
+            "split_message": split_message.strip(),
             "background_image": background_image,
             "show_school_name": bool(
                 incoming.get("show_school_name", current.get("show_school_name", True))
