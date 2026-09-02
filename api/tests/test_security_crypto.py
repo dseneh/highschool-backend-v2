@@ -18,6 +18,7 @@ class CryptoSecurityTests(SimpleTestCase):
         envelope = encrypt_text("sensitive-value")
         self.assertEqual(envelope["v"], 2)
         self.assertEqual(envelope["alg"], "AES-GCM")
+        self.assertEqual(envelope["iv"], envelope["nonce"])
         self.assertEqual(decrypt_text(envelope), "sensitive-value")
 
     def test_aes_gcm_rejects_tampering(self):
