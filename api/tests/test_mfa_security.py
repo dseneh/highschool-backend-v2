@@ -10,8 +10,9 @@ class MFASecurityTests(SimpleTestCase):
         secret = generate_secret()
         with patch("users.mfa.time.time", return_value=1_800_000_000):
             code = totp(secret)
+            wrong_code = "000000" if code != "000000" else "999999"
             self.assertTrue(verify_totp(secret, code))
-            self.assertFalse(verify_totp(secret, "000000") if code != "000000" else verify_totp(secret, "999999"))
+            self.assertFalse(verify_totp(secret, wrong_code))
 
     def test_recovery_codes_are_unique_and_hashable(self):
         codes, hashes = generate_recovery_codes()
