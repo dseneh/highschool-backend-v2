@@ -11,6 +11,7 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
         "/api/v1/auth/password/forgot/": "password_reset",
         "/api/v1/auth/account-activation/verify-code/": "activation",
         "/api/v1/auth/account-activation/resend-code/": "activation",
+        "/api/v1/auth/security/mfa/challenge/": "mfa_challenge",
         "/api/v1/public/schools/": "public_search",
     }
 
