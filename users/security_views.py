@@ -35,10 +35,18 @@ def _is_privileged(request) -> bool:
     return bool(getattr(request, "can", lambda permission: False)("tenant.settings.manage"))
 
 
+def _revoke_server_sessions(user_id, *, reason_time=None):
+    now = reason_time or timezone.now()
+    CentralAuthSession.objects.filter(user_id=user_id, revoked_at__isnull=True).update(revoked_at=now)
+    TenantSession.objects.filter(user_id=user_id, revoked_at__isnull=True).update(revoked_at=now)
+    RefreshTokenFamily.objects.filter(user_id=user_id, revoked_at__isnull=True).update(revoked_at=now)
+
+
 class SecurityStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        privileged = _is_privileged(request)
         with schema_context(get_public_schema_name()):
             user = User.objects.get(pk=request.user.pk)
             return Response(
@@ -46,7 +54,7 @@ class SecurityStatusView(APIView):
                     "mfa_enabled": user.mfa_enabled,
                     "mfa_required": user.mfa_required,
                     "mfa_confirmed_at": user.mfa_confirmed_at,
-                    "privileged": _is_privileged(request),
+                    "privileged": privileged,
                     "security_version": user.security_version,
                 }
             )
@@ -83,8 +91,11 @@ class MFASetupView(APIView):
 class MFAConfirmView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request):
         code = str(request.data.get("code") or "")
+        privileged = _is_privileged(request)
+        now = timezone.now()
         with schema_context(get_public_schema_name()):
             user = User.objects.get(pk=request.user.pk)
             if not user.mfa_secret_envelope:
@@ -95,13 +106,23 @@ class MFAConfirmView(APIView):
 
             recovery_codes, hashes = generate_recovery_codes()
             user.mfa_enabled = True
-            user.mfa_required = bool(user.mfa_required or _is_privileged(request))
-            user.mfa_confirmed_at = timezone.now()
+            user.mfa_required = bool(user.mfa_required or privileged)
+            user.mfa_confirmed_at = now
             user.mfa_recovery_code_hashes = hashes
-            user.save(update_fields=["mfa_enabled", "mfa_required", "mfa_confirmed_at", "mfa_recovery_code_hashes"])
+            user.security_version = F("security_version") + 1
+            user.save(
+                update_fields=[
+                    "mfa_enabled",
+                    "mfa_required",
+                    "mfa_confirmed_at",
+                    "mfa_recovery_code_hashes",
+                    "security_version",
+                ]
+            )
+            _revoke_server_sessions(user.id, reason_time=now)
             return Response(
                 {
-                    "detail": "Multi-factor authentication enabled.",
+                    "detail": "Multi-factor authentication enabled. Existing sessions were invalidated; sign in again using MFA.",
                     "recovery_codes": recovery_codes,
                     "warning": "Store these recovery codes securely. They are shown only once.",
                 }
@@ -111,8 +132,10 @@ class MFAConfirmView(APIView):
 class MFADisableView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request):
         code = str(request.data.get("code") or "")
+        now = timezone.now()
         with schema_context(get_public_schema_name()):
             user = User.objects.get(pk=request.user.pk)
             if not user.mfa_enabled or not user.mfa_secret_envelope:
@@ -131,13 +154,13 @@ class MFADisableView(APIView):
             user.mfa_recovery_code_hashes = []
             user.security_version = F("security_version") + 1
             user.save(update_fields=["mfa_enabled", "mfa_secret_envelope", "mfa_confirmed_at", "mfa_recovery_code_hashes", "security_version"])
+            _revoke_server_sessions(user.id, reason_time=now)
             return Response({"detail": "MFA disabled. Existing sessions were invalidated."})
 
 
 class MFAChallengeVerifyView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
-    throttle_scope = "activation"
 
     def post(self, request):
         challenge = str(request.data.get("challenge") or "")
@@ -189,7 +212,5 @@ class RevokeAllSessionsView(APIView):
         now = timezone.now()
         with schema_context(get_public_schema_name()):
             User.objects.filter(pk=request.user.pk).update(security_version=F("security_version") + 1)
-            CentralAuthSession.objects.filter(user_id=request.user.pk, revoked_at__isnull=True).update(revoked_at=now)
-            TenantSession.objects.filter(user_id=request.user.pk, revoked_at__isnull=True).update(revoked_at=now)
-            RefreshTokenFamily.objects.filter(user_id=request.user.pk, revoked_at__isnull=True).update(revoked_at=now)
+            _revoke_server_sessions(request.user.pk, reason_time=now)
         return Response({"detail": "All sessions have been revoked. Sign in again on each device."})
