@@ -24,18 +24,22 @@ def _key() -> bytes:
 
 def encrypt_text(plaintext: str, *, associated_data: bytes | None = None) -> dict:
     nonce = os.urandom(12)
+    encoded_nonce = base64.b64encode(nonce).decode("ascii")
     ciphertext = AESGCM(_key()).encrypt(nonce, plaintext.encode("utf-8"), associated_data)
     return {
         "v": V2,
         "alg": "AES-GCM",
-        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "nonce": encoded_nonce,
+        # Compatibility alias for existing response decoders that call the
+        # 12-byte GCM nonce an `iv`.
+        "iv": encoded_nonce,
         "data": base64.b64encode(ciphertext).decode("ascii"),
     }
 
 
 def decrypt_text(envelope: dict, *, associated_data: bytes | None = None) -> str:
     if int(envelope.get("v") or 1) >= V2:
-        nonce = base64.b64decode(envelope["nonce"])
+        nonce = base64.b64decode(envelope.get("nonce") or envelope["iv"])
         ciphertext = base64.b64decode(envelope["data"])
         plaintext = AESGCM(_key()).decrypt(nonce, ciphertext, associated_data)
         return plaintext.decode("utf-8")
