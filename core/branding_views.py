@@ -71,16 +71,33 @@ def _versioned_url(url: str) -> str:
 
 
 def _login_experience(tenant: Tenant) -> dict:
-    theme_config = tenant.theme_config or {}
+    """Always read login branding from the canonical public Tenant row."""
+    with schema_context("public"):
+        fresh_tenant = Tenant.objects.only("theme_config").get(pk=tenant.pk)
+        theme_config = fresh_tenant.theme_config or {}
+
     raw = theme_config.get("login_experience") if isinstance(theme_config, dict) else None
     return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _save_login_experience(tenant: Tenant, login_experience: dict) -> None:
-    theme_config = dict(tenant.theme_config or {})
-    theme_config["login_experience"] = login_experience
+    """Persist login branding against the public Tenant table explicitly.
+
+    Branding endpoints can be called while Django is operating inside a tenant
+    schema. Tenant metadata itself lives in the public schema, so both the read
+    and write must be pinned there rather than relying on the caller's current
+    connection schema.
+    """
+    with schema_context("public"):
+        fresh_tenant = Tenant.objects.get(pk=tenant.pk)
+        theme_config = dict(fresh_tenant.theme_config or {})
+        theme_config["login_experience"] = dict(login_experience)
+        fresh_tenant.theme_config = theme_config
+        fresh_tenant.save(update_fields=["theme_config", "updated_at"])
+
+    # Keep the in-memory instance synchronized for subsequent operations in
+    # the same request.
     tenant.theme_config = theme_config
-    tenant.save(update_fields=["theme_config", "updated_at"])
 
 
 def _update_login_background(tenant: Tenant, background_url: str) -> dict:
