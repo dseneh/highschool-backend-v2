@@ -66,15 +66,23 @@ class MFASetupView(APIView):
     def post(self, request):
         with schema_context(get_public_schema_name()):
             user = User.objects.get(pk=request.user.pk)
+            if user.mfa_enabled:
+                return Response(
+                    {
+                        "detail": (
+                            "MFA is already enabled. Re-enrollment is blocked so an active second factor "
+                            "cannot be bypassed; use a verified MFA rotation/recovery flow instead."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             secret = generate_secret()
             user.mfa_secret_envelope = encrypt_secret(secret, user.id)
-            user.mfa_enabled = False
             user.mfa_confirmed_at = None
             user.mfa_recovery_code_hashes = []
             user.save(
                 update_fields=[
                     "mfa_secret_envelope",
-                    "mfa_enabled",
                     "mfa_confirmed_at",
                     "mfa_recovery_code_hashes",
                 ]
@@ -98,6 +106,8 @@ class MFAConfirmView(APIView):
         now = timezone.now()
         with schema_context(get_public_schema_name()):
             user = User.objects.get(pk=request.user.pk)
+            if user.mfa_enabled:
+                return Response({"detail": "MFA is already enabled."}, status=status.HTTP_409_CONFLICT)
             if not user.mfa_secret_envelope:
                 return Response({"detail": "Start MFA setup first."}, status=status.HTTP_400_BAD_REQUEST)
             secret = decrypt_secret(user.mfa_secret_envelope, user.id)
