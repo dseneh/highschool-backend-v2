@@ -21,7 +21,7 @@ If public branding assets are needed, use a separate explicitly public storage b
 
 ## Authenticated encryption
 
-New encrypted security payloads use versioned AES-GCM envelopes (`v=2`). The shared decrypt helper can still read legacy AES-CFB `{iv, data}` envelopes so existing encrypted values can be migrated safely. New sensitive values must not be written using AES-CFB.
+New encrypted security payloads use versioned AES-GCM envelopes (`v=2`). The shared decrypt helper can read both historical unversioned AES-GCM envelopes (12-byte `iv`) and legacy AES-CFB envelopes (16-byte `iv`) so existing data can be migrated safely. New sensitive values must not be written using AES-CFB.
 
 MFA secrets are encrypted at rest with AES-GCM and bind the user id as associated authenticated data.
 
@@ -51,7 +51,7 @@ Run shared/public migrations before serving application traffic.
 
 TOTP MFA is available under `/api/v1/auth/security/` endpoints. Setup returns a standard `otpauth://` provisioning URI for authenticator applications. Recovery codes are hashed at rest and shown only once at confirmation.
 
-Once MFA is enabled, password authentication returns an MFA challenge instead of bearer tokens. Enabling MFA also invalidates sessions created before MFA was enabled. Privileged accounts are marked MFA-required when they complete enrollment.
+Once MFA is enabled, password authentication returns an MFA challenge instead of bearer tokens. Enabling MFA also invalidates sessions created before MFA was enabled. Privileged accounts are marked MFA-required when they complete enrollment. Active MFA cannot be silently re-enrolled; a future verified rotation/recovery flow should be used when a factor must be replaced.
 
 This change does **not** alter password strength or password-complexity requirements; that is intentionally deferred.
 
