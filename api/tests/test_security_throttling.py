@@ -26,6 +26,10 @@ class SensitiveEndpointRateThrottleTests(SimpleTestCase):
                 request = self.factory.post(path, {})
                 self.assertEqual(self.throttle.get_scope(request), "activation")
 
+    def test_mfa_challenge_has_dedicated_scope(self):
+        request = self.factory.post("/api/v1/auth/security/mfa/challenge/", {})
+        self.assertEqual(self.throttle.get_scope(request), "mfa_challenge")
+
     def test_public_school_search_has_own_scope(self):
         request = self.factory.get("/api/v1/public/schools/?query=test")
         self.assertEqual(self.throttle.get_scope(request), "public_search")
