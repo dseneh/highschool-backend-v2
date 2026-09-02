@@ -1,7 +1,8 @@
 """Versioned authenticated encryption helpers.
 
-New payloads use AES-GCM (v2). Legacy AES-CFB envelopes can still be
-read so existing encrypted data can be migrated without a flag day.
+New payloads use AES-GCM (v2). Historical unversioned envelopes remain
+readable: 12-byte IVs are treated as AES-GCM nonces and 16-byte IVs as
+legacy AES-CFB. New writes never use CFB.
 """
 
 import base64
@@ -38,15 +39,23 @@ def encrypt_text(plaintext: str, *, associated_data: bytes | None = None) -> dic
 
 
 def decrypt_text(envelope: dict, *, associated_data: bytes | None = None) -> str:
-    if int(envelope.get("v") or 1) >= V2:
-        nonce = base64.b64decode(envelope.get("nonce") or envelope["iv"])
-        ciphertext = base64.b64decode(envelope["data"])
-        plaintext = AESGCM(_key()).decrypt(nonce, ciphertext, associated_data)
+    version = envelope.get("v")
+    raw_nonce_or_iv = base64.b64decode(envelope.get("nonce") or envelope["iv"])
+    ciphertext = base64.b64decode(envelope["data"])
+
+    if version is not None and int(version) >= V2:
+        plaintext = AESGCM(_key()).decrypt(raw_nonce_or_iv, ciphertext, associated_data)
         return plaintext.decode("utf-8")
 
-    # Legacy v1 AES-CFB envelope: {iv, data}. Read-only compatibility.
-    iv = base64.b64decode(envelope["iv"])
-    ciphertext = base64.b64decode(envelope["data"])
-    cipher = Cipher(algorithms.AES(_key()), modes.CFB(iv))
+    # Historical secure_response envelopes were unversioned AES-GCM and used
+    # the field name `iv` for a 12-byte nonce.
+    if version is None and len(raw_nonce_or_iv) == 12:
+        plaintext = AESGCM(_key()).decrypt(raw_nonce_or_iv, ciphertext, associated_data)
+        return plaintext.decode("utf-8")
+
+    # Legacy AES-CFB envelope: 16-byte {iv, data}. Read-only compatibility.
+    if len(raw_nonce_or_iv) != 16:
+        raise ValueError("Unsupported encrypted envelope")
+    cipher = Cipher(algorithms.AES(_key()), modes.CFB(raw_nonce_or_iv))
     decryptor = cipher.decryptor()
     return (decryptor.update(ciphertext) + decryptor.finalize()).decode("utf-8")
