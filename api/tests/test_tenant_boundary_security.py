@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 from rest_framework.exceptions import NotFound
 from rest_framework.test import APIRequestFactory
@@ -23,14 +26,14 @@ class TenantBoundarySecurityTests(SimpleTestCase):
         with self.assertRaises(NotFound):
             self.middleware.get_tenant(None, "api.myezyschool.com")
 
-    def test_public_auth_route_is_classified_as_public(self):
-        # This assertion protects the intentionally public login route from
-        # accidentally becoming tenant-table dependent during middleware changes.
+    @patch("api.middleware.Tenant.objects.get")
+    def test_public_auth_route_resolves_public_schema_without_tenant_header(self, mock_get):
+        public_tenant = SimpleNamespace(schema_name="public")
+        mock_get.return_value = public_tenant
         request = self.factory.post("/api/v1/auth/login/", {})
         self.middleware.request = request
-        # Missing tenant context should not trigger tenant_header_required before
-        # public-schema resolution. We inspect the path classification indirectly
-        # by ensuring the explicit tenant-header guard is not reached.
-        with self.assertRaises(Exception) as ctx:
-            self.middleware.get_tenant(None, "api.myezyschool.com")
-        self.assertNotIn("tenant_header_required", str(getattr(ctx.exception, "default_code", "")))
+
+        result = self.middleware.get_tenant(None, "api.myezyschool.com")
+
+        self.assertIs(result, public_tenant)
+        mock_get.assert_called_with(schema_name="public")
