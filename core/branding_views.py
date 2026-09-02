@@ -102,14 +102,22 @@ def _update_login_background(tenant: Tenant, background_url: str) -> dict:
     login_experience = _login_experience(tenant)
     login_experience["background_image"] = background_url
     _save_login_experience(tenant, login_experience)
-    return login_experience
+    return _login_experience(tenant)
 
 
 class TenantLoginExperienceView(APIView):
-    """Update tenant login presentation without exposing tenant CRUD."""
+    """Read and update tenant login presentation without exposing tenant CRUD."""
 
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
+
+    def get(self, request, schema_name: str):
+        tenant = _tenant_or_404(schema_name)
+        _require_branding_access(request.user, tenant)
+        return Response(
+            {"login_experience": _login_experience(tenant)},
+            status=status.HTTP_200_OK,
+        )
 
     def put(self, request, schema_name: str):
         tenant = _tenant_or_404(schema_name)
@@ -168,7 +176,11 @@ class TenantLoginExperienceView(APIView):
             "show_logo": bool(incoming.get("show_logo", current.get("show_logo", True))),
         }
         _save_login_experience(tenant, updated)
-        return Response({"login_experience": updated}, status=status.HTTP_200_OK)
+
+        # Re-read from the canonical public Tenant row before responding. This
+        # makes the response authoritative and catches schema/persistence issues.
+        persisted = _login_experience(tenant)
+        return Response({"login_experience": persisted}, status=status.HTTP_200_OK)
 
 
 class TenantAuthBackgroundView(APIView):
