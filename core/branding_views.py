@@ -21,20 +21,27 @@ from core.models import Tenant
 AUTH_BACKGROUND_STORAGE_NAME = "branding/auth-bg.webp"
 AUTH_BACKGROUND_MAX_BYTES = 5 * 1024 * 1024
 AUTH_BACKGROUND_MAX_DIMENSION = 2560
+AUTH_BACKGROUND_MAX_PIXELS = 40_000_000
 AUTH_BACKGROUND_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 LOGIN_LAYOUTS = {"classic", "split", "hero", "minimal"}
 
 
 def _tenant_or_404(schema_name: str) -> Tenant:
-    if connection.schema_name != "public":
-        raise ValidationError(
-            {"detail": "Tenant branding operations must be performed in the public schema."}
-        )
+    """Resolve the public Tenant row without losing the caller's tenant scope."""
+    current_schema = connection.schema_name
 
-    try:
-        return Tenant.objects.get(schema_name=schema_name)
-    except Tenant.DoesNotExist as exc:
-        raise NotFound("Tenant not found.") from exc
+    with schema_context("public"):
+        try:
+            tenant = Tenant.objects.get(schema_name=schema_name)
+        except Tenant.DoesNotExist as exc:
+            raise NotFound("Tenant not found.") from exc
+
+    # A request made from a school workspace may only manage that same school.
+    # Platform/public requests are checked separately by _require_branding_access.
+    if current_schema != "public" and current_schema != tenant.schema_name:
+        raise PermissionDenied("You cannot manage another workspace's login branding.")
+
+    return tenant
 
 
 def _require_branding_access(user, tenant: Tenant) -> None:
@@ -84,7 +91,7 @@ def _update_login_background(tenant: Tenant, background_url: str) -> dict:
 
 
 class TenantLoginExperienceView(APIView):
-    """Update the tenant-managed login presentation without exposing tenant CRUD."""
+    """Update tenant login presentation without exposing tenant CRUD."""
 
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
@@ -166,6 +173,12 @@ class TenantAuthBackgroundView(APIView):
         try:
             uploaded.seek(0)
             image = Image.open(uploaded)
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > AUTH_BACKGROUND_MAX_PIXELS:
+                raise ValidationError(
+                    {"background": "The selected image dimensions are too large."}
+                )
+
             image = ImageOps.exif_transpose(image)
             image.thumbnail(
                 (AUTH_BACKGROUND_MAX_DIMENSION, AUTH_BACKGROUND_MAX_DIMENSION),
@@ -178,6 +191,8 @@ class TenantAuthBackgroundView(APIView):
             output = BytesIO()
             image.save(output, format="WEBP", quality=85, method=6)
             output.seek(0)
+        except ValidationError:
+            raise
         except (UnidentifiedImageError, OSError, ValueError) as exc:
             raise ValidationError({"background": "The selected file is not a valid image."}) from exc
 
