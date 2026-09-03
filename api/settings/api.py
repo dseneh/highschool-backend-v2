@@ -27,7 +27,6 @@ REST_FRAMEWORK = {
         "login": config("API_THROTTLE_LOGIN", default="5/min"),
         "password_reset": config("API_THROTTLE_PASSWORD_RESET", default="12/hour"),
         "activation": config("API_THROTTLE_ACTIVATION", default="12/hour"),
-        "mfa_challenge": config("API_THROTTLE_MFA_CHALLENGE", default="20/hour"),
         "public_search": config("API_THROTTLE_PUBLIC_SEARCH", default="20/min"),
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
