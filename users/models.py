@@ -1,12 +1,15 @@
 """
 User models for django-tenant-users
 User model with UserProfile for multi-tenant user management
+
+Reference: https://django-tenant-users.readthedocs.io/en/latest/pages/installation.html
 """
 
 import uuid
 from django.db import models
 from django.contrib.auth.models import Group, Permission
 from tenant_users.tenants.models import UserProfile
+from core.validators import ValidateImageFile
 from common.status import Roles, UserAccountType, PersonStatus
 from .sso_models import (  # noqa: F401
     AuthenticationAuditEvent,
@@ -31,43 +34,22 @@ class User(UserProfile):
     last_name = models.CharField(max_length=100, blank=True)
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female')], default='male')
     id_number = models.CharField(max_length=50, unique=True)
-    account_type = models.CharField(
-        max_length=20,
-        choices=UserAccountType.choices(),
-        default=UserAccountType.OTHER,
-        help_text="Identity category only: global, staff, student, parent, or other. Authorization is tenant RBAC.",
-    )
-    status = models.CharField(
-        max_length=20,
-        choices=PersonStatus.choices(),
-        default=PersonStatus.ACTIVE,
-        help_text="User status: ACTIVE (default), INACTIVE, SUSPENDED, DELETED, etc."
-    )
-    photo = models.ImageField(upload_to="users", null=True, blank=True)
-    last_password_updated = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
-    profile_updated_at = models.DateTimeField(null=True, blank=True)
-    profile_updated_by = models.ForeignKey(
-        "self", on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="profile_updates_made",
-    )
-    is_default_password = models.BooleanField(default=False)
-    is_platform_superuser = models.BooleanField(
-        default=False,
-        help_text="Platform-wide administration flag. Tenant authorization uses RBAC memberships.",
-    )
+    account_type = models.CharField(max_length=20, choices=UserAccountType.choices(), default=UserAccountType.OTHER, help_text="Identity category only: global, staff, student, parent, or other. Authorization is tenant RBAC.")
+    status = models.CharField(max_length=20, choices=PersonStatus.choices(), default=PersonStatus.ACTIVE, help_text="User status: ACTIVE (default), INACTIVE, SUSPENDED, DELETED, etc.")
+    photo = models.ImageField(upload_to="users", null=True, blank=True, validators=[ValidateImageFile()], help_text="User profile photo (storage backend handles tenant isolation)")
+    last_password_updated = models.DateTimeField(null=True, blank=True, help_text="Last password updated timestamp")
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True, help_text="Time this user account was created.")
+    profile_updated_at = models.DateTimeField(null=True, blank=True, help_text="Last time profile or account details were updated.")
+    profile_updated_by = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="profile_updates_made", help_text="User who last updated this account's profile details.")
+    is_default_password = models.BooleanField(default=False, help_text="Indicates whether this account is using its default password.")
+    is_platform_superuser = models.BooleanField(default=False, help_text="Platform-wide administration flag. Tenant authorization uses RBAC memberships.")
 
-    # Security state. security_version is embedded in newly-issued JWTs and can
-    # be incremented to invalidate every previously issued access token.
+    # Embedded in newly issued JWTs. Incrementing this value invalidates all
+    # previously issued access/refresh tokens for the user.
     security_version = models.PositiveBigIntegerField(default=1)
-    mfa_enabled = models.BooleanField(default=False)
-    mfa_required = models.BooleanField(default=False)
-    mfa_secret_envelope = models.JSONField(null=True, blank=True, editable=False)
-    mfa_confirmed_at = models.DateTimeField(null=True, blank=True)
-    mfa_recovery_code_hashes = models.JSONField(default=list, blank=True, editable=False)
 
-    groups = models.ManyToManyField(Group, blank=True, related_name='school_users')
-    user_permissions = models.ManyToManyField(Permission, blank=True, related_name='school_users')
+    groups = models.ManyToManyField(Group, blank=True, related_name='school_users', help_text='Groups for Django permission system')
+    user_permissions = models.ManyToManyField(Permission, blank=True, related_name='school_users', help_text='Direct permissions for user')
 
     class Meta:
         db_table = "user"
@@ -129,3 +111,6 @@ class User(UserProfile):
             return StudentGuardian.objects.filter(email=self.email)
         except Exception:
             return None
+
+
+# Tenant authorization roles and grants are modeled by the authorization app.
