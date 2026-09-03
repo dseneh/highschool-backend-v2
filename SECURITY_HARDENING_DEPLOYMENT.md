@@ -21,9 +21,7 @@ If public branding assets are needed, use a separate explicitly public storage b
 
 ## Authenticated encryption
 
-New encrypted security payloads use versioned AES-GCM envelopes (`v=2`). The shared decrypt helper can read both historical unversioned AES-GCM envelopes (12-byte `iv`) and legacy AES-CFB envelopes (16-byte `iv`) so existing data can be migrated safely. New sensitive values must not be written using AES-CFB.
-
-MFA secrets are encrypted at rest with AES-GCM and bind the user id as associated authenticated data.
+New encrypted security payloads use versioned AES-GCM envelopes (`v=2`). The shared decrypt helper can read historical unversioned AES-GCM envelopes and legacy AES-CFB envelopes so existing data can be migrated safely. New sensitive values must not be written using AES-CFB.
 
 ## API throttling
 
@@ -34,37 +32,29 @@ Defaults can be overridden through environment variables:
 - `API_THROTTLE_LOGIN=5/min`
 - `API_THROTTLE_PASSWORD_RESET=12/hour`
 - `API_THROTTLE_ACTIVATION=12/hour`
-- `API_THROTTLE_MFA_CHALLENGE=20/hour`
 - `API_THROTTLE_PUBLIC_SEARCH=20/min`
 
-DRF throttling uses Django's cache. For multi-replica production deployments, configure `USE_REDIS=true` with a shared `REDIS_URL`; otherwise per-process local-memory caches cannot enforce a reliable platform-wide rate limit. The same shared cache is used by future payment webhook replay protection.
+DRF throttling uses Django's cache. For multi-replica production deployments, configure `USE_REDIS=true` with a shared `REDIS_URL`; otherwise per-process local-memory caches cannot enforce a reliable platform-wide rate limit. The same shared cache can be used by future payment webhook replay protection.
 
 ## JWT/session revocation
 
-The `User.security_version` value is embedded in newly-issued JWTs. Incrementing it invalidates older access/refresh tokens. The security endpoint also revokes existing central and tenant SSO sessions and refresh-token families.
+The `User.security_version` value is embedded in newly-issued JWTs. Incrementing it invalidates older access/refresh tokens. The revoke-all-sessions endpoint also revokes existing central and tenant SSO sessions and refresh-token families.
 
-SimpleJWT's blacklist app is now enabled in the public/shared schema so refresh-token rotation and `BLACKLIST_AFTER_ROTATION` are persisted rather than configuration-only.
+SimpleJWT's blacklist app is enabled in the public/shared schema so refresh-token rotation and `BLACKLIST_AFTER_ROTATION` are persisted rather than configuration-only.
 
 Run shared/public migrations before serving application traffic.
 
-## MFA
+## Deferred items
 
-TOTP MFA is available under `/api/v1/auth/security/` endpoints. Setup returns a standard `otpauth://` provisioning URI for authenticator applications. Recovery codes are hashed at rest and shown only once at confirmation.
+MFA is intentionally **not included in this hardening release**. It will be designed, integrated with the frontend, and tested as a separate feature later.
 
-Once MFA is enabled, password authentication returns an MFA challenge instead of bearer tokens. Enabling MFA also invalidates sessions created before MFA was enabled. Privileged accounts are marked MFA-required when they complete enrollment. Active MFA cannot be silently re-enrolled; a future verified rotation/recovery flow should be used when a factor must be replaced.
-
-This change does **not** alter password strength or password-complexity requirements; that is intentionally deferred.
+Password strength and password-complexity changes are also intentionally deferred.
 
 ## Payment-readiness primitives
 
-`common.payment_security` provides provider-neutral helpers for:
+`common.payment_security` provides provider-neutral helpers for constant-time HMAC-SHA256 webhook signature checks, webhook timestamp freshness checks, deterministic idempotency keys, and atomic webhook event replay claims using Django's cache.
 
-- constant-time HMAC-SHA256 webhook signature checks;
-- webhook timestamp freshness checks;
-- deterministic idempotency keys; and
-- atomic webhook event replay claims using Django's cache.
-
-Provider adapters must still follow the selected payment provider's exact signing specification. Never treat these generic helpers as a substitute for provider-specific verification rules.
+Provider adapters must still follow the selected payment provider's exact signing specification.
 
 ## Rollout checklist
 
@@ -73,9 +63,8 @@ Provider adapters must still follow the selected payment provider's exact signin
 3. Confirm R2 credentials and endpoint variables are present.
 4. Disable R2 public bucket/custom-domain access for private tenant media.
 5. Configure shared Redis before relying on throttling or payment replay protection across replicas.
-6. Run public/shared migrations, including the user security-state and SimpleJWT blacklist migrations.
+6. Run public/shared migrations, including the user security-version and SimpleJWT blacklist migrations.
 7. Deploy and verify login, refresh-token rotation, password reset, school search, tenant media, and authenticated uploads/downloads.
-8. Enroll a privileged test account in MFA, confirm pre-MFA sessions are rejected, then validate TOTP and one-time recovery-code login.
-9. Verify the revoke-all-sessions endpoint invalidates prior JWTs and server-side sessions.
-10. Confirm repeated sensitive requests return HTTP 429 at the configured limits.
-11. Run tenant-boundary and public-endpoint security tests before enabling online payment integrations.
+8. Verify the revoke-all-sessions endpoint invalidates prior JWTs and server-side sessions.
+9. Confirm repeated sensitive requests return HTTP 429 at the configured limits.
+10. Run tenant-boundary and public-endpoint security tests before enabling online payment integrations.
