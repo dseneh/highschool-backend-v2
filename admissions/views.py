@@ -1,4 +1,6 @@
 from django.db import transaction
+from django.conf import settings
+import logging
 from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import filters, status, viewsets
@@ -16,8 +18,31 @@ from .serializers import (
     ApplicationMessageSerializer, ApplicationPlacementSerializer, ApplicationTransitionSerializer,
     DocumentReviewSerializer, InformationRequestCreateSerializer, InformationRequestSerializer,
     PublicAdmissionCycleSerializer,
+    ApplicationConversionSerializer,
 )
-from .services import transition_application
+from .services import application_approval_errors, transition_application
+from .conversion import (
+    ApplicationConversionError,
+    convert_application_to_enrollment,
+    send_enrollment_confirmation,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+def _send_enrollment_confirmation_safely(application, conversion):
+    try:
+        send_enrollment_confirmation(
+            application=application,
+            conversion=conversion,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+        )
+    except Exception:
+        logger.exception(
+            "Unable to send enrollment confirmation",
+            extra={"application_id": str(application.id)},
+        )
 
 
 class PublicAdmissionCycleListView(APIView):
@@ -58,6 +83,7 @@ class AdmissionApplicationViewSet(viewsets.ModelViewSet):
         "messages": "admissions.message", "request_information": "admissions.request_information",
         "placement": "admissions.place", "documents": "admissions.documents.view",
         "review_document": "admissions.documents.review", "download_document": "admissions.documents.view",
+        "convert": "admissions.enroll",
     }
 
     def get_permissions(self):
@@ -80,8 +106,26 @@ class AdmissionApplicationViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         if serializer.validated_data["version"] != application.version:
             return Response({"detail": "This application was updated by another user. Refresh and try again.", "error_code": "VERSION_CONFLICT"}, status=status.HTTP_409_CONFLICT)
+        target_status = serializer.validated_data["status"]
+        if target_status == "approved":
+            approval_errors = application_approval_errors(application)
+            if approval_errors:
+                return Response(
+                    {"detail": "Required documents must be scanned and accepted before approval.", "errors": approval_errors},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if target_status == "enrollment_ready" and not ApplicationPlacement.objects.filter(application=application).exists():
+            return Response(
+                {"detail": "Assign a grade and section before marking the application ready for enrollment."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if target_status == "enrolled":
+            return Response(
+                {"detail": "Use the enrollment conversion action to complete enrollment and billing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         application = transition_application(
-            application=application, to_status=serializer.validated_data["status"],
+            application=application, to_status=target_status,
             actor=request.user, reason=serializer.validated_data["reason"],
         )
         return Response(self.get_serializer(application).data)
@@ -170,3 +214,27 @@ class AdmissionApplicationViewSet(viewsets.ModelViewSet):
         if document.scan_status != ApplicationDocument.ScanStatus.CLEAN:
             return Response({"detail": "Document security scan is not complete."}, status=423)
         return Response({"url": document.file.storage.url(document.file.name, expire=300), "expires_in": 300})
+
+    @action(detail=True, methods=["post"])
+    def convert(self, request, pk=None):
+        application = self.get_object()
+        try:
+            conversion = convert_application_to_enrollment(
+                application=application,
+                actor=request.user,
+            )
+        except ApplicationConversionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except Exception:
+            logger.exception(
+                "Admission conversion failed",
+                extra={"application_id": str(application.id)},
+            )
+            return Response(
+                {"detail": "Enrollment could not be completed. No partial enrollment was saved."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        transaction.on_commit(
+            lambda: _send_enrollment_confirmation_safely(application, conversion)
+        )
+        return Response(ApplicationConversionSerializer(conversion).data)

@@ -63,6 +63,20 @@ def application_submission_errors(application):
     return errors
 
 
+def application_approval_errors(application):
+    errors = {}
+    requirements = applicable_document_requirements(application).filter(required=True)
+    for requirement in requirements:
+        document = application.documents.filter(requirement=requirement).first()
+        if document is None:
+            errors[str(requirement.id)] = f"{requirement.name} has not been uploaded."
+        elif document.scan_status != document.ScanStatus.CLEAN:
+            errors[str(requirement.id)] = f"{requirement.name} has not passed its security scan."
+        elif document.review_status != document.ReviewStatus.ACCEPTED:
+            errors[str(requirement.id)] = f"{requirement.name} has not been accepted."
+    return errors
+
+
 @transaction.atomic
 def transition_application(*, application, to_status, actor=None, reason="", metadata=None):
     locked = AdmissionApplication.objects.select_for_update().get(pk=application.pk)

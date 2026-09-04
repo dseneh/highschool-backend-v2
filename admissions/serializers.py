@@ -8,6 +8,7 @@ from .models import (
     AdmissionApplication, AdmissionCycle, ApplicationDocument,
     ApplicationDocumentRequirement, ApplicationInformationRequest,
     ApplicationMessage, ApplicationPlacement, ApplicationStatusHistory,
+    ApplicationConversion,
 )
 
 
@@ -236,3 +237,13 @@ class ApplicationTransitionSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=ApplicationStatus.choices)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
     version = serializers.IntegerField(min_value=1)
+
+
+class ApplicationConversionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplicationConversion
+        fields = [
+            "id", "status", "student", "enrollment", "accounting_bill",
+            "error_code", "error_detail", "completed_at",
+        ]
+        read_only_fields = fields
