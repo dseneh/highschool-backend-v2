@@ -15,6 +15,7 @@ from .portal_views import (
     ApplicantVerificationView,
     PublicApplicationStartView,
     ReturningApplicationStartView,
+    ReturningStudentListView,
 )
 
 router = DefaultRouter()
@@ -27,6 +28,7 @@ urlpatterns = [
     path("public/applications/verify/", ApplicantVerificationView.as_view(), name="public-application-verify"),
     path("public/applications/access/", ApplicantAccessRequestView.as_view(), name="public-application-access"),
     path("returning/applications/start/", ReturningApplicationStartView.as_view(), name="returning-application-start"),
+    path("returning/students/", ReturningStudentListView.as_view(), name="returning-students"),
     path("portal/applications/<str:request_id>/", ApplicantApplicationView.as_view(), name="applicant-application"),
     path("portal/applications/<str:request_id>/submit/", ApplicantSubmitView.as_view(), name="applicant-submit"),
     path("portal/applications/<str:request_id>/messages/", ApplicantMessageListCreateView.as_view(), name="applicant-messages"),

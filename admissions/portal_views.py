@@ -52,6 +52,17 @@ def _send_verification_safely(application, code):
         logger.exception("Unable to send applicant verification email", extra={"application_id": str(application.id)})
 
 
+def _eligible_returning_students(user):
+    students = []
+    own_student = user.get_student()
+    if own_student is not None:
+        students.append(own_student)
+    children = user.get_children()
+    if children is not None:
+        students.extend(children)
+    return list({student.pk: student for student in students}.values())
+
+
 class PublicApplicationStartView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
@@ -127,15 +138,9 @@ class ReturningApplicationStartView(APIView):
         serializer.is_valid(raise_exception=True)
 
         requested_student_id = serializer.validated_data.get("student_id")
-        eligible_students = []
-        own_student = request.user.get_student()
-        if own_student is not None:
-            eligible_students.append(own_student)
-        children = request.user.get_children()
-        if children is not None:
-            eligible_students.extend(children)
-
-        unique_students = {student.pk: student for student in eligible_students}
+        unique_students = {
+            student.pk: student for student in _eligible_returning_students(request.user)
+        }
         if requested_student_id:
             student = unique_students.get(requested_student_id)
         elif len(unique_students) == 1:
@@ -202,6 +207,32 @@ class ReturningApplicationStartView(APIView):
                 "expires_in": 24 * 60 * 60,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class ReturningStudentListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        students = _eligible_returning_students(request.user)
+        return Response(
+            [
+                {
+                    "id": student.id,
+                    "id_number": student.id_number,
+                    "name": student.get_full_name(),
+                    "current_grade": (
+                        {
+                            "id": student.grade_level.id,
+                            "name": student.grade_level.name,
+                            "level": student.grade_level.level,
+                        }
+                        if student.grade_level
+                        else None
+                    ),
+                }
+                for student in students
+            ]
         )
 
 
