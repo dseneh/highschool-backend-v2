@@ -20,6 +20,27 @@ ALLOWED_TRANSITIONS = {
     ApplicationStatus.CANCELLED: set(),
 }
 
+APPLICANT_UPLOAD_STATUSES = {
+    ApplicationStatus.DRAFT,
+    ApplicationStatus.INFORMATION_REQUESTED,
+    ApplicationStatus.INFORMATION_RECEIVED,
+}
+
+
+def applicable_document_requirements(application):
+    requirements = application.cycle.document_requirements.filter(
+        active=True,
+        application_type=application.application_type,
+    )
+    if application.requested_grade_level_id:
+        requirements = requirements.filter(
+            models.Q(grade_level__isnull=True)
+            | models.Q(grade_level_id=application.requested_grade_level_id)
+        )
+    else:
+        requirements = requirements.filter(grade_level__isnull=True)
+    return requirements
+
 
 def application_submission_errors(application):
     errors = {}
@@ -34,15 +55,7 @@ def application_submission_errors(application):
     if missing_consents:
         errors["consents"] = f"Required declarations are incomplete: {', '.join(missing_consents)}."
 
-    requirements = application.cycle.document_requirements.filter(
-        active=True,
-        required=True,
-        application_type=application.application_type,
-    )
-    if application.requested_grade_level_id:
-        requirements = requirements.filter(
-            models.Q(grade_level__isnull=True) | models.Q(grade_level_id=application.requested_grade_level_id)
-        )
+    requirements = applicable_document_requirements(application).filter(required=True)
     uploaded_requirement_ids = set(application.documents.values_list("requirement_id", flat=True))
     missing_documents = [item.name for item in requirements if item.id not in uploaded_requirement_ids]
     if missing_documents:

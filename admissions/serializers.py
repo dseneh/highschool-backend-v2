@@ -168,6 +168,20 @@ class ApplicationDocumentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ApplicationDocumentRequirementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplicationDocumentRequirement
+        fields = [
+            "id",
+            "name",
+            "instructions",
+            "required",
+            "allowed_extensions",
+            "max_size_bytes",
+        ]
+        read_only_fields = fields
+
+
 class ApplicationDocumentUploadSerializer(serializers.Serializer):
     requirement = serializers.PrimaryKeyRelatedField(queryset=ApplicationDocumentRequirement.objects.all())
     file = serializers.FileField()

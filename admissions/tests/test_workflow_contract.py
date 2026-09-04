@@ -2,7 +2,7 @@ from django.test import SimpleTestCase
 
 from admissions.enums import ApplicationStatus
 from admissions.request_ids import generate_request_id
-from admissions.services import ALLOWED_TRANSITIONS
+from admissions.services import ALLOWED_TRANSITIONS, APPLICANT_UPLOAD_STATUSES
 
 
 class AdmissionWorkflowContractTests(SimpleTestCase):
@@ -30,3 +30,13 @@ class AdmissionWorkflowContractTests(SimpleTestCase):
         self.assertEqual(len(values), 50)
         for value in values:
             self.assertRegex(value, r"^EZY-[0-9A-F]{6}-[0-9A-F]{6}$")
+
+    def test_applicant_uploads_are_limited_to_actionable_states(self):
+        self.assertEqual(
+            APPLICANT_UPLOAD_STATUSES,
+            {
+                ApplicationStatus.DRAFT,
+                ApplicationStatus.INFORMATION_REQUESTED,
+                ApplicationStatus.INFORMATION_RECEIVED,
+            },
+        )

@@ -7,6 +7,7 @@ from .portal_views import (
     ApplicantAccessRequestView,
     ApplicantDocumentDownloadView,
     ApplicantDocumentListCreateView,
+    ApplicantDocumentRequirementListView,
     ApplicantInformationRequestListView,
     ApplicantInformationResponseView,
     ApplicantMessageListCreateView,
@@ -32,6 +33,7 @@ urlpatterns = [
     path("portal/applications/<str:request_id>/information-requests/", ApplicantInformationRequestListView.as_view(), name="applicant-information-requests"),
     path("portal/applications/<str:request_id>/information-requests/<uuid:information_request_id>/respond/", ApplicantInformationResponseView.as_view(), name="applicant-information-response"),
     path("portal/applications/<str:request_id>/documents/", ApplicantDocumentListCreateView.as_view(), name="applicant-documents"),
+    path("portal/applications/<str:request_id>/document-requirements/", ApplicantDocumentRequirementListView.as_view(), name="applicant-document-requirements"),
     path("portal/applications/<str:request_id>/documents/<uuid:document_id>/download/", ApplicantDocumentDownloadView.as_view(), name="applicant-document-download"),
     path("", include(router.urls)),
 ]

@@ -26,6 +26,7 @@ from .serializers import (
     ApplicantVerificationSerializer,
     ApplicantAccessRequestSerializer,
     ApplicationDocumentSerializer,
+    ApplicationDocumentRequirementSerializer,
     ApplicationDocumentUploadSerializer,
     ApplicationMessageSerializer,
     InformationRequestSerializer,
@@ -33,7 +34,12 @@ from .serializers import (
     PublicApplicationStartSerializer,
     ReturningApplicationStartSerializer,
 )
-from .services import application_submission_errors, transition_application
+from .services import (
+    APPLICANT_UPLOAD_STATUSES,
+    applicable_document_requirements,
+    application_submission_errors,
+    transition_application,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -313,6 +319,11 @@ class ApplicantDocumentListCreateView(ApplicantPortalMixin, APIView):
         application = self.get_application(request_id)
         if application is None:
             return Response({"detail": "Application not found."}, status=404)
+        if application.status not in APPLICANT_UPLOAD_STATUSES:
+            return Response(
+                {"detail": "Documents cannot be uploaded at this stage."},
+                status=status.HTTP_409_CONFLICT,
+            )
         serializer = ApplicationDocumentUploadSerializer(data=request.data, context={"application": application})
         serializer.is_valid(raise_exception=True)
         upload = serializer.validated_data["file"]
@@ -336,6 +347,17 @@ class ApplicantDocumentListCreateView(ApplicantPortalMixin, APIView):
             checksum_sha256=digest.hexdigest(),
         )
         return Response(ApplicationDocumentSerializer(document).data, status=201)
+
+
+class ApplicantDocumentRequirementListView(ApplicantPortalMixin, APIView):
+    def get(self, request, request_id):
+        application = self.get_application(request_id)
+        if application is None:
+            return Response({"detail": "Application not found."}, status=404)
+        requirements = applicable_document_requirements(application)
+        return Response(
+            ApplicationDocumentRequirementSerializer(requirements, many=True).data
+        )
 
 
 class ApplicantDocumentDownloadView(ApplicantPortalMixin, APIView):
