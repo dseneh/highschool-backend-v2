@@ -30,6 +30,11 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.MultiPartParser",
     ],
     "EXCEPTION_HANDLER": "api.exceptions.custom_exception_handler",
+    "DEFAULT_THROTTLE_RATES": {
+        "website_public": "120/min",
+        "admissions_public": "30/min",
+        "admissions_start": "5/min",
+    },
 }
 
 # JWT Settings

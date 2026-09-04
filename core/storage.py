@@ -43,3 +43,29 @@ class TenantAwareS3Storage(S3Storage):
         # Add schema prefix
         return f"{prefix}/{name}" if prefix else name
 
+
+class PrivateTenantAwareS3Storage(TenantAwareS3Storage):
+    """Tenant-aware object storage for documents that must never be public."""
+
+    default_acl = "private"
+    querystring_auth = True
+    file_overwrite = False
+
+    def get_default_settings(self):
+        storage_settings = super().get_default_settings()
+        storage_settings.update({
+            "default_acl": "private",
+            "querystring_auth": True,
+            "custom_domain": None,
+            "file_overwrite": False,
+        })
+        return storage_settings
+
+    def url(self, name, parameters=None, expire=300, http_method=None):
+        """Return a short-lived signed URL; callers authorize before invoking."""
+        return super().url(
+            name,
+            parameters=parameters,
+            expire=expire,
+            http_method=http_method,
+        )

@@ -1,0 +1,10 @@
+{
+  "module": "website",
+  "label": "School Website",
+  "description": "School website content, design, and publishing",
+  "permissions": [
+    {"code": "website.view", "name": "View Website Drafts", "risk": "low", "scopes": ["all"]},
+    {"code": "website.manage", "name": "Manage Website", "risk": "high", "scopes": ["all"], "requires": ["website.view"]},
+    {"code": "website.publish", "name": "Publish Website", "risk": "high", "scopes": ["all"], "requires": ["website.manage"]}
+  ]
+}
