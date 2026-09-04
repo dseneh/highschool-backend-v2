@@ -1,8 +1,14 @@
 from django.utils import timezone
 from rest_framework import serializers
 
+from academics.models import GradeLevel
+
 from .enums import ApplicationStatus, ApplicationType
-from .models import AdmissionApplication, AdmissionCycle, ApplicationPlacement, ApplicationStatusHistory
+from .models import (
+    AdmissionApplication, AdmissionCycle, ApplicationDocument,
+    ApplicationDocumentRequirement, ApplicationInformationRequest,
+    ApplicationMessage, ApplicationPlacement, ApplicationStatusHistory,
+)
 
 
 class PublicAdmissionCycleSerializer(serializers.ModelSerializer):
@@ -47,8 +53,139 @@ class PublicApplicationStartSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "application_type": "Returning registration must begin through the verified student access flow."
             })
-        if not attrs.get("applicant_email") and not attrs.get("applicant_phone"):
-            raise serializers.ValidationError("Email or phone is required.")
+        if not attrs.get("applicant_email"):
+            raise serializers.ValidationError({"applicant_email": "Email is required for verification."})
+        grade_level = attrs.get("requested_grade_level")
+        eligible = cycle.eligible_grade_levels.all()
+        if eligible.exists() and grade_level is None:
+            raise serializers.ValidationError({"requested_grade_level": "Requested grade is required."})
+        if grade_level is not None and eligible.exists() and not eligible.filter(pk=grade_level.pk).exists():
+            raise serializers.ValidationError({"requested_grade_level": "This grade is not open for applications."})
+        return attrs
+
+
+class ApplicantVerificationSerializer(serializers.Serializer):
+    challenge_id = serializers.UUIDField(required=False)
+    request_id = serializers.CharField(required=False, max_length=32)
+    code = serializers.RegexField(r"^\d{6}$")
+
+    def validate(self, attrs):
+        if bool(attrs.get("challenge_id")) == bool(attrs.get("request_id")):
+            raise serializers.ValidationError("Provide exactly one verification reference.")
+        return attrs
+
+
+class ApplicantAccessRequestSerializer(serializers.Serializer):
+    request_id = serializers.CharField(max_length=32)
+    email = serializers.EmailField()
+
+
+class ReturningApplicationStartSerializer(serializers.Serializer):
+    cycle = serializers.PrimaryKeyRelatedField(queryset=AdmissionCycle.objects.all())
+    student_id = serializers.UUIDField(required=False)
+    requested_grade_level = serializers.PrimaryKeyRelatedField(
+        queryset=GradeLevel.objects.all()
+    )
+
+    def validate(self, attrs):
+        cycle = attrs["cycle"]
+        now = timezone.now()
+        if not cycle.active or not (cycle.opens_at <= now <= cycle.closes_at):
+            raise serializers.ValidationError({"cycle": "This admission cycle is not open."})
+        if not cycle.returning_registration_open:
+            raise serializers.ValidationError({"cycle": "Returning registration is closed."})
+        grade_level = attrs["requested_grade_level"]
+        eligible = cycle.eligible_grade_levels.all()
+        if eligible.exists() and not eligible.filter(pk=grade_level.pk).exists():
+            raise serializers.ValidationError({"requested_grade_level": "This grade is not open for registration."})
+        return attrs
+
+
+class PortalApplicationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdmissionApplication
+        fields = [
+            "request_id", "application_type", "cycle", "status", "applicant_name",
+            "applicant_email", "applicant_phone", "requested_grade_level",
+            "student_profile", "guardian_profiles", "previous_school_records",
+            "proposed_student_changes", "consents", "submitted_at", "decision_at",
+            "version", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "request_id", "application_type", "cycle", "status", "applicant_email",
+            "submitted_at", "decision_at", "version", "created_at", "updated_at",
+        ]
+
+    def validate(self, attrs):
+        if self.instance and self.instance.status != ApplicationStatus.DRAFT:
+            raise serializers.ValidationError("Only draft applications can be edited.")
+        return attrs
+
+
+class ApplicationMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplicationMessage
+        fields = ["id", "author_type", "body", "applicant_read_at", "school_read_at", "created_at"]
+        read_only_fields = ["id", "author_type", "applicant_read_at", "school_read_at", "created_at"]
+
+    def validate_body(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Message cannot be empty.")
+        if len(value) > 5000:
+            raise serializers.ValidationError("Message cannot exceed 5,000 characters.")
+        return value
+
+
+class InformationRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplicationInformationRequest
+        fields = ["id", "title", "instructions", "due_at", "status", "resolved_at", "created_at"]
+        read_only_fields = fields
+
+
+class InformationRequestCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplicationInformationRequest
+        fields = ["title", "instructions", "due_at"]
+
+
+class DocumentReviewSerializer(serializers.Serializer):
+    review_status = serializers.ChoiceField(choices=ApplicationDocument.ReviewStatus.choices)
+    review_note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class ApplicationDocumentSerializer(serializers.ModelSerializer):
+    requirement_name = serializers.CharField(source="requirement.name", read_only=True)
+
+    class Meta:
+        model = ApplicationDocument
+        fields = [
+            "id", "requirement", "requirement_name", "original_name", "mime_type",
+            "size_bytes", "checksum_sha256", "scan_status", "review_status",
+            "review_note", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ApplicationDocumentUploadSerializer(serializers.Serializer):
+    requirement = serializers.PrimaryKeyRelatedField(queryset=ApplicationDocumentRequirement.objects.all())
+    file = serializers.FileField()
+
+    def validate(self, attrs):
+        application = self.context["application"]
+        requirement = attrs["requirement"]
+        upload = attrs["file"]
+        if requirement.cycle_id != application.cycle_id or requirement.application_type != application.application_type:
+            raise serializers.ValidationError({"requirement": "This requirement does not apply to the application."})
+        if requirement.grade_level_id and requirement.grade_level_id != application.requested_grade_level_id:
+            raise serializers.ValidationError({"requirement": "This requirement does not apply to the requested grade."})
+        if upload.size > requirement.max_size_bytes:
+            raise serializers.ValidationError({"file": "The file exceeds the allowed size."})
+        extension = upload.name.rsplit(".", 1)[-1].lower() if "." in upload.name else ""
+        allowed = requirement.allowed_extensions or ["pdf", "png", "jpg", "jpeg"]
+        if extension not in allowed:
+            raise serializers.ValidationError({"file": "This file type is not allowed."})
         return attrs
 
 

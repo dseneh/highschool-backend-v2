@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from .enums import ApplicationStatus
@@ -19,6 +19,35 @@ ALLOWED_TRANSITIONS = {
     ApplicationStatus.ENROLLED: set(),
     ApplicationStatus.CANCELLED: set(),
 }
+
+
+def application_submission_errors(application):
+    errors = {}
+    required_student_fields = {"first_name", "last_name", "date_of_birth", "gender"}
+    missing_student = sorted(field for field in required_student_fields if not application.student_profile.get(field))
+    if missing_student:
+        errors["student_profile"] = f"Missing required fields: {', '.join(missing_student)}."
+    if not application.guardian_profiles:
+        errors["guardian_profiles"] = "At least one guardian or responsible contact is required."
+    required_consents = {"information_accurate", "data_processing"}
+    missing_consents = sorted(field for field in required_consents if application.consents.get(field) is not True)
+    if missing_consents:
+        errors["consents"] = f"Required declarations are incomplete: {', '.join(missing_consents)}."
+
+    requirements = application.cycle.document_requirements.filter(
+        active=True,
+        required=True,
+        application_type=application.application_type,
+    )
+    if application.requested_grade_level_id:
+        requirements = requirements.filter(
+            models.Q(grade_level__isnull=True) | models.Q(grade_level_id=application.requested_grade_level_id)
+        )
+    uploaded_requirement_ids = set(application.documents.values_list("requirement_id", flat=True))
+    missing_documents = [item.name for item in requirements if item.id not in uploaded_requirement_ids]
+    if missing_documents:
+        errors["documents"] = f"Missing required documents: {', '.join(missing_documents)}."
+    return errors
 
 
 @transaction.atomic

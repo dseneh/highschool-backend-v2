@@ -85,6 +85,8 @@ class ApplicantAccessToken(BaseModel):
     token_hash = models.CharField(max_length=128, unique=True)
     expires_at = models.DateTimeField(db_index=True)
     used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
