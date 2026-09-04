@@ -9,6 +9,7 @@ Complete guide to all environment variables needed for v2 SaaS backend deploymen
 | **BUILD** | None required | - |
 | **RELEASE** | Setup-specific vars | `RAILWAY_PUBLIC_DOMAIN` |
 | **WEB** | Django & app config | `DATABASE_URL`, `REDIS_URL`, `PORT` |
+| **DOCUMENT SCANNER** | Admissions malware scanning | ClamAV service connection |
 
 ---
 
@@ -115,6 +116,21 @@ R2_ACCESS_KEY_ID=<your-r2-access-key-id>
 R2_SECRET_ACCESS_KEY=<your-r2-secret-access-key>
 R2_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 R2_CUSTOM_DOMAIN=<your-custom-domain-for-media>
+```
+
+### Admissions Document Scanner
+
+Run the `document-scanner` Procfile process as a separate Railway worker and
+connect it to a private ClamAV `clamd` service. Uploaded admissions documents
+remain inaccessible until this worker records a clean verdict.
+
+```bash
+ADMISSIONS_DOCUMENT_SCAN_HOST=<private-clamav-host>
+ADMISSIONS_DOCUMENT_SCAN_PORT=3310
+ADMISSIONS_DOCUMENT_SCAN_TIMEOUT=30
+ADMISSIONS_DOCUMENT_SCAN_MAX_ATTEMPTS=3
+ADMISSIONS_DOCUMENT_SCAN_STALE_SECONDS=900
+ADMISSIONS_DOCUMENT_SCAN_POLL_SECONDS=5
 ```
 
 ### Encryption & Security Keys

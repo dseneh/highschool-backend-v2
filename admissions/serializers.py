@@ -163,7 +163,7 @@ class ApplicationDocumentSerializer(serializers.ModelSerializer):
         model = ApplicationDocument
         fields = [
             "id", "requirement", "requirement_name", "original_name", "mime_type",
-            "size_bytes", "checksum_sha256", "scan_status", "review_status",
+            "size_bytes", "checksum_sha256", "scan_status", "scan_completed_at", "review_status",
             "review_note", "created_at",
         ]
         read_only_fields = fields

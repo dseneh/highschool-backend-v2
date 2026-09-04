@@ -112,6 +112,7 @@ class ApplicationDocumentRequirement(BaseModel):
 class ApplicationDocument(BaseModel):
     class ScanStatus(models.TextChoices):
         PENDING = "pending", "Pending"
+        SCANNING = "scanning", "Scanning"
         CLEAN = "clean", "Clean"
         REJECTED = "rejected", "Rejected"
         FAILED = "failed", "Failed"
@@ -133,6 +134,12 @@ class ApplicationDocument(BaseModel):
     size_bytes = models.PositiveBigIntegerField()
     checksum_sha256 = models.CharField(max_length=64, db_index=True)
     scan_status = models.CharField(max_length=16, choices=ScanStatus.choices, default=ScanStatus.PENDING, db_index=True)
+    scan_attempts = models.PositiveSmallIntegerField(default=0)
+    scan_started_at = models.DateTimeField(null=True, blank=True)
+    scan_completed_at = models.DateTimeField(null=True, blank=True)
+    scan_engine = models.CharField(max_length=32, blank=True, default="")
+    scan_error = models.TextField(blank=True, default="")
+    threat_name = models.CharField(max_length=255, blank=True, default="")
     review_status = models.CharField(max_length=16, choices=ReviewStatus.choices, default=ReviewStatus.PENDING, db_index=True)
     review_note = models.TextField(blank=True, default="")
 

@@ -27,6 +27,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # Security
 SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-me-in-production")
 DEBUG = config("DEBUG", default=True, cast=bool)
+
+# Admissions documents remain unavailable until a dedicated worker receives a
+# clean verdict from ClamAV. No permissive fallback is provided.
+ADMISSIONS_DOCUMENT_SCAN_HOST = config("ADMISSIONS_DOCUMENT_SCAN_HOST", default="").strip()
+ADMISSIONS_DOCUMENT_SCAN_PORT = config("ADMISSIONS_DOCUMENT_SCAN_PORT", default=3310, cast=int)
+ADMISSIONS_DOCUMENT_SCAN_TIMEOUT = config("ADMISSIONS_DOCUMENT_SCAN_TIMEOUT", default=30, cast=int)
+ADMISSIONS_DOCUMENT_SCAN_MAX_ATTEMPTS = config("ADMISSIONS_DOCUMENT_SCAN_MAX_ATTEMPTS", default=3, cast=int)
+ADMISSIONS_DOCUMENT_SCAN_STALE_SECONDS = config("ADMISSIONS_DOCUMENT_SCAN_STALE_SECONDS", default=900, cast=int)
+ADMISSIONS_DOCUMENT_SCAN_POLL_SECONDS = config("ADMISSIONS_DOCUMENT_SCAN_POLL_SECONDS", default=5, cast=int)
 # ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
 ALLOWED_HOSTS = ["*"]
 
