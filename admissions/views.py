@@ -1,7 +1,7 @@
 from django.db import transaction
 from django.conf import settings
 import logging
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch
 from django.utils import timezone
 from rest_framework import filters, status, viewsets
 from rest_framework.throttling import ScopedRateThrottle
@@ -84,7 +84,40 @@ class AdmissionApplicationViewSet(viewsets.ModelViewSet):
         "placement": "admissions.place", "documents": "admissions.documents.view",
         "review_document": "admissions.documents.review", "download_document": "admissions.documents.view",
         "convert": "admissions.enroll",
+        "summary": "admissions.view",
     }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_value = self.request.query_params.get("status")
+        cycle = self.request.query_params.get("cycle")
+        reviewer = self.request.query_params.get("assigned_reviewer")
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if cycle:
+            queryset = queryset.filter(cycle_id=cycle)
+        if reviewer:
+            queryset = queryset.filter(assigned_reviewer_id=reviewer)
+        return queryset
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        rows = AdmissionApplication.objects.values("status").annotate(count=Count("id"))
+        by_status = {row["status"]: row["count"] for row in rows}
+        return Response(
+            {
+                "total": sum(by_status.values()),
+                "by_status": by_status,
+                "awaiting_review": sum(
+                    by_status.get(value, 0)
+                    for value in (
+                        "submitted", "under_review", "information_received"
+                    )
+                ),
+                "awaiting_applicant": by_status.get("information_requested", 0),
+                "ready_for_enrollment": by_status.get("enrollment_ready", 0),
+            }
+        )
 
     def get_permissions(self):
         permission_map = dict(type(self).permission_map)
