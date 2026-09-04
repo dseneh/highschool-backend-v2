@@ -1,13 +1,14 @@
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from authorization.drf import RBACPermission
-from school_website.models import WebsiteNavigationItem, WebsitePage, WebsiteSection, WebsiteSettings
-from school_website.serializers import WebsiteNavigationItemSerializer, WebsitePageSerializer, WebsiteSectionSerializer, WebsiteSettingsSerializer
+from school_website.models import WebsiteMedia, WebsiteNavigationItem, WebsitePage, WebsiteSection, WebsiteSettings
+from school_website.serializers import WebsiteMediaSerializer, WebsiteNavigationItemSerializer, WebsitePageSerializer, WebsiteSectionSerializer, WebsiteSettingsSerializer
 from school_website.services import publish_website
 
 
@@ -73,3 +74,13 @@ class WebsiteSectionViewSet(WebsiteOwnedModelViewSet):
 class WebsiteNavigationViewSet(WebsiteOwnedModelViewSet):
     queryset = WebsiteNavigationItem.objects.select_related("page", "parent").all()
     serializer_class = WebsiteNavigationItemSerializer
+
+
+class WebsiteMediaViewSet(WebsiteOwnedModelViewSet):
+    queryset = WebsiteMedia.objects.all()
+    serializer_class = WebsiteMediaSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def perform_destroy(self, instance):
+        instance.file.delete(save=False)
+        instance.delete()
