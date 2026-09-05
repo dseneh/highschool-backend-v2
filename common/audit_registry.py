@@ -256,3 +256,45 @@ def register_all_models():
     from settings.models import GradingSettings
 
     auditlog.register(GradingSettings, exclude_fields=COMMON_EXCLUDE)
+
+    # ── School website ────────────────────────────────────────────────
+    from school_website.models import (
+        WebsiteMedia,
+        WebsiteNavigationItem,
+        WebsitePage,
+        WebsiteRevision,
+        WebsiteSection,
+        WebsiteSettings,
+    )
+
+    auditlog.register(WebsiteMedia, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(WebsiteNavigationItem, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(WebsitePage, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(WebsiteRevision, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(WebsiteSection, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(WebsiteSettings, exclude_fields=COMMON_EXCLUDE)
+
+    # ── Admissions ───────────────────────────────────────────────────
+    from admissions.models import (
+        AdmissionApplication,
+        AdmissionCycle,
+        ApplicationConversion,
+        ApplicationDocument,
+        ApplicationDocumentRequirement,
+        ApplicationInformationRequest,
+        ApplicationMessage,
+        ApplicationPlacement,
+        ApplicationStatusHistory,
+        ApplicantIdentity,
+    )
+
+    auditlog.register(AdmissionApplication, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(AdmissionCycle, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicantIdentity, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationConversion, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationDocument, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationDocumentRequirement, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationInformationRequest, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationMessage, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationPlacement, exclude_fields=COMMON_EXCLUDE)
+    auditlog.register(ApplicationStatusHistory, exclude_fields=COMMON_EXCLUDE)

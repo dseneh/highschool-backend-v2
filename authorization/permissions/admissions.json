@@ -1,0 +1,19 @@
+{
+  "module": "admissions",
+  "label": "Admissions",
+  "description": "Online admissions and returning-student registration",
+  "permissions": [
+    {"code": "admissions.view", "name": "View Applications", "risk": "medium", "scopes": ["all"]},
+    {"code": "admissions.review", "name": "Review Applications", "risk": "high", "scopes": ["all"], "requires": ["admissions.view"]},
+    {"code": "admissions.assign", "name": "Assign Applications", "risk": "medium", "scopes": ["all"], "requires": ["admissions.view"]},
+    {"code": "admissions.request_information", "name": "Request Applicant Information", "risk": "medium", "scopes": ["all"], "requires": ["admissions.view"]},
+    {"code": "admissions.message", "name": "Message Applicants", "risk": "medium", "scopes": ["all"], "requires": ["admissions.view"]},
+    {"code": "admissions.documents.view", "name": "View Application Documents", "risk": "high", "scopes": ["all"], "requires": ["admissions.view"]},
+    {"code": "admissions.documents.review", "name": "Review Application Documents", "risk": "high", "scopes": ["all"], "requires": ["admissions.documents.view"]},
+    {"code": "admissions.approve", "name": "Approve Applications", "risk": "high", "scopes": ["all"], "requires": ["admissions.review"]},
+    {"code": "admissions.reject", "name": "Reject Applications", "risk": "high", "scopes": ["all"], "requires": ["admissions.review"]},
+    {"code": "admissions.place", "name": "Assign Admission Placement", "risk": "high", "scopes": ["all"], "requires": ["admissions.approve"]},
+    {"code": "admissions.enroll", "name": "Complete Applicant Enrollment", "risk": "critical", "scopes": ["all"], "requires": ["admissions.place", "students.enroll"]},
+    {"code": "admissions.cycles.manage", "name": "Manage Admission Cycles", "risk": "high", "scopes": ["all"], "requires": ["admissions.view"]}
+  ]
+}

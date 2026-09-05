@@ -72,7 +72,7 @@ jobs:
       - name: 🧪 Run tests
         run: |
           echo "🧪 Running Django tests..."
-          python manage.py test users core students employees finance --verbosity=2
+          python manage.py test users core students staff finance admissions school_website --verbosity=2
 
       - name: ✅ All checks passed
         run: echo "🎉 All development checks passed!"

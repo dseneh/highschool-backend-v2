@@ -29,6 +29,19 @@
     {"permission": "reports.transcript.view", "scope": "all"},
     {"permission": "reports.transcript.generate", "scope": "all"},
     {"permission": "notifications.view", "scope": "all"},
-    {"permission": "notifications.send", "scope": "all"}
+    {"permission": "notifications.send", "scope": "all"},
+    {"permission": "admissions.view", "scope": "all"},
+    {"permission": "admissions.review", "scope": "all"},
+    {"permission": "admissions.assign", "scope": "all"},
+    {"permission": "admissions.request_information", "scope": "all"},
+    {"permission": "admissions.message", "scope": "all"},
+    {"permission": "admissions.documents.view", "scope": "all"},
+    {"permission": "admissions.documents.review", "scope": "all"},
+    {"permission": "admissions.approve", "scope": "all"},
+    {"permission": "admissions.reject", "scope": "all"},
+    {"permission": "admissions.place", "scope": "all"},
+    {"permission": "admissions.enroll", "scope": "all"},
+    {"permission": "admissions.cycles.manage", "scope": "all"},
+    {"permission": "website.view", "scope": "all"}
   ]
 }
