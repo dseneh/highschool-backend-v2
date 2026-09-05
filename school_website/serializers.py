@@ -1,17 +1,35 @@
 from PIL import Image, UnidentifiedImageError
 from rest_framework import serializers
 
-from school_website.models import WebsiteMedia, WebsiteNavigationItem, WebsitePage, WebsiteSection, WebsiteSettings
-
+from school_website.models import (
+    WebsiteMedia,
+    WebsiteNavigationItem,
+    WebsitePage,
+    WebsiteSection,
+    WebsiteSettings,
+)
 
 WEBSITE_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 WEBSITE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 
 ALLOWED_BLOCK_TYPES = {
-    "about", "achievements", "admissions", "announcements", "contact",
-    "custom_rich_text", "events", "facilities", "faq", "gallery", "hero",
-    "history", "leadership", "mission_vision_values", "programs", "statistics",
+    "about",
+    "achievements",
+    "admissions",
+    "announcements",
+    "contact",
+    "custom_rich_text",
+    "events",
+    "facilities",
+    "faq",
+    "gallery",
+    "hero",
+    "history",
+    "leadership",
+    "mission_vision_values",
+    "programs",
+    "statistics",
     "testimonials",
 }
 
@@ -24,7 +42,15 @@ class WebsiteSectionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WebsiteSection
-        fields = ["id", "page", "block_type", "position", "variant", "content", "active"]
+        fields = [
+            "id",
+            "page",
+            "block_type",
+            "position",
+            "variant",
+            "content",
+            "active",
+        ]
 
 
 class WebsitePageSerializer(serializers.ModelSerializer):
@@ -32,16 +58,37 @@ class WebsitePageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WebsitePage
-        fields = ["id", "title", "slug", "page_type", "navigation_visible", "navigation_order", "seo", "active", "sections"]
+        fields = [
+            "id",
+            "title",
+            "slug",
+            "page_type",
+            "navigation_visible",
+            "navigation_order",
+            "seo",
+            "active",
+            "sections",
+        ]
 
 
 class WebsiteNavigationItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = WebsiteNavigationItem
-        fields = ["id", "label", "destination_type", "page", "url", "parent", "position", "active"]
+        fields = [
+            "id",
+            "label",
+            "destination_type",
+            "page",
+            "url",
+            "parent",
+            "position",
+            "active",
+        ]
 
     def validate(self, attrs):
-        destination_type = attrs.get("destination_type", getattr(self.instance, "destination_type", None))
+        destination_type = attrs.get(
+            "destination_type", getattr(self.instance, "destination_type", None)
+        )
         page = attrs.get("page", getattr(self.instance, "page", None))
         url = attrs.get("url", getattr(self.instance, "url", ""))
         if destination_type == WebsiteNavigationItem.DestinationType.PAGE and not page:
@@ -52,10 +99,31 @@ class WebsiteNavigationItemSerializer(serializers.ModelSerializer):
 
 
 class WebsiteSettingsSerializer(serializers.ModelSerializer):
+    tenant_defaults = serializers.SerializerMethodField()
+
+    def get_tenant_defaults(self, obj):
+        request = self.context.get("request")
+        if not request or not getattr(request, "tenant", None):
+            return {"design_tokens": {}, "contact": {}, "seo": {}}
+        from school_website.services import tenant_website_defaults
+
+        return tenant_website_defaults(request.tenant)
+
     class Meta:
         model = WebsiteSettings
-        fields = ["id", "template", "design_tokens", "seo_defaults", "contact_overrides", "social_links", "admissions_cta", "published_revision", "published_at"]
-        read_only_fields = ["published_revision", "published_at"]
+        fields = [
+            "id",
+            "template",
+            "design_tokens",
+            "seo_defaults",
+            "contact_overrides",
+            "social_links",
+            "admissions_cta",
+            "tenant_defaults",
+            "published_revision",
+            "published_at",
+        ]
+        read_only_fields = ["tenant_defaults", "published_revision", "published_at"]
 
 
 class WebsiteMediaSerializer(serializers.ModelSerializer):
@@ -64,8 +132,15 @@ class WebsiteMediaSerializer(serializers.ModelSerializer):
     class Meta:
         model = WebsiteMedia
         fields = [
-            "id", "file", "url", "display_name", "alt_text", "purpose",
-            "focal_point", "created_at", "updated_at",
+            "id",
+            "file",
+            "url",
+            "display_name",
+            "alt_text",
+            "purpose",
+            "focal_point",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = ["id", "url", "created_at", "updated_at"]
         extra_kwargs = {"file": {"write_only": True}}
@@ -87,5 +162,7 @@ class WebsiteMediaSerializer(serializers.ModelSerializer):
             image.verify()
             upload.seek(0)
         except (UnidentifiedImageError, OSError, ValueError) as exc:
-            raise serializers.ValidationError("The selected file is not a valid image.") from exc
+            raise serializers.ValidationError(
+                "The selected file is not a valid image."
+            ) from exc
         return upload

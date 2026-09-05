@@ -81,12 +81,17 @@ class WebsiteSettingsViewSet(WebsiteFeatureRequiredMixin, viewsets.ViewSet):
 
     def retrieve(self, request, pk=None):
         settings = ensure_default_website(tenant=request.tenant, user=request.user)
-        return Response(WebsiteSettingsSerializer(settings).data)
+        return Response(
+            WebsiteSettingsSerializer(settings, context={"request": request}).data
+        )
 
     def _save(self, request, *, partial):
         instance = ensure_default_website(tenant=request.tenant, user=request.user)
         serializer = WebsiteSettingsSerializer(
-            instance, data=request.data, partial=partial
+            instance,
+            data=request.data,
+            partial=partial,
+            context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
