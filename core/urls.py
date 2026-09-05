@@ -12,6 +12,7 @@ from core.views import (
     ContactInquiryView,
     PublicSchoolSearchView,
 )
+from core.branding_views import TenantAuthBackgroundView, TenantLoginExperienceView
 from core.onboarding_views import (
     get_onboarding,
     save_onboarding_step,
@@ -45,6 +46,19 @@ urlpatterns = [
     path('features/', TenantFeaturesView.as_view(), name='tenant-features'),
     path('features/<slug:key>/', TenantFeatureAccessView.as_view(), name='tenant-feature-access'),
     path('features/<slug:key>/<slug:action>/', TenantFeatureActionView.as_view(), name='tenant-feature-action'),
+
+    # Tenant-managed login branding. Keep these before the router so the
+    # schema_name detail route cannot swallow the nested paths.
+    path(
+        'tenants/<str:schema_name>/login-experience/',
+        TenantLoginExperienceView.as_view(),
+        name='tenant-login-experience',
+    ),
+    path(
+        'tenants/<str:schema_name>/auth-background/',
+        TenantAuthBackgroundView.as_view(),
+        name='tenant-auth-background',
+    ),
 
     # Onboarding endpoints (must be before router so they aren't swallowed by
     # the TenantViewSet detail lookup on schema_name)
