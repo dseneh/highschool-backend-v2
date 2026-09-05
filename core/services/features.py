@@ -4,8 +4,8 @@ from django.utils import timezone
 
 from core.models import Feature, Tenant, TenantFeatureEntitlement
 
-
 PAYROLL_FEATURE_KEY = "payroll"
+WEBSITE_FEATURE_KEY = "website"
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,9 @@ def feature_access(tenant: Tenant, feature_key: str) -> FeatureAccess:
         return FeatureAccess(feature_key, False, "feature_not_entitled")
 
     if not entitlement.locally_enabled:
-        return FeatureAccess(feature_key, False, "feature_disabled_by_tenant", entitlement)
+        return FeatureAccess(
+            feature_key, False, "feature_disabled_by_tenant", entitlement
+        )
     if entitlement.status != TenantFeatureEntitlement.Status.ACTIVE:
         return FeatureAccess(feature_key, False, entitlement.status, entitlement)
     if entitlement.active_from and entitlement.active_from > timezone.now():
@@ -59,7 +61,9 @@ def feature_summary(tenant: Tenant, feature: Feature) -> dict:
         "requires_payment": bool(feature.stripe_price_id),
         "status": entitlement.status if entitlement else "not_entitled",
         "locally_enabled": entitlement.locally_enabled if entitlement else False,
-        "cancel_at_period_end": entitlement.cancel_at_period_end if entitlement else False,
+        "cancel_at_period_end": (
+            entitlement.cancel_at_period_end if entitlement else False
+        ),
         "active_until": entitlement.active_until if entitlement else None,
         "limits": entitlement.limits if entitlement else {},
     }
