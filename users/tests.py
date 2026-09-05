@@ -140,6 +140,8 @@ class SsoAuthorizeViewTests(SimpleTestCase):
 		self.factory = APIRequestFactory()
 		self.view = SsoAuthorizeView.as_view()
 		self.user = SimpleNamespace(
+			pk="user-1",
+			id="user-1",
 			is_authenticated=True,
 			is_active=True,
 			status="active",
@@ -435,7 +437,13 @@ class SsoLogoutViewTests(SimpleTestCase):
 		self.factory = APIRequestFactory()
 		self.tenant_logout_view = TenantLogoutView.as_view()
 		self.global_logout_view = GlobalLogoutView.as_view()
-		self.user = SimpleNamespace(is_authenticated=True)
+		self.user = SimpleNamespace(
+			pk="user-1",
+			id="user-1",
+			is_authenticated=True,
+			is_active=True,
+			status="active",
+		)
 
 	@patch("users.sso_views.AuthenticationAuditEvent.objects.create")
 	@patch("users.sso_views.SessionRevocation.objects.create")

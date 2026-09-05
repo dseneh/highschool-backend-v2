@@ -1,16 +1,11 @@
-"""
-JWT authentication that resolves global users from the public schema.
-
-Users live in the public schema (SHARED_APPS). When a tenant X-Tenant header
-switches the connection to a school schema, the default JWT lookup can fail or
-return incomplete tenant permission state. This class retries authentication
-in the public schema, then ensures global superadmins are linked to the tenant.
-"""
+"""Tenant-aware authentication backends."""
 
 from django_tenants.utils import get_public_schema_name, schema_context
 from django.utils import timezone
 from rest_framework import authentication
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 from users.models import TenantSession
 from users.sso_utils import hash_value
@@ -18,37 +13,44 @@ from users.tenant_access import ensure_global_superadmin_tenant_membership
 
 
 class TenantAwareJWTAuthentication(JWTAuthentication):
-    """JWT auth with public-schema user resolution and superadmin tenant linking."""
+    """JWT auth with public-schema user resolution and revocation-version checks."""
+
+    def _authenticate_in_current_schema(self, request):
+        try:
+            return super().authenticate(request)
+        except (InvalidToken, TokenError, AuthenticationFailed):
+            return None
 
     def authenticate(self, request):
-        try:
-            result = super().authenticate(request)
-        except Exception:
-            result = None
+        result = self._authenticate_in_current_schema(request)
 
         if not result:
-            try:
-                with schema_context(get_public_schema_name()):
-                    result = super().authenticate(request)
-            except Exception:
-                result = None
+            with schema_context(get_public_schema_name()):
+                result = self._authenticate_in_current_schema(request)
 
         if not result:
             return None
 
         user, token = result
+        if not getattr(user, "is_active", False):
+            raise AuthenticationFailed("User account is disabled.")
+
+        token_version = int(token.get("security_version", 1))
+        user_version = int(getattr(user, "security_version", 1))
+        if token_version != user_version:
+            raise AuthenticationFailed("Session has been revoked. Please sign in again.")
+
         tenant = getattr(request, "tenant", None)
         if tenant:
             ensure_global_superadmin_tenant_membership(user, tenant)
         if hasattr(request, "_request"):
             from authorization.runtime import initialize_request_authorization
-
             initialize_request_authorization(request, user)
         return user, token
 
 
 class TenantSessionAuthentication(authentication.BaseAuthentication):
-    """Authenticate requests using a server-side tenant session identifier."""
+    """Authenticate requests using a hashed server-side tenant session identifier."""
 
     def authenticate(self, request):
         raw_session_id = request.META.get("HTTP_X_TENANT_SESSION")
@@ -62,6 +64,7 @@ class TenantSessionAuthentication(authentication.BaseAuthentication):
                 session_key_hash=hash_value(raw_session_id),
                 revoked_at__isnull=True,
                 expires_at__gt=now,
+                user__is_active=True,
             )
             .first()
         )
@@ -73,7 +76,6 @@ class TenantSessionAuthentication(authentication.BaseAuthentication):
             return None
 
         from authorization.runtime import initialize_request_authorization
-
         initialize_request_authorization(request, session_obj.user)
         return session_obj.user, None
 
@@ -86,7 +88,8 @@ class RBACSessionAuthentication(authentication.SessionAuthentication):
         if not result:
             return None
         user, auth = result
+        if not getattr(user, "is_active", False):
+            raise AuthenticationFailed("User account is disabled.")
         from authorization.runtime import initialize_request_authorization
-
         initialize_request_authorization(request, user)
         return user, auth

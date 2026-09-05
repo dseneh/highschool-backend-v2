@@ -123,7 +123,7 @@ class TaskManager:
         params_str = json.dumps(sorted_params, default=str)
         
         import hashlib
-        return hashlib.md5(params_str.encode()).hexdigest()
+        return hashlib.sha256(params_str.encode()).hexdigest()
 
 
 class MockTaskProcessor:

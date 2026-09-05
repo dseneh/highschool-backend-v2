@@ -7,9 +7,9 @@ from django.test import SimpleTestCase
 from students.views.utils import create_student_bill
 
 
-class CreateStudentBillArrearsTests(SimpleTestCase):
+class CreateStudentBillBroughtForwardTests(SimpleTestCase):
     @patch("students.views.utils.get_enrollment_arrears_amount", return_value=Decimal("0.00"))
-    def test_create_student_bill_prepends_zero_arrears_item(self, _mock_arrears):
+    def test_create_student_bill_prepends_zero_brought_forward_item(self, _mock_arrears):
         created_rows = []
 
         def create_bill(**kwargs):
@@ -43,7 +43,7 @@ class CreateStudentBillArrearsTests(SimpleTestCase):
 
         bills = create_student_bill(enrollment, request)
 
-        self.assertEqual(created_rows[0]["name"], "Arrears")
+        self.assertEqual(created_rows[0]["name"], "Brought Forward")
         self.assertEqual(created_rows[0]["amount"], Decimal("0.00"))
         self.assertEqual(created_rows[0]["type"], "other")
         self.assertEqual(created_rows[1]["name"], "PTA")

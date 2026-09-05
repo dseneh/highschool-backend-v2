@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hashlib import sha1
+from hashlib import sha256
 from typing import Any
 
 from rest_framework import status
@@ -20,7 +20,7 @@ def _normalize_etag_part(value: Any) -> str:
 def build_etag(*parts: Any) -> str:
     """Build a stable weak etag fingerprint from ordered parts."""
     payload = "|".join(_normalize_etag_part(part) for part in parts)
-    return sha1(payload.encode("utf-8")).hexdigest()
+    return sha256(payload.encode("utf-8")).hexdigest()
 
 
 def maybe_not_modified(request, etag: str) -> Response | None:

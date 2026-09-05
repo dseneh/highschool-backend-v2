@@ -8,12 +8,9 @@ References:
 """
 
 from pathlib import Path
+from django.core.exceptions import ImproperlyConfigured
 from decouple import config
 
-# Single source of truth for the app's public root domain. Tenant domains are
-# derived as f"{subdomain}.{APP_ROOT_DOMAIN}". Legacy domains (previously used
-# for the app) are kept only to support the permanent redirect to the current
-# domain - see api.middleware.LegacyDomainRedirectMiddleware.
 APP_ROOT_DOMAIN = config("APP_ROOT_DOMAIN", default="myezyschool.com").strip().lower()
 LEGACY_APP_DOMAINS = config(
     "LEGACY_APP_DOMAINS",
@@ -21,269 +18,147 @@ LEGACY_APP_DOMAINS = config(
     cast=lambda v: [s.strip().lower() for s in v.split(",") if s.strip()],
 )
 
-# Build paths inside the project
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Security
-SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-me-in-production")
+# Security: development may use a local fallback, production must provide a real secret.
 DEBUG = config("DEBUG", default=True, cast=bool)
-# ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
-ALLOWED_HOSTS = ["*"]
+_INSECURE_SECRET_KEYS = {"", "django-insecure-change-me-in-production", "django-insecure-change-me"}
+SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-me-in-production" if DEBUG else "")
+if not DEBUG and (SECRET_KEY in _INSECURE_SECRET_KEYS or SECRET_KEY.startswith("django-insecure-")):
+    raise ImproperlyConfigured("SECRET_KEY must be explicitly configured with a strong production value.")
 
-if not ALLOWED_HOSTS:
-    railway_public_domain = config("RAILWAY_PUBLIC_DOMAIN", default="").strip()
-    if railway_public_domain:
-        ALLOWED_HOSTS = [railway_public_domain]
+# Host-header validation. Wildcards are deliberately not used in production.
+def _csv(value):
+    return [item.strip() for item in value.split(",") if item.strip()]
 
-# Always allow Railway's internal health check domain
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=_csv)
+railway_public_domain = config("RAILWAY_PUBLIC_DOMAIN", default="").strip()
+if railway_public_domain and railway_public_domain not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(railway_public_domain)
+
+if DEBUG:
+    for local_host in ("localhost", "127.0.0.1", "[::1]", ".lvh.me", ".localtest.me"):
+        if local_host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(local_host)
+else:
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured("ALLOWED_HOSTS must be explicitly configured in production.")
+    if "*" in ALLOWED_HOSTS:
+        raise ImproperlyConfigured("ALLOWED_HOSTS cannot contain '*' in production.")
+
+# Railway health probes use this fixed host. Add it explicitly rather than trusting all hosts.
 if "healthcheck.railway.app" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append("healthcheck.railway.app")
 
-# Allow local/internal hosts used by platform health probes and container runtime
-for probe_host in ("localhost", "127.0.0.1", "[::1]"):
-    if probe_host not in ALLOWED_HOSTS:
-        ALLOWED_HOSTS.append(probe_host)
-
-# Allow Railway domains used by edge and service health probes
-for railway_host in (".railway.app", ".up.railway.app"):
-    if railway_host not in ALLOWED_HOSTS:
-        ALLOWED_HOSTS.append(railway_host)
-
-# Application definition
-# NOTE: django_tenants MUST be first in INSTALLED_APPS
 SHARED_APPS = [
-    "django_tenants",  # MUST be first - required by django-tenants
-    # Django contrib apps (needed in public schema)
-    "django.contrib.contenttypes",
-    "django.contrib.auth",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.admin",
-    "django.contrib.staticfiles",
-    # django-tenant-users (global user management)
-    # Reference: https://django-tenant-users.readthedocs.io/en/latest/pages/installation.html
-    "tenant_users.permissions",
-    "tenant_users.tenants",
-    # Framework libraries (NO database models - code only)
-    "rest_framework",
-    "rest_framework_simplejwt",
-    "corsheaders",
-    "storages",
-    # Audit trail
-    "auditlog",  # django-auditlog - change tracking (LogEntry in public + tenant schemas)
-    # Local shared apps (data in public schema OR abstract models/utilities)
-    "common",  # Abstract base models (BaseModel, BasePersonModel) - no DB tables
-    "users",  # User - lives in public schema (global users)
-    "core",  # School model (TenantBase) - lives in public schema
+    "django_tenants",
+    "django.contrib.contenttypes", "django.contrib.auth", "django.contrib.sessions",
+    "django.contrib.messages", "django.contrib.admin", "django.contrib.staticfiles",
+    "tenant_users.permissions", "tenant_users.tenants",
+    "rest_framework", "rest_framework_simplejwt", "corsheaders", "storages",
+    "auditlog", "common", "users", "core",
 ]
 
 TENANT_APPS = [
-    # Django contrib apps (needed in tenant schemas for tenant-specific tables)
-    "django.contrib.contenttypes",  # Tenant-specific content types
-    "django.contrib.auth",  # Tenant-specific permissions (via django-tenant-users)
-    "django.contrib.sessions",  # Tenant-specific sessions
-    "django.contrib.messages",  # Tenant-specific messages
-    "django.contrib.admin",  # Tenant-specific admin data
-    "django.contrib.staticfiles",  # Tenant-specific static file references
-    # django-tenant-users permissions (needed in tenant schemas)
-    "tenant_users.permissions",
-    # Audit trail
-    "auditlog",  # django-auditlog - change tracking (LogEntry per tenant)
-    # Local tenant apps (tenant-specific data)
-    "academics",  # Academic models (AcademicYear, Semester, Division, GradeLevel, etc.)
-    "students",  # Student models (Student, Enrollment, Attendance, GradeBook, etc.)
-    "staff",  # Staff models (Department, Position, Staff, Teacher assignments, etc.)
-    "grading",  # Grading models (GradeLetter, AssessmentType, GradeBook, Assessment, Grade, etc.)
-    "finance",  # Finance models (BankAccount, Transaction, PaymentMethod, PaymentInstallment, etc.)
-    "accounting",  # Accounting models (Ledger, Journal, Cash, AR, Tax, Posting Bridge - Phase 2-5)
-    "hr",  # HR models (Payroll, Contracts, Workforce - Phase 6-7)
-    "payroll_v2",  # Payroll: schedules, runs, items, settings, paystubs
-    "employee_benefits",  # Named employee benefits/allocations with approval workflow
-    "employee_disbursements",  # Paid payroll/benefit disbursement snapshots
-    "settings",  # Tenant-specific settings (grading settings)
-    "reports",  # Reports (transaction reporting, exports, placeholders)
-    "defaults",  # Default data creation for new tenants
-    "notifications",  # In-app notifications, announcements, email delivery
-    "authorization",  # Tenant roles, memberships, scoped grants, and permission registry
+    "django.contrib.contenttypes", "django.contrib.auth", "django.contrib.sessions",
+    "django.contrib.messages", "django.contrib.admin", "django.contrib.staticfiles",
+    "tenant_users.permissions", "auditlog", "academics", "students", "staff", "grading",
+    "finance", "accounting", "hr", "payroll_v2", "employee_benefits",
+    "employee_disbursements", "settings", "reports", "defaults", "notifications", "authorization",
 ]
-
-# INSTALLED_APPS: Automatically constructed from SHARED_APPS and TENANT_APPS
-# Reference: https://django-tenants.readthedocs.io/en/latest/install.html#configure-tenant-and-shared-applications
 INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in SHARED_APPS]
 
-# Tenant model configuration
-TENANT_MODEL = "core.Tenant"  # Your Tenant model (TenantBase)
-TENANT_DOMAIN_MODEL = "core.Domain"  # Domain model for routing
+TENANT_MODEL = "core.Tenant"
+TENANT_DOMAIN_MODEL = "core.Domain"
 
 MIDDLEWARE = [
-    "api.middleware.LegacyDomainRedirectMiddleware",  # Must be first - 301/308 redirects legacy domains before any routing
-    "corsheaders.middleware.CorsMiddleware",  # Must be before tenant middleware to handle OPTIONS requests
-    "api.middleware.HeaderBasedTenantMiddleware",  # Handles schema switching via X-Tenant header (skips OPTIONS)
-    "api.middleware.ApiPerformanceMetricsMiddleware",  # Optional endpoint performance metrics headers/logging
+    "api.middleware.LegacyDomainRedirectMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
+    "api.middleware.HeaderBasedTenantMiddleware",
+    "api.middleware.ApiPerformanceMetricsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "common.audit_middleware.AuditlogDeviceMiddleware",  # Captures actor + IP + User-Agent for audit trail
+    "common.audit_middleware.AuditlogDeviceMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
 ROOT_URLCONF = "api.urls"
-
-TEMPLATES = [
-    {
-        "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],
-        "APP_DIRS": True,
-        "OPTIONS": {
-            "context_processors": [
-                "django.template.context_processors.debug",
-                "django.template.context_processors.request",
-                "django.contrib.auth.context_processors.auth",
-                "django.contrib.messages.context_processors.messages",
-            ],
-        },
-    },
-]
-
+TEMPLATES = [{
+    "BACKEND": "django.template.backends.django.DjangoTemplates",
+    "DIRS": [BASE_DIR / "templates"], "APP_DIRS": True,
+    "OPTIONS": {"context_processors": [
+        "django.template.context_processors.debug", "django.template.context_processors.request",
+        "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages",
+    ]},
+}]
 WSGI_APPLICATION = "api.wsgi.application"
 
-# Internationalization
 LANGUAGE_CODE = config("LANGUAGE_CODE", default="en-us")
 TIME_ZONE = config("TIME_ZONE", default="UTC")
 USE_I18N = True
 USE_TZ = True
-
-# Default primary key field type
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
-# Custom user model
 AUTH_USER_MODEL = "users.User"
-
-# Authentication backend for django-tenant-users
-# Reference: https://django-tenant-users.readthedocs.io/en/latest/pages/installation.html
 AUTHENTICATION_BACKENDS = (
-    "users.backends.MultiFieldAuthBackend",  # Multi-field authentication (id_number/username/email)
-    "tenant_users.permissions.backend.UserBackend",  # Tenant-specific permissions
+    "users.backends.MultiFieldAuthBackend",
+    "tenant_users.permissions.backend.UserBackend",
 )
+AUTH_PASSWORD_VALIDATORS = [{
+    "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+    "OPTIONS": {"min_length": 8},
+}]
 
-# Password validation
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-        "OPTIONS": {
-            "min_length": 8,
-        },
-    },
-]
-
-# Static files
-
-# Email configuration
-# -------------------
-# Local (DEBUG): use Gmail SMTP when EMAIL_HOST_USER + EMAIL_HOST_PASSWORD are set.
-#   Leave RESEND_API_KEY empty locally so mail goes through SMTP, not Resend.
-# Production: RESEND_API_KEY (recommended) or SMTP credentials.
 EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 _local_smtp_configured = bool(EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
-
 if DEBUG and _local_smtp_configured:
     email_backend_default = "django.core.mail.backends.smtp.EmailBackend"
 elif DEBUG:
     email_backend_default = "django.core.mail.backends.console.EmailBackend"
 else:
     email_backend_default = "django.core.mail.backends.smtp.EmailBackend"
-
 EMAIL_BACKEND = config("EMAIL_BACKEND", default=email_backend_default)
 if not DEBUG and EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-
-_email_host_default = (
-    "smtp.gmail.com"
-    if DEBUG and _local_smtp_configured
-    else "smtp.resend.com"
-)
+_email_host_default = "smtp.gmail.com" if DEBUG and _local_smtp_configured else "smtp.resend.com"
 EMAIL_HOST = config("EMAIL_HOST", default=_email_host_default)
 EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
-DEFAULT_FROM_EMAIL = config(
-    "DEFAULT_FROM_EMAIL",
-    default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else f"noreply@mail.{APP_ROOT_DOMAIN}",
-)
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default=EMAIL_HOST_USER if DEBUG and _local_smtp_configured else f"noreply@mail.{APP_ROOT_DOMAIN}")
 EMAIL_FROM_NAME = config("EMAIL_FROM_NAME", default="EzySchool")
 ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default=f"admin@{APP_ROOT_DOMAIN}")
 SUPPORT_EMAIL = config("SUPPORT_EMAIL", default=f"support@{APP_ROOT_DOMAIN}")
-
-# Resend API key (production). Ignored in DEBUG when local SMTP is configured.
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
 
-# Frontend integration
 FRONTEND_DOMAIN = config("FRONTEND_DOMAIN", default="http://localhost:3000")
 FRONTEND_USE_SUBDOMAIN = config("FRONTEND_USE_SUBDOMAIN", default=True, cast=bool)
 FRONTEND_DEV_MODE = config("FRONTEND_DEV_MODE", default=True, cast=bool)
 FRONTEND_SUBDOMAIN_BASE = config("FRONTEND_SUBDOMAIN_BASE", default=APP_ROOT_DOMAIN)
 FRONTEND_PASSWORD_RESET_PATH = config("FRONTEND_PASSWORD_RESET_PATH", default="/reset-password")
-
-# Branding for transactional emails
 EMAIL_LOGO_URL = config("EMAIL_LOGO_URL", default="")
-
-# How long (in seconds) a password-reset token stays valid (default: 1 hour)
 PASSWORD_RESET_TIMEOUT = config("PASSWORD_RESET_TIMEOUT", default=3600, cast=int)
+PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS = config("PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS", default=60, cast=int)
 
-# Minimum seconds between password-reset email sends per user
-PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS = config(
-    "PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS",
-    default=60,
-    cast=int,
-)
-
-# Static files
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-
-# Media files
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-# Cache configuration
-# Development: Uses LocMemCache (in-memory)
-# Production: Uses Redis (set USE_REDIS=true and REDIS_URL)
-# Format: redis://[:password]@host:port/db
 USE_REDIS = config("USE_REDIS", default=False, cast=bool)
 REDIS_URL = config("REDIS_URL", default="redis://127.0.0.1:6379/1")
-
 if USE_REDIS and REDIS_URL.startswith("redis://"):
-    CACHES = {
-        "default": {
-            "BACKEND": "django_redis.cache.RedisCache",
-            "LOCATION": REDIS_URL,
-            "TIMEOUT": 300,  # Default cache timeout in seconds (5 minutes)
-            "KEY_PREFIX": "ezyschool",  # Namespace all keys to prevent collisions
-            "OPTIONS": {
-                "CLIENT_CLASS": "django_redis.client.DefaultClient",
-                "CONNECTION_POOL_KWARGS": {
-                    "max_connections": 50,
-                    "retry_on_timeout": True,
-                },
-                "SOCKET_CONNECT_TIMEOUT": 5,
-                "SOCKET_TIMEOUT": 5,
-                "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
-            },
-        }
-    }
+    CACHES = {"default": {
+        "BACKEND": "django_redis.cache.RedisCache", "LOCATION": REDIS_URL, "TIMEOUT": 300,
+        "KEY_PREFIX": "ezyschool",
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient", "CONNECTION_POOL_KWARGS": {"max_connections": 50, "retry_on_timeout": True}, "SOCKET_CONNECT_TIMEOUT": 5, "SOCKET_TIMEOUT": 5, "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor"},
+    }}
 else:
-    # Fallback to in-memory cache for development
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "ezyschool-cache",
-            "TIMEOUT": 300,
-        }
-    }
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "ezyschool-cache", "TIMEOUT": 300}}
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -294,27 +169,13 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = config("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True, cast=bool)
     SECURE_HSTS_PRELOAD = config("SECURE_HSTS_PRELOAD", default=True, cast=bool)
     SECURE_CONTENT_TYPE_NOSNIFF = True
-    SECURE_BROWSER_XSS_FILTER = True
     X_FRAME_OPTIONS = "DENY"
 
-# When True, live payroll/benefit line rows are deleted after mark-paid; revert rebuilds from snapshot.
 DELETE_PAID_LIVE_ROWS = config("DELETE_PAID_LIVE_ROWS", default=True, cast=bool)
-
-# Optional API performance instrumentation (disabled by default).
 API_PERF_METRICS_ENABLED = config("API_PERF_METRICS_ENABLED", default=False, cast=bool)
 API_PERF_METRICS_PATH_PREFIXES = config(
     "API_PERF_METRICS_PATH_PREFIXES",
-    default=(
-        "/api/v1/students/,"
-        "/api/v1/grading/,"
-        "/api/v1/reports/,"
-        "/api/v1/accounting/,"
-        "/api/v1/finance/"
-    ),
-    cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
+    default="/api/v1/students/,/api/v1/grading/,/api/v1/reports/,/api/v1/accounting/,/api/v1/finance/",
+    cast=_csv,
 )
-API_PERF_METRICS_LOG_THRESHOLD_MS = config(
-    "API_PERF_METRICS_LOG_THRESHOLD_MS",
-    default=400,
-    cast=int,
-)
+API_PERF_METRICS_LOG_THRESHOLD_MS = config("API_PERF_METRICS_LOG_THRESHOLD_MS", default=400, cast=int)
