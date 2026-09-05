@@ -9,8 +9,10 @@ from rest_framework import serializers
 from school_website.models import WebsiteSettings
 from school_website.serializers import WebsiteMediaSerializer, WebsiteSectionSerializer
 from school_website.services import (
+    DEFAULT_PAGES,
     public_website_fallback,
     reordered_items,
+    rich_text_document,
     tenant_website_defaults,
 )
 
@@ -102,3 +104,14 @@ class WebsiteContractTests(SimpleTestCase):
             ["hero", "contact", "about"],
         )
         self.assertEqual(original, ["hero", "about", "contact"])
+
+    def test_starter_website_has_a_complete_page_set(self):
+        self.assertEqual(
+            [slug for _title, slug, _page_type in DEFAULT_PAGES],
+            ["home", "about", "academics", "student-life", "admissions", "contact"],
+        )
+
+    def test_starter_copy_uses_the_safe_rich_text_document_shape(self):
+        document = rich_text_document("First paragraph.", "Second paragraph.")
+        self.assertEqual(document["type"], "doc")
+        self.assertEqual([node["tag"] for node in document["content"]], ["p", "p"])

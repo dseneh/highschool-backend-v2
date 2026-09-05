@@ -13,9 +13,30 @@ from school_website.models import (
 DEFAULT_PAGES = (
     ("Home", "home", WebsitePage.PageType.HOME),
     ("About", "about", WebsitePage.PageType.STANDARD),
+    ("Academics", "academics", WebsitePage.PageType.STANDARD),
+    ("Student Life", "student-life", WebsitePage.PageType.STANDARD),
     ("Admissions", "admissions", WebsitePage.PageType.ADMISSIONS),
     ("Contact", "contact", WebsitePage.PageType.CONTACT),
 )
+
+DEFAULT_HERO_IMAGE = "/website-defaults/campus-hero.webp"
+DEFAULT_ACADEMICS_IMAGE = "/website-defaults/science-class.webp"
+DEFAULT_STUDENT_LIFE_IMAGE = "/website-defaults/student-life.webp"
+
+
+def rich_text_document(*paragraphs):
+    return {
+        "type": "doc",
+        "content": [
+            {
+                "type": "element",
+                "tag": "p",
+                "children": [{"type": "text", "text": paragraph}],
+            }
+            for paragraph in paragraphs
+            if paragraph
+        ],
+    }
 
 
 def reordered_items(items, item, target_index):
@@ -115,6 +136,16 @@ def ensure_default_website(*, tenant, user=None):
         )
 
     school_name = defaults["design_tokens"]["school_name"]
+    school_description = defaults["design_tokens"]["description"] or (
+        f"{school_name} is committed to helping every learner grow in knowledge, "
+        "character, confidence, and service."
+    )
+    contact = defaults["contact"]
+    contact_summary = " · ".join(
+        value
+        for value in (contact["address"], contact["phone"], contact["email"])
+        if value
+    )
     WebsiteSection.objects.bulk_create(
         [
             WebsiteSection(
@@ -122,23 +153,202 @@ def ensure_default_website(*, tenant, user=None):
                 block_type="hero",
                 position=0,
                 content={
-                    "eyebrow": "Welcome",
+                    "eyebrow": school_name,
                     "title": defaults["design_tokens"]["slogan"]
-                    or f"Welcome to {school_name}",
-                    "body": defaults["design_tokens"]["description"]
-                    or "A place to learn, belong, and thrive.",
+                    or "Learning today. Leading tomorrow.",
+                    "rich_text": rich_text_document(school_description),
+                    "image_url": DEFAULT_HERO_IMAGE,
+                    "image_alt": f"Students arriving at {school_name}",
+                    "primary_label": "Apply for admission",
+                    "primary_url": "/admissions/apply",
+                    "secondary_label": "Discover our school",
+                    "secondary_url": "/about",
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["home"],
+                block_type="programs",
+                position=1,
+                content={
+                    "title": "An education built for the whole student",
+                    "rich_text": rich_text_document(
+                        "Strong academics, meaningful relationships, and opportunities to "
+                        "lead help students prepare for school, work, and life."
+                    ),
+                    "items": [
+                        {
+                            "title": "Academic excellence",
+                            "description": "Purposeful teaching builds strong foundations, curiosity, and independent thinking.",
+                            "image_url": DEFAULT_ACADEMICS_IMAGE,
+                        },
+                        {
+                            "title": "Character and leadership",
+                            "description": "Students learn responsibility, teamwork, integrity, and service to their community.",
+                            "image_url": DEFAULT_STUDENT_LIFE_IMAGE,
+                        },
+                        {
+                            "title": "A supportive community",
+                            "description": "Families, educators, and students work together so every learner is known and encouraged.",
+                            "image_url": DEFAULT_HERO_IMAGE,
+                        },
+                    ],
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["home"],
+                block_type="admissions",
+                position=2,
+                content={
+                    "title": f"Your journey at {school_name} starts here",
+                    "rich_text": rich_text_document(
+                        "Explore our school, learn what families can expect, and begin an online application when you are ready."
+                    ),
                 },
                 created_by=user,
                 updated_by=user,
             ),
             WebsiteSection(
                 page=pages["about"],
-                block_type="about",
+                block_type="hero",
                 position=0,
                 content={
+                    "eyebrow": "About our school",
                     "title": f"About {school_name}",
-                    "body": defaults["design_tokens"]["description"]
-                    or "Share your school's story, mission, and community.",
+                    "rich_text": rich_text_document(school_description),
+                    "image_url": DEFAULT_HERO_IMAGE,
+                    "image_alt": f"The {school_name} campus community",
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["about"],
+                block_type="mission_vision_values",
+                position=1,
+                content={
+                    "title": "What guides us",
+                    "rich_text": rich_text_document(
+                        "Our shared commitments shape how students learn, how educators teach, and how our community grows together."
+                    ),
+                    "items": [
+                        {
+                            "title": "Mission",
+                            "description": f"To help every {school_name} student learn deeply, act with integrity, and contribute with purpose.",
+                        },
+                        {
+                            "title": "Vision",
+                            "description": "A confident community of lifelong learners prepared to lead positive change.",
+                        },
+                        {
+                            "title": "Values",
+                            "description": "Excellence, respect, responsibility, compassion, and service.",
+                        },
+                    ],
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["academics"],
+                block_type="hero",
+                position=0,
+                content={
+                    "eyebrow": "Academics",
+                    "title": "Learning with purpose",
+                    "rich_text": rich_text_document(
+                        "Students build essential knowledge and practical skills through thoughtful instruction, collaboration, and discovery."
+                    ),
+                    "image_url": DEFAULT_ACADEMICS_IMAGE,
+                    "image_alt": "Students learning together in a science classroom",
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["academics"],
+                block_type="programs",
+                position=1,
+                content={
+                    "title": "A balanced learning experience",
+                    "items": [
+                        {
+                            "title": "Core academics",
+                            "description": "Clear learning goals and strong foundations in language, mathematics, science, and social studies.",
+                        },
+                        {
+                            "title": "Creative development",
+                            "description": "Opportunities for expression, communication, problem-solving, and original thinking.",
+                        },
+                        {
+                            "title": "Life and leadership skills",
+                            "description": "Experiences that strengthen collaboration, confidence, responsibility, and service.",
+                        },
+                    ],
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["student-life"],
+                block_type="hero",
+                position=0,
+                content={
+                    "eyebrow": "Student life",
+                    "title": "A place to belong and grow",
+                    "rich_text": rich_text_document(
+                        "Learning continues beyond the classroom through friendships, activities, teamwork, and service."
+                    ),
+                    "image_url": DEFAULT_STUDENT_LIFE_IMAGE,
+                    "image_alt": "Students enjoying an outdoor school activity",
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["student-life"],
+                block_type="gallery",
+                position=1,
+                content={
+                    "title": "Life in our community",
+                    "items": [
+                        {
+                            "url": DEFAULT_HERO_IMAGE,
+                            "alt": "Students walking together on campus",
+                            "caption": "A welcoming school community",
+                        },
+                        {
+                            "url": DEFAULT_ACADEMICS_IMAGE,
+                            "alt": "Students conducting a classroom experiment",
+                            "caption": "Curiosity in action",
+                        },
+                        {
+                            "url": DEFAULT_STUDENT_LIFE_IMAGE,
+                            "alt": "Students playing football outdoors",
+                            "caption": "Teamwork beyond the classroom",
+                        },
+                    ],
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["admissions"],
+                block_type="hero",
+                position=0,
+                content={
+                    "eyebrow": "Admissions",
+                    "title": f"Join the {school_name} community",
+                    "rich_text": rich_text_document(
+                        "We want the application process to be clear and welcoming. Start online, track your request, and communicate with the school in one place."
+                    ),
+                    "image_url": DEFAULT_HERO_IMAGE,
+                    "image_alt": f"Students at {school_name}",
+                    "primary_label": "Start your application",
+                    "primary_url": "/admissions/apply",
                 },
                 created_by=user,
                 updated_by=user,
@@ -146,10 +356,37 @@ def ensure_default_website(*, tenant, user=None):
             WebsiteSection(
                 page=pages["admissions"],
                 block_type="admissions",
-                position=0,
+                position=1,
                 content={
-                    "title": "Admissions",
-                    "body": "Learn how to join our school community.",
+                    "title": "A simple application process",
+                    "rich_text": rich_text_document(
+                        "Choose the appropriate admission cycle, complete the student and guardian information, upload any requested documents, and submit your application.",
+                        "You will receive a request ID so you can securely follow progress and respond if the school needs more information.",
+                    ),
+                },
+                created_by=user,
+                updated_by=user,
+            ),
+            WebsiteSection(
+                page=pages["admissions"],
+                block_type="faq",
+                position=2,
+                content={
+                    "title": "Admissions questions",
+                    "items": [
+                        {
+                            "question": "How do I begin?",
+                            "answer": "Select Start your application and follow the guided online steps.",
+                        },
+                        {
+                            "question": "Can returning students register online?",
+                            "answer": "Yes. Sign in to the school portal and choose the returning-student registration option.",
+                        },
+                        {
+                            "question": "How will I receive updates?",
+                            "answer": "Use your request workspace to view status changes, messages, and information requests from the school.",
+                        },
+                    ],
                 },
                 created_by=user,
                 updated_by=user,
@@ -160,7 +397,11 @@ def ensure_default_website(*, tenant, user=None):
                 position=0,
                 content={
                     "title": "Contact us",
-                    "body": "We would be glad to hear from you.",
+                    "rich_text": rich_text_document(
+                        f"We would be glad to hear from you. {contact_summary}"
+                        if contact_summary
+                        else "We would be glad to hear from you. Contact the school office for assistance."
+                    ),
                 },
                 created_by=user,
                 updated_by=user,
