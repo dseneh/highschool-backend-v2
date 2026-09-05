@@ -2,6 +2,7 @@ from django.db import transaction
 from django.db.models import Max, Prefetch
 from django.utils import timezone
 
+from core.utils import resolve_tenant_logo_media_url
 from school_website.models import (
     WebsiteNavigationItem,
     WebsitePage,
@@ -73,7 +74,10 @@ def tenant_website_defaults(tenant):
         ("colors", "primary"),
         ("palette", "primary"),
     )
-    logo = tenant.logo.url if getattr(tenant, "logo", None) else ""
+    # Tenant logos live in the public media namespace. Resolving ``logo.url``
+    # directly while the tenant schema is active can incorrectly add a second
+    # tenant prefix, leaving otherwise valid logos broken on the public site.
+    logo = resolve_tenant_logo_media_url(getattr(tenant, "logo", None)) or ""
     address = ", ".join(
         str(value).strip()
         for value in (

@@ -1,5 +1,6 @@
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
@@ -72,6 +73,36 @@ class WebsiteContractTests(SimpleTestCase):
         self.assertEqual(defaults["design_tokens"]["primary_color"], "#123456")
         self.assertEqual(
             defaults["contact"]["address"], "1 Main Street, Monrovia, Liberia"
+        )
+
+    def test_tenant_logo_uses_public_media_url_resolver(self):
+        logo = SimpleNamespace(name="tenants/example/logo/crest.png")
+        tenant = SimpleNamespace(
+            name="Example Academy",
+            short_name="EA",
+            slogan="Learn well",
+            description="A community school.",
+            theme_color="#123456",
+            theme_config={},
+            logo=logo,
+            email="hello@example.test",
+            phone="123",
+            address="1 Main Street",
+            city="Monrovia",
+            state="",
+            country="Liberia",
+            postal_code="",
+        )
+        with patch(
+            "school_website.services.resolve_tenant_logo_media_url",
+            return_value="https://media.example.test/public/tenants/example/logo/crest.png",
+        ) as resolver:
+            defaults = tenant_website_defaults(tenant)
+
+        resolver.assert_called_once_with(logo)
+        self.assertEqual(
+            defaults["design_tokens"]["logo_url"],
+            "https://media.example.test/public/tenants/example/logo/crest.png",
         )
 
     def test_disabled_website_has_minimal_public_fallback(self):
