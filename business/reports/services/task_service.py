@@ -69,13 +69,13 @@ def generate_cache_key(query_params: Dict[str, Any]) -> str:
         query_params: Dictionary of query parameters
         
     Returns:
-        str: MD5 hash of sorted parameters
+        str: SHA-256 hash of sorted parameters
     """
     # Sort params for consistent cache keys
     sorted_params = sorted(query_params.items())
     params_str = json.dumps(sorted_params, default=str)
     
-    return hashlib.md5(params_str.encode()).hexdigest()
+    return hashlib.sha256(params_str.encode()).hexdigest()
 
 
 def build_cache_key_from_request(query_params: Dict[str, Any]) -> str:

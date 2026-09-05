@@ -2,8 +2,9 @@ import base64
 import os
 
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.decrepit.ciphers.modes import CFB
 from django.test import SimpleTestCase, override_settings
 
 from common.crypto import decrypt_text, encrypt_text
@@ -42,7 +43,7 @@ class CryptoSecurityTests(SimpleTestCase):
     def test_legacy_cfb_envelope_remains_readable(self):
         key = base64.b64decode(TEST_KEY)
         iv = os.urandom(16)
-        cipher = Cipher(algorithms.AES(key), modes.CFB(iv))
+        cipher = Cipher(algorithms.AES(key), CFB(iv))
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(b"legacy-value") + encryptor.finalize()
         envelope = {

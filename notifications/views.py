@@ -1,4 +1,4 @@
-from hashlib import sha1
+from hashlib import sha256
 
 from django.db.models import Count, Max, Q
 from django.utils import timezone
@@ -64,7 +64,7 @@ def _build_etag(version_tuple, *extras):
         str(unread),
     ]
     parts.extend(str(x) for x in extras)
-    return sha1("|".join(parts).encode("utf-8")).hexdigest()
+    return sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def _maybe_304(request, etag):

@@ -1,3 +1,6 @@
+from unittest.mock import patch
+
+from django.core.cache import cache
 from django.test import SimpleTestCase
 from rest_framework.test import APIRequestFactory
 
@@ -6,6 +9,7 @@ from api.throttling import SensitiveEndpointRateThrottle
 
 class SensitiveEndpointRateThrottleTests(SimpleTestCase):
     def setUp(self):
+        cache.clear()
         self.factory = APIRequestFactory()
         self.throttle = SensitiveEndpointRateThrottle()
 
@@ -33,3 +37,16 @@ class SensitiveEndpointRateThrottleTests(SimpleTestCase):
     def test_regular_api_route_has_no_sensitive_scope(self):
         request = self.factory.get("/api/v1/students/")
         self.assertIsNone(self.throttle.get_scope(request))
+
+    def test_sensitive_route_enforces_configured_limit(self):
+        request = self.factory.post("/api/v1/auth/login/", {}, REMOTE_ADDR="192.0.2.10")
+        rates = {**self.throttle.THROTTLE_RATES, "login": "2/min"}
+
+        with patch.object(SensitiveEndpointRateThrottle, "THROTTLE_RATES", rates):
+            self.assertTrue(self.throttle.allow_request(request, None))
+            self.assertTrue(SensitiveEndpointRateThrottle().allow_request(request, None))
+            self.assertFalse(SensitiveEndpointRateThrottle().allow_request(request, None))
+
+    def test_regular_route_is_not_recorded_by_sensitive_throttle(self):
+        request = self.factory.get("/api/v1/students/", REMOTE_ADDR="192.0.2.11")
+        self.assertTrue(self.throttle.allow_request(request, None))

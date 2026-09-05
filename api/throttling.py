@@ -14,6 +14,14 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
         "/api/v1/public/schools/": "public_search",
     }
 
+    def __init__(self):
+        # The scope is selected from the request path, so it is not available
+        # when SimpleRateThrottle.__init__ normally resolves the rate.
+        self.scope = None
+        self.rate = None
+        self.num_requests = None
+        self.duration = None
+
     def get_scope(self, request):
         path = request.path if request.path.endswith("/") else f"{request.path}/"
         return self.ROUTE_SCOPES.get(path)

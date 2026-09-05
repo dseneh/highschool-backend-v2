@@ -8,8 +8,9 @@ legacy AES-CFB. New writes never use CFB.
 import base64
 import os
 
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.decrepit.ciphers.modes import CFB
 from django.conf import settings
 
 
@@ -56,6 +57,6 @@ def decrypt_text(envelope: dict, *, associated_data: bytes | None = None) -> str
     # Legacy AES-CFB envelope: 16-byte {iv, data}. Read-only compatibility.
     if len(raw_nonce_or_iv) != 16:
         raise ValueError("Unsupported encrypted envelope")
-    cipher = Cipher(algorithms.AES(_key()), modes.CFB(raw_nonce_or_iv))
+    cipher = Cipher(algorithms.AES(_key()), CFB(raw_nonce_or_iv))
     decryptor = cipher.decryptor()
     return (decryptor.update(ciphertext) + decryptor.finalize()).decode("utf-8")
