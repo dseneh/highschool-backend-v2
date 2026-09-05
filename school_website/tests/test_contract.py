@@ -8,7 +8,11 @@ from rest_framework import serializers
 
 from school_website.models import WebsiteSettings
 from school_website.serializers import WebsiteMediaSerializer, WebsiteSectionSerializer
-from school_website.services import public_website_fallback, tenant_website_defaults
+from school_website.services import (
+    public_website_fallback,
+    reordered_items,
+    tenant_website_defaults,
+)
 
 
 class WebsiteContractTests(SimpleTestCase):
@@ -90,3 +94,11 @@ class WebsiteContractTests(SimpleTestCase):
         self.assertFalse(fallback["published"])
         self.assertEqual(fallback["pages"], [])
         self.assertEqual(fallback["design_tokens"]["primary_color"], "#654321")
+
+    def test_sections_can_be_reordered_without_mutating_input(self):
+        original = ["hero", "about", "contact"]
+        self.assertEqual(
+            reordered_items(original, "contact", 1),
+            ["hero", "contact", "about"],
+        )
+        self.assertEqual(original, ["hero", "about", "contact"])

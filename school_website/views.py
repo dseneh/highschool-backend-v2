@@ -1,6 +1,7 @@
+from django.db import transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
@@ -28,6 +29,7 @@ from school_website.services import (
     public_website_fallback,
     publish_website,
     published_website_snapshot,
+    reordered_items,
 )
 
 
@@ -129,6 +131,7 @@ class WebsiteOwnedModelViewSet(WebsiteFeatureRequiredMixin, viewsets.ModelViewSe
         "update": "website.manage",
         "partial_update": "website.manage",
         "destroy": "website.manage",
+        "move": "website.manage",
     }
 
     def perform_create(self, serializer):
@@ -146,6 +149,38 @@ class WebsitePageViewSet(WebsiteOwnedModelViewSet):
 class WebsiteSectionViewSet(WebsiteOwnedModelViewSet):
     queryset = WebsiteSection.objects.select_related("page").all()
     serializer_class = WebsiteSectionSerializer
+
+    @action(detail=True, methods=["post"])
+    def move(self, request, pk=None):
+        try:
+            target_index = int(request.data.get("target_index"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"target_index": "Enter a valid position."}) from exc
+
+        section = self.get_object()
+        with transaction.atomic():
+            section = WebsiteSection.objects.select_for_update().get(pk=section.pk)
+            sections = list(
+                WebsiteSection.objects.select_for_update()
+                .filter(page_id=section.page_id)
+                .order_by("position", "created_at")
+            )
+            ordered = reordered_items(sections, section, target_index)
+            temporary_start = max(item.position for item in ordered) + len(ordered) + 1
+            if temporary_start + len(ordered) >= 32767:
+                raise ValidationError(
+                    {"target_index": "This page has too many sections to reorder."}
+                )
+            for index, item in enumerate(ordered):
+                item.position = temporary_start + index
+            WebsiteSection.objects.bulk_update(ordered, ["position"])
+            for index, item in enumerate(ordered):
+                item.position = index
+            WebsiteSection.objects.bulk_update(ordered, ["position"])
+
+        return Response(
+            [{"id": item.id, "position": item.position} for item in ordered]
+        )
 
 
 class WebsiteNavigationViewSet(WebsiteOwnedModelViewSet):

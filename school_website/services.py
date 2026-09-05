@@ -18,6 +18,17 @@ DEFAULT_PAGES = (
 )
 
 
+def reordered_items(items, item, target_index):
+    ordered = list(items)
+    current_index = ordered.index(item)
+    bounded_index = max(0, min(target_index, len(ordered) - 1))
+    if current_index == bounded_index:
+        return ordered
+    ordered.pop(current_index)
+    ordered.insert(bounded_index, item)
+    return ordered
+
+
 def _nested_value(data, *paths):
     for path in paths:
         value = data
