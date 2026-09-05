@@ -123,6 +123,13 @@ class DisciplineViewContractTests(SimpleTestCase):
             discipline_module.StudentDisciplinaryActionDetailView,
             "get_object",
             return_value=record,
+        ), patch.object(
+            discipline_module,
+            "user_can_access_student_for_permission",
+            return_value=True,
+        ), patch.object(
+            discipline_module,
+            "_ensure_currently_enrolled_for_discipline",
         ):
             response = view.put(request, "record-1")
 
@@ -159,6 +166,13 @@ class DisciplineViewContractTests(SimpleTestCase):
             discipline_module.StudentDisciplinaryActionDetailView,
             "get_object",
             return_value=record,
+        ), patch.object(
+            discipline_module,
+            "user_can_access_student_for_permission",
+            return_value=True,
+        ), patch.object(
+            discipline_module,
+            "_ensure_currently_enrolled_for_discipline",
         ), patch.object(
             discipline_module,
             "StudentDisciplinaryActionSerializer",
@@ -205,6 +219,13 @@ class DisciplineViewContractTests(SimpleTestCase):
             discipline_module.StudentDisciplinaryActionDetailView,
             "get_object",
             return_value=record,
+        ), patch.object(
+            discipline_module,
+            "user_can_access_student_for_permission",
+            return_value=True,
+        ), patch.object(
+            discipline_module,
+            "_ensure_currently_enrolled_for_discipline",
         ), patch.object(
             discipline_module,
             "StudentDisciplinaryActionSerializer",
