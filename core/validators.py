@@ -4,9 +4,11 @@ Validators for core app
 
 import os
 from django.core.exceptions import ValidationError
+from django.utils.deconstruct import deconstructible
 from PIL import Image
 
 
+@deconstructible
 class ValidateImageFile:
     """
     Validator for image file uploads.
@@ -31,4 +33,3 @@ class ValidateImageFile:
 
         if file.size > self.max_size:
             raise ValidationError("Image file too large (max 5MB).")
-
