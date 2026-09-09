@@ -6,7 +6,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.files import File
-from django.core.files.storage import default_storage
+from django.core.files.storage import storages
 from django.db import connection, transaction
 from django.utils import timezone
 
@@ -48,10 +48,7 @@ def _sha256(path):
 
 
 def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.BackupType.MANUAL):
-    """Create a backup request while preventing concurrent jobs for one tenant."""
     with transaction.atomic():
-        # Serialize request creation against the tenant row. This is database
-        # backed and works across multiple web/worker replicas.
         tenant.__class__.objects.select_for_update().get(pk=tenant.pk)
         if TenantBackup.objects.filter(tenant=tenant, status__in=ACTIVE_STATUSES).exists():
             raise BackupError("A backup is already in progress for this tenant.")
@@ -64,12 +61,7 @@ def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.Backup
 
 
 def run_backup(backup_id):
-    """Run one tenant schema backup synchronously.
-
-    Intended to be called by a worker/management command. It deliberately does
-    not accept a schema name; the authoritative schema is resolved from the
-    backup's tenant relation immediately before pg_dump.
-    """
+    """Run a queued schema backup. Never accepts a caller-supplied schema."""
     backup = TenantBackup.objects.select_related("tenant").get(pk=backup_id)
     if backup.status != TenantBackup.Status.QUEUED:
         raise BackupError(f"Backup {backup.id} is not queued (status={backup.status}).")
@@ -85,6 +77,7 @@ def run_backup(backup_id):
         raise BackupError(backup.error_message)
 
     db, env = _database_environment()
+    backup_storage = storages["backups"]
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(prefix=f"ezyschool-{backup.id}-", suffix=".dump", delete=False) as tmp:
@@ -93,14 +86,7 @@ def run_backup(backup_id):
         backup.status = TenantBackup.Status.BACKING_UP
         backup.save(update_fields=["status", "updated_at"])
 
-        command = [
-            "pg_dump",
-            "--format=custom",
-            "--no-owner",
-            "--no-privileges",
-            "--schema", schema_name,
-            "--file", str(temp_path),
-        ]
+        command = ["pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--schema", schema_name, "--file", str(temp_path)]
         if db.get("HOST"):
             command.extend(["--host", str(db["HOST"])])
         if db.get("PORT"):
@@ -109,7 +95,7 @@ def run_backup(backup_id):
             command.extend(["--username", str(db["USER"])])
         command.append(str(db["NAME"]))
 
-        result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=getattr(settings, "TENANT_BACKUP_TIMEOUT_SECONDS", 1800))
+        result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=settings.TENANT_BACKUP_TIMEOUT_SECONDS)
         if result.returncode != 0:
             raise BackupError((result.stderr or "pg_dump failed").strip()[-4000:])
         if not temp_path.exists() or temp_path.stat().st_size == 0:
@@ -122,15 +108,15 @@ def run_backup(backup_id):
         backup.status = TenantBackup.Status.UPLOADING
         backup.save(update_fields=["status", "updated_at"])
         with open(temp_path, "rb") as stream:
-            saved_key = default_storage.save(storage_key, File(stream))
+            saved_key = backup_storage.save(storage_key, File(stream))
 
         backup.status = TenantBackup.Status.VERIFYING
         backup.storage_key = saved_key
         backup.save(update_fields=["status", "storage_key", "updated_at"])
 
-        remote_size = default_storage.size(saved_key)
+        remote_size = backup_storage.size(saved_key)
         if remote_size != file_size:
-            default_storage.delete(saved_key)
+            backup_storage.delete(saved_key)
             raise BackupError(f"Backup verification failed: uploaded size {remote_size} != local size {file_size}.")
 
         with connection.cursor() as cursor:
@@ -138,16 +124,13 @@ def run_backup(backup_id):
             postgres_version = cursor.fetchone()[0]
 
         backup.status = TenantBackup.Status.AVAILABLE
-        backup.storage_provider = "s3" if getattr(settings, "USE_S3_STORAGE", False) else "filesystem"
+        backup.storage_provider = "s3" if settings.USE_S3_STORAGE else "filesystem"
         backup.file_size = file_size
         backup.sha256 = checksum
         backup.postgres_version = postgres_version
         backup.application_version = getattr(settings, "APP_VERSION", "")
         backup.completed_at = timezone.now()
-        backup.save(update_fields=[
-            "status", "storage_provider", "storage_key", "file_size", "sha256",
-            "postgres_version", "application_version", "completed_at", "updated_at",
-        ])
+        backup.save(update_fields=["status", "storage_provider", "storage_key", "file_size", "sha256", "postgres_version", "application_version", "completed_at", "updated_at"])
         return backup
     except Exception as exc:
         _fail(backup, str(exc))
