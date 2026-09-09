@@ -203,7 +203,11 @@ def recover_stale_backups(*, now=None):
 def purge_expired_backups(*, now=None):
     now = now or timezone.now()
     storage = storages["backups"]
-    expired = list(TenantBackup.objects.filter(status=TenantBackup.Status.AVAILABLE, expires_at__isnull=False, expires_at__lte=now))
+    expired = list(TenantBackup.objects.filter(
+        status__in=[TenantBackup.Status.AVAILABLE, TenantBackup.Status.DELETING],
+        expires_at__isnull=False,
+        expires_at__lte=now,
+    ))
     deleted = []
     for backup in expired:
         backup.status = TenantBackup.Status.DELETING
@@ -212,12 +216,15 @@ def purge_expired_backups(*, now=None):
             if backup.storage_key and storage.exists(backup.storage_key):
                 storage.delete(backup.storage_key)
         except Exception as exc:
-            _fail(backup, f"Failed to remove expired backup object: {exc}")
+            backup.status = TenantBackup.Status.AVAILABLE
+            backup.error_message = f"Retention cleanup failed and will be retried: {exc}"[:8000]
+            backup.save(update_fields=["status", "error_message", "updated_at"])
             continue
         backup.status = TenantBackup.Status.DELETED
         backup.deleted_at = timezone.now()
         backup.storage_key = ""
-        backup.save(update_fields=["status", "deleted_at", "storage_key", "updated_at"])
+        backup.error_message = ""
+        backup.save(update_fields=["status", "deleted_at", "storage_key", "error_message", "updated_at"])
         deleted.append(backup)
     return deleted
 
