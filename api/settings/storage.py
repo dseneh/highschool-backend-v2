@@ -10,6 +10,7 @@ ACCOUNTING_ATTACHMENT_UPLOAD_PREFIX = config("ACCOUNTING_ATTACHMENT_UPLOAD_PREFI
 
 USE_S3_STORAGE = config("USE_S3_STORAGE", default=False, cast=bool)
 PRIVATE_FILE_URL_EXPIRY_SECONDS = config("PRIVATE_FILE_URL_EXPIRY_SECONDS", default=300, cast=int)
+TENANT_BACKUP_TIMEOUT_SECONDS = config("TENANT_BACKUP_TIMEOUT_SECONDS", default=1800, cast=int)
 
 if USE_S3_STORAGE:
     bucket_name = config("R2_BUCKET", default=config("AWS_STORAGE_BUCKET_NAME", default=""))
@@ -27,6 +28,11 @@ if USE_S3_STORAGE:
     if missing:
         raise ImproperlyConfigured(f"Object storage is enabled but required settings are missing: {', '.join(missing)}")
 
+    backup_bucket = config("R2_BACKUP_BUCKET", default=bucket_name)
+    backup_access_key = config("R2_BACKUP_ACCESS_KEY_ID", default=access_key)
+    backup_secret_key = config("R2_BACKUP_SECRET_ACCESS_KEY", default=secret_key)
+    backup_endpoint = config("R2_BACKUP_S3_ENDPOINT", default=endpoint_url)
+
     STORAGES = {
         "default": {
             "BACKEND": "core.storage.TenantAwareS3Storage",
@@ -35,6 +41,20 @@ if USE_S3_STORAGE:
                 "access_key": access_key,
                 "secret_key": secret_key,
                 "endpoint_url": endpoint_url,
+                "region_name": region_name,
+                "file_overwrite": False,
+                "default_acl": None,
+                "querystring_auth": True,
+                "querystring_expire": PRIVATE_FILE_URL_EXPIRY_SECONDS,
+            },
+        },
+        "backups": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": backup_bucket,
+                "access_key": backup_access_key,
+                "secret_key": backup_secret_key,
+                "endpoint_url": backup_endpoint,
                 "region_name": region_name,
                 "file_overwrite": False,
                 "default_acl": None,
@@ -57,5 +77,6 @@ if USE_S3_STORAGE:
 else:
     STORAGES = {
         "default": {"BACKEND": "django_tenants.files.storage.TenantFileSystemStorage"},
+        "backups": {"BACKEND": "django.core.files.storage.FileSystemStorage", "OPTIONS": {"location": str(__import__("pathlib").Path(BASE_DIR) / "backups-data")}},
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
