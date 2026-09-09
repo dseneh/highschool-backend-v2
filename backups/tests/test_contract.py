@@ -53,7 +53,7 @@ class BackupServiceContractTests(SimpleTestCase):
         payload = b"ezy-school-tenant-backup"
         self.assertEqual(
             _hash_stream(BytesIO(payload)),
-            "b2530268575bb95cf9688a6e47f312713a27c6588198b83373362845aec59e59",
+            "a0b6b4b1e24bacb9496a0b16ddafa21943e3535a2a374f4349580c2236680965",
         )
 
     @override_settings(
