@@ -1,8 +1,11 @@
 """Multi-tenant storage configuration for local and S3-compatible object storage."""
 
+from pathlib import Path
+
 from django.core.exceptions import ImproperlyConfigured
 from decouple import config
 
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES = config("ACCOUNTING_ATTACHMENT_MAX_FILE_SIZE_BYTES", default=10 * 1024 * 1024, cast=int)
 ACCOUNTING_ATTACHMENT_ALLOWED_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"]
 ACCOUNTING_ATTACHMENT_ALLOWED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif"]
@@ -34,34 +37,8 @@ if USE_S3_STORAGE:
     backup_endpoint = config("R2_BACKUP_S3_ENDPOINT", default=endpoint_url)
 
     STORAGES = {
-        "default": {
-            "BACKEND": "core.storage.TenantAwareS3Storage",
-            "OPTIONS": {
-                "bucket_name": bucket_name,
-                "access_key": access_key,
-                "secret_key": secret_key,
-                "endpoint_url": endpoint_url,
-                "region_name": region_name,
-                "file_overwrite": False,
-                "default_acl": None,
-                "querystring_auth": True,
-                "querystring_expire": PRIVATE_FILE_URL_EXPIRY_SECONDS,
-            },
-        },
-        "backups": {
-            "BACKEND": "storages.backends.s3.S3Storage",
-            "OPTIONS": {
-                "bucket_name": backup_bucket,
-                "access_key": backup_access_key,
-                "secret_key": backup_secret_key,
-                "endpoint_url": backup_endpoint,
-                "region_name": region_name,
-                "file_overwrite": False,
-                "default_acl": None,
-                "querystring_auth": True,
-                "querystring_expire": PRIVATE_FILE_URL_EXPIRY_SECONDS,
-            },
-        },
+        "default": {"BACKEND": "core.storage.TenantAwareS3Storage", "OPTIONS": {"bucket_name": bucket_name, "access_key": access_key, "secret_key": secret_key, "endpoint_url": endpoint_url, "region_name": region_name, "file_overwrite": False, "default_acl": None, "querystring_auth": True, "querystring_expire": PRIVATE_FILE_URL_EXPIRY_SECONDS}},
+        "backups": {"BACKEND": "storages.backends.s3.S3Storage", "OPTIONS": {"bucket_name": backup_bucket, "access_key": backup_access_key, "secret_key": backup_secret_key, "endpoint_url": backup_endpoint, "region_name": region_name, "file_overwrite": False, "default_acl": None, "querystring_auth": True, "querystring_expire": PRIVATE_FILE_URL_EXPIRY_SECONDS}},
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
 
@@ -77,6 +54,6 @@ if USE_S3_STORAGE:
 else:
     STORAGES = {
         "default": {"BACKEND": "django_tenants.files.storage.TenantFileSystemStorage"},
-        "backups": {"BACKEND": "django.core.files.storage.FileSystemStorage", "OPTIONS": {"location": str(__import__("pathlib").Path(BASE_DIR) / "backups-data")}},
+        "backups": {"BACKEND": "django.core.files.storage.FileSystemStorage", "OPTIONS": {"location": str(BASE_DIR / "backups-data")}},
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
