@@ -2,6 +2,7 @@ import hashlib
 import os
 import subprocess
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 from django.conf import settings
@@ -11,6 +12,7 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from backups.models import TenantBackup
+from core.models import Tenant
 
 
 ACTIVE_STATUSES = {
@@ -20,6 +22,7 @@ ACTIVE_STATUSES = {
     TenantBackup.Status.UPLOADING,
     TenantBackup.Status.VERIFYING,
 }
+RUNNING_STATUSES = ACTIVE_STATUSES - {TenantBackup.Status.QUEUED}
 
 
 class BackupError(RuntimeError):
@@ -47,16 +50,31 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+def _retention_days(backup_type):
+    mapping = {
+        TenantBackup.BackupType.MANUAL: settings.TENANT_BACKUP_RETENTION_MANUAL_DAYS,
+        TenantBackup.BackupType.SCHEDULED: settings.TENANT_BACKUP_RETENTION_SCHEDULED_DAYS,
+        TenantBackup.BackupType.PRE_RESTORE: settings.TENANT_BACKUP_RETENTION_PRE_RESTORE_DAYS,
+        TenantBackup.BackupType.SYSTEM: settings.TENANT_BACKUP_RETENTION_SYSTEM_DAYS,
+    }
+    return max(0, int(mapping[backup_type]))
+
+
 def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.BackupType.MANUAL):
     with transaction.atomic():
-        tenant.__class__.objects.select_for_update().get(pk=tenant.pk)
+        tenant = tenant.__class__.objects.select_for_update().get(pk=tenant.pk)
+        if not tenant.schema_name or tenant.schema_name == "public":
+            raise BackupError("Refusing to queue a tenant backup for an invalid/public schema.")
         if TenantBackup.objects.filter(tenant=tenant, status__in=ACTIVE_STATUSES).exists():
             raise BackupError("A backup is already in progress for this tenant.")
+        retention_days = _retention_days(backup_type)
+        expires_at = timezone.now() + timedelta(days=retention_days) if retention_days else None
         return TenantBackup.objects.create(
             tenant=tenant,
             schema_name=tenant.schema_name,
             backup_type=backup_type,
             requested_by=requested_by,
+            expires_at=expires_at,
         )
 
 
@@ -147,6 +165,61 @@ def run_backup(backup_id):
     finally:
         if temp_path:
             temp_path.unlink(missing_ok=True)
+
+
+def queue_due_scheduled_backups(*, now=None):
+    if not settings.TENANT_BACKUP_SCHEDULE_ENABLED:
+        return []
+    now = now or timezone.now()
+    cutoff = now - timedelta(hours=max(1, settings.TENANT_BACKUP_SCHEDULE_INTERVAL_HOURS))
+    queued = []
+    for tenant in Tenant.objects.exclude(schema_name="public").filter(active=True).iterator():
+        if TenantBackup.objects.filter(tenant=tenant, status__in=ACTIVE_STATUSES).exists():
+            continue
+        recent = TenantBackup.objects.filter(
+            tenant=tenant,
+            backup_type=TenantBackup.BackupType.SCHEDULED,
+            status=TenantBackup.Status.AVAILABLE,
+            completed_at__gt=cutoff,
+        ).exists()
+        if recent:
+            continue
+        try:
+            queued.append(request_backup(tenant=tenant, backup_type=TenantBackup.BackupType.SCHEDULED))
+        except BackupError:
+            continue
+    return queued
+
+
+def recover_stale_backups(*, now=None):
+    now = now or timezone.now()
+    cutoff = now - timedelta(minutes=max(1, settings.TENANT_BACKUP_STALE_MINUTES))
+    stale = list(TenantBackup.objects.filter(status__in=RUNNING_STATUSES, updated_at__lt=cutoff))
+    for backup in stale:
+        _fail(backup, "Backup job exceeded the stale-job threshold and was marked failed for operator review.")
+    return stale
+
+
+def purge_expired_backups(*, now=None):
+    now = now or timezone.now()
+    storage = storages["backups"]
+    expired = list(TenantBackup.objects.filter(status=TenantBackup.Status.AVAILABLE, expires_at__isnull=False, expires_at__lte=now))
+    deleted = []
+    for backup in expired:
+        backup.status = TenantBackup.Status.DELETING
+        backup.save(update_fields=["status", "updated_at"])
+        try:
+            if backup.storage_key and storage.exists(backup.storage_key):
+                storage.delete(backup.storage_key)
+        except Exception as exc:
+            _fail(backup, f"Failed to remove expired backup object: {exc}")
+            continue
+        backup.status = TenantBackup.Status.DELETED
+        backup.deleted_at = timezone.now()
+        backup.storage_key = ""
+        backup.save(update_fields=["status", "deleted_at", "storage_key", "updated_at"])
+        deleted.append(backup)
+    return deleted
 
 
 def _fail(backup, message):
