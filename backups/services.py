@@ -42,12 +42,21 @@ def _storage_key(backup):
     return f"tenants/{backup.tenant_id}/{now:%Y/%m}/{backup.id}.dump"
 
 
-def _sha256(path):
+def _hash_stream(stream):
     digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256(path):
+    with open(path, "rb") as stream:
+        return _hash_stream(stream)
+
+
+def _storage_sha256(storage, key):
+    with storage.open(key, "rb") as stream:
+        return _hash_stream(stream)
 
 
 def _retention_days(backup_type):
@@ -145,6 +154,10 @@ def run_backup(backup_id):
         if remote_size != file_size:
             backup_storage.delete(saved_key)
             raise BackupError(f"Backup verification failed: uploaded size {remote_size} != local size {file_size}.")
+        remote_checksum = _storage_sha256(backup_storage, saved_key)
+        if remote_checksum != checksum:
+            backup_storage.delete(saved_key)
+            raise BackupError("Backup verification failed: uploaded SHA-256 does not match the local dump.")
 
         with connection.cursor() as cursor:
             cursor.execute("SHOW server_version")
