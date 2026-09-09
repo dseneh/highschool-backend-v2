@@ -61,16 +61,25 @@ def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.Backup
 
 
 def run_backup(backup_id):
-    """Run a queued schema backup. Never accepts a caller-supplied schema."""
+    """Run one queued schema backup and atomically claim it for this worker."""
+    started_at = timezone.now()
+    claimed = TenantBackup.objects.filter(
+        pk=backup_id,
+        status=TenantBackup.Status.QUEUED,
+    ).update(
+        status=TenantBackup.Status.PREPARING,
+        started_at=started_at,
+        error_message="",
+        updated_at=started_at,
+    )
+    if claimed != 1:
+        try:
+            current_status = TenantBackup.objects.only("status").get(pk=backup_id).status
+        except TenantBackup.DoesNotExist as exc:
+            raise BackupError(f"Backup {backup_id} does not exist.") from exc
+        raise BackupError(f"Backup {backup_id} is not queued (status={current_status}).")
+
     backup = TenantBackup.objects.select_related("tenant").get(pk=backup_id)
-    if backup.status != TenantBackup.Status.QUEUED:
-        raise BackupError(f"Backup {backup.id} is not queued (status={backup.status}).")
-
-    backup.status = TenantBackup.Status.PREPARING
-    backup.started_at = timezone.now()
-    backup.error_message = ""
-    backup.save(update_fields=["status", "started_at", "error_message", "updated_at"])
-
     schema_name = backup.tenant.schema_name
     if not schema_name or schema_name == "public":
         _fail(backup, "Refusing to create a tenant backup for an invalid/public schema.")
