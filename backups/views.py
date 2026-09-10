@@ -7,13 +7,21 @@ from rest_framework.response import Response
 
 from authorization.drf import RBACPermission
 from backups.models import TenantBackup, TenantRestoreRequest
-from backups.restore_services import RestoreError, refresh_restore_readiness, request_restore
+from backups.restore_services import (
+    RestoreError,
+    approve_restore,
+    refresh_restore_readiness,
+    reject_restore,
+    request_restore,
+)
 from backups.serializers import (
+    RestoreDecisionSerializer,
     RestoreRequestCreateSerializer,
     TenantBackupSerializer,
     TenantRestoreRequestSerializer,
 )
 from backups.services import BackupError, request_backup
+from common.permissions import IsSuperAdmin
 from core.models import Tenant
 
 
@@ -30,8 +38,6 @@ class TenantContextMixin:
 
 
 class TenantBackupViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
-    """Tenant-admin backup history, ad hoc backup requests, and restore requests."""
-
     serializer_class = TenantBackupSerializer
     permission_classes = [RBACPermission]
     permission_map = {
@@ -105,14 +111,9 @@ class TenantBackupViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
 
 
 class TenantRestoreRequestViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
-    """Read-only tenant view of restore requests and their safety-backup readiness."""
-
     serializer_class = TenantRestoreRequestSerializer
     permission_classes = [RBACPermission]
-    permission_map = {
-        "list": "backups.view",
-        "retrieve": "backups.view",
-    }
+    permission_map = {"list": "backups.view", "retrieve": "backups.view"}
     http_method_names = ["get", "head", "options"]
 
     def get_queryset(self):
@@ -120,7 +121,7 @@ class TenantRestoreRequestViewSet(TenantContextMixin, viewsets.ReadOnlyModelView
         with schema_context(get_public_schema_name()):
             requests = list(
                 TenantRestoreRequest.objects.filter(tenant=tenant)
-                .select_related("backup", "safety_backup", "requested_by", "approved_by", "rejected_by")
+                .select_related("tenant", "backup", "safety_backup", "requested_by", "approved_by", "rejected_by")
                 .order_by("-requested_at")
             )
             for restore_request in requests:
@@ -140,10 +141,96 @@ class TenantRestoreRequestViewSet(TenantContextMixin, viewsets.ReadOnlyModelView
         with schema_context(get_public_schema_name()):
             try:
                 restore_request = TenantRestoreRequest.objects.select_related(
-                    "backup", "safety_backup", "requested_by", "approved_by", "rejected_by"
+                    "tenant", "backup", "safety_backup", "requested_by", "approved_by", "rejected_by"
                 ).get(pk=kwargs[self.lookup_field], tenant=tenant)
             except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
                 raise NotFound("Restore request not found.") from exc
             restore_request = refresh_restore_readiness(restore_request)
+            data = self.get_serializer(restore_request).data
+        return Response(data)
+
+
+class PlatformRestoreRequestViewSet(viewsets.ReadOnlyModelViewSet):
+    """Platform-superadmin review queue for tenant restore requests."""
+
+    serializer_class = TenantRestoreRequestSerializer
+    permission_classes = [IsSuperAdmin]
+    http_method_names = ["get", "post", "head", "options"]
+
+    def _require_public_workspace(self):
+        if connection.schema_name != get_public_schema_name():
+            raise NotFound("Platform restore administration is only available in the public workspace.")
+
+    def get_queryset(self):
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            requests = list(
+                TenantRestoreRequest.objects.select_related(
+                    "tenant", "backup", "safety_backup", "requested_by", "approved_by", "rejected_by"
+                ).order_by("-requested_at")
+            )
+            for restore_request in requests:
+                refresh_restore_readiness(restore_request)
+            return requests
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        return Response(self.get_serializer(queryset, many=True).data)
+
+    def retrieve(self, request, *args, **kwargs):
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.select_related(
+                    "tenant", "backup", "safety_backup", "requested_by", "approved_by", "rejected_by"
+                ).get(pk=kwargs[self.lookup_field])
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            restore_request = refresh_restore_readiness(restore_request)
+            data = self.get_serializer(restore_request).data
+        return Response(data)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        self._require_public_workspace()
+        input_serializer = RestoreDecisionSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.get(pk=pk)
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            try:
+                restore_request = approve_restore(
+                    restore_request=restore_request,
+                    approved_by=request.user,
+                    decision_note=input_serializer.validated_data.get("decision_note", ""),
+                )
+            except RestoreError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+            data = self.get_serializer(restore_request).data
+        return Response(data, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        self._require_public_workspace()
+        input_serializer = RestoreDecisionSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.get(pk=pk)
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            try:
+                restore_request = reject_restore(
+                    restore_request=restore_request,
+                    rejected_by=request.user,
+                    decision_note=input_serializer.validated_data.get("decision_note", ""),
+                )
+            except RestoreError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
             data = self.get_serializer(restore_request).data
         return Response(data)
