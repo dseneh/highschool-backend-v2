@@ -9,7 +9,11 @@ from django.test import SimpleTestCase, override_settings
 
 from authorization.registry import load_permission_registry
 from backups.models import TenantBackup, TenantRestoreRequest
-from backups.serializers import TenantBackupSerializer, TenantRestoreRequestSerializer
+from backups.serializers import (
+    BackupRequestCreateSerializer,
+    TenantBackupSerializer,
+    TenantRestoreRequestSerializer,
+)
 from backups.views import PlatformRestoreRequestViewSet, TenantBackupViewSet, TenantRestoreRequestViewSet
 from common.permissions import IsSuperAdmin
 
@@ -22,17 +26,21 @@ class BackupPermissionContractTests(SimpleTestCase):
         create = registry.require("backups.create")
         self.assertEqual(create.scopes, ["all"])
         self.assertEqual(create.requires, ["backups.view"])
+        delete = registry.require("backups.delete")
+        self.assertEqual(delete.scopes, ["all"])
+        self.assertEqual(delete.requires, ["backups.view"])
         restore = registry.require("restore.request")
         self.assertEqual(restore.scopes, ["all"])
         self.assertEqual(restore.requires, ["backups.view"])
 
-    def test_tenant_restore_viewset_remains_read_only(self):
+    def test_tenant_backup_viewset_exposes_controlled_delete_only(self):
         self.assertEqual(TenantBackupViewSet.permission_map["request_restore"], "restore.request")
+        self.assertEqual(TenantBackupViewSet.permission_map["destroy"], "backups.delete")
         self.assertEqual(
             TenantRestoreRequestViewSet.permission_map,
             {"list": "backups.view", "retrieve": "backups.view"},
         )
-        self.assertNotIn("delete", TenantBackupViewSet.http_method_names)
+        self.assertIn("delete", TenantBackupViewSet.http_method_names)
         self.assertNotIn("put", TenantBackupViewSet.http_method_names)
         self.assertNotIn("patch", TenantBackupViewSet.http_method_names)
         self.assertNotIn("post", TenantRestoreRequestViewSet.http_method_names)
@@ -49,6 +57,12 @@ class BackupSerializerContractTests(SimpleTestCase):
         self.assertNotIn("error_message", fields)
         self.assertNotIn("schema_name", fields)
         self.assertNotIn("storage_provider", fields)
+
+    def test_manual_backup_reason_is_required(self):
+        serializer = BackupRequestCreateSerializer(data={"reason": ""})
+        self.assertFalse(serializer.is_valid())
+        serializer = BackupRequestCreateSerializer(data={"reason": "Before year-end adjustments"})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_restore_serializer_does_not_expose_operational_fields(self):
         fields = set(TenantRestoreRequestSerializer.Meta.fields)
