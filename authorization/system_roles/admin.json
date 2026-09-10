@@ -89,6 +89,8 @@
     {"permission": "audit.view", "scope": "all"},
     {"permission": "backups.view", "scope": "all"},
     {"permission": "backups.create", "scope": "all"},
+    {"permission": "backups.delete", "scope": "all"},
+    {"permission": "restore.request", "scope": "all"},
     {"permission": "notifications.view", "scope": "all"},
     {"permission": "notifications.send", "scope": "all"},
     {"permission": "notifications.send_class", "scope": "all"},
