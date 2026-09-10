@@ -1,8 +1,11 @@
 """REST Framework and API configuration."""
 
+import re
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
 from decouple import config
+
+from .base import APP_ROOT_DOMAIN
 
 _DEBUG = config("DEBUG", default=True, cast=bool)
 _SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-me" if _DEBUG else "")
@@ -56,8 +59,17 @@ SIMPLE_JWT = {
 if _DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
-    CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
-    CORS_ALLOWED_ORIGIN_REGEXES = config("CORS_ALLOWED_ORIGIN_REGEXES", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
+    _escaped_root_domain = re.escape(APP_ROOT_DOMAIN)
+    CORS_ALLOWED_ORIGINS = config(
+        "CORS_ALLOWED_ORIGINS",
+        default=f"https://{APP_ROOT_DOMAIN}",
+        cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
+    )
+    CORS_ALLOWED_ORIGIN_REGEXES = config(
+        "CORS_ALLOWED_ORIGIN_REGEXES",
+        default=rf"^https://([a-z0-9-]+\.)?{_escaped_root_domain}$",
+        cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
+    )
 CORS_ALLOW_CREDENTIALS = True
 CORS_EXPOSE_HEADERS = ["content-type", "x-tenant"]
 CORS_ALLOW_HEADERS = ["accept", "accept-encoding", "authorization", "content-type", "dnt", "origin", "user-agent", "x-csrftoken", "x-requested-with", "x-tenant", "x-workspace", "x-app-path", "x-app-platform", "x-app-version", "x-client-name", "x-device-name", "x-device-model", "x-device-brand", "x-device-type", "x-device-os", "x-device-os-version", "x-tenant-session"]
@@ -67,7 +79,11 @@ CORS_PREFLIGHT_MAX_AGE = 86400
 if _DEBUG:
     CSRF_TRUSTED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000", "http://*.localhost:3000", "http://*.lvh.me:3000", "http://lvh.me:3000", "http://*.localtest.me:3000", "http://localtest.me:3000", "http://localhost:8081", "http://127.0.0.1:8081"]
 else:
-    CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="", cast=lambda v: [s.strip() for s in v.split(",") if s.strip()])
+    CSRF_TRUSTED_ORIGINS = config(
+        "CSRF_TRUSTED_ORIGINS",
+        default=f"https://{APP_ROOT_DOMAIN},https://*.{APP_ROOT_DOMAIN}",
+        cast=lambda v: [s.strip() for s in v.split(",") if s.strip()],
+    )
 
 SECRET_AES_KEY = config("SECRET_AES_KEY", default="your-aes-secret-key-change-in-production" if _DEBUG else "")
 if not _DEBUG and (not SECRET_AES_KEY or SECRET_AES_KEY == "your-aes-secret-key-change-in-production"):
