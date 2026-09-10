@@ -1,8 +1,11 @@
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import UUID
 
 from django.test import SimpleTestCase, override_settings
+from django.utils import timezone
 
 from authorization.registry import load_permission_registry
 from backups.models import TenantBackup
@@ -55,6 +58,30 @@ class BackupServiceContractTests(SimpleTestCase):
             _hash_stream(BytesIO(payload)),
             "a0b6b4b1e24bacb9496a0b16ddafa21943e3535a2a374f4349580c2236680965",
         )
+
+    @patch("backups.services.timezone.now")
+    def test_storage_key_uses_schema_name(self, now):
+        from backups.services import _storage_key
+
+        now.return_value = timezone.datetime(2026, 9, 10, tzinfo=timezone.utc)
+        backup = SimpleNamespace(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            schema_name="Dujar",
+        )
+        self.assertEqual(
+            _storage_key(backup),
+            "tenants/dujar/2026/09/12345678-1234-5678-1234-567812345678.dump",
+        )
+
+    def test_storage_key_rejects_public_schema(self):
+        from backups.services import BackupError, _storage_key
+
+        backup = SimpleNamespace(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            schema_name="public",
+        )
+        with self.assertRaises(BackupError):
+            _storage_key(backup)
 
     @override_settings(
         TENANT_BACKUP_RETENTION_MANUAL_DAYS=14,
