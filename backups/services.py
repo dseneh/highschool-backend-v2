@@ -11,7 +11,7 @@ from django.core.files.storage import storages
 from django.db import connection, transaction
 from django.utils import timezone
 
-from backups.models import TenantBackup
+from backups.models import TenantBackup, TenantRestoreRequest
 from core.models import Tenant
 
 
@@ -23,6 +23,13 @@ ACTIVE_STATUSES = {
     TenantBackup.Status.VERIFYING,
 }
 RUNNING_STATUSES = ACTIVE_STATUSES - {TenantBackup.Status.QUEUED}
+ACTIVE_RESTORE_STATUSES = {
+    TenantRestoreRequest.Status.REQUESTED,
+    TenantRestoreRequest.Status.SAFETY_BACKUP_PENDING,
+    TenantRestoreRequest.Status.READY_FOR_APPROVAL,
+    TenantRestoreRequest.Status.APPROVED,
+    TenantRestoreRequest.Status.RESTORING,
+}
 
 
 class BackupError(RuntimeError):
@@ -72,7 +79,7 @@ def _retention_days(backup_type):
     return max(0, int(mapping[backup_type]))
 
 
-def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.BackupType.MANUAL):
+def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.BackupType.MANUAL, reason=""):
     with transaction.atomic():
         tenant = tenant.__class__.objects.select_for_update().get(pk=tenant.pk)
         if not tenant.schema_name or tenant.schema_name == "public":
@@ -86,8 +93,41 @@ def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.Backup
             schema_name=tenant.schema_name,
             backup_type=backup_type,
             requested_by=requested_by,
+            reason=(reason or "").strip(),
             expires_at=expires_at,
         )
+
+
+def delete_backup(backup):
+    if backup.status != TenantBackup.Status.AVAILABLE:
+        raise BackupError("Only available backups can be deleted.")
+    if TenantRestoreRequest.objects.filter(
+        backup=backup,
+        status__in=ACTIVE_RESTORE_STATUSES,
+    ).exists() or TenantRestoreRequest.objects.filter(
+        safety_backup=backup,
+        status__in=ACTIVE_RESTORE_STATUSES,
+    ).exists():
+        raise BackupError("This backup is currently required by an active restore request and cannot be deleted.")
+
+    storage = storages["backups"]
+    backup.status = TenantBackup.Status.DELETING
+    backup.save(update_fields=["status", "updated_at"])
+    try:
+        if backup.storage_key and storage.exists(backup.storage_key):
+            storage.delete(backup.storage_key)
+    except Exception as exc:
+        backup.status = TenantBackup.Status.AVAILABLE
+        backup.error_message = f"Manual backup deletion failed: {exc}"[:8000]
+        backup.save(update_fields=["status", "error_message", "updated_at"])
+        raise BackupError("The backup artifact could not be deleted. Please try again.") from exc
+
+    backup.status = TenantBackup.Status.DELETED
+    backup.deleted_at = timezone.now()
+    backup.storage_key = ""
+    backup.error_message = ""
+    backup.save(update_fields=["status", "deleted_at", "storage_key", "error_message", "updated_at"])
+    return backup
 
 
 def run_backup(backup_id):
