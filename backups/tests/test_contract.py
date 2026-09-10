@@ -18,13 +18,13 @@ class BackupPermissionContractTests(SimpleTestCase):
     def test_backup_permissions_are_registered(self):
         permission_dir = Path(__file__).resolve().parents[2] / "authorization" / "permissions"
         registry = load_permission_registry(permission_dir)
-        self.assertEqual(registry.require("backups.view").scopes, ("all",))
+        self.assertEqual(registry.require("backups.view").scopes, ["all"])
         create = registry.require("backups.create")
-        self.assertEqual(create.scopes, ("all",))
-        self.assertEqual(create.requires, ("backups.view",))
+        self.assertEqual(create.scopes, ["all"])
+        self.assertEqual(create.requires, ["backups.view"])
         restore = registry.require("restore.request")
-        self.assertEqual(restore.scopes, ("all",))
-        self.assertEqual(restore.requires, ("backups.view",))
+        self.assertEqual(restore.scopes, ["all"])
+        self.assertEqual(restore.requires, ["backups.view"])
 
     def test_tenant_restore_viewset_remains_read_only(self):
         self.assertEqual(TenantBackupViewSet.permission_map["request_restore"], "restore.request")
@@ -54,6 +54,7 @@ class BackupSerializerContractTests(SimpleTestCase):
         fields = set(TenantRestoreRequestSerializer.Meta.fields)
         self.assertNotIn("schema_name", fields)
         self.assertNotIn("error_message", fields)
+        self.assertNotIn("tenant_runtime_snapshot", fields)
 
 
 class BackupServiceContractTests(SimpleTestCase):
