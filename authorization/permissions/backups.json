@@ -1,9 +1,10 @@
 {
   "module": "backups",
   "label": "Backups & Recovery",
-  "description": "Tenant backup history and ad hoc backup requests",
+  "description": "Tenant backup history and controlled restore requests",
   "permissions": [
     {"code": "backups.view", "name": "View Backups", "risk": "high", "scopes": ["all"]},
-    {"code": "backups.create", "name": "Create Backup", "risk": "critical", "scopes": ["all"], "requires": ["backups.view"]}
+    {"code": "backups.create", "name": "Create Backup", "risk": "critical", "scopes": ["all"], "requires": ["backups.view"]},
+    {"code": "restore.request", "name": "Request Restore", "risk": "critical", "scopes": ["all"], "requires": ["backups.view"]}
   ]
 }
