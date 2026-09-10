@@ -77,7 +77,7 @@ def refresh_restore_readiness(restore_request):
 
 def approve_restore(*, restore_request, approved_by, decision_note=""):
     with transaction.atomic():
-        restore_request = TenantRestoreRequest.objects.select_for_update().select_related(
+        restore_request = TenantRestoreRequest.objects.select_for_update(of=("self",)).select_related(
             "tenant", "backup", "safety_backup"
         ).get(pk=restore_request.pk)
         restore_request = refresh_restore_readiness(restore_request)
