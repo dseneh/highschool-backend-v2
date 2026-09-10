@@ -99,20 +99,23 @@ def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.Backup
 
 
 def delete_backup(backup):
-    if backup.status != TenantBackup.Status.AVAILABLE:
-        raise BackupError("Only available backups can be deleted.")
-    if TenantRestoreRequest.objects.filter(
-        backup=backup,
-        status__in=ACTIVE_RESTORE_STATUSES,
-    ).exists() or TenantRestoreRequest.objects.filter(
-        safety_backup=backup,
-        status__in=ACTIVE_RESTORE_STATUSES,
-    ).exists():
-        raise BackupError("This backup is currently required by an active restore request and cannot be deleted.")
+    with transaction.atomic():
+        backup = TenantBackup.objects.select_for_update().get(pk=backup.pk)
+        if backup.status != TenantBackup.Status.AVAILABLE:
+            raise BackupError("Only available backups can be deleted.")
+        if TenantRestoreRequest.objects.filter(
+            backup=backup,
+            status__in=ACTIVE_RESTORE_STATUSES,
+        ).exists() or TenantRestoreRequest.objects.filter(
+            safety_backup=backup,
+            status__in=ACTIVE_RESTORE_STATUSES,
+        ).exists():
+            raise BackupError("This backup is currently required by an active restore request and cannot be deleted.")
+
+        backup.status = TenantBackup.Status.DELETING
+        backup.save(update_fields=["status", "updated_at"])
 
     storage = storages["backups"]
-    backup.status = TenantBackup.Status.DELETING
-    backup.save(update_fields=["status", "updated_at"])
     try:
         if backup.storage_key and storage.exists(backup.storage_key):
             storage.delete(backup.storage_key)
