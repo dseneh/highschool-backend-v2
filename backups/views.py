@@ -16,6 +16,7 @@ from backups.restore_services import (
 )
 from backups.serializers import (
     BackupRequestCreateSerializer,
+    PlatformTenantBackupSerializer,
     RestoreDecisionSerializer,
     RestoreRequestCreateSerializer,
     TenantBackupSerializer,
@@ -169,6 +170,44 @@ class TenantRestoreRequestViewSet(TenantContextMixin, viewsets.ReadOnlyModelView
                 raise NotFound("Restore request not found.") from exc
             restore_request = refresh_restore_readiness(restore_request)
             data = self.get_serializer(restore_request).data
+        return Response(data)
+
+
+class PlatformBackupViewSet(viewsets.ReadOnlyModelViewSet):
+    """Platform-superadmin read-only backup history across all tenants."""
+
+    serializer_class = PlatformTenantBackupSerializer
+    permission_classes = [IsSuperAdmin]
+    http_method_names = ["get", "head", "options"]
+
+    def _require_public_workspace(self):
+        if connection.schema_name != get_public_schema_name():
+            raise NotFound("Platform backup administration is only available in the public workspace.")
+
+    def get_queryset(self):
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            return list(
+                TenantBackup.objects.select_related("tenant", "requested_by").order_by("-requested_at")
+            )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        return Response(self.get_serializer(queryset, many=True).data)
+
+    def retrieve(self, request, *args, **kwargs):
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            try:
+                backup = TenantBackup.objects.select_related("tenant", "requested_by").get(
+                    pk=kwargs[self.lookup_field]
+                )
+            except (TenantBackup.DoesNotExist, ValueError) as exc:
+                raise NotFound("Backup not found.") from exc
+            data = self.get_serializer(backup).data
         return Response(data)
 
 
