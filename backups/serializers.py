@@ -34,11 +34,17 @@ class TenantRestoreRequestSerializer(serializers.ModelSerializer):
     rejected_by = serializers.SerializerMethodField()
     backup_id = serializers.UUIDField(source="backup.id", read_only=True)
     safety_backup_id = serializers.UUIDField(source="safety_backup.id", read_only=True, allow_null=True)
+    tenant_id = serializers.UUIDField(source="tenant.id", read_only=True)
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    tenant_schema = serializers.CharField(source="tenant.schema_name", read_only=True)
 
     class Meta:
         model = TenantRestoreRequest
         fields = (
             "id",
+            "tenant_id",
+            "tenant_name",
+            "tenant_schema",
             "backup_id",
             "safety_backup_id",
             "status",
@@ -67,6 +73,10 @@ class TenantRestoreRequestSerializer(serializers.ModelSerializer):
 
 class RestoreRequestCreateSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+
+class RestoreDecisionSerializer(serializers.Serializer):
+    decision_note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 def _user_summary(user):

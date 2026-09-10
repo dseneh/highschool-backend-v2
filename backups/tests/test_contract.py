@@ -10,22 +10,23 @@ from django.test import SimpleTestCase, override_settings
 from authorization.registry import load_permission_registry
 from backups.models import TenantBackup, TenantRestoreRequest
 from backups.serializers import TenantBackupSerializer, TenantRestoreRequestSerializer
-from backups.views import TenantBackupViewSet, TenantRestoreRequestViewSet
+from backups.views import PlatformRestoreRequestViewSet, TenantBackupViewSet, TenantRestoreRequestViewSet
+from common.permissions import IsSuperAdmin
 
 
 class BackupPermissionContractTests(SimpleTestCase):
     def test_backup_permissions_are_registered(self):
         permission_dir = Path(__file__).resolve().parents[2] / "authorization" / "permissions"
         registry = load_permission_registry(permission_dir)
-        self.assertEqual(registry.require("backups.view").scopes, ("all",))
+        self.assertEqual(registry.require("backups.view").scopes, ["all"])
         create = registry.require("backups.create")
-        self.assertEqual(create.scopes, ("all",))
-        self.assertEqual(create.requires, ("backups.view",))
+        self.assertEqual(create.scopes, ["all"])
+        self.assertEqual(create.requires, ["backups.view"])
         restore = registry.require("restore.request")
-        self.assertEqual(restore.scopes, ("all",))
-        self.assertEqual(restore.requires, ("backups.view",))
+        self.assertEqual(restore.scopes, ["all"])
+        self.assertEqual(restore.requires, ["backups.view"])
 
-    def test_viewsets_do_not_expose_destructive_restore_methods(self):
+    def test_tenant_restore_viewset_remains_read_only(self):
         self.assertEqual(TenantBackupViewSet.permission_map["request_restore"], "restore.request")
         self.assertEqual(
             TenantRestoreRequestViewSet.permission_map,
@@ -35,6 +36,10 @@ class BackupPermissionContractTests(SimpleTestCase):
         self.assertNotIn("put", TenantBackupViewSet.http_method_names)
         self.assertNotIn("patch", TenantBackupViewSet.http_method_names)
         self.assertNotIn("post", TenantRestoreRequestViewSet.http_method_names)
+
+    def test_platform_restore_decisions_require_superadmin(self):
+        self.assertEqual(PlatformRestoreRequestViewSet.permission_classes, [IsSuperAdmin])
+        self.assertIn("post", PlatformRestoreRequestViewSet.http_method_names)
 
 
 class BackupSerializerContractTests(SimpleTestCase):
@@ -49,6 +54,7 @@ class BackupSerializerContractTests(SimpleTestCase):
         fields = set(TenantRestoreRequestSerializer.Meta.fields)
         self.assertNotIn("schema_name", fields)
         self.assertNotIn("error_message", fields)
+        self.assertNotIn("tenant_runtime_snapshot", fields)
 
 
 class BackupServiceContractTests(SimpleTestCase):
@@ -120,11 +126,24 @@ class RestoreServiceContractTests(SimpleTestCase):
         self.assertIn(TenantRestoreRequest.Status.READY_FOR_APPROVAL, dict(TenantRestoreRequest.Status.choices))
         self.assertIn(TenantRestoreRequest.Status.APPROVED, dict(TenantRestoreRequest.Status.choices))
 
-    def test_restore_execution_is_not_exposed_by_request_service(self):
+    def test_restore_execution_accepts_only_request_id(self):
         import inspect
-        from backups.restore_services import request_restore
+        from backups.restore_services import run_restore
 
-        self.assertEqual(
-            tuple(inspect.signature(request_restore).parameters),
-            ("tenant", "backup", "requested_by", "reason"),
-        )
+        self.assertEqual(tuple(inspect.signature(run_restore).parameters), ("restore_request_id",))
+
+    def test_restore_rejects_public_and_unsafe_schema_names(self):
+        from backups.restore_services import _is_safe_schema
+
+        self.assertTrue(_is_safe_schema("dujar"))
+        self.assertTrue(_is_safe_schema("kipss_2026"))
+        self.assertFalse(_is_safe_schema("public"))
+        self.assertFalse(_is_safe_schema("dujar;drop schema public"))
+        self.assertFalse(_is_safe_schema("dujar-school"))
+
+    def test_rollback_schema_name_stays_within_postgres_identifier_limit(self):
+        from backups.restore_services import _rollback_schema_name
+
+        name = _rollback_schema_name("a" * 63, UUID("12345678-1234-5678-1234-567812345678"))
+        self.assertLessEqual(len(name), 63)
+        self.assertIn("__restore_rb_", name)
