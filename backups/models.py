@@ -28,6 +28,7 @@ class TenantBackup(models.Model):
     schema_name = models.CharField(max_length=63)
     backup_type = models.CharField(max_length=20, choices=BackupType.choices, default=BackupType.MANUAL)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
+    reason = models.TextField(blank=True, default="")
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

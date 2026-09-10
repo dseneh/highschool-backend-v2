@@ -12,6 +12,7 @@ class TenantBackupSerializer(serializers.ModelSerializer):
             "id",
             "backup_type",
             "status",
+            "reason",
             "requested_by",
             "requested_at",
             "started_at",
@@ -26,6 +27,10 @@ class TenantBackupSerializer(serializers.ModelSerializer):
 
     def get_requested_by(self, obj):
         return _user_summary(obj.requested_by)
+
+
+class BackupRequestCreateSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=True, allow_blank=False, max_length=2000, trim_whitespace=True)
 
 
 class TenantRestoreRequestSerializer(serializers.ModelSerializer):

@@ -15,12 +15,13 @@ from backups.restore_services import (
     request_restore,
 )
 from backups.serializers import (
+    BackupRequestCreateSerializer,
     RestoreDecisionSerializer,
     RestoreRequestCreateSerializer,
     TenantBackupSerializer,
     TenantRestoreRequestSerializer,
 )
-from backups.services import BackupError, request_backup
+from backups.services import BackupError, delete_backup, request_backup
 from common.permissions import IsSuperAdmin
 from core.models import Tenant
 
@@ -44,9 +45,10 @@ class TenantBackupViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
         "list": "backups.view",
         "retrieve": "backups.view",
         "create": "backups.create",
+        "destroy": "backups.delete",
         "request_restore": "restore.request",
     }
-    http_method_names = ["get", "post", "head", "options"]
+    http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_queryset(self):
         tenant = self._tenant()
@@ -79,13 +81,33 @@ class TenantBackupViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
 
     def create(self, request, *args, **kwargs):
         tenant = self._tenant()
+        input_serializer = BackupRequestCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
         with schema_context(get_public_schema_name()):
             try:
-                backup = request_backup(tenant=tenant, requested_by=request.user)
+                backup = request_backup(
+                    tenant=tenant,
+                    requested_by=request.user,
+                    reason=input_serializer.validated_data["reason"],
+                )
             except BackupError as exc:
                 raise ValidationError({"detail": str(exc)}) from exc
             data = self.get_serializer(backup).data
         return Response(data, status=status.HTTP_202_ACCEPTED)
+
+    def destroy(self, request, *args, **kwargs):
+        tenant = self._tenant()
+        with schema_context(get_public_schema_name()):
+            try:
+                backup = TenantBackup.objects.get(pk=kwargs[self.lookup_field], tenant=tenant)
+            except (TenantBackup.DoesNotExist, ValueError) as exc:
+                raise NotFound("Backup not found.") from exc
+            try:
+                backup = delete_backup(backup)
+            except BackupError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+            data = self.get_serializer(backup).data
+        return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="restore-request")
     def request_restore(self, request, pk=None):

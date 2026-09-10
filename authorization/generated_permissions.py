@@ -31,6 +31,9 @@ class Permissions:
     class Backups:
         VIEW = "backups.view"
         CREATE = "backups.create"
+        DELETE = "backups.delete"
+        class Restore:
+            REQUEST = "restore.request"
 
     class Employees:
         VIEW = "employees.view"
