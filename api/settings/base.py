@@ -134,7 +134,12 @@ ADMIN_NOTIFICATION_EMAIL = config("ADMIN_NOTIFICATION_EMAIL", default=f"admin@{A
 SUPPORT_EMAIL = config("SUPPORT_EMAIL", default=f"support@{APP_ROOT_DOMAIN}")
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
 
-FRONTEND_DOMAIN = config("FRONTEND_DOMAIN", default="http://localhost:3000")
+if DEBUG:
+    _frontend_domain_default = "http://localhost:3000"
+else:
+    _frontend_domain_default = f"https://{APP_ROOT_DOMAIN}"
+
+FRONTEND_DOMAIN = config("FRONTEND_DOMAIN", default=_frontend_domain_default)
 FRONTEND_USE_SUBDOMAIN = config("FRONTEND_USE_SUBDOMAIN", default=True, cast=bool)
 FRONTEND_DEV_MODE = config("FRONTEND_DEV_MODE", default=True, cast=bool)
 FRONTEND_SUBDOMAIN_BASE = config("FRONTEND_SUBDOMAIN_BASE", default=APP_ROOT_DOMAIN)
