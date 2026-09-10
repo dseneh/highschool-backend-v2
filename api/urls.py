@@ -68,6 +68,7 @@ urlpatterns = [
     path(api_base + "reports/", include("reports.urls")),
     path(api_base, include("common.urls")),
     path(api_base + "notifications/", include("notifications.urls")),
+    path(api_base, include("backups.urls")),
 ]
 
 # Serve media files in development

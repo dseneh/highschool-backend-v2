@@ -1,0 +1,9 @@
+{
+  "module": "backups",
+  "label": "Backups & Recovery",
+  "description": "Tenant backup history and ad hoc backup requests",
+  "permissions": [
+    {"code": "backups.view", "name": "View Backups", "risk": "high", "scopes": ["all"]},
+    {"code": "backups.create", "name": "Create Backup", "risk": "critical", "scopes": ["all"], "requires": ["backups.view"]}
+  ]
+}

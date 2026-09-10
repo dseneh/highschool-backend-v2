@@ -59,9 +59,6 @@ SIMPLE_JWT = {
 if _DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
-    # Defaults are derived from APP_ROOT_DOMAIN so one env var (e.g. a
-    # per-environment override for staging) covers CORS/CSRF instead of
-    # having to keep three separately-formatted vars in sync.
     _escaped_root_domain = re.escape(APP_ROOT_DOMAIN)
     CORS_ALLOWED_ORIGINS = config(
         "CORS_ALLOWED_ORIGINS",
