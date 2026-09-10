@@ -29,6 +29,21 @@ class TenantBackupSerializer(serializers.ModelSerializer):
         return _user_summary(obj.requested_by)
 
 
+class PlatformTenantBackupSerializer(TenantBackupSerializer):
+    tenant_id = serializers.UUIDField(source="tenant.id", read_only=True)
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    tenant_schema = serializers.CharField(source="tenant.schema_name", read_only=True)
+
+    class Meta(TenantBackupSerializer.Meta):
+        fields = (
+            "tenant_id",
+            "tenant_name",
+            "tenant_schema",
+            *TenantBackupSerializer.Meta.fields,
+        )
+        read_only_fields = fields
+
+
 class BackupRequestCreateSerializer(serializers.Serializer):
     reason = serializers.CharField(required=True, allow_blank=False, max_length=2000, trim_whitespace=True)
 
