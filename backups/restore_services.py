@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 from django.conf import settings
@@ -30,11 +31,9 @@ _SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def request_restore(*, tenant, backup, requested_by=None, reason=""):
-    """Create a non-destructive restore request and queue a pre-restore safety backup."""
     with transaction.atomic():
         tenant = tenant.__class__.objects.select_for_update().get(pk=tenant.pk)
         backup = TenantBackup.objects.select_for_update().get(pk=backup.pk)
-
         _validate_tenant_and_backup(tenant=tenant, backup=backup)
         if TenantRestoreRequest.objects.filter(tenant=tenant, status__in=ACTIVE_RESTORE_STATUSES).exists():
             raise RestoreError("A restore request is already active for this tenant.")
@@ -47,7 +46,6 @@ def request_restore(*, tenant, backup, requested_by=None, reason=""):
             reason=(reason or "").strip(),
             status=TenantRestoreRequest.Status.SAFETY_BACKUP_PENDING,
         )
-
         try:
             safety_backup = request_backup(
                 tenant=tenant,
@@ -56,14 +54,12 @@ def request_restore(*, tenant, backup, requested_by=None, reason=""):
             )
         except BackupError as exc:
             raise RestoreError(f"Could not queue the pre-restore safety backup: {exc}") from exc
-
         restore_request.safety_backup = safety_backup
         restore_request.save(update_fields=["safety_backup", "updated_at"])
         return restore_request
 
 
 def refresh_restore_readiness(restore_request):
-    """Promote a restore request to approval-ready only after its safety backup is available."""
     restore_request = TenantRestoreRequest.objects.select_related("safety_backup").get(pk=restore_request.pk)
     if restore_request.status != TenantRestoreRequest.Status.SAFETY_BACKUP_PENDING:
         return restore_request
@@ -120,13 +116,6 @@ def reject_restore(*, restore_request, rejected_by, decision_note=""):
 
 
 def run_restore(restore_request_id):
-    """Execute one approved tenant restore with an in-database rollback schema.
-
-    The current tenant schema is renamed out of the way, the verified archive is
-    restored into its original schema name, and the old schema is automatically
-    restored if pg_restore or validation fails. The mandatory pre-restore backup
-    remains the durable recovery point after a successful operation.
-    """
     claimed_at = timezone.now()
     claimed = TenantRestoreRequest.objects.filter(
         pk=restore_request_id,
@@ -144,31 +133,29 @@ def run_restore(restore_request_id):
             raise RestoreError(f"Restore request {restore_request_id} does not exist.") from exc
         raise RestoreError(f"Restore request {restore_request_id} is not approved (status={current.status}).")
 
-    restore_request = TenantRestoreRequest.objects.select_related(
-        "tenant", "backup", "safety_backup"
-    ).get(pk=restore_request_id)
+    restore_request = TenantRestoreRequest.objects.select_related("tenant", "backup", "safety_backup").get(
+        pk=restore_request_id
+    )
     temp_path = None
     rollback_schema = None
-    maintenance_enabled_by_worker = False
+    tenant_locked = False
 
     try:
         _validate_execution_prerequisites(restore_request)
         tenant = restore_request.tenant
         schema_name = tenant.schema_name
-        if tenant.maintenance_mode:
-            raise RestoreError("Tenant is already in maintenance mode; restore execution was not started.")
+        if tenant.maintenance_mode or not tenant.active:
+            raise RestoreError("Tenant is already disabled or in maintenance mode; restore execution was not started.")
 
         storage = storages["backups"]
         temp_path = _download_and_verify_backup(storage=storage, backup=restore_request.backup)
         _validate_archive(temp_path=temp_path, schema_name=schema_name)
 
-        tenant.maintenance_mode = True
-        tenant.save(update_fields=["maintenance_mode"])
-        maintenance_enabled_by_worker = True
+        _lock_tenant_runtime(restore_request)
+        tenant_locked = True
 
         rollback_schema = _rollback_schema_name(schema_name, restore_request.id)
         _rename_schema(schema_name, rollback_schema)
-
         try:
             _pg_restore(temp_path)
             _validate_restored_schema(schema_name)
@@ -180,11 +167,8 @@ def run_restore(restore_request_id):
 
         _drop_schema_if_exists(rollback_schema)
         rollback_schema = None
-
-        tenant.refresh_from_db()
-        tenant.maintenance_mode = False
-        tenant.save(update_fields=["maintenance_mode"])
-        maintenance_enabled_by_worker = False
+        _restore_tenant_runtime(restore_request)
+        tenant_locked = False
 
         restore_request.status = TenantRestoreRequest.Status.COMPLETED
         restore_request.completed_at = timezone.now()
@@ -199,12 +183,9 @@ def run_restore(restore_request_id):
                 _rename_schema(rollback_schema, schema_name)
             except Exception as rollback_exc:
                 exc = RestoreError(f"{exc}; automatic schema rollback also failed: {rollback_exc}")
-        if maintenance_enabled_by_worker:
+        if tenant_locked:
             try:
-                tenant = restore_request.tenant
-                tenant.refresh_from_db()
-                tenant.maintenance_mode = False
-                tenant.save(update_fields=["maintenance_mode"])
+                _restore_tenant_runtime(restore_request)
             except Exception:
                 pass
         _fail_restore(restore_request, str(exc))
@@ -212,6 +193,98 @@ def run_restore(restore_request_id):
     finally:
         if temp_path:
             Path(temp_path).unlink(missing_ok=True)
+
+
+def recover_stale_restores(*, now=None):
+    """Recover restore workers that stopped updating while RESTORING.
+
+    A rollback schema wins over any partially restored live schema. If no
+    rollback schema exists, a structurally valid live schema is retained and
+    the prior tenant runtime state is restored for operator review.
+    """
+    now = now or timezone.now()
+    cutoff = now - timedelta(minutes=max(1, getattr(settings, "TENANT_RESTORE_STALE_MINUTES", 60)))
+    stale = list(
+        TenantRestoreRequest.objects.filter(
+            status=TenantRestoreRequest.Status.RESTORING,
+            updated_at__lt=cutoff,
+        ).select_related("tenant")
+    )
+    recovered = []
+    for restore_request in stale:
+        schema_name = restore_request.tenant.schema_name
+        rollback_schema = _rollback_schema_name(schema_name, restore_request.id)
+        try:
+            rollback_exists = _schema_exists(rollback_schema)
+            live_exists = _schema_exists(schema_name)
+            if rollback_exists:
+                if live_exists:
+                    _drop_schema_if_exists(schema_name)
+                _rename_schema(rollback_schema, schema_name)
+                _validate_restored_schema(schema_name)
+                _restore_tenant_runtime(restore_request)
+                _fail_restore(restore_request, "Stale restore recovered by reinstating the rollback schema.")
+                recovered.append(restore_request)
+            elif live_exists:
+                _validate_restored_schema(schema_name)
+                _restore_tenant_runtime(restore_request)
+                _fail_restore(
+                    restore_request,
+                    "Stale restore stopped without a rollback schema; live schema is structurally valid and requires operator review.",
+                )
+                recovered.append(restore_request)
+            else:
+                _fail_restore(
+                    restore_request,
+                    "Stale restore requires manual intervention: neither live nor rollback schema exists. Tenant remains locked.",
+                )
+        except Exception as exc:
+            _fail_restore(restore_request, f"Stale restore recovery failed: {exc}")
+    return recovered
+
+
+def _lock_tenant_runtime(restore_request):
+    tenant = restore_request.tenant
+    snapshot = {
+        "active": bool(tenant.active),
+        "maintenance_mode": bool(tenant.maintenance_mode),
+        "disabled_access_allow_tenant_admins": bool(tenant.disabled_access_allow_tenant_admins),
+        "disabled_access_allowed_users": list(tenant.disabled_access_allowed_users or []),
+    }
+    restore_request.tenant_runtime_snapshot = snapshot
+    restore_request.save(update_fields=["tenant_runtime_snapshot", "updated_at"])
+
+    tenant.active = False
+    tenant.maintenance_mode = True
+    tenant.disabled_access_allow_tenant_admins = False
+    tenant.disabled_access_allowed_users = []
+    tenant.save(
+        update_fields=[
+            "active",
+            "maintenance_mode",
+            "disabled_access_allow_tenant_admins",
+            "disabled_access_allowed_users",
+        ]
+    )
+
+
+def _restore_tenant_runtime(restore_request):
+    tenant = restore_request.tenant
+    snapshot = restore_request.tenant_runtime_snapshot or {}
+    if not snapshot:
+        raise RestoreError("Tenant runtime snapshot is missing; refusing to guess the prior runtime state.")
+    tenant.active = bool(snapshot.get("active", True))
+    tenant.maintenance_mode = bool(snapshot.get("maintenance_mode", False))
+    tenant.disabled_access_allow_tenant_admins = bool(snapshot.get("disabled_access_allow_tenant_admins", True))
+    tenant.disabled_access_allowed_users = list(snapshot.get("disabled_access_allowed_users", []))
+    tenant.save(
+        update_fields=[
+            "active",
+            "maintenance_mode",
+            "disabled_access_allow_tenant_admins",
+            "disabled_access_allowed_users",
+        ]
+    )
 
 
 def _validate_tenant_and_backup(*, tenant, backup):
@@ -284,21 +357,14 @@ def _validate_archive(*, temp_path, schema_name):
 
 def _pg_restore(temp_path):
     db, env = _database_environment()
-    command = [
-        "pg_restore",
-        "--exit-on-error",
-        "--no-owner",
-        "--no-privileges",
-        "--dbname",
-        str(db["NAME"]),
-    ]
+    command = ["pg_restore", "--exit-on-error", "--no-owner", "--no-privileges"]
     if db.get("HOST"):
         command.extend(["--host", str(db["HOST"])])
     if db.get("PORT"):
         command.extend(["--port", str(db["PORT"])])
     if db.get("USER"):
         command.extend(["--username", str(db["USER"])])
-    command.append(str(temp_path))
+    command.extend(["--dbname", str(db["NAME"]), str(temp_path)])
     result = subprocess.run(
         command,
         env=env,
@@ -320,10 +386,7 @@ def _database_environment():
 
 def _validate_restored_schema(schema_name):
     with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema = %s",
-            [schema_name],
-        )
+        cursor.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = %s", [schema_name])
         table_count = cursor.fetchone()[0]
         cursor.execute(
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = %s AND table_name = 'django_migrations')",
@@ -337,6 +400,14 @@ def _validate_restored_schema(schema_name):
 def _rollback_schema_name(schema_name, restore_id):
     suffix = f"__restore_rb_{restore_id.hex[:10]}"
     return f"{schema_name[: 63 - len(suffix)]}{suffix}"
+
+
+def _schema_exists(schema_name):
+    if not _is_safe_schema(schema_name, allow_public=False):
+        return False
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = %s)", [schema_name])
+        return bool(cursor.fetchone()[0])
 
 
 def _rename_schema(source, target):
