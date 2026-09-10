@@ -39,7 +39,10 @@ def _database_environment():
 
 def _storage_key(backup):
     now = timezone.now()
-    return f"tenants/{backup.tenant_id}/{now:%Y/%m}/{backup.id}.dump"
+    schema_name = (backup.schema_name or "").strip().lower()
+    if not schema_name or schema_name == "public":
+        raise BackupError("Refusing to create a backup object key for an invalid/public schema.")
+    return f"tenants/{schema_name}/{now:%Y/%m}/{backup.id}.dump"
 
 
 def _hash_stream(stream):
