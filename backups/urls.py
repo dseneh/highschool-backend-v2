@@ -7,21 +7,40 @@ from backups.history_views import (
     TenantBackupHistoryView,
     TenantRestoreHistoryView,
 )
+from backups.platform_views import PolicyAwarePlatformBackupViewSet
+from backups.policy_permissions import TenantBackupCapabilityPermission
+from backups.policy_views import (
+    PlatformBackupSettingsView,
+    PlatformTenantBackupPolicyViewSet,
+    TenantEffectiveBackupPolicyView,
+)
 from backups.views import (
-    PlatformBackupViewSet,
     PlatformRestoreRequestViewSet,
     TenantBackupViewSet,
     TenantRestoreRequestViewSet,
 )
 
 
+def _add_capability_permission(viewset):
+    if TenantBackupCapabilityPermission not in viewset.permission_classes:
+        viewset.permission_classes = [*viewset.permission_classes, TenantBackupCapabilityPermission]
+
+
+# Tenant capability policy is intentionally layered after RBAC: the user needs
+# both their normal role permission and the platform-enabled tenant capability.
+_add_capability_permission(TenantBackupViewSet)
+_add_capability_permission(TenantRestoreRequestViewSet)
+
 router = DefaultRouter()
 router.register("backups", TenantBackupViewSet, basename="tenant-backup")
 router.register("restore-requests", TenantRestoreRequestViewSet, basename="tenant-restore-request")
-router.register("platform/backups", PlatformBackupViewSet, basename="platform-backup")
+router.register("platform/backups", PolicyAwarePlatformBackupViewSet, basename="platform-backup")
 router.register("platform/restore-requests", PlatformRestoreRequestViewSet, basename="platform-restore-request")
+router.register("platform/backup-policies", PlatformTenantBackupPolicyViewSet, basename="platform-backup-policy")
 
 urlpatterns = [
+    path("backup-policy/", TenantEffectiveBackupPolicyView.as_view(), name="tenant-backup-policy"),
+    path("platform/backup-settings/", PlatformBackupSettingsView.as_view(), name="platform-backup-settings"),
     path("backups/<uuid:pk>/history/", TenantBackupHistoryView.as_view(), name="tenant-backup-history"),
     path("restore-requests/<uuid:pk>/history/", TenantRestoreHistoryView.as_view(), name="tenant-restore-history"),
     path("platform/backups/<uuid:pk>/history/", PlatformBackupHistoryView.as_view(), name="platform-backup-history"),
