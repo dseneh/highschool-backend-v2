@@ -1,6 +1,12 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from backups.history_views import (
+    PlatformBackupHistoryView,
+    PlatformRestoreHistoryView,
+    TenantBackupHistoryView,
+    TenantRestoreHistoryView,
+)
 from backups.views import (
     PlatformBackupViewSet,
     PlatformRestoreRequestViewSet,
@@ -15,4 +21,14 @@ router.register("restore-requests", TenantRestoreRequestViewSet, basename="tenan
 router.register("platform/backups", PlatformBackupViewSet, basename="platform-backup")
 router.register("platform/restore-requests", PlatformRestoreRequestViewSet, basename="platform-restore-request")
 
-urlpatterns = [path("", include(router.urls))]
+urlpatterns = [
+    path("backups/<uuid:pk>/history/", TenantBackupHistoryView.as_view(), name="tenant-backup-history"),
+    path("restore-requests/<uuid:pk>/history/", TenantRestoreHistoryView.as_view(), name="tenant-restore-history"),
+    path("platform/backups/<uuid:pk>/history/", PlatformBackupHistoryView.as_view(), name="platform-backup-history"),
+    path(
+        "platform/restore-requests/<uuid:pk>/history/",
+        PlatformRestoreHistoryView.as_view(),
+        name="platform-restore-history",
+    ),
+    path("", include(router.urls)),
+]

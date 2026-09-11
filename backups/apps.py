@@ -8,10 +8,16 @@ class BackupsConfig(AppConfig):
 
     def ready(self):
         from auditlog.registry import auditlog
-        from backups.models import TenantBackup
+        from backups.models import TenantBackup, TenantRestoreRequest
 
         if not auditlog.contains(TenantBackup):
             auditlog.register(
                 TenantBackup,
                 exclude_fields=["storage_key", "error_message"],
+            )
+
+        if not auditlog.contains(TenantRestoreRequest):
+            auditlog.register(
+                TenantRestoreRequest,
+                exclude_fields=["tenant_runtime_snapshot", "error_message"],
             )
