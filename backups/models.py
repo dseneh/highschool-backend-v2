@@ -4,6 +4,85 @@ from django.conf import settings
 from django.db import models
 
 
+class BackupPlatformSettings(models.Model):
+    """Platform defaults for tenant backup and restore behavior."""
+
+    class Frequency(models.TextChoices):
+        DAILY = "daily", "Daily"
+        WEEKLY = "weekly", "Weekly"
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    automatic_backups_enabled = models.BooleanField(default=True)
+    frequency = models.CharField(max_length=20, choices=Frequency.choices, default=Frequency.WEEKLY)
+    scheduled_time = models.TimeField(default="02:00")
+    timezone = models.CharField(max_length=64, default="UTC")
+    scheduled_retention_days = models.PositiveIntegerField(default=30)
+    manual_retention_days = models.PositiveIntegerField(default=30)
+    safety_retention_days = models.PositiveIntegerField(default=14)
+    system_retention_days = models.PositiveIntegerField(default=30)
+    maximum_retained_scheduled_backups = models.PositiveIntegerField(default=8)
+    tenant_manual_backups_allowed = models.BooleanField(default=True)
+    tenant_restore_requests_allowed = models.BooleanField(default=True)
+    tenant_restore_execution_allowed = models.BooleanField(default=True)
+    default_storage_quota_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "backups_platform_settings"
+        verbose_name_plural = "Backup platform settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "Backup platform settings"
+
+
+class TenantBackupPolicy(models.Model):
+    """Optional tenant overrides plus authoritative scheduling state."""
+
+    tenant = models.OneToOneField(
+        "core.Tenant",
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="backup_policy",
+    )
+    automatic_backups_enabled = models.BooleanField(null=True, blank=True)
+    frequency = models.CharField(
+        max_length=20,
+        choices=BackupPlatformSettings.Frequency.choices,
+        null=True,
+        blank=True,
+    )
+    scheduled_time = models.TimeField(null=True, blank=True)
+    timezone = models.CharField(max_length=64, blank=True, default="")
+    scheduled_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    manual_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    safety_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    system_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    maximum_retained_scheduled_backups = models.PositiveIntegerField(null=True, blank=True)
+    manual_backups_allowed = models.BooleanField(null=True, blank=True)
+    restore_requests_allowed = models.BooleanField(null=True, blank=True)
+    restore_execution_allowed = models.BooleanField(null=True, blank=True)
+    storage_quota_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    storage_quota_overridden = models.BooleanField(default=False)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "backups_tenant_policy"
+        indexes = [
+            models.Index(fields=("next_run_at",), name="backup_policy_next_run_idx"),
+        ]
+
+    def __str__(self):
+        return f"Backup policy for {self.tenant_id}"
+
+
 class TenantBackup(models.Model):
     class BackupType(models.TextChoices):
         MANUAL = "manual", "Manual"
@@ -129,4 +208,3 @@ class TenantRestoreRequest(models.Model):
 
     def __str__(self):
         return f"{self.tenant_id}:{self.id} ({self.status})"
-
