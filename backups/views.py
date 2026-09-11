@@ -1,4 +1,8 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.db import connection
+from django.utils import timezone
 from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -262,6 +266,75 @@ class PlatformBackupViewSet(viewsets.ReadOnlyModelViewSet):
                 raise NotFound("Backup not found.") from exc
             data = self.get_serializer(backup).data
         return Response(data)
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """Get backup summary statistics for admin UI (platform superadmin only).
+        
+        Returns:
+        - total_backup_count: Total number of backups across all tenants
+        - available_backup_count: Number of backups with status=AVAILABLE
+        - total_storage_bytes: Sum of file_size for available backups only
+        - protected_tenant_count: Number of active tenants with at least one available backup
+        - failed_backup_count: Number of backups with status=FAILED
+        - scheduled_backup_count: Number of scheduled backups across all statuses
+        - upcoming_backup_count: Number of tenants due for a scheduled backup
+        - next_scheduled_backup_at: Timestamp of the next scheduled backup due (or null)
+        """
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            backups = TenantBackup.objects.select_related("tenant")
+            total_backup_count = backups.count()
+            available_backups = backups.filter(status=TenantBackup.Status.AVAILABLE)
+            available_backup_count = available_backups.count()
+            total_storage_bytes = sum(b.file_size or 0 for b in available_backups)
+            failed_backup_count = backups.filter(status=TenantBackup.Status.FAILED).count()
+            scheduled_backups = backups.filter(backup_type=TenantBackup.BackupType.SCHEDULED)
+            scheduled_backup_count = scheduled_backups.count()
+            
+            protected_tenant_ids = set(available_backups.values_list("tenant_id", flat=True))
+            protected_tenant_count = len(protected_tenant_ids)
+            
+            # Compute upcoming scheduled backups
+            upcoming_backup_count = 0
+            next_scheduled_backup_at = None
+            
+            if getattr(settings, "TENANT_BACKUP_SCHEDULE_ENABLED", False):
+                interval_hours = max(1, getattr(settings, "TENANT_BACKUP_SCHEDULE_INTERVAL_HOURS", 168))
+                cutoff = timezone.now() - timedelta(hours=interval_hours)
+                active_tenants = Tenant.objects.exclude(schema_name=get_public_schema_name()).filter(active=True)
+                
+                upcoming_times = []
+                for tenant in active_tenants:
+                    latest_scheduled = TenantBackup.objects.filter(
+                        tenant=tenant,
+                        backup_type=TenantBackup.BackupType.SCHEDULED,
+                        status=TenantBackup.Status.AVAILABLE,
+                        completed_at__isnull=False,
+                    ).order_by("-completed_at").first()
+                    
+                    if latest_scheduled and latest_scheduled.completed_at > cutoff:
+                        next_due = latest_scheduled.completed_at + timedelta(hours=interval_hours)
+                    else:
+                        next_due = timezone.now()
+                    
+                    upcoming_times.append(next_due)
+                    if next_due <= timezone.now():
+                        upcoming_backup_count += 1
+                
+                if upcoming_times:
+                    next_scheduled_backup_at = min(upcoming_times).isoformat() if upcoming_times else None
+            
+            return Response({
+                "total_backup_count": total_backup_count,
+                "available_backup_count": available_backup_count,
+                "total_storage_bytes": total_storage_bytes,
+                "protected_tenant_count": protected_tenant_count,
+                "failed_backup_count": failed_backup_count,
+                "scheduled_backup_count": scheduled_backup_count,
+                "upcoming_backup_count": upcoming_backup_count,
+                "next_scheduled_backup_at": next_scheduled_backup_at,
+            })
 
 
 class PlatformRestoreRequestViewSet(viewsets.ReadOnlyModelViewSet):
