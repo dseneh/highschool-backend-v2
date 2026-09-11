@@ -120,6 +120,11 @@ class ExecuteTransitionTestCase(RestoreLifecycleTestCase):
             executed = execute_restore(restore_request=approved, executed_by=self.tenant_user)
         
         self.assertEqual(executed.status, TenantRestoreRequest.Status.EXECUTION_PENDING)
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.restoration_in_progress)
+        self.assertTrue(self.tenant.maintenance_mode)
+        self.assertFalse(self.tenant.active)
+        self.assertEqual(self.tenant.restoration_request_id, executed.id)
 
     def test_execute_non_approved_raises_error(self):
         """Verify execute_restore refuses non-APPROVED statuses."""

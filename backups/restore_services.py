@@ -151,6 +151,7 @@ def execute_restore(*, restore_request, executed_by=None):
         restore_request.status = TenantRestoreRequest.Status.EXECUTION_PENDING
         restore_request.error_message = ""
         restore_request.save(update_fields=["status", "error_message", "updated_at"])
+        _lock_tenant_runtime(restore_request)
         return restore_request
 
 
@@ -178,6 +179,7 @@ def retry_restore(*, restore_request, retried_by=None):
         restore_request.status = TenantRestoreRequest.Status.EXECUTION_PENDING
         restore_request.error_message = ""
         restore_request.save(update_fields=["status", "error_message", "updated_at"])
+        _lock_tenant_runtime(restore_request)
         return restore_request
 
 
@@ -258,14 +260,20 @@ def run_restore(restore_request_id):
         _validate_execution_prerequisites(restore_request)
         tenant = restore_request.tenant
         schema_name = tenant.schema_name
-        if tenant.maintenance_mode or not tenant.active:
+        restore_already_locked = (
+            tenant.restoration_in_progress
+            and str(tenant.restoration_request_id) == str(restore_request.id)
+            and bool(restore_request.tenant_runtime_snapshot)
+        )
+        if (tenant.maintenance_mode or not tenant.active) and not restore_already_locked:
             raise RestoreError("Tenant is already disabled or in maintenance mode; restore execution was not started.")
 
         storage = storages["backups"]
         temp_path = _download_and_verify_backup(storage=storage, backup=restore_request.backup)
         _validate_archive(temp_path=temp_path, schema_name=schema_name)
 
-        _lock_tenant_runtime(restore_request)
+        if not restore_already_locked:
+            _lock_tenant_runtime(restore_request)
         tenant_locked = True
         _acquire_restore_lock(schema_name)
         restore_lock_acquired = True
@@ -328,7 +336,10 @@ def recover_stale_restores(*, now=None):
     cutoff = now - timedelta(minutes=max(1, getattr(settings, "TENANT_RESTORE_STALE_MINUTES", 60)))
     stale = list(
         TenantRestoreRequest.objects.filter(
-            status=TenantRestoreRequest.Status.RESTORING,
+            status__in=(
+                TenantRestoreRequest.Status.EXECUTION_PENDING,
+                TenantRestoreRequest.Status.RESTORING,
+            ),
             updated_at__lt=cutoff,
         ).select_related("tenant")
     )
