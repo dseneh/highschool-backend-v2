@@ -10,9 +10,12 @@ from backups.models import TenantBackup, TenantRestoreRequest
 from backups.restore_services import (
     RestoreError,
     approve_restore,
+    delete_restore,
+    execute_restore,
     refresh_restore_readiness,
     reject_restore,
     request_restore,
+    retry_restore,
 )
 from backups.serializers import (
     BackupRequestCreateSerializer,
@@ -137,8 +140,13 @@ class TenantBackupViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
 class TenantRestoreRequestViewSet(TenantContextMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = TenantRestoreRequestSerializer
     permission_classes = [RBACPermission]
-    permission_map = {"list": "backups.view", "retrieve": "backups.view"}
-    http_method_names = ["get", "head", "options"]
+    permission_map = {
+        "list": "backups.view",
+        "retrieve": "backups.view",
+        "execute": "restore.execute",
+        "retry": "restore.execute",
+    }
+    http_method_names = ["get", "post", "head", "options"]
 
     def get_queryset(self):
         tenant = self._tenant()
@@ -172,6 +180,50 @@ class TenantRestoreRequestViewSet(TenantContextMixin, viewsets.ReadOnlyModelView
             restore_request = refresh_restore_readiness(restore_request)
             data = self.get_serializer(restore_request).data
         return Response(data)
+
+    @action(detail=True, methods=["post"], url_path="execute")
+    def execute(self, request, pk=None):
+        """Execute an approved restore request (tenant action).
+        
+        Transitions from APPROVED to EXECUTION_PENDING.
+        Tenant can only execute their own restore requests.
+        """
+        tenant = self._tenant()
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.select_related(
+                    "tenant", "backup", "safety_backup"
+                ).get(pk=pk, tenant=tenant)
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            try:
+                restore_request = execute_restore(restore_request=restore_request, executed_by=request.user)
+            except RestoreError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+            data = self.get_serializer(restore_request).data
+        return Response(data, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["post"], url_path="retry")
+    def retry(self, request, pk=None):
+        """Retry a failed restore request (tenant action).
+        
+        Only allows retry of FAILED requests that were previously APPROVED.
+        Transitions directly to EXECUTION_PENDING without second approval.
+        """
+        tenant = self._tenant()
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.select_related(
+                    "tenant", "backup", "safety_backup"
+                ).get(pk=pk, tenant=tenant)
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            try:
+                restore_request = retry_restore(restore_request=restore_request, retried_by=request.user)
+            except RestoreError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+            data = self.get_serializer(restore_request).data
+        return Response(data, status=status.HTTP_202_ACCEPTED)
 
 
 class PlatformBackupViewSet(viewsets.ReadOnlyModelViewSet):
@@ -217,7 +269,7 @@ class PlatformRestoreRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
     serializer_class = PlatformTenantRestoreRequestSerializer
     permission_classes = [IsSuperAdmin]
-    http_method_names = ["get", "post", "head", "options"]
+    http_method_names = ["get", "post", "delete", "head", "options"]
 
     def _require_public_workspace(self):
         if connection.schema_name != get_public_schema_name():
@@ -254,6 +306,23 @@ class PlatformRestoreRequestViewSet(viewsets.ReadOnlyModelViewSet):
             restore_request = refresh_restore_readiness(restore_request)
             data = self.get_serializer(restore_request).data
         return Response(data)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a restore request (platform superadmin only).
+        
+        Only allows hard delete for terminal statuses: FAILED, REJECTED, CANCELLED.
+        """
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.get(pk=kwargs[self.lookup_field])
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            try:
+                delete_restore(restore_request=restore_request)
+            except RestoreError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -296,3 +365,26 @@ class PlatformRestoreRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 raise ValidationError({"detail": str(exc)}) from exc
             data = self.get_serializer(restore_request).data
         return Response(data)
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        """Retry a failed restore that was previously approved (platform superadmin).
+        
+        Only allows retry of FAILED requests where approved_at is set.
+        Transitions directly to EXECUTION_PENDING without second approval.
+        """
+        self._require_public_workspace()
+        with schema_context(get_public_schema_name()):
+            try:
+                restore_request = TenantRestoreRequest.objects.select_related(
+                    "tenant", "backup", "safety_backup"
+                ).get(pk=pk)
+            except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
+                raise NotFound("Restore request not found.") from exc
+            try:
+                restore_request = retry_restore(restore_request=restore_request, retried_by=request.user)
+            except RestoreError as exc:
+                raise ValidationError({"detail": str(exc)}) from exc
+            data = self.get_serializer(restore_request).data
+        return Response(data, status=status.HTTP_202_ACCEPTED)
+

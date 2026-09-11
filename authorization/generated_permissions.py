@@ -34,6 +34,7 @@ class Permissions:
         DELETE = "backups.delete"
         class Restore:
             REQUEST = "restore.request"
+            EXECUTE = "restore.execute"
 
     class Employees:
         VIEW = "employees.view"

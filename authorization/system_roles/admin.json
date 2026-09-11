@@ -91,9 +91,11 @@
     {"permission": "backups.create", "scope": "all"},
     {"permission": "backups.delete", "scope": "all"},
     {"permission": "restore.request", "scope": "all"},
+    {"permission": "restore.execute", "scope": "all"},
     {"permission": "notifications.view", "scope": "all"},
     {"permission": "notifications.send", "scope": "all"},
     {"permission": "notifications.send_class", "scope": "all"},
     {"permission": "notifications.manage", "scope": "all"}
   ]
 }
+
