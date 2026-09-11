@@ -91,6 +91,15 @@ class TenantRestoreRequestSerializer(serializers.ModelSerializer):
         return _user_summary(obj.rejected_by)
 
 
+class PlatformTenantRestoreRequestSerializer(TenantRestoreRequestSerializer):
+    class Meta(TenantRestoreRequestSerializer.Meta):
+        fields = (
+            *TenantRestoreRequestSerializer.Meta.fields,
+            "error_message",
+        )
+        read_only_fields = fields
+
+
 class RestoreRequestCreateSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
