@@ -14,6 +14,7 @@ class BackupPolicyError(RuntimeError):
 
 @dataclass(frozen=True)
 class EffectiveBackupPolicy:
+    backups_enabled: bool
     automatic_backups_enabled: bool
     frequency: str
     scheduled_time: object
@@ -81,6 +82,7 @@ def effective_policy(tenant, *, create_state=False):
         else platform.default_storage_quota_bytes
     )
     return EffectiveBackupPolicy(
+        backups_enabled=attr("backups_enabled") is not False,
         automatic_backups_enabled=_choose(attr("automatic_backups_enabled"), platform.automatic_backups_enabled),
         frequency=_choose(attr("frequency"), platform.frequency),
         scheduled_time=_choose(attr("scheduled_time"), platform.scheduled_time),
@@ -111,17 +113,26 @@ def retention_days_for(tenant, backup_type):
 
 
 def require_manual_backup_allowed(tenant):
-    if not effective_policy(tenant).manual_backups_allowed:
+    policy = effective_policy(tenant)
+    if not policy.backups_enabled:
+        raise BackupPolicyError("Backup and recovery has been paused for this workspace by EzySchool.")
+    if not policy.manual_backups_allowed:
         raise BackupPolicyError("Manual backups have been disabled for this workspace by EzySchool.")
 
 
 def require_restore_request_allowed(tenant):
-    if not effective_policy(tenant).restore_requests_allowed:
+    policy = effective_policy(tenant)
+    if not policy.backups_enabled:
+        raise BackupPolicyError("Backup and recovery has been paused for this workspace by EzySchool.")
+    if not policy.restore_requests_allowed:
         raise BackupPolicyError("Restore requests have been disabled for this workspace by EzySchool.")
 
 
 def require_restore_execution_allowed(tenant):
-    if not effective_policy(tenant).restore_execution_allowed:
+    policy = effective_policy(tenant)
+    if not policy.backups_enabled:
+        raise BackupPolicyError("Backup and recovery has been paused for this workspace by EzySchool.")
+    if not policy.restore_execution_allowed:
         raise BackupPolicyError("Restore execution has been disabled for this workspace by EzySchool.")
 
 
@@ -145,7 +156,7 @@ def ensure_schedule_state(tenant, *, now=None, recalculate=False):
     state = get_or_create_tenant_policy(tenant)
     policy = effective_policy(tenant)
     now = now or timezone.now()
-    if not policy.automatic_backups_enabled:
+    if not policy.backups_enabled or not policy.automatic_backups_enabled:
         if state.next_run_at is not None:
             state.next_run_at = None
             state.save(update_fields=["next_run_at", "updated_at"])
@@ -176,5 +187,9 @@ def mark_scheduled_backup_completed(backup, *, completed_at=None):
     completed_at = completed_at or backup.completed_at or timezone.now()
     state.last_run_at = completed_at
     policy = effective_policy(backup.tenant)
-    state.next_run_at = calculate_next_run(policy, after=completed_at)
+    state.next_run_at = (
+        calculate_next_run(policy, after=completed_at)
+        if policy.backups_enabled and policy.automatic_backups_enabled
+        else None
+    )
     state.save(update_fields=["last_run_at", "next_run_at", "updated_at"])
