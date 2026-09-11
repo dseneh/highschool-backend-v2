@@ -17,6 +17,7 @@ from backups.restore_services import (
 from backups.serializers import (
     BackupRequestCreateSerializer,
     PlatformTenantBackupSerializer,
+    PlatformTenantRestoreRequestSerializer,
     RestoreDecisionSerializer,
     RestoreRequestCreateSerializer,
     TenantBackupSerializer,
@@ -214,7 +215,7 @@ class PlatformBackupViewSet(viewsets.ReadOnlyModelViewSet):
 class PlatformRestoreRequestViewSet(viewsets.ReadOnlyModelViewSet):
     """Platform-superadmin review queue for tenant restore requests."""
 
-    serializer_class = TenantRestoreRequestSerializer
+    serializer_class = PlatformTenantRestoreRequestSerializer
     permission_classes = [IsSuperAdmin]
     http_method_names = ["get", "post", "head", "options"]
 
