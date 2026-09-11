@@ -24,6 +24,7 @@ ACTIVE_RESTORE_STATUSES = {
     TenantRestoreRequest.Status.SAFETY_BACKUP_PENDING,
     TenantRestoreRequest.Status.READY_FOR_APPROVAL,
     TenantRestoreRequest.Status.APPROVED,
+    TenantRestoreRequest.Status.EXECUTION_PENDING,
     TenantRestoreRequest.Status.RESTORING,
 }
 
@@ -87,6 +88,12 @@ def refresh_restore_readiness(restore_request):
 
 
 def approve_restore(*, restore_request, approved_by, decision_note=""):
+    """Approve a restore request.
+    
+    Moves status from READY_FOR_APPROVAL to APPROVED.
+    Does NOT transition to EXECUTION_PENDING or RESTORING.
+    The tenant must explicitly call execute_restore() to queue execution.
+    """
     with transaction.atomic():
         restore_request = TenantRestoreRequest.objects.select_for_update(of=("self",)).select_related(
             "tenant", "backup", "safety_backup"
@@ -108,6 +115,80 @@ def approve_restore(*, restore_request, approved_by, decision_note=""):
         return restore_request
 
 
+def execute_restore(*, restore_request, executed_by=None):
+    """Execute an approved restore request.
+    
+    Transitions from APPROVED to EXECUTION_PENDING.
+    The worker process will pick it up and move it to RESTORING, then handle execution.
+    Validates that backup and safety backup are still available.
+    """
+    with transaction.atomic():
+        restore_request = TenantRestoreRequest.objects.select_for_update(of=("self",)).select_related(
+            "tenant", "backup", "safety_backup"
+        ).get(pk=restore_request.pk)
+        
+        if restore_request.status != TenantRestoreRequest.Status.APPROVED:
+            raise RestoreError(
+                f"Restore request is not approved (current status: {restore_request.status})."
+            )
+        
+        _validate_execution_prerequisites(restore_request)
+        restore_request.status = TenantRestoreRequest.Status.EXECUTION_PENDING
+        restore_request.error_message = ""
+        restore_request.save(update_fields=["status", "error_message", "updated_at"])
+        return restore_request
+
+
+def retry_restore(*, restore_request, retried_by=None):
+    """Retry a failed restore that was previously approved.
+    
+    Only applies to FAILED requests where approved_at is set.
+    Transitions directly to EXECUTION_PENDING without requiring second approval.
+    Validates that backup and safety backup are still available.
+    """
+    with transaction.atomic():
+        restore_request = TenantRestoreRequest.objects.select_for_update(of=("self",)).select_related(
+            "tenant", "backup", "safety_backup"
+        ).get(pk=restore_request.pk)
+        
+        if restore_request.status != TenantRestoreRequest.Status.FAILED:
+            raise RestoreError(
+                f"Only a failed restore request can be retried (current status: {restore_request.status})."
+            )
+        
+        if not restore_request.approved_at:
+            raise RestoreError("Cannot retry a restore request that was not previously approved.")
+        
+        _validate_execution_prerequisites(restore_request)
+        restore_request.status = TenantRestoreRequest.Status.EXECUTION_PENDING
+        restore_request.error_message = ""
+        restore_request.save(update_fields=["status", "error_message", "updated_at"])
+        return restore_request
+
+
+def delete_restore(*, restore_request):
+    """Delete a restore request (platform superadmin only).
+    
+    Only allows hard delete for terminal statuses: FAILED, REJECTED, CANCELLED.
+    Refuses to delete if in active/approved/restoring/execution_pending.
+    """
+    terminal_statuses = {
+        TenantRestoreRequest.Status.FAILED,
+        TenantRestoreRequest.Status.REJECTED,
+        TenantRestoreRequest.Status.CANCELLED,
+    }
+    
+    if restore_request.status not in terminal_statuses:
+        raise RestoreError(
+            f"Cannot delete restore request in status '{restore_request.status}'. "
+            f"Only terminal statuses ({', '.join(terminal_statuses)}) may be deleted."
+        )
+    
+    restore_request_id = restore_request.id
+    restore_request.delete()
+    return restore_request_id
+
+
 def reject_restore(*, restore_request, rejected_by, decision_note=""):
     with transaction.atomic():
         restore_request = TenantRestoreRequest.objects.select_for_update().get(pk=restore_request.pk)
@@ -127,10 +208,15 @@ def reject_restore(*, restore_request, rejected_by, decision_note=""):
 
 
 def run_restore(restore_request_id):
+    """Execute the actual restore.
+    
+    Transitions from EXECUTION_PENDING to RESTORING, performs the restore,
+    then moves to COMPLETED or FAILED.
+    """
     claimed_at = timezone.now()
     claimed = TenantRestoreRequest.objects.filter(
         pk=restore_request_id,
-        status=TenantRestoreRequest.Status.APPROVED,
+        status=TenantRestoreRequest.Status.EXECUTION_PENDING,
     ).update(
         status=TenantRestoreRequest.Status.RESTORING,
         started_at=claimed_at,
@@ -142,7 +228,7 @@ def run_restore(restore_request_id):
             current = TenantRestoreRequest.objects.only("status").get(pk=restore_request_id)
         except TenantRestoreRequest.DoesNotExist as exc:
             raise RestoreError(f"Restore request {restore_request_id} does not exist.") from exc
-        raise RestoreError(f"Restore request {restore_request_id} is not approved (status={current.status}).")
+        raise RestoreError(f"Restore request {restore_request_id} is not execution pending (status={current.status}).")
 
     restore_request = TenantRestoreRequest.objects.select_related("tenant", "backup", "safety_backup").get(
         pk=restore_request_id

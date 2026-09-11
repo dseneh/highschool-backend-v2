@@ -68,10 +68,11 @@ class TenantRestoreRequest(models.Model):
         SAFETY_BACKUP_PENDING = "safety_backup_pending", "Safety backup pending"
         READY_FOR_APPROVAL = "ready_for_approval", "Ready for approval"
         APPROVED = "approved", "Approved"
-        REJECTED = "rejected", "Rejected"
+        EXECUTION_PENDING = "execution_pending", "Execution pending"
         RESTORING = "restoring", "Restoring"
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
+        REJECTED = "rejected", "Rejected"
         CANCELLED = "cancelled", "Cancelled"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -128,3 +129,4 @@ class TenantRestoreRequest(models.Model):
 
     def __str__(self):
         return f"{self.tenant_id}:{self.id} ({self.status})"
+

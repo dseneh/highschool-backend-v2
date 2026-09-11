@@ -119,3 +119,4 @@ def _user_summary(user):
         "id_number": getattr(user, "id_number", None),
         "name": display_name or getattr(user, "email", "") or str(user.pk),
     }
+

@@ -28,6 +28,7 @@ ACTIVE_RESTORE_STATUSES = {
     TenantRestoreRequest.Status.SAFETY_BACKUP_PENDING,
     TenantRestoreRequest.Status.READY_FOR_APPROVAL,
     TenantRestoreRequest.Status.APPROVED,
+    TenantRestoreRequest.Status.EXECUTION_PENDING,
     TenantRestoreRequest.Status.RESTORING,
 }
 
