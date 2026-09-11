@@ -30,6 +30,21 @@ ACTIVE_RESTORE_STATUSES = {
 
 _SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+
+def _tenant_lock_key(schema_name):
+    digest = hashlib.blake2b(str(schema_name).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def _acquire_restore_lock(schema_name):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_lock(%s)", [_tenant_lock_key(schema_name)])
+
+
+def _release_restore_lock(schema_name):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_unlock(%s)", [_tenant_lock_key(schema_name)])
+
 # Forbidden catalog types that must not appear in tenant-scoped restores.
 # Format in pg_restore --list: "; <oid>; <catalog-type> <rest>"
 # Some types are single-word (DATABASE, EXTENSION) and some are multi-word (EVENT TRIGGER).
@@ -236,6 +251,8 @@ def run_restore(restore_request_id):
     temp_path = None
     rollback_schema = None
     tenant_locked = False
+    restore_lock_acquired = False
+    runtime_safe_to_unlock = True
 
     try:
         _validate_execution_prerequisites(restore_request)
@@ -250,6 +267,8 @@ def run_restore(restore_request_id):
 
         _lock_tenant_runtime(restore_request)
         tenant_locked = True
+        _acquire_restore_lock(schema_name)
+        restore_lock_acquired = True
 
         rollback_schema = _rollback_schema_name(schema_name, restore_request.id)
         _rename_schema(schema_name, rollback_schema)
@@ -279,8 +298,9 @@ def run_restore(restore_request_id):
                 _drop_schema_if_exists(schema_name)
                 _rename_schema(rollback_schema, schema_name)
             except Exception as rollback_exc:
+                runtime_safe_to_unlock = False
                 exc = RestoreError(f"{exc}; automatic schema rollback also failed: {rollback_exc}")
-        if tenant_locked:
+        if tenant_locked and runtime_safe_to_unlock:
             try:
                 _restore_tenant_runtime(restore_request)
             except Exception:
@@ -288,6 +308,11 @@ def run_restore(restore_request_id):
         _fail_restore(restore_request, str(exc))
         raise
     finally:
+        if restore_lock_acquired:
+            try:
+                _release_restore_lock(restore_request.tenant.schema_name)
+            except Exception:
+                pass
         if temp_path:
             Path(temp_path).unlink(missing_ok=True)
 
@@ -353,12 +378,18 @@ def _lock_tenant_runtime(restore_request):
 
     tenant.active = False
     tenant.maintenance_mode = True
+    tenant.restoration_in_progress = True
+    tenant.restoration_started_at = timezone.now()
+    tenant.restoration_request_id = restore_request.id
     tenant.disabled_access_allow_tenant_admins = False
     tenant.disabled_access_allowed_users = []
     tenant.save(
         update_fields=[
             "active",
             "maintenance_mode",
+            "restoration_in_progress",
+            "restoration_started_at",
+            "restoration_request_id",
             "disabled_access_allow_tenant_admins",
             "disabled_access_allowed_users",
         ]
@@ -374,12 +405,18 @@ def _restore_tenant_runtime(restore_request):
     tenant.maintenance_mode = bool(snapshot.get("maintenance_mode", False))
     tenant.disabled_access_allow_tenant_admins = bool(snapshot.get("disabled_access_allow_tenant_admins", True))
     tenant.disabled_access_allowed_users = list(snapshot.get("disabled_access_allowed_users", []))
+    tenant.restoration_in_progress = False
+    tenant.restoration_started_at = None
+    tenant.restoration_request_id = None
     tenant.save(
         update_fields=[
             "active",
             "maintenance_mode",
             "disabled_access_allow_tenant_admins",
             "disabled_access_allowed_users",
+            "restoration_in_progress",
+            "restoration_started_at",
+            "restoration_request_id",
         ]
     )
 
@@ -597,4 +634,3 @@ def _fail_restore(restore_request, message):
     restore_request.error_message = (message or "Unknown restore failure")[:8000]
     restore_request.completed_at = timezone.now()
     restore_request.save(update_fields=["status", "error_message", "completed_at", "updated_at"])
-
