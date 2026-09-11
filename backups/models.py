@@ -50,6 +50,7 @@ class TenantBackupPolicy(models.Model):
         primary_key=True,
         related_name="backup_policy",
     )
+    backups_enabled = models.BooleanField(default=True)
     automatic_backups_enabled = models.BooleanField(null=True, blank=True)
     frequency = models.CharField(
         max_length=20,

@@ -78,3 +78,24 @@ class BackupCapabilityPermissionTests(SimpleTestCase):
         permission = TenantBackupCapabilityPermission()
         self.assertFalse(permission.has_permission(self._request(), self._view("execute")))
         self.assertFalse(permission.has_permission(self._request(), self._view("retry")))
+
+    @patch("backups.policy_permissions.connection")
+    @patch("backups.policy_permissions.schema_context")
+    @patch("backups.policy_permissions.Tenant.objects.get")
+    @patch("backups.policy_permissions.effective_policy")
+    def test_paused_tenant_denies_all_tenant_backup_actions(
+        self, effective_policy, tenant_get, schema_context, connection
+    ):
+        connection.schema_name = "demo"
+        tenant_get.return_value = SimpleNamespace(schema_name="demo")
+        schema_context.return_value.__enter__.return_value = None
+        effective_policy.return_value = SimpleNamespace(
+            backups_enabled=False,
+            manual_backups_allowed=True,
+            restore_requests_allowed=True,
+            restore_execution_allowed=True,
+        )
+        for action in ("create", "request_restore", "execute", "retry"):
+            permission = TenantBackupCapabilityPermission()
+            self.assertFalse(permission.has_permission(self._request(), self._view(action)))
+            self.assertIn("paused", permission.message)
