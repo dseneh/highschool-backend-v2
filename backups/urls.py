@@ -7,6 +7,7 @@ from backups.history_views import (
     TenantBackupHistoryView,
     TenantRestoreHistoryView,
 )
+from backups.platform_views import PolicyAwarePlatformBackupViewSet
 from backups.policy_permissions import TenantBackupCapabilityPermission
 from backups.policy_views import (
     PlatformBackupSettingsView,
@@ -14,7 +15,6 @@ from backups.policy_views import (
     TenantEffectiveBackupPolicyView,
 )
 from backups.views import (
-    PlatformBackupViewSet,
     PlatformRestoreRequestViewSet,
     TenantBackupViewSet,
     TenantRestoreRequestViewSet,
@@ -34,7 +34,7 @@ _add_capability_permission(TenantRestoreRequestViewSet)
 router = DefaultRouter()
 router.register("backups", TenantBackupViewSet, basename="tenant-backup")
 router.register("restore-requests", TenantRestoreRequestViewSet, basename="tenant-restore-request")
-router.register("platform/backups", PlatformBackupViewSet, basename="platform-backup")
+router.register("platform/backups", PolicyAwarePlatformBackupViewSet, basename="platform-backup")
 router.register("platform/restore-requests", PlatformRestoreRequestViewSet, basename="platform-restore-request")
 router.register("platform/backup-policies", PlatformTenantBackupPolicyViewSet, basename="platform-backup-policy")
 
