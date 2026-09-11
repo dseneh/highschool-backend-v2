@@ -126,7 +126,7 @@ def require_restore_execution_allowed(tenant):
 
 
 def calculate_next_run(policy, *, after=None):
-    """Return the next UTC run at or after the tenant's configured local wall-clock schedule."""
+    """Return the next UTC run after the supplied instant using the configured local wall clock."""
     after = after or timezone.now()
     try:
         tz = ZoneInfo(policy.timezone)
@@ -150,9 +150,22 @@ def ensure_schedule_state(tenant, *, now=None, recalculate=False):
             state.next_run_at = None
             state.save(update_fields=["next_run_at", "updated_at"])
         return state
+
     if recalculate or state.next_run_at is None:
-        state.next_run_at = calculate_next_run(policy, after=now - timedelta(seconds=1))
-        state.save(update_fields=["next_run_at", "updated_at"])
+        latest = (
+            TenantBackup.objects.filter(
+                tenant=tenant,
+                backup_type=TenantBackup.BackupType.SCHEDULED,
+                status=TenantBackup.Status.AVAILABLE,
+                completed_at__isnull=False,
+            )
+            .order_by("-completed_at")
+            .first()
+        )
+        base = latest.completed_at if latest else now - timedelta(seconds=1)
+        state.last_run_at = latest.completed_at if latest else state.last_run_at
+        state.next_run_at = calculate_next_run(policy, after=base)
+        state.save(update_fields=["last_run_at", "next_run_at", "updated_at"])
     return state
 
 
