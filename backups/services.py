@@ -12,6 +12,14 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from backups.models import TenantBackup, TenantRestoreRequest
+from backups.policies import (
+    calculate_next_run,
+    effective_policy,
+    ensure_schedule_state,
+    get_or_create_tenant_policy,
+    mark_scheduled_backup_completed,
+    retention_days_for,
+)
 from core.models import Tenant
 
 
@@ -70,16 +78,6 @@ def _storage_sha256(storage, key):
         return _hash_stream(stream)
 
 
-def _retention_days(backup_type):
-    mapping = {
-        TenantBackup.BackupType.MANUAL: settings.TENANT_BACKUP_RETENTION_MANUAL_DAYS,
-        TenantBackup.BackupType.SCHEDULED: settings.TENANT_BACKUP_RETENTION_SCHEDULED_DAYS,
-        TenantBackup.BackupType.PRE_RESTORE: settings.TENANT_BACKUP_RETENTION_PRE_RESTORE_DAYS,
-        TenantBackup.BackupType.SYSTEM: settings.TENANT_BACKUP_RETENTION_SYSTEM_DAYS,
-    }
-    return max(0, int(mapping[backup_type]))
-
-
 def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.BackupType.MANUAL, reason=""):
     with transaction.atomic():
         tenant = tenant.__class__.objects.select_for_update().get(pk=tenant.pk)
@@ -87,7 +85,7 @@ def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.Backup
             raise BackupError("Refusing to queue a tenant backup for an invalid/public schema.")
         if TenantBackup.objects.filter(tenant=tenant, status__in=ACTIVE_STATUSES).exists():
             raise BackupError("A backup is already in progress for this tenant.")
-        retention_days = _retention_days(backup_type)
+        retention_days = retention_days_for(tenant, backup_type)
         expires_at = timezone.now() + timedelta(days=retention_days) if retention_days else None
         return TenantBackup.objects.create(
             tenant=tenant,
@@ -99,18 +97,22 @@ def request_backup(*, tenant, requested_by=None, backup_type=TenantBackup.Backup
         )
 
 
+def _backup_required_by_active_restore(backup):
+    return TenantRestoreRequest.objects.filter(
+        backup=backup,
+        status__in=ACTIVE_RESTORE_STATUSES,
+    ).exists() or TenantRestoreRequest.objects.filter(
+        safety_backup=backup,
+        status__in=ACTIVE_RESTORE_STATUSES,
+    ).exists()
+
+
 def delete_backup(backup):
     with transaction.atomic():
         backup = TenantBackup.objects.select_for_update().get(pk=backup.pk)
         if backup.status != TenantBackup.Status.AVAILABLE:
             raise BackupError("Only available backups can be deleted.")
-        if TenantRestoreRequest.objects.filter(
-            backup=backup,
-            status__in=ACTIVE_RESTORE_STATUSES,
-        ).exists() or TenantRestoreRequest.objects.filter(
-            safety_backup=backup,
-            status__in=ACTIVE_RESTORE_STATUSES,
-        ).exists():
+        if _backup_required_by_active_restore(backup):
             raise BackupError("This backup is currently required by an active restore request and cannot be deleted.")
 
         backup.status = TenantBackup.Status.DELETING
@@ -218,6 +220,7 @@ def run_backup(backup_id):
         backup.application_version = getattr(settings, "APP_VERSION", "")
         backup.completed_at = timezone.now()
         backup.save(update_fields=["status", "storage_provider", "storage_key", "file_size", "sha256", "postgres_version", "application_version", "completed_at", "updated_at"])
+        mark_scheduled_backup_completed(backup)
         return backup
     except Exception as exc:
         _fail(backup, str(exc))
@@ -228,26 +231,22 @@ def run_backup(backup_id):
 
 
 def queue_due_scheduled_backups(*, now=None):
-    if not settings.TENANT_BACKUP_SCHEDULE_ENABLED:
-        return []
     now = now or timezone.now()
-    cutoff = now - timedelta(hours=max(1, settings.TENANT_BACKUP_SCHEDULE_INTERVAL_HOURS))
     queued = []
     for tenant in Tenant.objects.exclude(schema_name="public").filter(active=True).iterator():
+        policy = effective_policy(tenant, create_state=True)
+        state = ensure_schedule_state(tenant, now=now)
+        if not policy.automatic_backups_enabled or not state.next_run_at or state.next_run_at > now:
+            continue
         if TenantBackup.objects.filter(tenant=tenant, status__in=ACTIVE_STATUSES).exists():
             continue
-        recent = TenantBackup.objects.filter(
-            tenant=tenant,
-            backup_type=TenantBackup.BackupType.SCHEDULED,
-            status=TenantBackup.Status.AVAILABLE,
-            completed_at__gt=cutoff,
-        ).exists()
-        if recent:
-            continue
         try:
-            queued.append(request_backup(tenant=tenant, backup_type=TenantBackup.BackupType.SCHEDULED))
+            queued_backup = request_backup(tenant=tenant, backup_type=TenantBackup.BackupType.SCHEDULED)
         except BackupError:
             continue
+        queued.append(queued_backup)
+        state.next_run_at = calculate_next_run(policy, after=now)
+        state.save(update_fields=["next_run_at", "updated_at"])
     return queued
 
 
@@ -260,16 +259,38 @@ def recover_stale_backups(*, now=None):
     return stale
 
 
+def _retention_candidates(now):
+    candidates = {
+        backup.pk: backup
+        for backup in TenantBackup.objects.select_related("tenant").filter(
+            status__in=[TenantBackup.Status.AVAILABLE, TenantBackup.Status.DELETING],
+            expires_at__isnull=False,
+            expires_at__lte=now,
+        )
+    }
+    for tenant in Tenant.objects.exclude(schema_name="public").filter(active=True).iterator():
+        maximum = effective_policy(tenant).maximum_retained_scheduled_backups
+        if not maximum:
+            continue
+        scheduled = list(
+            TenantBackup.objects.filter(
+                tenant=tenant,
+                backup_type=TenantBackup.BackupType.SCHEDULED,
+                status=TenantBackup.Status.AVAILABLE,
+            ).order_by("-completed_at", "-requested_at")
+        )
+        for backup in scheduled[maximum:]:
+            candidates.setdefault(backup.pk, backup)
+    return list(candidates.values())
+
+
 def purge_expired_backups(*, now=None):
     now = now or timezone.now()
     storage = storages["backups"]
-    expired = list(TenantBackup.objects.filter(
-        status__in=[TenantBackup.Status.AVAILABLE, TenantBackup.Status.DELETING],
-        expires_at__isnull=False,
-        expires_at__lte=now,
-    ))
     deleted = []
-    for backup in expired:
+    for backup in _retention_candidates(now):
+        if _backup_required_by_active_restore(backup):
+            continue
         backup.status = TenantBackup.Status.DELETING
         backup.save(update_fields=["status", "updated_at"])
         try:
