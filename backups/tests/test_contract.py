@@ -161,3 +161,148 @@ class RestoreServiceContractTests(SimpleTestCase):
         name = _rollback_schema_name("a" * 63, UUID("12345678-1234-5678-1234-567812345678"))
         self.assertLessEqual(len(name), 63)
         self.assertIn("__restore_rb_", name)
+
+
+class RestoreTOCValidatorRegressionTests(SimpleTestCase):
+    """Regression tests for TOC validator fix (Issue: false-positives on object names).
+    
+    Tests that:
+    1. Object names containing forbidden words (database, subscription, etc.) do NOT false-positive
+    2. Actual forbidden catalog types in the TOC ARE correctly rejected
+    """
+
+    def test_table_named_student_database_does_not_false_positive(self):
+        """Table named 'student_database' should not trigger DATABASE filter."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public student_database postgres  
+; 2345; INDEX SCHEMA public student_database_pkey postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(forbidden, [], "Object name containing 'database' word must not trigger filter")
+
+    def test_function_named_validate_subscription_plan_does_not_false_positive(self):
+        """Function named 'validate_subscription_plan' should not trigger SUBSCRIPTION filter."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; FUNCTION SCHEMA public validate_subscription_plan() postgres  
+; 2345; FUNCTION SCHEMA public check_subscription_status() postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(forbidden, [], "Object name containing 'subscription' word must not trigger filter")
+
+    def test_table_named_event_trigger_history_does_not_false_positive(self):
+        """Table named 'event_trigger_history' should not trigger EVENT TRIGGER filter."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public event_trigger_history postgres  
+; 2345; VIEW SCHEMA public event_trigger_logs postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(
+            forbidden, [],
+            "Object name containing 'event' and 'trigger' as separate words must not trigger filter",
+        )
+
+    def test_table_named_extension_metadata_does_not_false_positive(self):
+        """Table named 'extension_metadata' should not trigger EXTENSION filter."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public extension_metadata postgres  
+; 2345; COLUMN SCHEMA public extension_config postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(forbidden, [], "Object name containing 'extension' word must not trigger filter")
+
+    def test_table_named_published_articles_does_not_false_positive(self):
+        """Column named 'published_articles' should not trigger PUBLICATION filter."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public articles postgres  
+; 2345; COLUMN SCHEMA public published_articles postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(forbidden, [], "Object name containing 'publication' word must not trigger filter")
+
+    def test_actual_database_toc_entry_is_rejected(self):
+        """Actual DATABASE entry in TOC must be rejected."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; DATABASE mydb postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 1, "Actual DATABASE entry must be detected")
+        self.assertIn("[DATABASE", forbidden[0], "Error message must include DATABASE type")
+
+    def test_actual_extension_toc_entry_is_rejected(self):
+        """Actual EXTENSION entry in TOC must be rejected."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; EXTENSION uuid-ossp postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 1, "Actual EXTENSION entry must be detected")
+        self.assertIn("[EXTENSION", forbidden[0], "Error message must include EXTENSION type")
+
+    def test_actual_event_trigger_toc_entry_is_rejected(self):
+        """Actual EVENT TRIGGER entry in TOC must be rejected."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; EVENT TRIGGER log_schema_changes postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 1, "Actual EVENT TRIGGER entry must be detected")
+        self.assertIn("[EVENT TRIGGER", forbidden[0], "Error message must include EVENT TRIGGER type")
+
+    def test_actual_publication_toc_entry_is_rejected(self):
+        """Actual PUBLICATION entry in TOC must be rejected."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; PUBLICATION all_tables postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 1, "Actual PUBLICATION entry must be detected")
+        self.assertIn("[PUBLICATION", forbidden[0], "Error message must include PUBLICATION type")
+
+    def test_actual_subscription_toc_entry_is_rejected(self):
+        """Actual SUBSCRIPTION entry in TOC must be rejected."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; SUBSCRIPTION remote_sync postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 1, "Actual SUBSCRIPTION entry must be detected")
+        self.assertIn("[SUBSCRIPTION", forbidden[0], "Error message must include SUBSCRIPTION type")
+
+    def test_multiple_forbidden_entries_are_all_detected(self):
+        """Multiple forbidden entries must all be detected."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; DATABASE mydb postgres  
+; 3456; EXTENSION uuid-ossp postgres  
+; 4567; PUBLICATION all_tables postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 3, "All forbidden entries must be detected")
+
+    def test_mixed_safe_and_forbidden_objects_only_flags_forbidden(self):
+        """Safe objects mixed with forbidden ones only flag the forbidden ones."""
+        from backups.restore_services import _find_forbidden_toc_entries
+
+        toc = """; 1234; TABLE SCHEMA public users postgres  
+; 2345; COLUMN SCHEMA public user_id postgres  
+; 3456; FUNCTION SCHEMA public get_user_by_database_name() postgres  
+; 4567; DATABASE mydb postgres  
+; 5678; INDEX SCHEMA public users_pkey postgres  
+"""
+        forbidden = _find_forbidden_toc_entries(toc)
+        self.assertEqual(len(forbidden), 1, "Only actual DATABASE entry should be detected")
+        self.assertIn("[DATABASE", forbidden[0])
+        self.assertNotIn("FUNCTION", forbidden[0])
+

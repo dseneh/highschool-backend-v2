@@ -29,6 +29,17 @@ ACTIVE_RESTORE_STATUSES = {
 
 _SAFE_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Forbidden catalog types that must not appear in tenant-scoped restores.
+# Format in pg_restore --list: "; <oid>; <catalog-type> <rest>"
+# Some types are single-word (DATABASE, EXTENSION) and some are multi-word (EVENT TRIGGER).
+_FORBIDDEN_TOC_TYPES = {
+    "DATABASE",
+    "EXTENSION",
+    "EVENT TRIGGER",
+    "PUBLICATION",
+    "SUBSCRIPTION",
+}
+
 
 def request_restore(*, tenant, backup, requested_by=None, reason=""):
     with transaction.atomic():
@@ -338,6 +349,14 @@ def _download_and_verify_backup(*, storage, backup):
 
 
 def _validate_archive(*, temp_path, schema_name):
+    """Validate pg_restore archive.
+    
+    Checks:
+    1. Archive is readable by pg_restore
+    2. Archive contains the expected tenant schema
+    3. Archive does not contain forbidden object types (DATABASE, EXTENSION, etc.)
+       by parsing actual TOC lines, not substring matching
+    """
     result = subprocess.run(
         ["pg_restore", "--list", str(temp_path)],
         capture_output=True,
@@ -349,10 +368,61 @@ def _validate_archive(*, temp_path, schema_name):
     toc = result.stdout or ""
     if f"SCHEMA - {schema_name} " not in toc and f"SCHEMA {schema_name} " not in toc:
         raise RestoreError("Restore archive does not contain the expected tenant schema.")
-    forbidden = (" DATABASE ", " EXTENSION ", " EVENT TRIGGER ", " PUBLICATION ", " SUBSCRIPTION ")
-    normalized = f" {toc.upper()} "
-    if any(token in normalized for token in forbidden):
-        raise RestoreError("Restore archive contains object types that are not permitted for tenant restore.")
+    
+    # Parse TOC lines to find forbidden object types (not substring matches on object names).
+    forbidden_lines = _find_forbidden_toc_entries(toc)
+    if forbidden_lines:
+        offending = "; ".join(forbidden_lines[:3])  # Show first 3 offending lines
+        if len(forbidden_lines) > 3:
+            offending += f"; ... and {len(forbidden_lines) - 3} more"
+        raise RestoreError(
+            f"Restore archive contains forbidden object type(s). "
+            f"Offending TOC entries: {offending}"
+        )
+
+
+def _find_forbidden_toc_entries(toc):
+    """Parse pg_restore --list output and find TOC lines with forbidden catalog types.
+    
+    pg_restore --list format: "; <oid>; <catalog-type> <schema> <name> <owner> ..."
+    Examples:
+      "; 1234; TABLE SCHEMA public my_table postgres  "
+      "; 5678; EVENT TRIGGER log_changes postgres  "
+    
+    Returns list of sanitized TOC lines (object names redacted) that triggered the filter.
+    """
+    forbidden_lines = []
+    for line in toc.split("\n"):
+        if not line.strip():
+            continue
+        if not line.startswith(";"):
+            continue
+        # Parse: "; <oid>; <catalog-type> <rest>"
+        # Extract the part after ";<digits>;"
+        parts = line.split(";", 2)
+        if len(parts) < 3:
+            continue
+        type_and_rest = parts[2].strip()
+        
+        # Now match the catalog type. Handle both single-word and multi-word types.
+        # Try to match "EVENT TRIGGER" first (longest), then others.
+        matched_type = None
+        if type_and_rest.upper().startswith("EVENT TRIGGER "):
+            matched_type = "EVENT TRIGGER"
+        else:
+            # Try single-word types
+            first_word = type_and_rest.split()[0].upper() if type_and_rest else ""
+            if first_word in _FORBIDDEN_TOC_TYPES:
+                matched_type = first_word
+        
+        if matched_type:
+            # Extract schema (should be first part after type)
+            rest_after_type = type_and_rest[len(matched_type):].strip()
+            schema_part = rest_after_type.split()[0] if rest_after_type else "(unknown)"
+            sanitized = f"[{matched_type} in {schema_part}]"
+            forbidden_lines.append(sanitized)
+    
+    return forbidden_lines
 
 
 def _pg_restore(temp_path):
@@ -441,3 +511,4 @@ def _fail_restore(restore_request, message):
     restore_request.error_message = (message or "Unknown restore failure")[:8000]
     restore_request.completed_at = timezone.now()
     restore_request.save(update_fields=["status", "error_message", "completed_at", "updated_at"])
+
