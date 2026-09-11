@@ -35,6 +35,25 @@ def _message_for(entry, changes):
     return str(action)
 
 
+def _fallback_history(instance):
+    actor = _actor_summary(getattr(instance, "requested_by", None))
+    timestamp = getattr(instance, "requested_at", None) or getattr(instance, "created_at", None)
+    if not timestamp:
+        return []
+    return [
+        {
+            "id": f"baseline-{instance.pk}",
+            "action": "created",
+            "timestamp": timestamp,
+            "actor": actor,
+            "message": f"Record created; current status is {str(instance.status).replace('_', ' ')}",
+            "status_from": None,
+            "status_to": instance.status,
+            "changes": {},
+        }
+    ]
+
+
 def _history_for(instance):
     entries = (
         LogEntry.objects.get_for_object(instance)
@@ -64,7 +83,7 @@ def _history_for(instance):
                 "changes": changes,
             }
         )
-    return history
+    return history or _fallback_history(instance)
 
 
 class TenantHistoryMixin:
@@ -87,7 +106,7 @@ class TenantBackupHistoryView(TenantHistoryMixin, APIView):
         tenant = self._tenant()
         with schema_context(get_public_schema_name()):
             try:
-                backup = TenantBackup.objects.get(pk=pk, tenant=tenant)
+                backup = TenantBackup.objects.select_related("requested_by").get(pk=pk, tenant=tenant)
             except (TenantBackup.DoesNotExist, ValueError) as exc:
                 raise NotFound("Backup not found.") from exc
             return Response(_history_for(backup))
@@ -98,7 +117,7 @@ class TenantRestoreHistoryView(TenantHistoryMixin, APIView):
         tenant = self._tenant()
         with schema_context(get_public_schema_name()):
             try:
-                restore = TenantRestoreRequest.objects.get(pk=pk, tenant=tenant)
+                restore = TenantRestoreRequest.objects.select_related("requested_by").get(pk=pk, tenant=tenant)
             except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
                 raise NotFound("Restore request not found.") from exc
             return Response(_history_for(restore))
@@ -111,7 +130,7 @@ class PlatformBackupHistoryView(APIView):
         if connection.schema_name != get_public_schema_name():
             raise NotFound("Platform backup administration is only available in the public workspace.")
         try:
-            backup = TenantBackup.objects.get(pk=pk)
+            backup = TenantBackup.objects.select_related("requested_by").get(pk=pk)
         except (TenantBackup.DoesNotExist, ValueError) as exc:
             raise NotFound("Backup not found.") from exc
         return Response(_history_for(backup))
@@ -124,7 +143,7 @@ class PlatformRestoreHistoryView(APIView):
         if connection.schema_name != get_public_schema_name():
             raise NotFound("Platform restore administration is only available in the public workspace.")
         try:
-            restore = TenantRestoreRequest.objects.get(pk=pk)
+            restore = TenantRestoreRequest.objects.select_related("requested_by").get(pk=pk)
         except (TenantRestoreRequest.DoesNotExist, ValueError) as exc:
             raise NotFound("Restore request not found.") from exc
         return Response(_history_for(restore))
