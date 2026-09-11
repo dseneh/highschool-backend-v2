@@ -7,6 +7,7 @@ from backups.history_views import (
     TenantBackupHistoryView,
     TenantRestoreHistoryView,
 )
+from backups.policy_permissions import TenantBackupCapabilityPermission
 from backups.policy_views import (
     PlatformBackupSettingsView,
     PlatformTenantBackupPolicyViewSet,
@@ -19,6 +20,17 @@ from backups.views import (
     TenantRestoreRequestViewSet,
 )
 
+
+# Tenant capability policy is intentionally layered after RBAC: the user needs
+# both their normal role permission and the platform-enabled tenant capability.
+TenantBackupViewSet.permission_classes = [
+    *TenantBackupViewSet.permission_classes,
+    TenantBackupCapabilityPermission,
+]
+TenantRestoreRequestViewSet.permission_classes = [
+    *TenantRestoreRequestViewSet.permission_classes,
+    TenantBackupCapabilityPermission,
+]
 
 router = DefaultRouter()
 router.register("backups", TenantBackupViewSet, basename="tenant-backup")
