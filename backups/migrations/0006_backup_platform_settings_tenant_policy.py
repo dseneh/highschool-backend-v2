@@ -1,3 +1,5 @@
+import datetime
+
 from django.db import migrations, models
 import django.db.models.deletion
 
@@ -14,7 +16,7 @@ class Migration(migrations.Migration):
                 ("id", models.PositiveSmallIntegerField(default=1, editable=False, primary_key=True, serialize=False)),
                 ("automatic_backups_enabled", models.BooleanField(default=True)),
                 ("frequency", models.CharField(choices=[("daily", "Daily"), ("weekly", "Weekly")], default="weekly", max_length=20)),
-                ("scheduled_time", models.TimeField(default="02:00")),
+                ("scheduled_time", models.TimeField(default=datetime.time(2, 0))),
                 ("timezone", models.CharField(default="UTC", max_length=64)),
                 ("scheduled_retention_days", models.PositiveIntegerField(default=30)),
                 ("manual_retention_days", models.PositiveIntegerField(default=30)),
