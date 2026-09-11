@@ -1,4 +1,5 @@
 import uuid
+from datetime import time
 
 from django.conf import settings
 from django.db import models
@@ -14,7 +15,7 @@ class BackupPlatformSettings(models.Model):
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     automatic_backups_enabled = models.BooleanField(default=True)
     frequency = models.CharField(max_length=20, choices=Frequency.choices, default=Frequency.WEEKLY)
-    scheduled_time = models.TimeField(default="02:00")
+    scheduled_time = models.TimeField(default=time(2, 0))
     timezone = models.CharField(max_length=64, default="UTC")
     scheduled_retention_days = models.PositiveIntegerField(default=30)
     manual_retention_days = models.PositiveIntegerField(default=30)
