@@ -42,7 +42,7 @@ class TenantBackupCapabilityPermission(BasePermission):
                 return False
             policy = effective_policy(tenant)
 
-        if not policy.backups_enabled:
+        if not getattr(policy, "backups_enabled", True):
             self.message = "Backup and recovery has been paused for this workspace by EzySchool."
             return False
 
