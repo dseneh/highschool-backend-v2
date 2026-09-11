@@ -21,16 +21,15 @@ from backups.views import (
 )
 
 
+def _add_capability_permission(viewset):
+    if TenantBackupCapabilityPermission not in viewset.permission_classes:
+        viewset.permission_classes = [*viewset.permission_classes, TenantBackupCapabilityPermission]
+
+
 # Tenant capability policy is intentionally layered after RBAC: the user needs
 # both their normal role permission and the platform-enabled tenant capability.
-TenantBackupViewSet.permission_classes = [
-    *TenantBackupViewSet.permission_classes,
-    TenantBackupCapabilityPermission,
-]
-TenantRestoreRequestViewSet.permission_classes = [
-    *TenantRestoreRequestViewSet.permission_classes,
-    TenantBackupCapabilityPermission,
-]
+_add_capability_permission(TenantBackupViewSet)
+_add_capability_permission(TenantRestoreRequestViewSet)
 
 router = DefaultRouter()
 router.register("backups", TenantBackupViewSet, basename="tenant-backup")
