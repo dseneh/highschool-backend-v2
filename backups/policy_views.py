@@ -94,6 +94,7 @@ class TenantBackupPolicyUpdateSerializer(serializers.ModelSerializer):
 def _effective_payload(tenant):
     effective = effective_policy(tenant)
     return {
+        "backups_enabled": effective.backups_enabled,
         "automatic_backups_enabled": effective.automatic_backups_enabled,
         "frequency": effective.frequency,
         "scheduled_time": effective.scheduled_time,
@@ -121,6 +122,7 @@ def _policy_payload(tenant):
         "tenant_name": tenant.name,
         "tenant_schema": tenant.schema_name,
         "active": tenant.active,
+        "backups_enabled": policy.backups_enabled if policy else True,
         "overrides": overrides,
         "effective": _effective_payload(tenant),
         "last_run_at": policy.last_run_at if policy else None,
@@ -209,6 +211,47 @@ class PlatformTenantBackupPolicyViewSet(viewsets.ViewSet):
             except BackupPolicyError as exc:
                 raise ValidationError({"detail": str(exc)}) from exc
             return Response(_policy_payload(tenant))
+
+    @action(detail=True, methods=["post"], url_path="status")
+    def set_status(self, request, pk=None):
+        _require_public_workspace()
+        enabled = request.data.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValidationError({"enabled": "This field must be true or false."})
+        with schema_context(get_public_schema_name()):
+            try:
+                tenant = Tenant.objects.get(pk=pk)
+            except (Tenant.DoesNotExist, ValueError) as exc:
+                raise NotFound("Tenant not found.") from exc
+            policy = get_or_create_tenant_policy(tenant)
+            policy.backups_enabled = enabled
+            policy.save(update_fields=["backups_enabled", "updated_at"])
+            ensure_schedule_state(tenant, recalculate=True)
+            return Response(_policy_payload(tenant))
+
+    @action(detail=False, methods=["post"], url_path="bulk-status")
+    def bulk_status(self, request):
+        _require_public_workspace()
+        tenant_ids = request.data.get("tenant_ids")
+        enabled = request.data.get("enabled")
+        if not isinstance(tenant_ids, list) or not tenant_ids:
+            raise ValidationError({"tenant_ids": "Select at least one tenant."})
+        if not isinstance(enabled, bool):
+            raise ValidationError({"enabled": "This field must be true or false."})
+        with schema_context(get_public_schema_name()):
+            tenants = list(
+                Tenant.objects.exclude(schema_name=get_public_schema_name())
+                .filter(pk__in=tenant_ids)
+                .order_by("name")
+            )
+            if len(tenants) != len(set(tenant_ids)):
+                raise ValidationError({"tenant_ids": "One or more tenants could not be found."})
+            for tenant in tenants:
+                policy = get_or_create_tenant_policy(tenant)
+                policy.backups_enabled = enabled
+                policy.save(update_fields=["backups_enabled", "updated_at"])
+                ensure_schedule_state(tenant, recalculate=True)
+            return Response([_policy_payload(tenant) for tenant in tenants])
 
     @action(detail=True, methods=["post"], url_path="reset")
     def reset(self, request, pk=None):
