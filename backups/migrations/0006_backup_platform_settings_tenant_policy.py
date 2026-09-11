@@ -5,7 +5,6 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
     dependencies = [
         ("backups", "0005_add_execution_pending_status"),
-        ("core", "0001_initial"),
     ]
 
     operations = [
