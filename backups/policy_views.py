@@ -85,6 +85,11 @@ class TenantBackupPolicyUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Enter a valid IANA timezone, for example UTC or Africa/Monrovia.") from exc
         return value
 
+    def update(self, instance, validated_data):
+        if "storage_quota_bytes" in validated_data and "storage_quota_overridden" not in validated_data:
+            validated_data["storage_quota_overridden"] = True
+        return super().update(instance, validated_data)
+
 
 def _effective_payload(tenant):
     effective = effective_policy(tenant)
@@ -131,7 +136,7 @@ def _require_public_workspace():
 
 class TenantEffectiveBackupPolicyView(APIView):
     permission_classes = [RBACPermission]
-    required_permission = "backups.view"
+    permission_map = {"get": "backups.view"}
 
     def get(self, request):
         schema_name = connection.schema_name
