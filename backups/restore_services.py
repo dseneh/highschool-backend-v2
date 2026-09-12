@@ -263,7 +263,6 @@ def run_restore(restore_request_id):
         restore_already_locked = (
             tenant.restoration_in_progress
             and str(tenant.restoration_request_id) == str(restore_request.id)
-            and bool(restore_request.tenant_runtime_snapshot)
         )
         if (tenant.maintenance_mode or not tenant.active) and not restore_already_locked:
             raise RestoreError("Tenant is already disabled or in maintenance mode; restore execution was not started.")
@@ -378,31 +377,19 @@ def recover_stale_restores(*, now=None):
 
 def _lock_tenant_runtime(restore_request):
     tenant = restore_request.tenant
-    snapshot = {
-        "active": bool(tenant.active),
-        "maintenance_mode": bool(tenant.maintenance_mode),
-        "disabled_access_allow_tenant_admins": bool(tenant.disabled_access_allow_tenant_admins),
-        "disabled_access_allowed_users": list(tenant.disabled_access_allowed_users or []),
-    }
-    restore_request.tenant_runtime_snapshot = snapshot
+    # Restoration is its own runtime state. It must not disable the tenant,
+    # enable general maintenance mode, or replace the maintenance allowlist.
+    restore_request.tenant_runtime_snapshot = {"restoration_gate_only": True}
     restore_request.save(update_fields=["tenant_runtime_snapshot", "updated_at"])
 
-    tenant.active = False
-    tenant.maintenance_mode = True
     tenant.restoration_in_progress = True
     tenant.restoration_started_at = timezone.now()
     tenant.restoration_request_id = restore_request.id
-    tenant.disabled_access_allow_tenant_admins = False
-    tenant.disabled_access_allowed_users = []
     tenant.save(
         update_fields=[
-            "active",
-            "maintenance_mode",
             "restoration_in_progress",
             "restoration_started_at",
             "restoration_request_id",
-            "disabled_access_allow_tenant_admins",
-            "disabled_access_allowed_users",
         ]
     )
 
@@ -410,26 +397,37 @@ def _lock_tenant_runtime(restore_request):
 def _restore_tenant_runtime(restore_request):
     tenant = restore_request.tenant
     snapshot = restore_request.tenant_runtime_snapshot or {}
-    if not snapshot:
-        raise RestoreError("Tenant runtime snapshot is missing; refusing to guess the prior runtime state.")
-    tenant.active = bool(snapshot.get("active", True))
-    tenant.maintenance_mode = bool(snapshot.get("maintenance_mode", False))
-    tenant.disabled_access_allow_tenant_admins = bool(snapshot.get("disabled_access_allow_tenant_admins", True))
-    tenant.disabled_access_allowed_users = list(snapshot.get("disabled_access_allowed_users", []))
+
+    # Restores queued by older deployments changed operational tenant fields.
+    # Restore those snapshots once for compatibility; new restores are gate-only.
+    if snapshot and not snapshot.get("restoration_gate_only"):
+        tenant.active = bool(snapshot.get("active", True))
+        tenant.maintenance_mode = bool(snapshot.get("maintenance_mode", False))
+        tenant.disabled_access_allow_tenant_admins = bool(
+            snapshot.get("disabled_access_allow_tenant_admins", True)
+        )
+        tenant.disabled_access_allowed_users = list(
+            snapshot.get("disabled_access_allowed_users", [])
+        )
+
     tenant.restoration_in_progress = False
     tenant.restoration_started_at = None
     tenant.restoration_request_id = None
-    tenant.save(
-        update_fields=[
-            "active",
-            "maintenance_mode",
-            "disabled_access_allow_tenant_admins",
-            "disabled_access_allowed_users",
-            "restoration_in_progress",
-            "restoration_started_at",
-            "restoration_request_id",
-        ]
-    )
+    update_fields = [
+        "restoration_in_progress",
+        "restoration_started_at",
+        "restoration_request_id",
+    ]
+    if snapshot and not snapshot.get("restoration_gate_only"):
+        update_fields.extend(
+            [
+                "active",
+                "maintenance_mode",
+                "disabled_access_allow_tenant_admins",
+                "disabled_access_allowed_users",
+            ]
+        )
+    tenant.save(update_fields=update_fields)
 
 
 def _validate_tenant_and_backup(*, tenant, backup):
