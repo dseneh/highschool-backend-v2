@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
@@ -37,3 +38,18 @@ class TenantRestorationGateTests(SimpleTestCase):
         )
 
         self.assertIsNone(self.middleware._enforce_tenant_runtime_controls(request))
+
+
+    @patch("api.middleware.Tenant.objects.get")
+    def test_runtime_status_endpoint_honors_tenant_header(self, get_tenant):
+        tenant = SimpleNamespace(schema_name="demo")
+        get_tenant.return_value = tenant
+        self.middleware.request = SimpleNamespace(
+            path="/api/v1/tenants/current/",
+            META={"HTTP_X_TENANT": "demo"},
+        )
+
+        resolved = self.middleware.get_tenant(SimpleNamespace(), "api.staging.myezyschool.com")
+
+        self.assertIs(resolved, tenant)
+        get_tenant.assert_called_once_with(schema_name="demo")
