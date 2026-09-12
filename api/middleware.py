@@ -441,9 +441,14 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             # Tenant management endpoints (retrieving tenant info) should ignore x-tenant header
             # and always work in public schema
             path = request.path
-            if path.startswith('/api/v1/tenants/'):
-                # For tenant-specific retrieval endpoints like GET /api/v1/tenants/ldtc/
-                # Always use public schema, regardless of x-tenant header
+            if (
+                path.startswith('/api/v1/tenants/')
+                and path != '/api/v1/tenants/current/'
+            ):
+                # Tenant management/detail endpoints always use the public
+                # schema. The current-tenant runtime endpoint is the exception:
+                # it must honor X-Tenant so restoration polling can observe the
+                # selected workspace's live state.
                 try:
                     public_schema = get_public_schema_name()
                     return Tenant.objects.get(schema_name=public_schema)
