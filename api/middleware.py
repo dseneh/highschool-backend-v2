@@ -108,8 +108,12 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             json_dumps_params={'ensure_ascii': False},
         )
 
-    def _is_blocked_tenant_path_allowed(self, path: str) -> bool:
-        return path in self.BLOCKED_TENANT_ALLOWED_PATHS
+    def _is_blocked_tenant_path_allowed(self, path: str, method: str = "") -> bool:
+        if path in self.BLOCKED_TENANT_ALLOWED_PATHS:
+            return True
+        # The restoration dialog may read the request list to report the real
+        # queue/worker stage. Mutating this collection remains blocked.
+        return method.upper() == "GET" and path == "/api/v1/restore-requests/"
 
     @staticmethod
     def _normalize_frontend_path(path: str) -> str:
@@ -218,7 +222,7 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if getattr(tenant, 'schema_name', None) == public_schema:
             return None
 
-        if self._is_blocked_tenant_path_allowed(path):
+        if self._is_blocked_tenant_path_allowed(path, request.method):
             return None
 
         # A schema restore is a hard lock. Unlike ordinary maintenance mode,
