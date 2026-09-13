@@ -13,6 +13,7 @@ class TenantRestorationGateTests(SimpleTestCase):
     def test_restore_blocks_every_tenant_user_before_admin_overrides(self):
         request = SimpleNamespace(
             path="/api/v1/students/",
+            method="GET",
             tenant=SimpleNamespace(
                 schema_name="demo",
                 active=False,
@@ -31,6 +32,7 @@ class TenantRestorationGateTests(SimpleTestCase):
     def test_runtime_status_endpoint_remains_available_for_polling(self):
         request = SimpleNamespace(
             path="/api/v1/tenants/current/",
+            method="GET",
             tenant=SimpleNamespace(
                 schema_name="demo",
                 restoration_in_progress=True,
@@ -38,6 +40,30 @@ class TenantRestorationGateTests(SimpleTestCase):
         )
 
         self.assertIsNone(self.middleware._enforce_tenant_runtime_controls(request))
+
+    def test_restore_status_list_is_read_only_during_restoration(self):
+        tenant = SimpleNamespace(
+            schema_name="demo",
+            active=True,
+            status="active",
+            maintenance_mode=False,
+            restoration_in_progress=True,
+        )
+        read_request = SimpleNamespace(
+            path="/api/v1/restore-requests/",
+            method="GET",
+            tenant=tenant,
+        )
+        write_request = SimpleNamespace(
+            path="/api/v1/restore-requests/",
+            method="POST",
+            tenant=tenant,
+        )
+
+        self.assertIsNone(self.middleware._enforce_tenant_runtime_controls(read_request))
+        response = self.middleware._enforce_tenant_runtime_controls(write_request)
+        self.assertEqual(response.status_code, 423)
+        self.assertIn(b"TENANT_RESTORE_IN_PROGRESS", response.content)
 
 
     @patch("api.middleware.Tenant.objects.get")
