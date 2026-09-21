@@ -32,8 +32,19 @@ class RestoreLifecycleTestCase(TestCase):
     def setUpClass(cls):
         super().setUpClass()
         with schema_context(get_public_schema_name()):
-            cls.admin_user = User.objects.create_user(username="admin", email="admin@test.com", is_staff=True)
-            cls.tenant_user = User.objects.create_user(username="tenant_user", email="user@test.com")
+            # The tenant-aware user manager requires a public tenant, which
+            # this isolated TestCase intentionally does not provision. These
+            # lifecycle tests only need persisted actors, not tenant-user
+            # membership setup, so create the fixtures directly.
+            cls.admin_user = User.objects.create(
+                username="admin",
+                email="admin@test.com",
+                is_staff=True,
+            )
+            cls.tenant_user = User.objects.create(
+                username="tenant_user",
+                email="user@test.com",
+            )
             cls.tenant = Tenant.objects.create(
                 name="Test Tenant",
                 schema_name="test_tenant_restore",
