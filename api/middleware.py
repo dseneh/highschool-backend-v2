@@ -2,6 +2,7 @@
 Custom middleware for multi-tenant application
 """
 
+import hashlib
 import logging
 import time
 
@@ -107,8 +108,12 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             json_dumps_params={'ensure_ascii': False},
         )
 
-    def _is_blocked_tenant_path_allowed(self, path: str) -> bool:
-        return path in self.BLOCKED_TENANT_ALLOWED_PATHS
+    def _is_blocked_tenant_path_allowed(self, path: str, method: str = "") -> bool:
+        if path in self.BLOCKED_TENANT_ALLOWED_PATHS:
+            return True
+        # The restoration dialog may read the request list to report the real
+        # queue/worker stage. Mutating this collection remains blocked.
+        return method.upper() == "GET" and path == "/api/v1/restore-requests/"
 
     @staticmethod
     def _normalize_frontend_path(path: str) -> str:
@@ -217,8 +222,19 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         if getattr(tenant, 'schema_name', None) == public_schema:
             return None
 
-        if self._is_blocked_tenant_path_allowed(path):
+        if self._is_blocked_tenant_path_allowed(path, request.method):
             return None
+
+        # A schema restore is a hard lock. Unlike ordinary maintenance mode,
+        # no tenant user or administrator may bypass it. Platform restore
+        # operations run in the public workspace and never reach this branch.
+        if getattr(tenant, 'restoration_in_progress', False):
+            response = self._blocked_tenant_response(
+                'This workspace is temporarily unavailable while data restoration is in progress.',
+                'TENANT_RESTORE_IN_PROGRESS',
+            )
+            response['Retry-After'] = '10'
+            return response
 
         is_disabled = not getattr(tenant, 'active', True)
         tenant_status = str(getattr(tenant, 'status', 'active') or 'active').lower()
@@ -300,6 +316,31 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             },
             status=403,
         )
+
+    @staticmethod
+    def _tenant_lock_key(schema_name):
+        digest = hashlib.blake2b(str(schema_name).encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, byteorder="big", signed=True)
+
+    def _acquire_tenant_request_lock(self, request):
+        tenant = getattr(request, "tenant", None)
+        schema_name = getattr(tenant, "schema_name", None)
+        if not schema_name or schema_name == get_public_schema_name():
+            return
+        key = self._tenant_lock_key(schema_name)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_lock_shared(%s)", [key])
+        request._tenant_advisory_lock_key = key
+
+    def process_response(self, request, response):
+        key = getattr(request, "_tenant_advisory_lock_key", None)
+        if key is not None:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_unlock_shared(%s)", [key])
+            except Exception:
+                logger.exception("Could not release tenant request advisory lock")
+        return response
     
     def process_request(self, request):
         """
@@ -326,7 +367,13 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
 
             self._ensure_superadmin_tenant_access(request)
             runtime_response = self._enforce_tenant_runtime_controls(request)
-            return runtime_response or self._enforce_feature_access(request)
+            if runtime_response is not None:
+                return runtime_response
+            feature_response = self._enforce_feature_access(request)
+            if feature_response is not None:
+                return feature_response
+            self._acquire_tenant_request_lock(request)
+            return None
         except Exception as exc:
             # If it's an API endpoint and we have a DRF or Http404 exception, handle it
             if request.path.startswith('/api/'):
@@ -398,9 +445,14 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             # Tenant management endpoints (retrieving tenant info) should ignore x-tenant header
             # and always work in public schema
             path = request.path
-            if path.startswith('/api/v1/tenants/'):
-                # For tenant-specific retrieval endpoints like GET /api/v1/tenants/ldtc/
-                # Always use public schema, regardless of x-tenant header
+            if (
+                path.startswith('/api/v1/tenants/')
+                and path != '/api/v1/tenants/current/'
+            ):
+                # Tenant management/detail endpoints always use the public
+                # schema. The current-tenant runtime endpoint is the exception:
+                # it must honor X-Tenant so restoration polling can observe the
+                # selected workspace's live state.
                 try:
                     public_schema = get_public_schema_name()
                     return Tenant.objects.get(schema_name=public_schema)

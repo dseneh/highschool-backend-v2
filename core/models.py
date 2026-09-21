@@ -329,6 +329,12 @@ class Tenant(TenantBase):
         default=False,
         help_text="When enabled, tenant workspace operations are paused except for allowed auth/status checks."
     )
+    restoration_in_progress = models.BooleanField(
+        default=False,
+        help_text="Hard tenant-wide gate while a schema restoration is running.",
+    )
+    restoration_started_at = models.DateTimeField(null=True, blank=True)
+    restoration_request_id = models.UUIDField(null=True, blank=True)
     login_access_policy = models.CharField(
         max_length=32,
         choices=[

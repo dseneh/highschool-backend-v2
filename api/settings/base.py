@@ -20,16 +20,16 @@ LEGACY_APP_DOMAINS = config(
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Security: development may use a local fallback, production must provide a real secret.
 DEBUG = config("DEBUG", default=True, cast=bool)
 _INSECURE_SECRET_KEYS = {"", "django-insecure-change-me-in-production", "django-insecure-change-me"}
 SECRET_KEY = config("SECRET_KEY", default="django-insecure-change-me-in-production" if DEBUG else "")
 if not DEBUG and (SECRET_KEY in _INSECURE_SECRET_KEYS or SECRET_KEY.startswith("django-insecure-")):
     raise ImproperlyConfigured("SECRET_KEY must be explicitly configured with a strong production value.")
 
-# Host-header validation. Wildcards are deliberately not used in production.
+
 def _csv(value):
     return [item.strip() for item in value.split(",") if item.strip()]
+
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=_csv)
 railway_public_domain = config("RAILWAY_PUBLIC_DOMAIN", default="").strip()
@@ -46,7 +46,6 @@ else:
     if "*" in ALLOWED_HOSTS:
         raise ImproperlyConfigured("ALLOWED_HOSTS cannot contain '*' in production.")
 
-# Railway health probes use this fixed host. Add it explicitly rather than trusting all hosts.
 if "healthcheck.railway.app" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append("healthcheck.railway.app")
 
@@ -56,7 +55,7 @@ SHARED_APPS = [
     "django.contrib.messages", "django.contrib.admin", "django.contrib.staticfiles",
     "tenant_users.permissions", "tenant_users.tenants",
     "rest_framework", "rest_framework_simplejwt", "corsheaders", "storages",
-    "auditlog", "common", "users", "core",
+    "auditlog", "common", "users", "core", "backups",
 ]
 
 TENANT_APPS = [

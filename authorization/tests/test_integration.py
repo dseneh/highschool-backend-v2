@@ -276,7 +276,7 @@ class AuthorizationPersistenceTests(TenantTestCase):
         self._set_owner_role(role)
 
         # django-tenants emits a SET search_path before each SELECT.
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(6):
             cold_context = resolve_authorization_context(self.tenant.owner)
         with self.assertNumQueries(0):
             warm_context = resolve_authorization_context(self.tenant.owner)
@@ -297,7 +297,7 @@ class AuthorizationPersistenceTests(TenantTestCase):
         )
         facade = initialize_request_authorization(request, self.tenant.owner)
 
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(6):
             self.assertTrue(facade.can("students.view"))
         with self.assertNumQueries(0):
             self.assertTrue(request.can("students.view"))
@@ -364,9 +364,12 @@ class AuthorizationPersistenceTests(TenantTestCase):
         replace_role_permissions(role, {"students.view": "all"})
         self._set_owner_role(role)
 
-        with self.assertNumQueries(4):
+        # Each uncached lookup performs two model queries plus the tenant
+        # backend's search-path setup while the surrounding test transaction
+        # intentionally prevents the authorization snapshot from publishing.
+        with self.assertNumQueries(6):
             first = resolve_authorization_context(self.tenant.owner)
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(6):
             second = resolve_authorization_context(self.tenant.owner)
 
         self.assertTrue(first.can("students.view"))

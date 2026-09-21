@@ -28,6 +28,14 @@ class Permissions:
         ASSIGN_USERS = "roles.assign_users"
         VIEW_AUDIT = "roles.view_audit"
 
+    class Backups:
+        VIEW = "backups.view"
+        CREATE = "backups.create"
+        DELETE = "backups.delete"
+        class Restore:
+            REQUEST = "restore.request"
+            EXECUTE = "restore.execute"
+
     class Employees:
         VIEW = "employees.view"
         CREATE = "employees.create"
