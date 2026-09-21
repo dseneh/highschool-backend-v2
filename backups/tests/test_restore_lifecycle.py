@@ -57,7 +57,7 @@ class RestoreLifecycleTestCase(TestCase):
     def tearDownClass(cls):
         super().tearDownClass()
         with schema_context(get_public_schema_name()):
-            cls.tenant.delete()
+            Tenant.objects.filter(pk=cls.tenant.pk).delete()
             User.objects.filter(pk__in=[cls.admin_user.pk, cls.tenant_user.pk]).delete()
 
     def setUp(self):
@@ -82,9 +82,14 @@ class RestoreLifecycleTestCase(TestCase):
                 requested_by=self.tenant_user,
                 reason="Test restore",
             )
-            # Simulate safety backup completion
+            # Simulate safety backup completion with verified restore metadata.
             restore_request.safety_backup.status = TenantBackup.Status.AVAILABLE
-            restore_request.safety_backup.save(update_fields=["status"])
+            restore_request.safety_backup.storage_key = "s3://test/safety-backup"
+            restore_request.safety_backup.sha256 = "b" * 64
+            restore_request.safety_backup.file_size = 1000
+            restore_request.safety_backup.save(
+                update_fields=["status", "storage_key", "sha256", "file_size"]
+            )
             restore_request.status = TenantRestoreRequest.Status.READY_FOR_APPROVAL
             restore_request.save(update_fields=["status"])
             return restore_request
@@ -258,9 +263,10 @@ class PlatformDeletionRestrictionsTestCase(RestoreLifecycleTestCase):
             restore_request.status = TenantRestoreRequest.Status.FAILED
             restore_request.save(update_fields=["status"])
             
+            restore_request_id = restore_request.id
             deleted_id = delete_restore(restore_request=restore_request)
         
-        self.assertEqual(deleted_id, restore_request.id)
+        self.assertEqual(deleted_id, restore_request_id)
         with schema_context(get_public_schema_name()):
             self.assertFalse(TenantRestoreRequest.objects.filter(id=deleted_id).exists())
 
