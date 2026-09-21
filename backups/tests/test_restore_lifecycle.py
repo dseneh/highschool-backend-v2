@@ -39,7 +39,6 @@ class RestoreLifecycleTestCase(TestCase):
             cls.admin_user = User.objects.create(
                 username="admin",
                 email="admin@test.com",
-                is_staff=True,
             )
             cls.tenant_user = User.objects.create(
                 username="tenant_user",
