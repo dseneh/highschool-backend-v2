@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -39,10 +40,12 @@ class RestoreLifecycleTestCase(TestCase):
             cls.admin_user = User.objects.create(
                 username="admin",
                 email="admin@test.com",
+                id_number=f"restore-admin-{uuid4().hex}",
             )
             cls.tenant_user = User.objects.create(
                 username="tenant_user",
                 email="user@test.com",
+                id_number=f"restore-user-{uuid4().hex}",
             )
             cls.tenant = Tenant.objects.create(
                 name="Test Tenant",
