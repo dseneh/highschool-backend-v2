@@ -33,17 +33,22 @@ class BackupPermissionContractTests(SimpleTestCase):
         self.assertEqual(restore.scopes, ["all"])
         self.assertEqual(restore.requires, ["backups.view"])
 
-    def test_tenant_backup_viewset_exposes_controlled_delete_only(self):
+    def test_tenant_backup_viewsets_expose_controlled_actions(self):
         self.assertEqual(TenantBackupViewSet.permission_map["request_restore"], "restore.request")
         self.assertEqual(TenantBackupViewSet.permission_map["destroy"], "backups.delete")
         self.assertEqual(
             TenantRestoreRequestViewSet.permission_map,
-            {"list": "backups.view", "retrieve": "backups.view"},
+            {
+                "list": "backups.view",
+                "retrieve": "backups.view",
+                "execute": "restore.execute",
+                "retry": "restore.execute",
+            },
         )
         self.assertIn("delete", TenantBackupViewSet.http_method_names)
         self.assertNotIn("put", TenantBackupViewSet.http_method_names)
         self.assertNotIn("patch", TenantBackupViewSet.http_method_names)
-        self.assertNotIn("post", TenantRestoreRequestViewSet.http_method_names)
+        self.assertIn("post", TenantRestoreRequestViewSet.http_method_names)
 
     def test_platform_restore_decisions_require_superadmin(self):
         self.assertEqual(PlatformRestoreRequestViewSet.permission_classes, [IsSuperAdmin])
@@ -120,18 +125,20 @@ class BackupServiceContractTests(SimpleTestCase):
         TENANT_BACKUP_RETENTION_SYSTEM_DAYS=7,
     )
     def test_retention_is_configuration_driven(self):
-        from backups.services import _retention_days
+        from backups.policies import _platform_defaults_from_settings
 
-        self.assertEqual(_retention_days(TenantBackup.BackupType.MANUAL), 14)
-        self.assertEqual(_retention_days(TenantBackup.BackupType.SCHEDULED), 21)
-        self.assertEqual(_retention_days(TenantBackup.BackupType.PRE_RESTORE), 90)
-        self.assertEqual(_retention_days(TenantBackup.BackupType.SYSTEM), 7)
+        defaults = _platform_defaults_from_settings()
+
+        self.assertEqual(defaults["manual_retention_days"], 14)
+        self.assertEqual(defaults["scheduled_retention_days"], 21)
+        self.assertEqual(defaults["safety_retention_days"], 90)
+        self.assertEqual(defaults["system_retention_days"], 7)
 
     @override_settings(TENANT_BACKUP_SCHEDULE_ENABLED=False)
     def test_scheduler_is_safe_off_by_default(self):
-        from backups.services import queue_due_scheduled_backups
+        from backups.policies import _platform_defaults_from_settings
 
-        self.assertEqual(queue_due_scheduled_backups(), [])
+        self.assertFalse(_platform_defaults_from_settings()["automatic_backups_enabled"])
 
 
 class RestoreServiceContractTests(SimpleTestCase):
@@ -305,4 +312,3 @@ class RestoreTOCValidatorRegressionTests(SimpleTestCase):
         self.assertEqual(len(forbidden), 1, "Only actual DATABASE entry should be detected")
         self.assertIn("[DATABASE", forbidden[0])
         self.assertNotIn("FUNCTION", forbidden[0])
-
