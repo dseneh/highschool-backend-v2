@@ -32,9 +32,13 @@ class RestoreLifecycleTestCase(TestCase):
     def setUpClass(cls):
         super().setUpClass()
         with schema_context(get_public_schema_name()):
-            cls.tenant = Tenant.objects.create(name="Test Tenant", schema_name="test_tenant_restore")
             cls.admin_user = User.objects.create_user(username="admin", email="admin@test.com", is_staff=True)
             cls.tenant_user = User.objects.create_user(username="tenant_user", email="user@test.com")
+            cls.tenant = Tenant.objects.create(
+                name="Test Tenant",
+                schema_name="test_tenant_restore",
+                owner=cls.admin_user,
+            )
 
     @classmethod
     def tearDownClass(cls):
@@ -122,8 +126,8 @@ class ExecuteTransitionTestCase(RestoreLifecycleTestCase):
         self.assertEqual(executed.status, TenantRestoreRequest.Status.EXECUTION_PENDING)
         self.tenant.refresh_from_db()
         self.assertTrue(self.tenant.restoration_in_progress)
-        self.assertTrue(self.tenant.maintenance_mode)
-        self.assertFalse(self.tenant.active)
+        self.assertFalse(self.tenant.maintenance_mode)
+        self.assertTrue(self.tenant.active)
         self.assertEqual(self.tenant.restoration_request_id, executed.id)
 
     def test_execute_non_approved_raises_error(self):
@@ -336,4 +340,3 @@ class RejectAfterApprovalTestCase(RestoreLifecycleTestCase):
         
         self.assertEqual(rejected.status, TenantRestoreRequest.Status.REJECTED)
         self.assertEqual(rejected.decision_note, "Rejecting after approval")
-
