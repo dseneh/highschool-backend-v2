@@ -4,7 +4,7 @@
 name: 🧹 Development Checks
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, staging ]
   push:
     branches:
       - develop
@@ -12,10 +12,15 @@ on:
       - bugfix/*
       - hotfix/*
 
+concurrency:
+  group: development-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-test:
     name: 🔍 Lint & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -44,35 +49,37 @@ jobs:
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 🐍 Setup Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-          cache: 'pip'
+
+      - name: ⚡ Setup uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
 
       - name: 📦 Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8 black isort
+          uv pip install --system -r requirements.txt
+          uv pip install --system ruff
 
-      - name: 🎨 Check code formatting
+      - name: 🔍 Fast lint report
         run: |
-          echo "🎨 Checking code formatting with black..."
-          black --check --diff . || echo "⚠️ Code formatting issues found but continuing..."
-
-      - name: 🔍 Lint code
-        run: |
-          echo "🔍 Linting code with flake8..."
-          flake8 . --count --exit-zero --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          ruff check . \
+            --select=E9,F63,F7,F82 \
+            --exclude migrations,.venv,venv,env,node_modules,.tox,build,dist \
+            || echo "⚠️ Existing lint issues found; see the concise report above."
 
       - name: 🧪 Run tests
         run: |
           echo "🧪 Running Django tests, including API security and tenant backup tests..."
-          python manage.py test api users core students finance authorization backups --verbosity=2
+          python manage.py test api users core students finance authorization backups \
+            --parallel auto \
+            --verbosity=1
 
       - name: ✅ All checks passed
         run: echo "🎉 All development checks passed!"
@@ -80,21 +87,26 @@ jobs:
   security-check:
     name: 🔒 Security Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 🐍 Setup Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-          cache: 'pip'
+
+      - name: ⚡ Setup uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
 
       - name: 📦 Install security tools
         run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit bandit
+          uv pip install --system pip-audit bandit
 
       - name: 🔒 Check for security vulnerabilities
         run: pip-audit -r requirements.txt
