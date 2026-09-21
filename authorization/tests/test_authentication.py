@@ -34,7 +34,7 @@ class AuthenticationFacadeTests(SimpleTestCase):
     @patch("rest_framework_simplejwt.authentication.JWTAuthentication.authenticate")
     def test_jwt_authentication_attaches_facade_to_drf_request(self, mock_authenticate):
         user = authenticated_user()
-        token = object()
+        token = {"security_version": 1}
         mock_authenticate.return_value = (user, token)
         request = SimpleNamespace(_request=object())
 
