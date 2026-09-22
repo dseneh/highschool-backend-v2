@@ -1,2 +1,4 @@
 [phases.setup]
-nixPkgs = ["postgresql_16"]
+# Tenant backup and restore workers shell out to PostgreSQL's native archive
+# tools. The ellipsis preserves Nixpacks' automatically detected packages.
+nixPkgs = ["...", "postgresql_16"]
