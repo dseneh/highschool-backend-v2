@@ -46,6 +46,75 @@ jobs:
             --exclude migrations,.venv,venv,env,node_modules,.tox,build,dist \
             || echo "⚠️ Existing lint issues found; see the concise report above."
 
+  migrations:
+    name: 🗃️ Migration Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: backend_v2_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d backend_v2_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DEBUG: True
+      CI_TESTING: True
+      SECRET_KEY: test-secret-key-for-ci
+      DB_NAME: backend_v2_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      DB_PORT: 5432
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v7
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: ⚡ Setup uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+
+      - name: 📦 Install dependencies
+        run: uv pip install --system -r requirements.txt
+
+      - name: 🗃️ Validate public and tenant migrations once
+        run: |
+          python manage.py migrate_schemas --shared --noinput
+          python manage.py shell <<'PY'
+          from core.models import Tenant
+          from users.models import User
+
+          owner = User.objects.create(
+              username="migration-check-owner",
+              email="migration-check@example.com",
+              id_number="MIGRATION-CHECK-OWNER",
+              account_type="staff",
+          )
+          tenant = Tenant.objects.create(
+              name="Migration Check",
+              schema_name="migration_check",
+              owner=owner,
+          )
+          assert tenant.schema_name == "migration_check"
+          PY
+
   tests:
     name: 🧪 Tests · ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -82,6 +151,7 @@ jobs:
     env:
       DEBUG: True
       CI_TESTING: True
+      CI_FAST_TEST_SCHEMA: True
       SECRET_KEY: test-secret-key-for-ci
       DB_NAME: backend_v2_db
       DB_USER: postgres
