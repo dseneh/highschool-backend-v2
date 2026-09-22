@@ -2,7 +2,12 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
-from users.security_auth import SecurityTokenObtainPairView, SecurityTokenRefreshView
+from users.security_auth import (
+    EmailMFAResendView,
+    EmailMFAVerifyView,
+    SecurityTokenObtainPairView,
+    SecurityTokenRefreshView,
+)
 from users.security_views import RevokeAllSessionsView
 from users.views import (
     VerifyTokenView,
@@ -19,6 +24,8 @@ router.register(r'users', UserViewSet, basename='user')
 
 urlpatterns = [
     path("login/", SecurityTokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("mfa/verify/", EmailMFAVerifyView.as_view(), name="email_mfa_verify"),
+    path("mfa/resend/", EmailMFAResendView.as_view(), name="email_mfa_resend"),
     path("token/refresh/", SecurityTokenRefreshView.as_view(), name="token_refresh"),
     path("verify/", VerifyTokenView.as_view(), name="verify_token"),
     path("security/revoke-sessions/", RevokeAllSessionsView.as_view(), name="revoke_all_sessions"),

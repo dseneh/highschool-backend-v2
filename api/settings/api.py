@@ -30,6 +30,8 @@ REST_FRAMEWORK = {
         "login": config("API_THROTTLE_LOGIN", default="5/min"),
         "password_reset": config("API_THROTTLE_PASSWORD_RESET", default="12/hour"),
         "activation": config("API_THROTTLE_ACTIVATION", default="12/hour"),
+        "mfa_verify": config("API_THROTTLE_MFA_VERIFY", default="10/min"),
+        "mfa_resend": config("API_THROTTLE_MFA_RESEND", default="5/hour"),
         "public_search": config("API_THROTTLE_PUBLIC_SEARCH", default="20/min"),
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
@@ -39,6 +41,17 @@ REST_FRAMEWORK = {
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser", "rest_framework.parsers.FormParser", "rest_framework.parsers.MultiPartParser"],
     "EXCEPTION_HANDLER": "api.exceptions.custom_exception_handler",
 }
+
+EMAIL_MFA_PRIVILEGED_ENABLED = config("EMAIL_MFA_PRIVILEGED_ENABLED", default=False, cast=bool)
+EMAIL_MFA_CODE_TTL_SECONDS = config("EMAIL_MFA_CODE_TTL_SECONDS", default=600, cast=int)
+EMAIL_MFA_MAX_ATTEMPTS = config("EMAIL_MFA_MAX_ATTEMPTS", default=5, cast=int)
+EMAIL_MFA_RESEND_COOLDOWN_SECONDS = config("EMAIL_MFA_RESEND_COOLDOWN_SECONDS", default=60, cast=int)
+EMAIL_MFA_MAX_RESENDS = config("EMAIL_MFA_MAX_RESENDS", default=5, cast=int)
+EMAIL_MFA_PRIVILEGED_PERMISSIONS = config(
+    "EMAIL_MFA_PRIVILEGED_PERMISSIONS",
+    default="finance.transactions.approve,finance.settings.manage,payroll.process,payroll.review,payroll.approve,payroll.configure",
+    cast=lambda value: [item.strip() for item in value.split(",") if item.strip()],
+)
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=config("JWT_ACCESS_TOKEN_LIFETIME", default=60, cast=int)),

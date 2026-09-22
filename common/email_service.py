@@ -288,6 +288,31 @@ def send_password_reset_email(user, reset_url: str, school=None) -> bool:
     )
 
 
+def send_email_mfa_code(user, code: str, *, ttl_seconds: int = 600, school=None) -> bool:
+    """Send a privileged-login verification code without logging the code."""
+    if not is_valid_email(getattr(user, "email", "")):
+        logger.warning("send_email_mfa_code: user %s has no valid email", user.pk)
+        return False
+
+    context = _build_branding_context(user, school)
+    context["verification_code"] = code
+    context["expiry_minutes"] = max(1, ttl_seconds // 60)
+    try:
+        html_body = render_to_string("emails/login_mfa_code.html", context)
+        text_body = render_to_string("emails/login_mfa_code.txt", context)
+    except Exception as exc:
+        logger.error("send_email_mfa_code: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=f"Your sign-in verification code - {context['school_name']}",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 def send_password_reset_success_email(user, login_url: str = "", school=None) -> bool:
     """Send a confirmation email after a password has been reset successfully."""
     if not user.email:

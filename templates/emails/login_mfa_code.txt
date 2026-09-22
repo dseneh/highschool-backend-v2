@@ -1,0 +1,10 @@
+Hi {{ user_name }},
+
+Your EzySchool sign-in verification code is:
+
+{{ verification_code }}
+
+This code expires in {{ expiry_minutes }} minutes and can be used only once.
+If you did not attempt to sign in, change your password and contact your administrator.
+
+EzySchool Security
