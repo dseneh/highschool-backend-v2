@@ -109,8 +109,11 @@ jobs:
 
       - name: 🧪 Run ${{ matrix.name }} tests
         run: |
+          # django-tenants test cases reuse deterministic schema names. Keep
+          # concurrency at the isolated GitHub-job level; multiprocessing inside
+          # one database races schema creation and migration.
           python manage.py test ${{ matrix.labels }} \
-            --parallel auto \
+            --parallel 1 \
             --verbosity=1
 
   security-check:
