@@ -84,6 +84,7 @@ MIDDLEWARE = [
     "api.middleware.HeaderBasedTenantMiddleware",
     "api.middleware.ApiPerformanceMetricsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "api.middleware.SecurityResponseHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -155,6 +156,16 @@ FRONTEND_PASSWORD_RESET_PATH = config("FRONTEND_PASSWORD_RESET_PATH", default="/
 EMAIL_LOGO_URL = config("EMAIL_LOGO_URL", default="")
 PASSWORD_RESET_TIMEOUT = config("PASSWORD_RESET_TIMEOUT", default=3600, cast=int)
 PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS = config("PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS", default=60, cast=int)
+
+SECURE_REFERRER_POLICY = config("SECURE_REFERRER_POLICY", default="no-referrer")
+SECURITY_PERMISSIONS_POLICY = config(
+    "SECURITY_PERMISSIONS_POLICY",
+    default="camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+)
+API_CONTENT_SECURITY_POLICY = config(
+    "API_CONTENT_SECURITY_POLICY",
+    default="default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+)
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

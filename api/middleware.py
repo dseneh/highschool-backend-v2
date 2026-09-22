@@ -19,6 +19,53 @@ from users.tenant_access import is_global_superadmin
 logger = logging.getLogger(__name__)
 
 
+class SecurityResponseHeadersMiddleware:
+    """Add restrictive browser headers to API and authentication responses.
+
+    The frontend is hosted separately, so API responses can use a deny-by-
+    default CSP without affecting the frontend application or Django admin.
+    Existing upstream headers are preserved.
+    """
+
+    AUTH_PATH_PREFIX = "/api/v1/auth/"
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+
+        response.setdefault(
+            "Referrer-Policy",
+            getattr(settings, "SECURE_REFERRER_POLICY", "no-referrer"),
+        )
+        response.setdefault(
+            "Permissions-Policy",
+            getattr(
+                settings,
+                "SECURITY_PERMISSIONS_POLICY",
+                "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+            ),
+        )
+        response.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+
+        if request.path.startswith("/api/"):
+            response.setdefault(
+                "Content-Security-Policy",
+                getattr(
+                    settings,
+                    "API_CONTENT_SECURITY_POLICY",
+                    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+                ),
+            )
+
+        if request.path.startswith(self.AUTH_PATH_PREFIX):
+            response.setdefault("Cache-Control", "no-store")
+            response.setdefault("Pragma", "no-cache")
+
+        return response
+
+
 class LegacyDomainRedirectMiddleware:
     """Permanently redirects requests on legacy APP_ROOT_DOMAIN(s) to the current domain.
 
