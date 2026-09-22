@@ -52,10 +52,11 @@ EMAIL_MFA_PRIVILEGED_PERMISSIONS = config(
     default="finance.transactions.approve,finance.settings.manage,payroll.process,payroll.review,payroll.approve,payroll.configure",
     cast=lambda value: [item.strip() for item in value.split(",") if item.strip()],
 )
+SSO_SESSION_LIFETIME_DAYS = config("SSO_SESSION_LIFETIME_DAYS", default=30, cast=int)
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=config("JWT_ACCESS_TOKEN_LIFETIME", default=60, cast=int)),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=config("JWT_REFRESH_TOKEN_LIFETIME", default=7, cast=int)),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=config("JWT_REFRESH_TOKEN_LIFETIME", default=30, cast=int)),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
