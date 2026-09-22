@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import uuid
 
+from django.db import connection
 from django.test import SimpleTestCase
 from django_tenants.test.cases import TenantTestCase
 from django_tenants.utils import schema_context
@@ -510,6 +511,10 @@ class TenantCloneIntegrationTests(TenantTestCase):
 		)
 		serializer.is_valid(raise_exception=True)
 		with schema_context("public"):
+			# Creating the tenant runs schema DDL. Resolve deferred FK events
+			# from the existing owner fixture before tenant migrations begin.
+			with connection.cursor() as cursor:
+				cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 			created = serializer.save()
 		try:
 			self.assertEqual(created.owner_id, existing_owner.pk)
