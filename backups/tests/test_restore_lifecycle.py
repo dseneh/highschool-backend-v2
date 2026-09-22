@@ -67,9 +67,6 @@ class RestoreLifecycleTestCase(TestCase):
         try:
             with schema_context(get_public_schema_name()):
                 hard_delete_tenant_workspace(cls.tenant)
-                User.objects.filter(
-                    pk__in=[cls.admin_user.pk, cls.tenant_user.pk]
-                ).delete()
         finally:
             super().tearDownClass()
 
