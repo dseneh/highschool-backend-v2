@@ -124,8 +124,10 @@ jobs:
       max-parallel: 4
       matrix:
         include:
-          - name: Foundation
-            labels: api.tests users.tests core.tests authorization.tests
+          - name: Foundation Core
+            labels: api.tests users.tests core.tests
+          - name: Foundation Authorization
+            labels: authorization.tests
           - name: Students
             labels: students.tests
           - name: Academics & Grading
