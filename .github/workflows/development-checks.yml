@@ -17,10 +17,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint-and-test:
-    name: 🔍 Lint & Test
+  lint:
+    name: 🔍 Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v7
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: ⚡ Setup uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: 📦 Install lint tools
+        run: uv pip install --system ruff
+
+      - name: 🔍 Fast lint report
+        run: |
+          ruff check . \
+            --select=E9,F63,F7,F82 \
+            --exclude migrations,.venv,venv,env,node_modules,.tox,build,dist \
+            || echo "⚠️ Existing lint issues found; see the concise report above."
+
+  tests:
+    name: 🧪 Tests · ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: Foundation
+            labels: api users core authorization
+          - name: Students
+            labels: students
+          - name: Academics & Grading
+            labels: academics grading
+          - name: Finance & Backups
+            labels: finance backups
 
     services:
       postgres:
@@ -63,26 +105,13 @@ jobs:
           cache-dependency-glob: requirements.txt
 
       - name: 📦 Install dependencies
-        run: |
-          uv pip install --system -r requirements.txt
-          uv pip install --system ruff
+        run: uv pip install --system -r requirements.txt
 
-      - name: 🔍 Fast lint report
+      - name: 🧪 Run ${{ matrix.name }} tests
         run: |
-          ruff check . \
-            --select=E9,F63,F7,F82 \
-            --exclude migrations,.venv,venv,env,node_modules,.tox,build,dist \
-            || echo "⚠️ Existing lint issues found; see the concise report above."
-
-      - name: 🧪 Run tests
-        run: |
-          echo "🧪 Running Django tests, including API security and tenant backup tests..."
-          python manage.py test api users core students finance authorization backups \
+          python manage.py test ${{ matrix.labels }} \
             --parallel auto \
             --verbosity=1
-
-      - name: ✅ All checks passed
-        run: echo "🎉 All development checks passed!"
 
   security-check:
     name: 🔒 Security Check
@@ -105,8 +134,7 @@ jobs:
           cache-dependency-glob: requirements.txt
 
       - name: 📦 Install security tools
-        run: |
-          uv pip install --system pip-audit bandit
+        run: uv pip install --system pip-audit bandit
 
       - name: 🔒 Check for security vulnerabilities
         run: pip-audit -r requirements.txt
