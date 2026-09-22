@@ -37,14 +37,15 @@ class RestoreLifecycleTestCase(TestCase):
             # this isolated TestCase intentionally does not provision. These
             # lifecycle tests only need persisted actors, not tenant-user
             # membership setup, so create the fixtures directly.
+            fixture_key = cls.__name__.lower()
             cls.admin_user = User.objects.create(
-                username="admin",
-                email="admin@test.com",
+                username=f"admin-{fixture_key}",
+                email=f"admin-{fixture_key}@test.com",
                 id_number=f"restore-admin-{uuid4().hex}",
             )
             cls.tenant_user = User.objects.create(
-                username="tenant_user",
-                email="user@test.com",
+                username=f"tenant-user-{fixture_key}",
+                email=f"user-{fixture_key}@test.com",
                 id_number=f"restore-user-{uuid4().hex}",
             )
             cls.tenant = Tenant.objects.create(
