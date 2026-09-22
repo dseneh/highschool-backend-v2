@@ -33,15 +33,5 @@ else:
         }
     }
 
-# Replaying every historical migration for every tenant created by a
-# TenantTestCase is prohibitively expensive. Django's supported test setting
-# disables migrations consistently for every installed app so syncdb can
-# create interdependent tables (for example users.User.groups -> auth.Group)
-# in dependency-safe model order. The CI migration-validation job leaves this
-# flag disabled and exercises the complete migration history once.
-if config("CI_FAST_TEST_SCHEMA", default=False, cast=bool):
-    DATABASES["default"].setdefault("TEST", {})["MIGRATE"] = False
-    TEST_RUNNER = "api.test_runner.CIFastTenantTestRunner"
-
 # Database router for django-tenants
 DATABASE_ROUTERS = ("django_tenants.routers.TenantSyncRouter",)

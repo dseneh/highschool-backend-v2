@@ -151,7 +151,6 @@ jobs:
     env:
       DEBUG: True
       CI_TESTING: True
-      CI_FAST_TEST_SCHEMA: True
       SECRET_KEY: test-secret-key-for-ci
       DB_NAME: backend_v2_db
       DB_USER: postgres
