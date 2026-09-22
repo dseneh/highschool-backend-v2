@@ -75,37 +75,6 @@ TENANT_APPS = [
 ]
 INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in SHARED_APPS]
 
-# Replaying every historical migration for every tenant created by a
-# TenantTestCase is prohibitively expensive. CI's ordinary test shards can
-# create tables from the current model state instead; the workflow has a
-# separate migration-validation job that exercises the complete public and
-# tenant migration histories once.
-if config("CI_FAST_TEST_SCHEMA", default=False, cast=bool):
-    MIGRATION_MODULES = {
-        app_label: None
-        for app_label in (
-            "academics",
-            "accounting",
-            "authorization",
-            "backups",
-            "common",
-            "core",
-            "defaults",
-            "employee_benefits",
-            "employee_disbursements",
-            "finance",
-            "grading",
-            "hr",
-            "notifications",
-            "payroll_v2",
-            "reports",
-            "settings",
-            "staff",
-            "students",
-            "users",
-        )
-    }
-
 TENANT_MODEL = "core.Tenant"
 TENANT_DOMAIN_MODEL = "core.Domain"
 
