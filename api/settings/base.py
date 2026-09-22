@@ -32,6 +32,14 @@ def _csv(value):
 
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=_csv)
+
+# The redirect middleware must be able to inspect both root and tenant hosts on
+# current and legacy domains. Django's leading-dot syntax allows the root domain
+# and all of its subdomains without enabling arbitrary hosts.
+for app_domain in [APP_ROOT_DOMAIN, *LEGACY_APP_DOMAINS]:
+    for allowed_host in (app_domain, f".{app_domain}"):
+        if allowed_host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(allowed_host)
 railway_public_domain = config("RAILWAY_PUBLIC_DOMAIN", default="").strip()
 if railway_public_domain and railway_public_domain not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(railway_public_domain)
