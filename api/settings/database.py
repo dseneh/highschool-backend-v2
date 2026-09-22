@@ -41,6 +41,7 @@ else:
 # flag disabled and exercises the complete migration history once.
 if config("CI_FAST_TEST_SCHEMA", default=False, cast=bool):
     DATABASES["default"].setdefault("TEST", {})["MIGRATE"] = False
+    TEST_RUNNER = "api.test_runner.CIFastTenantTestRunner"
 
 # Database router for django-tenants
 DATABASE_ROUTERS = ("django_tenants.routers.TenantSyncRouter",)
