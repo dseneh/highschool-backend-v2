@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import serializers
 
 
@@ -33,4 +34,8 @@ class GlobalLogoutSerializer(serializers.Serializer):
 
 
 class SsoBootstrapSerializer(serializers.Serializer):
-    ttl_seconds = serializers.IntegerField(required=False, min_value=300, max_value=86400)
+    ttl_seconds = serializers.IntegerField(
+        required=False,
+        min_value=300,
+        max_value=getattr(settings, "SSO_SESSION_LIFETIME_DAYS", 30) * 86400,
+    )
