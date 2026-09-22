@@ -56,13 +56,13 @@ jobs:
       matrix:
         include:
           - name: Foundation
-            labels: api users core authorization
+            labels: api.tests users.tests core.tests authorization.tests
           - name: Students
-            labels: students
+            labels: students.tests
           - name: Academics & Grading
-            labels: academics grading
+            labels: academics.tests grading.tests
           - name: Finance & Backups
-            labels: finance backups
+            labels: finance.tests backups.tests
 
     services:
       postgres:
