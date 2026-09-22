@@ -1,7 +1,7 @@
 """Tenant-aware authentication backends."""
 
-from django_tenants.utils import get_public_schema_name, schema_context
 from django.utils import timezone
+from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework import authentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -38,6 +38,11 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         token_version = int(token.get("security_version", 1))
         user_version = int(getattr(user, "security_version", 1))
         if token_version != user_version:
+            raise AuthenticationFailed("Session has been revoked. Please sign in again.")
+
+        from users.session_security import touch_and_validate_session
+
+        if not touch_and_validate_session(user=user, session_id=token.get("session_id")):
             raise AuthenticationFailed("Session has been revoked. Please sign in again.")
 
         tenant = getattr(request, "tenant", None)

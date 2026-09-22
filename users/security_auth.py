@@ -94,6 +94,14 @@ class EmailMFAVerifyView(APIView):
             if not verify_code(challenge, code):
                 user = challenge.user if challenge else None
                 log_auth_event(request, user, "mfa_verification_failed", details={"tenant_schema": tenant_schema})
+                from users.session_security import record_security_event
+
+                record_security_event(
+                    request=request,
+                    user=user,
+                    event_type="mfa_verification_failed",
+                    metadata={"tenant_schema": tenant_schema},
+                )
                 return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
             user = challenge.user
 
@@ -105,10 +113,21 @@ class EmailMFAVerifyView(APIView):
             return denied
 
         refresh = SecurityTokenObtainPairSerializer.get_token(user)
+        from users.session_security import register_jwt_session
+
+        register_jwt_session(user=user, request=request, refresh=refresh)
         if settings.SIMPLE_JWT.get("UPDATE_LAST_LOGIN", False):
             user.last_login = timezone.now()
             user.save(update_fields=["last_login"])
         log_auth_event(request, user, "mfa_verification_success", details={"tenant_schema": tenant_schema})
+        from users.session_security import record_security_event
+
+        record_security_event(
+            request=request,
+            user=user,
+            event_type="mfa_verification_success",
+            metadata={"tenant_schema": tenant_schema},
+        )
         return Response(
             {
                 "refresh": str(refresh),
@@ -146,6 +165,7 @@ class SecurityTokenRefreshSerializer(TokenRefreshSerializer):
         refresh = RefreshToken(attrs["refresh"])
         user_id = refresh.get("user_id")
         token_version = int(refresh.get("security_version", 1))
+        session_id = refresh.get("session_id")
 
         with schema_context(get_public_schema_name()):
             user = User.objects.filter(pk=user_id, is_active=True).first()
@@ -153,6 +173,11 @@ class SecurityTokenRefreshSerializer(TokenRefreshSerializer):
                 raise serializers.ValidationError({"detail": "Account is no longer active."})
             if token_version != int(user.security_version):
                 raise serializers.ValidationError({"detail": "Session has been revoked. Please sign in again."})
+            if session_id:
+                from users.session_security import touch_and_validate_session
+
+                if not touch_and_validate_session(user=user, session_id=session_id):
+                    raise serializers.ValidationError({"detail": "Session has been revoked. Please sign in again."})
 
         return super().validate(attrs)
 
