@@ -567,87 +567,76 @@ def generate_default_assessments_for_gradebook(
     gradebook: GradeBook, created_by=None
 ) -> list:
     """
-    Generate Assessment instances from DefaultAssessmentTemplate for a specific gradebook.
+    Generate missing assessments from the active default templates.
 
-    This function:
-    1. Gets all active templates for the gradebook's school
-    2. For each marking period in the academic year:
-       - Determines if marking period is an exam period (by checking if 'exam' is in name)
-       - Matches templates to marking periods based on the 'target' field
-       - Creates Assessment instances from matching templates
-    3. Avoids duplicates by checking if assessment already exists
-
-    Args:
-        gradebook: GradeBook instance to generate assessments for
-        created_by: User who triggered the generation (optional)
-
-    Returns:
-        List of created Assessment instances
+    The combinations for a gradebook are loaded once and inserted in one batch.
+    This keeps the operation idempotent while avoiding a SELECT + INSERT pair
+    for every template/marking-period combination during workspace onboarding.
     """
     from .models import DefaultAssessmentTemplate, Assessment
     from academics.models import MarkingPeriod
 
-    ay = gradebook.academic_year
-
-    # Get all active templates (templates are NOT year-specific)
-    templates = DefaultAssessmentTemplate.objects.filter(
-        is_active=True
-    ).select_related("assessment_type")
-
-    if not templates.exists():
+    templates = list(
+        DefaultAssessmentTemplate.objects.filter(is_active=True).select_related(
+            "assessment_type"
+        )
+    )
+    if not templates:
         return []
 
-    # Get all marking periods for this academic year
-    marking_periods = MarkingPeriod.objects.filter(
-        semester__academic_year=ay, active=True
-    ).order_by("start_date")
+    marking_periods = list(
+        MarkingPeriod.objects.filter(
+            semester__academic_year=gradebook.academic_year,
+            active=True,
+        ).order_by("start_date")
+    )
+    if not marking_periods:
+        return []
 
-    created_assessments = []
+    existing_keys = set(
+        Assessment.objects.filter(gradebook=gradebook).values_list(
+            "name", "marking_period_id", "assessment_type_id"
+        )
+    )
+    actor = created_by or gradebook.created_by
+    pending = []
 
-    for mp in marking_periods:
-        # Determine if this is an exam marking period (by checking if 'exam' is in the name)
-        is_exam_period = "exam" in mp.name.lower()
+    for marking_period in marking_periods:
+        is_exam_period = "exam" in marking_period.name.lower()
 
-        # Get templates that match this marking period type
         for template in templates:
-            # Skip if target doesn't match marking period type
             if is_exam_period and template.target != "exam":
                 continue
             if not is_exam_period and template.target == "exam":
                 continue
 
-            # Check if this assessment already exists to avoid duplicates
-            existing = Assessment.objects.filter(
-                gradebook=gradebook,
-                name=template.name,
-                marking_period=mp,
-                assessment_type=template.assessment_type,
-            ).first()
-
-            if existing:
-                # Already exists, skip
+            key = (
+                template.name,
+                marking_period.id,
+                template.assessment_type_id,
+            )
+            if key in existing_keys:
                 continue
 
-            # Create assessment from template
-            # Due date defaults to marking period end date
-            due_date = mp.end_date
-
-            assessment = Assessment.objects.create(
-                gradebook=gradebook,
-                name=template.name,
-                assessment_type=template.assessment_type,
-                marking_period=mp,
-                max_score=template.max_score,
-                weight=template.weight,
-                due_date=due_date,
-                is_calculated=template.is_calculated,
-                created_by=created_by or gradebook.created_by,
+            pending.append(
+                Assessment(
+                    gradebook=gradebook,
+                    name=template.name,
+                    assessment_type=template.assessment_type,
+                    marking_period=marking_period,
+                    max_score=template.max_score,
+                    weight=template.weight,
+                    due_date=marking_period.end_date,
+                    is_calculated=template.is_calculated,
+                    created_by=actor,
+                )
             )
+            existing_keys.add(key)
 
-            created_assessments.append(assessment)
+    if not pending:
+        return []
 
-    return created_assessments
-
+    return Assessment.objects.bulk_create(pending, batch_size=500)
 
 def generate_default_assessments_for_academic_year(
     academic_year, created_by=None
