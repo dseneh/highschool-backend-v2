@@ -5,6 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 from django_tenants.utils import get_public_schema_name, schema_context
@@ -38,6 +39,7 @@ class RestoreLifecycleTestCase(TestCase):
             # lifecycle tests only need persisted actors, not tenant-user
             # membership setup, so create the fixtures directly.
             fixture_key = cls.__name__.lower()
+            cls.schema_name = f"restore_{uuid4().hex[:16]}"
             cls.admin_user = User.objects.create(
                 username=f"admin-{fixture_key}",
                 email=f"admin-{fixture_key}@test.com",
@@ -48,18 +50,28 @@ class RestoreLifecycleTestCase(TestCase):
                 email=f"user-{fixture_key}@test.com",
                 id_number=f"restore-user-{uuid4().hex}",
             )
+            # Tenant schema creation performs DDL. Flush deferred FK events from
+            # the public user fixtures before migrations alter tenant tables.
+            with connection.cursor() as cursor:
+                cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
             cls.tenant = Tenant.objects.create(
                 name="Test Tenant",
-                schema_name="test_tenant_restore",
+                schema_name=cls.schema_name,
                 owner=cls.admin_user,
             )
 
     @classmethod
     def tearDownClass(cls):
-        super().tearDownClass()
-        with schema_context(get_public_schema_name()):
-            Tenant.objects.filter(pk=cls.tenant.pk).delete()
-            User.objects.filter(pk__in=[cls.admin_user.pk, cls.tenant_user.pk]).delete()
+        from core.services.tenant_deletion import hard_delete_tenant_workspace
+
+        try:
+            with schema_context(get_public_schema_name()):
+                hard_delete_tenant_workspace(cls.tenant)
+                User.objects.filter(
+                    pk__in=[cls.admin_user.pk, cls.tenant_user.pk]
+                ).delete()
+        finally:
+            super().tearDownClass()
 
     def setUp(self):
         """Create test backup for each test."""
