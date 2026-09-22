@@ -269,6 +269,21 @@ class CreateGradebookWithAssessmentsTests(GradebookGenerationFixtureMixin, Tenan
         self.assertEqual(GradeBook.objects.count(), 1)
         self.assertEqual(Assessment.objects.count(), 1)
 
+    def test_multiple_entry_assessments_are_inserted_in_one_batch(self):
+        with patch.object(
+            Assessment.objects,
+            "bulk_create",
+            wraps=Assessment.objects.bulk_create,
+        ) as bulk_create:
+            result = self._create(grading_style="multiple_entry")
+
+        bulk_create.assert_called_once()
+        pending = bulk_create.call_args.args[0]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(bulk_create.call_args.kwargs["batch_size"], 500)
+        self.assertEqual(result["generation_result"]["assessments_created"], 1)
+        self.assertEqual(Assessment.objects.count(), 1)
+
     def test_uses_configured_grading_style_when_not_supplied(self):
         GradingSettings.objects.create(grading_style="single_entry")
 
