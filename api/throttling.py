@@ -1,5 +1,11 @@
 """Central throttles for security-sensitive public API endpoints."""
 
+import hashlib
+import hmac
+
+from django.conf import settings
+from django.core.cache import cache
+
 from rest_framework.throttling import SimpleRateThrottle
 
 
@@ -43,3 +49,33 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
             return None
         ident = self.get_ident(request)
         return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+def opaque_rate_limit_subject(value):
+    """Return a stable cache-safe digest without retaining account identifiers."""
+    normalized = str(value or "").strip().casefold().encode("utf-8")
+    secret = settings.SECRET_KEY.encode("utf-8")
+    return hmac.new(secret, normalized, hashlib.sha256).hexdigest()
+
+
+def claim_fixed_window_rate_limit(*, namespace, subject, limit, window_seconds):
+    """Atomically claim one request in a cache-backed fixed window.
+
+    ``cache.add`` and ``cache.incr`` are atomic in Redis, which is the production
+    cache backend. The local-memory backend keeps the same behavior for tests and
+    development. Subject values are hashed before being included in cache keys.
+    """
+    limit = max(1, int(limit))
+    window_seconds = max(1, int(window_seconds))
+    digest = opaque_rate_limit_subject(subject)
+    key = f"security-rate-limit:{namespace}:{digest}"
+
+    if cache.add(key, 1, timeout=window_seconds):
+        return True
+
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        # The entry may expire between add() and incr(); retry as a new window.
+        return cache.add(key, 1, timeout=window_seconds)
+    return count <= limit
