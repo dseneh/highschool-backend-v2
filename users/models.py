@@ -148,3 +148,32 @@ class EmailMFAChallenge(models.Model):
 
     def __str__(self):
         return f"Email MFA challenge for {self.user_id}"
+
+
+class EmailMFARecovery(models.Model):
+    """Administrator-initiated, new-address-verified MFA recovery request."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="email_mfa_recoveries")
+    initiated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="initiated_email_mfa_recoveries",
+    )
+    tenant_schema = models.CharField(max_length=63, db_index=True)
+    new_email = models.EmailField(max_length=254)
+    token_hash = models.CharField(max_length=64, unique=True)
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField(db_index=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    used_at = models.DateTimeField(null=True, blank=True)
+    invalidated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_email_mfa_recovery"
+        indexes = [
+            models.Index(fields=("user", "tenant_schema", "created_at"), name="user_mfa_recovery_idx"),
+        ]

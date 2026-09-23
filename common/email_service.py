@@ -313,6 +313,54 @@ def send_email_mfa_code(user, code: str, *, ttl_seconds: int = 600, school=None)
     )
 
 
+def send_suspicious_login_email(user, *, metadata: dict, ip_address=None, school=None) -> bool:
+    """Notify a user when a privileged login comes from materially new context."""
+    if not is_valid_email(getattr(user, "email", "")):
+        return False
+    context = _build_branding_context(user, school)
+    location = metadata.get("location") if isinstance(metadata.get("location"), dict) else {}
+    context.update(
+        {
+            "device": metadata.get("device_name") or metadata.get("client_name") or metadata.get("device_type") or "Unknown device",
+            "operating_system": metadata.get("device_os") or "Unknown",
+            "location": location.get("city") or location.get("region") or location.get("country") or "Unknown location",
+            "ip_address": ip_address or "Unknown",
+        }
+    )
+    try:
+        html_body = render_to_string("emails/suspicious_login.html", context)
+        text_body = render_to_string("emails/suspicious_login.txt", context)
+    except Exception as exc:
+        logger.error("send_suspicious_login_email: template render error - %s", exc)
+        return False
+    return ResendEmailService().send(
+        to=[user.email],
+        subject=f"New sign-in detected - {context['school_name']}",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
+def send_email_mfa_recovery_code(*, email: str, user, code: str, ttl_minutes: int = 15, school=None) -> bool:
+    """Verify a replacement email address before it becomes an MFA destination."""
+    if not is_valid_email(email):
+        return False
+    context = _build_branding_context(user, school)
+    context.update({"verification_code": code, "expiry_minutes": ttl_minutes})
+    try:
+        html_body = render_to_string("emails/mfa_recovery_code.html", context)
+        text_body = render_to_string("emails/mfa_recovery_code.txt", context)
+    except Exception as exc:
+        logger.error("send_email_mfa_recovery_code: template render error - %s", exc)
+        return False
+    return ResendEmailService().send(
+        to=[email],
+        subject=f"Verify your recovery email - {context['school_name']}",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 def send_password_reset_success_email(user, login_url: str = "", school=None) -> bool:
     """Send a confirmation email after a password has been reset successfully."""
     if not user.email:

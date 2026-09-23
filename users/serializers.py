@@ -472,6 +472,13 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise NoAssignedRole()
 
         refresh = self.get_token(user)
+        from users.session_security import register_jwt_session
+
+        register_jwt_session(
+            user=user,
+            request=self.context.get('request'),
+            refresh=refresh,
+        )
         data = {
             'refresh': str(refresh),
             'access': str(refresh.access_token),
@@ -607,4 +614,3 @@ class UserRecreateSerializer(serializers.Serializer):
         if not attrs.get('id_number'):
             raise serializers.ValidationError({'id_number': 'id_number is required.'})
         return attrs
-
