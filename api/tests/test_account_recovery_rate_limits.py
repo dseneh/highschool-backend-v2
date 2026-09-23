@@ -1,16 +1,16 @@
 """Account-aware password reset rate-limit tests."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.test import override_settings
-from django_tenants.test.cases import TenantTestCase
+from django.test import TestCase, override_settings
 from django_tenants.utils import get_public_schema_name, schema_context
-from rest_framework.test import APIClient
+from rest_framework.test import APIRequestFactory, force_authenticate
 
-from authorization.models import Role
-from authorization.services import assign_user_role
 from users.models import AuthenticationAuditEvent, User
+from users.security_views import EmailMFARecoveryStartView
+from users.views import PasswordResetRequestView
 
 
 @override_settings(
@@ -20,24 +20,10 @@ from users.models import AuthenticationAuditEvent, User
     MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR=1,
     MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS=60,
 )
-class AccountRecoveryRateLimitTests(TenantTestCase):
-    @classmethod
-    def setup_tenant(cls, tenant):
-        tenant.name = "Password Reset Test School"
-        tenant.short_name = "reset"
-        tenant.status = "active"
-        tenant.owner, _ = User.objects.get_or_create(
-            email="reset-owner@example.com",
-            defaults={
-                "username": "reset-owner",
-                "id_number": "RESET-OWNER",
-                "account_type": "staff",
-            },
-        )
-
+class AccountRecoveryRateLimitTests(TestCase):
     def setUp(self):
         cache.clear()
-        self.client = APIClient(HTTP_X_TENANT=self.tenant.schema_name)
+        self.factory = APIRequestFactory()
         self.user = User.objects.create(
             email="reset-user@example.com",
             username="reset-user",
@@ -52,11 +38,13 @@ class AccountRecoveryRateLimitTests(TenantTestCase):
         self, send_email, log_auth_event
     ):
         responses = [
-            self.client.post(
-                "/api/v1/auth/password/forgot/",
-                {"user_identifier": self.user.email},
-                format="json",
-                REMOTE_ADDR=f"192.0.2.{index}",
+            PasswordResetRequestView.as_view()(
+                self.factory.post(
+                    "/api/v1/auth/password/forgot/",
+                    {"user_identifier": self.user.email},
+                    format="json",
+                    REMOTE_ADDR=f"192.0.2.{index}",
+                )
             )
             for index in range(1, 5)
         ]
@@ -81,17 +69,21 @@ class AccountRecoveryRateLimitTests(TenantTestCase):
 
     @patch("common.email_service.send_password_reset_email", return_value=True)
     def test_unknown_and_existing_accounts_receive_same_response(self, _send_email):
-        existing = self.client.post(
-            "/api/v1/auth/password/forgot/",
-            {"user_identifier": self.user.email},
-            format="json",
-            REMOTE_ADDR="198.51.100.10",
+        existing = PasswordResetRequestView.as_view()(
+            self.factory.post(
+                "/api/v1/auth/password/forgot/",
+                {"user_identifier": self.user.email},
+                format="json",
+                REMOTE_ADDR="198.51.100.10",
+            )
         )
-        unknown = self.client.post(
-            "/api/v1/auth/password/forgot/",
-            {"user_identifier": "missing@example.com"},
-            format="json",
-            REMOTE_ADDR="198.51.100.11",
+        unknown = PasswordResetRequestView.as_view()(
+            self.factory.post(
+                "/api/v1/auth/password/forgot/",
+                {"user_identifier": "missing@example.com"},
+                format="json",
+                REMOTE_ADDR="198.51.100.11",
+            )
         )
 
         self.assertEqual(existing.status_code, 200, existing.data)
@@ -110,11 +102,6 @@ class AccountRecoveryRateLimitTests(TenantTestCase):
             account_type="staff",
             is_active=True,
         )
-        self.tenant.add_user(target)
-        assign_user_role(
-            user=target,
-            role=Role.objects.get(system_key="admin"),
-        )
         actor = User.objects.create(
             email="mfa-limit-platform@example.com",
             username="mfa-limit-platform",
@@ -123,23 +110,32 @@ class AccountRecoveryRateLimitTests(TenantTestCase):
             is_active=True,
             is_platform_superuser=True,
         )
-        self.client.force_authenticate(user=actor)
         payload = {
             "user_id": str(target.pk),
             "new_email": "mfa-limit-recovered@example.com",
         }
-        first = self.client.post(
-            "/api/v1/auth/security/mfa-recovery/",
-            payload,
-            format="json",
-            REMOTE_ADDR="203.0.113.10",
-        )
-        second = self.client.post(
-            "/api/v1/auth/security/mfa-recovery/",
-            payload,
-            format="json",
-            REMOTE_ADDR="203.0.113.11",
-        )
+        role = SimpleNamespace(system_key="admin", is_active=True)
+        with (
+            patch("authorization.services.get_assigned_role", return_value=role),
+            patch("users.mfa.requires_email_mfa", return_value=True),
+        ):
+            first_request = self.factory.post(
+                "/api/v1/auth/security/mfa-recovery/",
+                payload,
+                format="json",
+                REMOTE_ADDR="203.0.113.10",
+            )
+            force_authenticate(first_request, user=actor)
+            first = EmailMFARecoveryStartView.as_view()(first_request)
+
+            second_request = self.factory.post(
+                "/api/v1/auth/security/mfa-recovery/",
+                payload,
+                format="json",
+                REMOTE_ADDR="203.0.113.11",
+            )
+            force_authenticate(second_request, user=actor)
+            second = EmailMFARecoveryStartView.as_view()(second_request)
 
         self.assertEqual(first.status_code, 202, first.data)
         self.assertEqual(second.status_code, 429, second.data)
