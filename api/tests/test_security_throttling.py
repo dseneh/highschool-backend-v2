@@ -4,7 +4,11 @@ from django.core.cache import cache
 from django.test import SimpleTestCase
 from rest_framework.test import APIRequestFactory
 
-from api.throttling import SensitiveEndpointRateThrottle
+from api.throttling import (
+    SensitiveEndpointRateThrottle,
+    claim_fixed_window_rate_limit,
+    opaque_rate_limit_subject,
+)
 
 
 class SensitiveEndpointRateThrottleTests(SimpleTestCase):
@@ -50,3 +54,55 @@ class SensitiveEndpointRateThrottleTests(SimpleTestCase):
     def test_regular_route_is_not_recorded_by_sensitive_throttle(self):
         request = self.factory.get("/api/v1/students/", REMOTE_ADDR="192.0.2.11")
         self.assertTrue(self.throttle.allow_request(request, None))
+
+    def test_account_limit_is_enforced_across_requests(self):
+        kwargs = {
+            "namespace": "password-reset-account:school-a",
+            "subject": "user:123",
+            "limit": 3,
+            "window_seconds": 3600,
+        }
+
+        self.assertTrue(claim_fixed_window_rate_limit(**kwargs))
+        self.assertTrue(claim_fixed_window_rate_limit(**kwargs))
+        self.assertTrue(claim_fixed_window_rate_limit(**kwargs))
+        self.assertFalse(claim_fixed_window_rate_limit(**kwargs))
+
+    def test_account_limits_are_tenant_and_subject_isolated(self):
+        common = {"limit": 1, "window_seconds": 3600}
+
+        self.assertTrue(
+            claim_fixed_window_rate_limit(
+                namespace="mfa-recovery-account:school-a",
+                subject="user:123",
+                **common,
+            )
+        )
+        self.assertFalse(
+            claim_fixed_window_rate_limit(
+                namespace="mfa-recovery-account:school-a",
+                subject="user:123",
+                **common,
+            )
+        )
+        self.assertTrue(
+            claim_fixed_window_rate_limit(
+                namespace="mfa-recovery-account:school-b",
+                subject="user:123",
+                **common,
+            )
+        )
+        self.assertTrue(
+            claim_fixed_window_rate_limit(
+                namespace="mfa-recovery-account:school-a",
+                subject="user:456",
+                **common,
+            )
+        )
+
+    def test_subject_digest_does_not_retain_email_address(self):
+        digest = opaque_rate_limit_subject("Person@Example.com")
+
+        self.assertNotIn("person", digest)
+        self.assertNotIn("example", digest)
+        self.assertEqual(len(digest), 64)
