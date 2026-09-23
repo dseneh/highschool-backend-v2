@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, F, Q
 from django.utils import timezone
@@ -278,6 +279,45 @@ class EmailMFARecoveryStartView(APIView):
 
         tenant = getattr(request, "tenant", None)
         tenant_schema = getattr(tenant, "schema_name", "")
+        from api.throttling import claim_fixed_window_rate_limit
+
+        account_allowed = claim_fixed_window_rate_limit(
+            namespace=f"mfa-recovery-account:{tenant_schema or 'public'}",
+            subject=f"user:{target.pk}",
+            limit=getattr(settings, "MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR", 3),
+            window_seconds=3600,
+        )
+        cooldown_allowed = claim_fixed_window_rate_limit(
+            namespace=f"mfa-recovery-cooldown:{tenant_schema or 'public'}",
+            subject=f"user:{target.pk}",
+            limit=1,
+            window_seconds=getattr(
+                settings, "MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS", 60
+            ),
+        )
+        if not account_allowed or not cooldown_allowed:
+            reason = (
+                "account_hourly_limit" if not account_allowed else "resend_cooldown"
+            )
+            with schema_context(get_public_schema_name()):
+                AuthenticationAuditEvent.objects.create(
+                    event_type="mfa_recovery_throttled",
+                    user=target,
+                    tenant=tenant,
+                    ip_address=request.META.get("REMOTE_ADDR") or None,
+                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                    metadata={
+                        "initiated_by": str(request.user.pk),
+                        "reason": reason,
+                    },
+                )
+            return Response(
+                {
+                    "detail": "A recovery request was recently processed. Please wait before trying again."
+                },
+                status=429,
+            )
+
         with schema_context(get_public_schema_name()):
             issued = issue_recovery(
                 user=target,
