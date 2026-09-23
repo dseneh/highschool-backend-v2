@@ -34,7 +34,7 @@ class PasswordResetRateLimitTests(TenantTestCase):
 
     def setUp(self):
         cache.clear()
-        self.client = APIClient(HTTP_HOST=self.domain.domain)
+        self.client = APIClient(HTTP_X_TENANT=self.tenant.schema_name)
         self.user = User.objects.create(
             email="reset-user@example.com",
             username="reset-user",
@@ -58,7 +58,13 @@ class PasswordResetRateLimitTests(TenantTestCase):
             for index in range(1, 5)
         ]
 
-        self.assertTrue(all(response.status_code == 200 for response in responses))
+        self.assertTrue(
+            all(response.status_code == 200 for response in responses),
+            [
+                {"status": response.status_code, "data": response.data}
+                for response in responses
+            ],
+        )
         self.assertTrue(
             all(response.data == responses[0].data for response in responses[1:])
         )
@@ -85,8 +91,8 @@ class PasswordResetRateLimitTests(TenantTestCase):
             REMOTE_ADDR="198.51.100.11",
         )
 
-        self.assertEqual(existing.status_code, 200)
-        self.assertEqual(unknown.status_code, 200)
+        self.assertEqual(existing.status_code, 200, existing.data)
+        self.assertEqual(unknown.status_code, 200, unknown.data)
         self.assertEqual(existing.data, unknown.data)
 
 
@@ -112,7 +118,7 @@ class MFARecoveryRateLimitTests(TenantTestCase):
 
     def setUp(self):
         cache.clear()
-        self.client = APIClient(HTTP_HOST=self.domain.domain)
+        self.client = APIClient(HTTP_X_TENANT=self.tenant.schema_name)
         self.target = User.objects.create(
             email="mfa-limit-target@example.com",
             username="mfa-limit-target",
@@ -157,8 +163,8 @@ class MFARecoveryRateLimitTests(TenantTestCase):
             REMOTE_ADDR="203.0.113.11",
         )
 
-        self.assertEqual(first.status_code, 202)
-        self.assertEqual(second.status_code, 429)
+        self.assertEqual(first.status_code, 202, first.data)
+        self.assertEqual(second.status_code, 429, second.data)
         with schema_context(get_public_schema_name()):
             event = AuthenticationAuditEvent.objects.filter(
                 event_type="mfa_recovery_throttled",
