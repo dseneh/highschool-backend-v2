@@ -1026,6 +1026,32 @@ class PasswordResetRequestView(APIView):
                     Q(id_number=user_identifier)
                 ).first()
 
+                from api.throttling import claim_fixed_window_rate_limit
+                from common.audit_utils import log_auth_event
+
+                tenant_schema = getattr(
+                    getattr(request, "tenant", None), "schema_name", "public"
+                )
+                account_subject = (
+                    f"user:{user.pk}"
+                    if user
+                    else f"identifier:{user_identifier}"
+                )
+                account_allowed = claim_fixed_window_rate_limit(
+                    namespace=f"password-reset-account:{tenant_schema}",
+                    subject=account_subject,
+                    limit=getattr(settings, "PASSWORD_RESET_ACCOUNT_LIMIT_PER_HOUR", 3),
+                    window_seconds=3600,
+                )
+                if not account_allowed:
+                    log_auth_event(
+                        request,
+                        user,
+                        "password_reset_throttled",
+                        details={"reason": "account_hourly_limit"},
+                    )
+                    return _safe_response
+
                 if not user:
                     return _safe_response
 
@@ -1043,7 +1069,6 @@ class PasswordResetRequestView(APIView):
                     1,
                     int(getattr(settings, "PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS", 60)),
                 )
-                tenant_schema = getattr(getattr(request, "tenant", None), "schema_name", "public")
                 rate_limit_key = f"pwd-reset-cooldown:{tenant_schema}:{user.id}"
 
                 # cache.add is atomic: it returns False when key already exists.
@@ -1052,6 +1077,12 @@ class PasswordResetRequestView(APIView):
                         "Password reset request throttled for user %s (%ss cooldown)",
                         user.username,
                         cooldown_seconds,
+                    )
+                    log_auth_event(
+                        request,
+                        user,
+                        "password_reset_throttled",
+                        details={"reason": "resend_cooldown"},
                     )
                     return _safe_response
 
@@ -1076,17 +1107,15 @@ class PasswordResetRequestView(APIView):
                 if not sent:
                     logger.error("Failed to send password reset email to user %s", user.username)
 
-                from common.audit_utils import log_auth_event
                 log_auth_event(request, user, "password_reset_requested")
 
                 return _safe_response
 
             except Exception as exc:
                 logger.error("Error processing password reset request: %s", exc)
-                return Response(
-                    {"detail": "An error occurred while processing your request."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
+                # Preserve the same public response so delivery failures cannot
+                # be used to determine whether an account exists.
+                return _safe_response
 
 
 class TenantOwnerActivationVerifyCodeView(APIView):
