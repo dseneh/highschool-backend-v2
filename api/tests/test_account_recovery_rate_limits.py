@@ -22,6 +22,7 @@ class PasswordResetRateLimitTests(TenantTestCase):
     def setup_tenant(cls, tenant):
         tenant.name = "Password Reset Test School"
         tenant.short_name = "reset"
+        tenant.status = "active"
         tenant.owner, _ = User.objects.get_or_create(
             email="reset-owner@example.com",
             defaults={
@@ -99,6 +100,7 @@ class MFARecoveryRateLimitTests(TenantTestCase):
     def setup_tenant(cls, tenant):
         tenant.name = "MFA Recovery Limit Test School"
         tenant.short_name = "mfa-limit"
+        tenant.status = "active"
         tenant.owner, _ = User.objects.get_or_create(
             email="mfa-limit-owner@example.com",
             defaults={
