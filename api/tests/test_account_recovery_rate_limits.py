@@ -16,8 +16,11 @@ from users.models import AuthenticationAuditEvent, User
 @override_settings(
     PASSWORD_RESET_ACCOUNT_LIMIT_PER_HOUR=3,
     PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS=60,
+    EMAIL_MFA_PRIVILEGED_ENABLED=True,
+    MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR=1,
+    MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS=60,
 )
-class PasswordResetRateLimitTests(TenantTestCase):
+class AccountRecoveryRateLimitTests(TenantTestCase):
     @classmethod
     def setup_tenant(cls, tenant):
         tenant.name = "Password Reset Test School"
@@ -95,43 +98,24 @@ class PasswordResetRateLimitTests(TenantTestCase):
         self.assertEqual(unknown.status_code, 200, unknown.data)
         self.assertEqual(existing.data, unknown.data)
 
-
-@override_settings(
-    EMAIL_MFA_PRIVILEGED_ENABLED=True,
-    MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR=1,
-    MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS=60,
-)
-class MFARecoveryRateLimitTests(TenantTestCase):
-    @classmethod
-    def setup_tenant(cls, tenant):
-        tenant.name = "MFA Recovery Limit Test School"
-        tenant.short_name = "mfa-limit"
-        tenant.status = "active"
-        tenant.owner, _ = User.objects.get_or_create(
-            email="mfa-limit-owner@example.com",
-            defaults={
-                "username": "mfa-limit-owner",
-                "id_number": "MFA-LIMIT-OWNER",
-                "account_type": "staff",
-            },
-        )
-
-    def setUp(self):
-        cache.clear()
-        self.client = APIClient(HTTP_X_TENANT=self.tenant.schema_name)
-        self.target = User.objects.create(
+    @patch(
+        "common.email_service.send_email_mfa_recovery_code",
+        return_value=True,
+    )
+    def test_account_limit_applies_across_ip_addresses(self, _send_email):
+        target = User.objects.create(
             email="mfa-limit-target@example.com",
             username="mfa-limit-target",
             id_number="MFA-LIMIT-TARGET",
             account_type="staff",
             is_active=True,
         )
-        self.tenant.add_user(self.target)
+        self.tenant.add_user(target)
         assign_user_role(
-            user=self.target,
+            user=target,
             role=Role.objects.get(system_key="admin"),
         )
-        self.actor = User.objects.create(
+        actor = User.objects.create(
             email="mfa-limit-platform@example.com",
             username="mfa-limit-platform",
             id_number="MFA-LIMIT-PLATFORM",
@@ -139,15 +123,9 @@ class MFARecoveryRateLimitTests(TenantTestCase):
             is_active=True,
             is_platform_superuser=True,
         )
-        self.client.force_authenticate(user=self.actor)
-
-    @patch(
-        "common.email_service.send_email_mfa_recovery_code",
-        return_value=True,
-    )
-    def test_account_limit_applies_across_ip_addresses(self, _send_email):
+        self.client.force_authenticate(user=actor)
         payload = {
-            "user_id": str(self.target.pk),
+            "user_id": str(target.pk),
             "new_email": "mfa-limit-recovered@example.com",
         }
         first = self.client.post(
@@ -168,6 +146,6 @@ class MFARecoveryRateLimitTests(TenantTestCase):
         with schema_context(get_public_schema_name()):
             event = AuthenticationAuditEvent.objects.filter(
                 event_type="mfa_recovery_throttled",
-                user=self.target,
+                user=target,
             ).latest("created_at")
         self.assertEqual(event.metadata["reason"], "account_hourly_limit")
