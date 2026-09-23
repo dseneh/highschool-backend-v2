@@ -33,7 +33,7 @@ class PasswordResetRateLimitTests(TenantTestCase):
 
     def setUp(self):
         cache.clear()
-        self.client = APIClient()
+        self.client = APIClient(HTTP_HOST=self.domain.domain)
         self.user = User.objects.create(
             email="reset-user@example.com",
             username="reset-user",
@@ -110,7 +110,7 @@ class MFARecoveryRateLimitTests(TenantTestCase):
 
     def setUp(self):
         cache.clear()
-        self.client = APIClient()
+        self.client = APIClient(HTTP_HOST=self.domain.domain)
         self.target = User.objects.create(
             email="mfa-limit-target@example.com",
             username="mfa-limit-target",
