@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIClient
@@ -44,6 +45,7 @@ class PrivilegedEmailMFATests(TenantTestCase):
         )
 
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
 
     def _user(self, name, role_key):
@@ -163,6 +165,7 @@ class PrivilegedEmailMFATests(TenantTestCase):
 
         self.assertEqual(started.status_code, 202)
         self.assertRegex(captured["code"], r"^\d{6}$")
+
         self.client.force_authenticate(user=None)
         completed = self.client.post(
             "/api/v1/auth/security/mfa-recovery/verify/",
