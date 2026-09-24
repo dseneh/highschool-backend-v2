@@ -51,6 +51,9 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         if hasattr(request, "_request"):
             from authorization.runtime import initialize_request_authorization
             initialize_request_authorization(request, user)
+        from users.step_up import enforce_authenticated_request_step_up
+
+        enforce_authenticated_request_step_up(request, user)
         return user, token
 
 
@@ -82,6 +85,9 @@ class TenantSessionAuthentication(authentication.BaseAuthentication):
 
         from authorization.runtime import initialize_request_authorization
         initialize_request_authorization(request, session_obj.user)
+        from users.step_up import enforce_authenticated_request_step_up
+
+        enforce_authenticated_request_step_up(request, session_obj.user)
         return session_obj.user, None
 
 
@@ -97,4 +103,7 @@ class RBACSessionAuthentication(authentication.SessionAuthentication):
             raise AuthenticationFailed("User account is disabled.")
         from authorization.runtime import initialize_request_authorization
         initialize_request_authorization(request, user)
+        from users.step_up import enforce_authenticated_request_step_up
+
+        enforce_authenticated_request_step_up(request, user)
         return user, auth
