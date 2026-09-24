@@ -32,6 +32,8 @@ REST_FRAMEWORK = {
         "activation": config("API_THROTTLE_ACTIVATION", default="12/hour"),
         "mfa_verify": config("API_THROTTLE_MFA_VERIFY", default="10/min"),
         "mfa_resend": config("API_THROTTLE_MFA_RESEND", default="5/hour"),
+        "step_up_start": config("API_THROTTLE_STEP_UP_START", default="60/hour"),
+        "step_up_verify": config("API_THROTTLE_STEP_UP_VERIFY", default="30/min"),
         "mfa_recovery": config("API_THROTTLE_MFA_RECOVERY", default="30/hour"),
         "public_search": config("API_THROTTLE_PUBLIC_SEARCH", default="20/min"),
     },
