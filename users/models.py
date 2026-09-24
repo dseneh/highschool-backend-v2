@@ -126,6 +126,9 @@ class EmailMFAChallenge(models.Model):
         related_name="email_mfa_challenges",
     )
     tenant_schema = models.CharField(max_length=63, db_index=True)
+    purpose = models.CharField(max_length=32, default="login", db_index=True)
+    action = models.CharField(max_length=64, blank=True, default="")
+    context = models.CharField(max_length=255, blank=True, default="")
     token_hash = models.CharField(max_length=64, unique=True)
     code_hash = models.CharField(max_length=128)
     expires_at = models.DateTimeField(db_index=True)
@@ -148,6 +151,29 @@ class EmailMFAChallenge(models.Model):
 
     def __str__(self):
         return f"Email MFA challenge for {self.user_id}"
+
+
+class StepUpAuthorization(models.Model):
+    """Short-lived, single-use proof for one sensitive action."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="step_up_authorizations")
+    tenant_schema = models.CharField(max_length=63, db_index=True)
+    action = models.CharField(max_length=64, db_index=True)
+    context = models.CharField(max_length=255, blank=True, default="")
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField(db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "user_step_up_authorization"
+        indexes = [
+            models.Index(
+                fields=("user", "tenant_schema", "action", "expires_at"),
+                name="user_step_up_lookup_idx",
+            )
+        ]
 
 
 class EmailMFARecovery(models.Model):
