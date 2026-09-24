@@ -21,6 +21,8 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
         "/api/v1/auth/mfa/resend/": "mfa_resend",
         "/api/v1/auth/security/mfa-recovery/": "mfa_recovery",
         "/api/v1/auth/security/mfa-recovery/verify/": "mfa_recovery",
+        "/api/v1/auth/security/step-up/": "mfa_resend",
+        "/api/v1/auth/security/step-up/verify/": "mfa_verify",
         "/api/v1/public/schools/": "public_search",
     }
 
