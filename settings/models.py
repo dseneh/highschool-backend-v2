@@ -16,6 +16,26 @@ class GradingStyleChoices(models.TextChoices):
     MULTIPLE_ENTRY = "multiple_entry", "Multiple Entry (Assessments & Final Grades)"
 
 
+class SecuritySettings(BaseModel):
+    """Tenant-controlled step-up MFA policy for sensitive operations."""
+
+    require_mfa_for_payroll_approval = models.BooleanField(default=False)
+    require_mfa_for_payment_configuration = models.BooleanField(default=False)
+    require_mfa_for_bank_account_changes = models.BooleanField(default=False)
+    require_mfa_for_backup_restore = models.BooleanField(default=False)
+    require_mfa_for_security_settings = models.BooleanField(default=False)
+    require_mfa_for_admin_role_changes = models.BooleanField(default=False)
+    require_mfa_for_mfa_recovery = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "security_settings"
+        verbose_name = "Security Settings"
+        verbose_name_plural = "Security Settings"
+
+    def __str__(self):
+        return "Workspace security settings"
+
+
 class GradingSettings(BaseModel):
     """
     Settings for grading system behavior.
