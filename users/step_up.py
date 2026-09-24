@@ -103,6 +103,7 @@ def enforce_step_up(request, *, action, context="", required=None):
             "detail": "Fresh email verification is required for this action.",
             "error_code": "STEP_UP_MFA_REQUIRED",
             "step_up_action": action,
+            "step_up_context": normalize_context(context),
         }
     )
 
