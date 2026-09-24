@@ -22,10 +22,10 @@ class SecuritySettings(BaseModel):
     require_mfa_for_payroll_approval = models.BooleanField(default=False)
     require_mfa_for_payment_configuration = models.BooleanField(default=False)
     require_mfa_for_bank_account_changes = models.BooleanField(default=False)
-    require_mfa_for_backup_restore = models.BooleanField(default=False)
-    require_mfa_for_security_settings = models.BooleanField(default=False)
-    require_mfa_for_admin_role_changes = models.BooleanField(default=False)
-    require_mfa_for_mfa_recovery = models.BooleanField(default=False)
+    require_mfa_for_backup_restore = models.BooleanField(default=True)
+    require_mfa_for_security_settings = models.BooleanField(default=True)
+    require_mfa_for_admin_role_changes = models.BooleanField(default=True)
+    require_mfa_for_mfa_recovery = models.BooleanField(default=True)
 
     class Meta:
         db_table = "security_settings"
