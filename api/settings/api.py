@@ -87,7 +87,7 @@ else:
     )
 CORS_ALLOW_CREDENTIALS = True
 CORS_EXPOSE_HEADERS = ["content-type", "x-tenant"]
-CORS_ALLOW_HEADERS = ["accept", "accept-encoding", "authorization", "content-type", "dnt", "origin", "user-agent", "x-csrftoken", "x-requested-with", "x-tenant", "x-workspace", "x-app-path", "x-app-platform", "x-app-version", "x-client-name", "x-device-name", "x-device-model", "x-device-brand", "x-device-type", "x-device-os", "x-device-os-version", "x-tenant-session"]
+CORS_ALLOW_HEADERS = ["accept", "accept-encoding", "authorization", "content-type", "dnt", "origin", "user-agent", "x-csrftoken", "x-requested-with", "x-tenant", "x-workspace", "x-app-path", "x-app-platform", "x-app-version", "x-client-name", "x-device-name", "x-device-model", "x-device-brand", "x-device-type", "x-device-os", "x-device-os-version", "x-tenant-session", "x-step-up-token"]
 CORS_ALLOW_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
 CORS_PREFLIGHT_MAX_AGE = 86400
 
