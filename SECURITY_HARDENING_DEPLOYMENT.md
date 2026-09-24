@@ -34,6 +34,8 @@ Defaults can be overridden through environment variables:
 - `API_THROTTLE_ACTIVATION=12/hour`
 - `API_THROTTLE_MFA_VERIFY=10/min`
 - `API_THROTTLE_MFA_RESEND=5/hour`
+- `API_THROTTLE_STEP_UP_START=60/hour` (per authenticated user and workspace)
+- `API_THROTTLE_STEP_UP_VERIFY=30/min` (per authenticated user and workspace)
 - `API_THROTTLE_MFA_RECOVERY=30/hour` (per IP)
 - `API_THROTTLE_PUBLIC_SEARCH=20/min`
 - `PASSWORD_RESET_ACCOUNT_LIMIT_PER_HOUR=3`
