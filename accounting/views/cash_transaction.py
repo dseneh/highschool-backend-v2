@@ -60,6 +60,7 @@ from accounting.services.post_all import (
 )
 from accounting.services.cash_transaction_pdf import build_cash_transaction_pdf_bytes
 from accounting.views.base import AccountingErrorFormattingMixin
+from common.update_utils import filter_changed_data
 
 
 class AccountingCashTransactionPagination(PageNumberPagination):
@@ -214,12 +215,13 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
         from users.step_up import enforce_step_up_for_sensitive_changes
 
         instance = serializer.instance
+        changed_data = filter_changed_data(instance, serializer.validated_data)
         enforce_step_up_for_sensitive_changes(
             self.request,
             action="bank_account_changes",
             context=instance.pk,
             instance=instance,
-            validated_data=serializer.validated_data,
+            validated_data=changed_data,
         )
         serializer.save()
 
