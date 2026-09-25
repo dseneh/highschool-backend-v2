@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -6,6 +7,7 @@ from django.test import SimpleTestCase
 from users.step_up import (
     changed_fields,
     enforce_step_up_for_sensitive_changes,
+    enforce_step_up,
     get_step_up_grant_policy,
     request_session_binding,
 )
@@ -103,3 +105,41 @@ class StepUpSensitiveChangeTests(SimpleTestCase):
         }
 
         self.assertEqual(changed_fields(current, submitted), set())
+
+    @patch("users.step_up.schema_context", return_value=nullcontext())
+    @patch("users.step_up.transaction.atomic", return_value=nullcontext())
+    @patch("users.step_up.connection")
+    @patch("users.models.StepUpAuthorization")
+    def test_reusable_grant_is_resolved_from_bound_session_without_bearer_token(
+        self,
+        authorization_model,
+        connection,
+        _atomic,
+        _schema_context,
+    ):
+        connection.schema_name = "school"
+        proof = SimpleNamespace(pk="proof-1", reusable=True)
+        base_query = MagicMock()
+        reusable_query = MagicMock()
+        reusable_query.first.return_value = proof
+        base_query.filter.return_value = reusable_query
+        authorization_model.objects.select_for_update.return_value.filter.return_value = base_query
+        request = SimpleNamespace(
+            headers={},
+            user=SimpleNamespace(pk="user-1", security_version=3),
+            _step_up_session_binding="tenant:session-1",
+        )
+
+        enforce_step_up(
+            request,
+            action="bank_account_changes",
+            context="bank-1",
+            required=True,
+        )
+
+        base_query.filter.assert_called_once_with(reusable=True)
+        authorization_model.objects.filter.assert_called_once_with(pk="proof-1")
+        update_values = authorization_model.objects.filter.return_value.update.call_args.kwargs
+        self.assertIn("last_used_at", update_values)
+        self.assertIn("use_count", update_values)
+        self.assertNotIn("used_at", update_values)
