@@ -970,7 +970,10 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         if "description" in validated_data:
             description = str(validated_data.get("description") or "").strip()
             validated_data["description"] = description or "Transaction entry"
-        return super().update(instance, validated_data)
+        changed_data = filter_changed_data(instance, validated_data)
+        if not changed_data:
+            return instance
+        return super().update(instance, changed_data)
 
     def get_bank_account(self, obj):
         if obj.bank_account_id is None:
