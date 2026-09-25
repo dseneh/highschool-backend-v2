@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.utils import timezone
 from rest_framework import serializers
+from common.update_utils import ChangedFieldsModelSerializerMixin
 from academics.models import Section, SectionSubject, Subject
 from staff.models import Staff
 
@@ -48,7 +49,10 @@ class EmployeeOrStaffPKField(serializers.PrimaryKeyRelatedField):
             return employee
 
 
-class EmployeeDepartmentSerializer(serializers.ModelSerializer):
+class EmployeeDepartmentSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = EmployeeDepartment
         fields = [
@@ -63,7 +67,10 @@ class EmployeeDepartmentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-class EmployeePositionSerializer(serializers.ModelSerializer):
+class EmployeePositionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     department = serializers.PrimaryKeyRelatedField(
         queryset=EmployeeDepartment.objects.all(),
         required=False,
@@ -334,7 +341,10 @@ class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
         return data
 
 
-class LeaveTypeSerializer(serializers.ModelSerializer):
+class LeaveTypeSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = LeaveType
         fields = [
