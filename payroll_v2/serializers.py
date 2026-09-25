@@ -905,7 +905,7 @@ class StaffWardSponsorshipPolicySerializer(ChangedFieldsModelSerializerMixin, se
         read_only_fields = ["created_at", "updated_at"]
 
 
-class EmployeeWardSerializer(serializers.ModelSerializer):
+class EmployeeWardSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
 
@@ -935,7 +935,7 @@ class EmployeeWardSerializer(serializers.ModelSerializer):
         return obj.student.get_full_name() if obj.student_id else None
 
 
-class StaffWardSponsorshipStudentSerializer(serializers.ModelSerializer):
+class StaffWardSponsorshipStudentSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -1081,7 +1081,7 @@ class StaffWardSponsorshipStudentSerializer(serializers.ModelSerializer):
         return instance
 
 
-class StaffWardSponsorshipSerializer(serializers.ModelSerializer):
+class StaffWardSponsorshipSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     id_number = serializers.CharField(source="employee.id_number", read_only=True)
     policy_name = serializers.CharField(source="policy.name", read_only=True)
@@ -1202,7 +1202,7 @@ class StaffWardSponsorshipSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class SalaryAdvanceSerializer(serializers.ModelSerializer):
+class SalaryAdvanceSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     completed_by_name = serializers.SerializerMethodField()
@@ -1349,7 +1349,7 @@ class SalaryAdvanceSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class PayrollDeductionInstallmentSerializer(serializers.ModelSerializer):
+class PayrollDeductionInstallmentSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = PayrollDeductionInstallment
         fields = [
@@ -1368,7 +1368,7 @@ class PayrollDeductionInstallmentSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at", "updated_at"]
 
 
-class PayrollDeductionScheduleSerializer(serializers.ModelSerializer):
+class PayrollDeductionScheduleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     installments = PayrollDeductionInstallmentSerializer(many=True, read_only=True)
 
