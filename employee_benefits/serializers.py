@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
+
 from payroll_v2.enums import CalculationType, TargetAmountSource
 from payroll_v2.serializers import EmployeeDisplaySerializer
 
@@ -59,7 +61,7 @@ class BenefitTypeRuleSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class BenefitTypeSerializer(serializers.ModelSerializer):
+class BenefitTypeSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     rules = BenefitTypeRuleSerializer(many=True, read_only=True)
     employee_count = serializers.SerializerMethodField()
 
