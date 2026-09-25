@@ -16,9 +16,18 @@ class AccountingSettingsView(APIView):
         return Response(AccountingSettingsSerializer(settings).data)
 
     def patch(self, request):
+        from users.step_up import enforce_step_up_for_sensitive_changes
+
         settings = get_tenant_accounting_settings(user=request.user)
         serializer = AccountingSettingsSerializer(settings, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        enforce_step_up_for_sensitive_changes(
+            request,
+            action="payment_configuration",
+            context="",
+            instance=settings,
+            validated_data=serializer.validated_data,
+        )
         settings = serializer.save(updated_by=request.user)
         settings.refresh_from_db()
         return Response(AccountingSettingsSerializer(settings).data)

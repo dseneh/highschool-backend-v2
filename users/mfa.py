@@ -112,7 +112,7 @@ def _new_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def issue_challenge(user, tenant_schema: str):
+def issue_challenge(user, tenant_schema: str, *, purpose="login", action="", context=""):
     from common.email_service import send_email_mfa_code
 
     now = timezone.now()
@@ -124,12 +124,18 @@ def issue_challenge(user, tenant_schema: str):
         EmailMFAChallenge.objects.select_for_update().filter(
             user=user,
             tenant_schema=tenant_schema,
+            purpose=purpose,
+            action=action,
+            context=context,
             used_at__isnull=True,
             invalidated_at__isnull=True,
         ).update(invalidated_at=now)
         challenge = EmailMFAChallenge.objects.create(
             user=user,
             tenant_schema=tenant_schema,
+            purpose=purpose,
+            action=action,
+            context=context,
             token_hash=token_digest(raw_token),
             code_hash=make_password(code),
             expires_at=now + timedelta(seconds=ttl),
@@ -142,9 +148,9 @@ def issue_challenge(user, tenant_schema: str):
     return challenge, raw_token
 
 
-def get_challenge_for_update(raw_token: str, tenant_schema: str):
+def get_challenge_for_update(raw_token: str, tenant_schema: str, *, purpose="login"):
     return EmailMFAChallenge.objects.select_for_update().select_related("user").filter(
-        token_hash=token_digest(raw_token), tenant_schema=tenant_schema
+        token_hash=token_digest(raw_token), tenant_schema=tenant_schema, purpose=purpose
     ).first()
 
 

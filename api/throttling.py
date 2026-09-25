@@ -21,6 +21,8 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
         "/api/v1/auth/mfa/resend/": "mfa_resend",
         "/api/v1/auth/security/mfa-recovery/": "mfa_recovery",
         "/api/v1/auth/security/mfa-recovery/verify/": "mfa_recovery",
+        "/api/v1/auth/security/step-up/": "step_up_start",
+        "/api/v1/auth/security/step-up/verify/": "step_up_verify",
         "/api/v1/public/schools/": "public_search",
     }
 
@@ -47,7 +49,19 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         if not self.scope:
             return None
-        ident = self.get_ident(request)
+
+        user = getattr(request, "user", None)
+        if (
+            self.scope in {"step_up_start", "step_up_verify"}
+            and user is not None
+            and getattr(user, "is_authenticated", False)
+        ):
+            tenant = request.headers.get("X-Tenant", "")
+            subject = f"user:{user.pk}:tenant:{tenant}"
+            ident = opaque_rate_limit_subject(subject)
+        else:
+            ident = self.get_ident(request)
+
         return self.cache_format % {"scope": self.scope, "ident": ident}
 
 

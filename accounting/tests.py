@@ -1289,6 +1289,30 @@ class AccountingCashTransactionStatusFlowTests(SimpleTestCase):
 
 
 class AccountingBankAccountListOptimizationTests(SimpleTestCase):
+    @patch("users.step_up.enforce_step_up_for_sensitive_changes")
+    def test_perform_update_enforces_only_configured_sensitive_fields(
+        self,
+        enforce_sensitive_changes,
+    ):
+        viewset = AccountingBankAccountViewSet()
+        viewset.request = MagicMock()
+        bank_account = SimpleNamespace(pk="bank-1")
+        serializer = MagicMock(
+            instance=bank_account,
+            validated_data={"bank_name": "New Bank", "status": "closed"},
+        )
+
+        viewset.perform_update(serializer)
+
+        enforce_sensitive_changes.assert_called_once_with(
+            viewset.request,
+            action="bank_account_changes",
+            context="bank-1",
+            instance=bank_account,
+            validated_data=serializer.validated_data,
+        )
+        serializer.save.assert_called_once_with()
+
     @patch("accounting.views.cash_transaction.recalculate_bank_account_current_balance")
     @patch("accounting.views.cash_transaction.aggregate_bank_account_balances")
     @patch("accounting.views.cash_transaction.recalculate_bank_accounts_current_balances")

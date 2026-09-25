@@ -8,6 +8,11 @@ from settings import views
 app_name = 'settings'
 
 urlpatterns = [
+    path(
+        'security/',
+        views.SecuritySettingsView.as_view(),
+        name='school-security-settings'
+    ),
     # School Grading Settings
     path(
         'grading/',

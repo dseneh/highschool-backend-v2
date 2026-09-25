@@ -16,6 +16,7 @@ from users.security_views import (
     RevokeSessionView,
     SecurityOverviewView,
 )
+from users.step_up_views import StepUpMFAStartView, StepUpMFAVerifyView
 from users.views import (
     VerifyTokenView,
     GlobalUserCreateView,
@@ -39,6 +40,8 @@ urlpatterns = [
     path("security/sessions/", ActiveSessionListView.as_view(), name="active_sessions"),
     path("security/sessions/<uuid:session_id>/", RevokeSessionView.as_view(), name="revoke_session"),
     path("security/overview/", SecurityOverviewView.as_view(), name="security_overview"),
+    path("security/step-up/", StepUpMFAStartView.as_view(), name="step_up_start"),
+    path("security/step-up/verify/", StepUpMFAVerifyView.as_view(), name="step_up_verify"),
     path("security/mfa-recovery/", EmailMFARecoveryStartView.as_view(), name="mfa_recovery_start"),
     path("security/mfa-recovery/verify/", EmailMFARecoveryVerifyView.as_view(), name="mfa_recovery_verify"),
     path("users/global/", GlobalUserCreateView.as_view(), name="global_user_create"),

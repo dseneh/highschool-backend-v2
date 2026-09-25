@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -33,6 +34,39 @@ class SensitiveEndpointRateThrottleTests(SimpleTestCase):
             with self.subTest(path=path):
                 request = self.factory.post(path, {})
                 self.assertEqual(self.throttle.get_scope(request), "activation")
+
+    def test_step_up_routes_have_dedicated_scopes(self):
+        start = self.factory.post("/api/v1/auth/security/step-up/", {})
+        verify = self.factory.post("/api/v1/auth/security/step-up/verify/", {})
+
+        self.assertEqual(self.throttle.get_scope(start), "step_up_start")
+        self.assertEqual(self.throttle.get_scope(verify), "step_up_verify")
+
+    def test_step_up_throttle_is_user_and_workspace_aware(self):
+        first = self.factory.post(
+            "/api/v1/auth/security/step-up/",
+            {},
+            HTTP_X_TENANT="school-a",
+            REMOTE_ADDR="192.0.2.20",
+        )
+        second = self.factory.post(
+            "/api/v1/auth/security/step-up/",
+            {},
+            HTTP_X_TENANT="school-a",
+            REMOTE_ADDR="192.0.2.20",
+        )
+        first.user = SimpleNamespace(pk=101, is_authenticated=True)
+        second.user = SimpleNamespace(pk=202, is_authenticated=True)
+
+        first_throttle = SensitiveEndpointRateThrottle()
+        first_throttle.scope = "step_up_start"
+        second_throttle = SensitiveEndpointRateThrottle()
+        second_throttle.scope = "step_up_start"
+
+        self.assertNotEqual(
+            first_throttle.get_cache_key(first, None),
+            second_throttle.get_cache_key(second, None),
+        )
 
     def test_public_school_search_has_own_scope(self):
         request = self.factory.get("/api/v1/public/schools/?query=test")

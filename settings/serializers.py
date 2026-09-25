@@ -5,7 +5,23 @@ Handles data validation and serialization for Settings API endpoints.
 """
 
 from rest_framework import serializers
-from .models import GradingSettings, GradingStyleChoices
+from .models import GradingSettings, GradingStyleChoices, SecuritySettings
+
+
+class SecuritySettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SecuritySettings
+        fields = [
+            "require_mfa_for_payroll_approval",
+            "require_mfa_for_payment_configuration",
+            "require_mfa_for_bank_account_changes",
+            "require_mfa_for_backup_restore",
+            "require_mfa_for_security_settings",
+            "require_mfa_for_admin_role_changes",
+            "require_mfa_for_mfa_recovery",
+            "updated_at",
+        ]
+        read_only_fields = ["updated_at"]
 
 
 class GradingSettingsOut(serializers.ModelSerializer):

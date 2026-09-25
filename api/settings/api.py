@@ -32,6 +32,8 @@ REST_FRAMEWORK = {
         "activation": config("API_THROTTLE_ACTIVATION", default="12/hour"),
         "mfa_verify": config("API_THROTTLE_MFA_VERIFY", default="10/min"),
         "mfa_resend": config("API_THROTTLE_MFA_RESEND", default="5/hour"),
+        "step_up_start": config("API_THROTTLE_STEP_UP_START", default="60/hour"),
+        "step_up_verify": config("API_THROTTLE_STEP_UP_VERIFY", default="30/min"),
         "mfa_recovery": config("API_THROTTLE_MFA_RECOVERY", default="30/hour"),
         "public_search": config("API_THROTTLE_PUBLIC_SEARCH", default="20/min"),
     },
@@ -87,7 +89,7 @@ else:
     )
 CORS_ALLOW_CREDENTIALS = True
 CORS_EXPOSE_HEADERS = ["content-type", "x-tenant"]
-CORS_ALLOW_HEADERS = ["accept", "accept-encoding", "authorization", "content-type", "dnt", "origin", "user-agent", "x-csrftoken", "x-requested-with", "x-tenant", "x-workspace", "x-app-path", "x-app-platform", "x-app-version", "x-client-name", "x-device-name", "x-device-model", "x-device-brand", "x-device-type", "x-device-os", "x-device-os-version", "x-tenant-session"]
+CORS_ALLOW_HEADERS = ["accept", "accept-encoding", "authorization", "content-type", "dnt", "origin", "user-agent", "x-csrftoken", "x-requested-with", "x-tenant", "x-workspace", "x-app-path", "x-app-platform", "x-app-version", "x-client-name", "x-device-name", "x-device-model", "x-device-brand", "x-device-type", "x-device-os", "x-device-os-version", "x-tenant-session", "x-step-up-token"]
 CORS_ALLOW_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
 CORS_PREFLIGHT_MAX_AGE = 86400
 
