@@ -1,9 +1,11 @@
 from rest_framework import serializers
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
+
 from ..models import StudentGuardian
 
 
-class StudentGuardianSerializer(serializers.ModelSerializer):
+class StudentGuardianSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = StudentGuardian
         fields = [
