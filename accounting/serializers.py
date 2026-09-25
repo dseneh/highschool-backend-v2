@@ -55,6 +55,7 @@ from accounting.services.posting import (
 )
 from accounting.services.settings_services import resolve_student_refund_transaction_type
 from common.email_validation import is_valid_email
+from common.update_utils import ChangedFieldsModelSerializerMixin
 from hr.models import Employee
 from students.models import Student
 from academics.models import AcademicYear
@@ -543,7 +544,10 @@ class AccountingPaymentMethodSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "code", "description", "is_active"]
 
 
-class AccountingBankAccountSerializer(serializers.ModelSerializer):
+class AccountingBankAccountSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     currency = serializers.PrimaryKeyRelatedField(queryset=AccountingCurrency.objects.all())
     bank_rule_status = serializers.SerializerMethodField()
 
