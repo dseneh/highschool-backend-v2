@@ -100,7 +100,8 @@ class StepUpMFAVerifyView(APIView):
                 return Response(
                     {"detail": "Invalid or expired verification code."}, status=400
                 )
-            proof_token = issue_step_up_proof(
+            proof_token, policy = issue_step_up_proof(
+                request=request,
                 user=request.user,
                 tenant_schema=tenant_schema,
                 action=challenge.action,
@@ -119,6 +120,7 @@ class StepUpMFAVerifyView(APIView):
                 "step_up_token": proof_token,
                 "action": action,
                 "context": context,
-                "expires_in": 600,
+                "expires_in": policy["ttl_seconds"],
+                "reusable": policy["reusable"],
             }
         )
