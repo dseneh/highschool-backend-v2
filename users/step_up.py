@@ -5,7 +5,7 @@ import secrets
 from datetime import timedelta
 
 from django.db import connection, transaction
-from django.db.models import F, Q
+from django.db.models import F
 from django.utils import timezone
 from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework.exceptions import PermissionDenied
@@ -224,8 +224,7 @@ def enforce_step_up(
     # Preserve the tenant before switching to the shared schema in the helper.
     from users.models import StepUpAuthorization
     with schema_context(get_public_schema_name()), transaction.atomic():
-        proof = StepUpAuthorization.objects.select_for_update().filter(
-            token_hash=token_digest(raw_token),
+        proof_query = StepUpAuthorization.objects.select_for_update().filter(
             user_id=request.user.pk,
             tenant_schema=tenant_schema,
             action=action,
@@ -233,7 +232,16 @@ def enforce_step_up(
             session_binding=session_binding,
             security_version=request.user.security_version,
             expires_at__gt=timezone.now(),
-        ).filter(Q(reusable=True) | Q(used_at__isnull=True)).first()
+        )
+        if policy["reusable"]:
+            proof_query = proof_query.filter(reusable=True)
+        else:
+            proof_query = proof_query.filter(
+                token_hash=token_digest(raw_token),
+                reusable=False,
+                used_at__isnull=True,
+            )
+        proof = proof_query.first()
         if proof:
             now = timezone.now()
             updates = {
