@@ -121,7 +121,7 @@ class PayrollItemRulePreviewSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False, default=True)
 
 
-class PayrollItemRuleSerializer(serializers.ModelSerializer):
+class PayrollItemRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = PayrollCatalogItemRule
         fields = [
@@ -162,7 +162,7 @@ class PayrollItemRuleSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class PayrollItemSerializer(serializers.ModelSerializer):
+class PayrollItemSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     rules = PayrollItemRuleSerializer(many=True, read_only=True)
 
     class Meta:
@@ -183,7 +183,7 @@ class PayrollItemSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at", "updated_at"]
 
 
-class EmployeePayrollItemSerializer(serializers.ModelSerializer):
+class EmployeePayrollItemSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     payroll_item_display = PayrollItemSerializer(source="payroll_item", read_only=True)
 
@@ -832,7 +832,7 @@ class SalaryAdvancePaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at", "updated_at"]
 
 
-class PayrollTableViewSerializer(serializers.ModelSerializer):
+class PayrollTableViewSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = PayrollTableView
         fields = [
@@ -859,7 +859,7 @@ class PayrollTableViewSerializer(serializers.ModelSerializer):
         return value
 
 
-class PayrollPayslipTemplateSerializer(serializers.ModelSerializer):
+class PayrollPayslipTemplateSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = PayrollPayslipTemplate
         fields = [
