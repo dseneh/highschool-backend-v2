@@ -214,6 +214,8 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
+        from users.step_up import enforce_step_up_for_sensitive_changes
+
         partial = kwargs.pop("partial", False)
         serializer = RoleUpdateSerializer(data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
@@ -222,10 +224,36 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
             serializer.validated_data.get("permissions"),
         )
         try:
+            role = self.get_object()
             changes = dict(serializer.validated_data)
             permissions = changes.pop("permissions", None)
+            current_permissions = tuple(
+                sorted(
+                    (grant.permission_code, grant.scope)
+                    for grant in role.permission_grants.all()
+                )
+            )
+            submitted_sensitive_values = {
+                key: value
+                for key, value in serializer.validated_data.items()
+                if key in {"is_active", "permissions"}
+            }
+            if permissions is not None:
+                submitted_sensitive_values["permissions"] = tuple(
+                    sorted((grant["code"], grant["scope"]) for grant in permissions)
+                )
+            enforce_step_up_for_sensitive_changes(
+                request,
+                action="admin_role_changes",
+                context=role.pk,
+                instance={
+                    "is_active": role.is_active,
+                    "permissions": current_permissions,
+                },
+                validated_data=submitted_sensitive_values,
+            )
             role = update_role(
-                role=self.get_object(),
+                role=role,
                 changes=changes,
                 actor=request.user,
                 metadata=_metadata(request),
