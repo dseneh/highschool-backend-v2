@@ -53,6 +53,7 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
             initialize_request_authorization(request, user)
         from users.step_up import enforce_authenticated_request_step_up
 
+        request._step_up_session_binding = f"jwt:{token.get('session_id') or token.get('jti')}"[:128]
         enforce_authenticated_request_step_up(request, user)
         return user, token
 
@@ -87,6 +88,7 @@ class TenantSessionAuthentication(authentication.BaseAuthentication):
         initialize_request_authorization(request, session_obj.user)
         from users.step_up import enforce_authenticated_request_step_up
 
+        request._step_up_session_binding = f"tenant:{session_obj.id}"[:128]
         enforce_authenticated_request_step_up(request, session_obj.user)
         return session_obj.user, None
 
@@ -105,5 +107,7 @@ class RBACSessionAuthentication(authentication.SessionAuthentication):
         initialize_request_authorization(request, user)
         from users.step_up import enforce_authenticated_request_step_up
 
+        session_key = getattr(getattr(request, "session", None), "session_key", "")
+        request._step_up_session_binding = f"django:{session_key}"[:128]
         enforce_authenticated_request_step_up(request, user)
         return user, auth
