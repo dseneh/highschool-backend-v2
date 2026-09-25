@@ -55,7 +55,7 @@ from accounting.services.posting import (
 )
 from accounting.services.settings_services import resolve_student_refund_transaction_type
 from common.email_validation import is_valid_email
-from common.update_utils import ChangedFieldsModelSerializerMixin
+from common.update_utils import ChangedFieldsModelSerializerMixin, filter_changed_data
 from hr.models import Employee
 from students.models import Student
 from academics.models import AcademicYear
@@ -282,7 +282,10 @@ class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
         validated_data.pop("template_key", None)
         if "code" in validated_data and not str(validated_data.get("code") or "").strip():
             validated_data.pop("code")
-        return super().update(instance, validated_data)
+        changed_data = filter_changed_data(instance, validated_data)
+        if not changed_data:
+            return instance
+        return super().update(instance, changed_data)
 
     def validate(self, attrs):
         if self.instance is not None and getattr(self.instance, "is_system_managed", False):
