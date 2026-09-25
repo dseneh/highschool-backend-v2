@@ -154,16 +154,21 @@ class EmailMFAChallenge(models.Model):
 
 
 class StepUpAuthorization(models.Model):
-    """Short-lived, single-use proof for one sensitive action."""
+    """Session-bound proof for one sensitive-action scope."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="step_up_authorizations")
     tenant_schema = models.CharField(max_length=63, db_index=True)
     action = models.CharField(max_length=64, db_index=True)
     context = models.CharField(max_length=255, blank=True, default="")
+    session_binding = models.CharField(max_length=128, db_index=True)
+    security_version = models.PositiveBigIntegerField(default=1)
+    reusable = models.BooleanField(default=False)
     token_hash = models.CharField(max_length=64, unique=True)
     expires_at = models.DateTimeField(db_index=True)
     used_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    use_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
