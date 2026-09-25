@@ -2,7 +2,10 @@ from decimal import Decimal
 
 from django.utils import timezone
 from rest_framework import serializers
-from common.update_utils import ChangedFieldsModelSerializerMixin
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    filter_changed_data,
+)
 from academics.models import Section, SectionSubject, Subject
 from staff.models import Staff
 
@@ -597,6 +600,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validated_data["job_title"] = position.title
         if position and not validated_data.get("employment_type"):
             validated_data["employment_type"] = position.employment_type
+        validated_data = filter_changed_data(instance, validated_data)
+        if not validated_data:
+            return instance
         instance = super().update(instance, validated_data)
         if "pay_schedule" in validated_data and instance.pay_schedule_id != previous_schedule_id:
             from payroll_v2.services import refresh_employee_compensation_annual_salaries
