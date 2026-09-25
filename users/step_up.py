@@ -22,20 +22,43 @@ ACTION_TO_SETTING = {
     "mfa_recovery": "require_mfa_for_mfa_recovery",
 }
 
+SENSITIVE_FIELD_POLICIES = {
+    "bank_account_changes": frozenset(
+        {
+            "account_number",
+            "account_type",
+            "currency",
+            "ledger_account",
+            "opening_balance",
+            "opening_balance_date",
+            "status",
+        }
+    ),
+    "payment_configuration": frozenset(
+        {
+            "transfer_in_account",
+            "transfer_out_account",
+            "salary_expense_account",
+            "salary_advance_repayment_ledger_account",
+            "payroll_tax_payable_account",
+            "payroll_deductions_payable_account",
+            "student_refund_account",
+            "default_payroll_bank_account",
+            "default_expense_bank_account",
+        }
+    ),
+    "admin_role_changes": frozenset({"is_active", "permissions"}),
+}
+
 STEP_UP_TTL_SECONDS = 600
 
 
 SENSITIVE_REQUEST_PATTERNS = (
     ("POST", re.compile(r"^/api/v1/payroll-v2/runs/([^/]+)/approve/$"), "payroll_approval", 1),
     ("POST", re.compile(r"^/api/v1/restore-requests/([^/]+)/(?:execute|retry)/$"), "backup_restore", 1),
-    ("PATCH", re.compile(r"^/api/v1/accounting/settings/$"), "payment_configuration", None),
     ("POST", re.compile(r"^/api/v1/accounting/bank-accounts/$"), "bank_account_changes", "new"),
-    ("PUT", re.compile(r"^/api/v1/accounting/bank-accounts/([^/]+)/$"), "bank_account_changes", 1),
-    ("PATCH", re.compile(r"^/api/v1/accounting/bank-accounts/([^/]+)/$"), "bank_account_changes", 1),
     ("DELETE", re.compile(r"^/api/v1/accounting/bank-accounts/([^/]+)/$"), "bank_account_changes", 1),
     ("POST", re.compile(r"^/api/v1/authorization/roles/$"), "admin_role_changes", "new"),
-    ("PUT", re.compile(r"^/api/v1/authorization/roles/([^/]+)/$"), "admin_role_changes", 1),
-    ("PATCH", re.compile(r"^/api/v1/authorization/roles/([^/]+)/$"), "admin_role_changes", 1),
     ("DELETE", re.compile(r"^/api/v1/authorization/roles/([^/]+)/$"), "admin_role_changes", 1),
     ("POST", re.compile(r"^/api/v1/authorization/roles/([^/]+)/(?:clone|permissions)/$"), "admin_role_changes", 1),
     ("PUT", re.compile(r"^/api/v1/authorization/roles/([^/]+)/permissions/$"), "admin_role_changes", 1),
@@ -46,6 +69,65 @@ SENSITIVE_REQUEST_PATTERNS = (
 
 def normalize_context(value):
     return str(value or "").strip()[:255]
+
+
+def comparable_value(value):
+    """Normalize model and scalar values before change comparison."""
+    if hasattr(value, "pk"):
+        return value.pk
+    if isinstance(value, dict):
+        return tuple(
+            sorted((key, comparable_value(item)) for key, item in value.items())
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(comparable_value(item) for item in value)
+    return value
+
+
+def changed_fields(instance, validated_data, *, fields=None):
+    """Return submitted fields whose validated value differs from the instance.
+
+    This helper intentionally works from serializer ``validated_data`` so type
+    coercion and relationship resolution have already happened.
+    """
+    candidates = set(validated_data)
+    if fields is not None:
+        candidates.intersection_update(fields)
+    return {
+        field
+        for field in candidates
+        if comparable_value(
+            instance.get(field) if isinstance(instance, dict) else getattr(instance, field, None)
+        )
+        != comparable_value(validated_data[field])
+    }
+
+
+def enforce_step_up_for_sensitive_changes(
+    request,
+    *,
+    action,
+    context,
+    instance,
+    validated_data,
+    sensitive_fields=None,
+):
+    """Enforce step-up only when a submitted sensitive field truly changes."""
+    if sensitive_fields is None:
+        sensitive_fields = SENSITIVE_FIELD_POLICIES.get(action, ())
+    sensitive_changes = changed_fields(
+        instance,
+        validated_data,
+        fields=sensitive_fields,
+    )
+    if sensitive_changes:
+        enforce_step_up(
+            request,
+            action=action,
+            context=context,
+            sensitive_fields=sensitive_changes,
+        )
+    return sensitive_changes
 
 
 def is_step_up_required(action):
@@ -75,7 +157,14 @@ def issue_step_up_proof(*, user, tenant_schema, action, context=""):
     return raw_token
 
 
-def enforce_step_up(request, *, action, context="", required=None):
+def enforce_step_up(
+    request,
+    *,
+    action,
+    context="",
+    required=None,
+    sensitive_fields=None,
+):
     if required is None:
         required = is_step_up_required(action)
     if not required:
@@ -104,6 +193,7 @@ def enforce_step_up(request, *, action, context="", required=None):
             "error_code": "STEP_UP_MFA_REQUIRED",
             "step_up_action": action,
             "step_up_context": normalize_context(context),
+            "sensitive_fields": sorted(sensitive_fields or ()),
         }
     )
 
