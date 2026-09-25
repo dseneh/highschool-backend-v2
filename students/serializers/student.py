@@ -4,6 +4,7 @@ from django.utils import timezone
 
 from common.utils import get_enrollment_bill_summary
 from common.serializers import PhotoURLMixin
+from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from ..models import Student
 from ..services.student_status import apply_status_fields_to_response
@@ -11,7 +12,11 @@ from .enrollment import EnrollmentListSerializer
 from .discipline import ActiveStudentDisciplinaryActionSerializer
 
 
-class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
+class StudentSerializer(
+    PhotoURLMixin,
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = Student
         fields = [
