@@ -61,7 +61,7 @@ from students.models import Student
 from academics.models import AcademicYear
 
 
-class AccountingCurrencySerializer(serializers.ModelSerializer):
+class AccountingCurrencySerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = AccountingCurrency
         fields = [
