@@ -1512,7 +1512,7 @@ class AccountingPayrollPostingLineSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class AccountingBankBalanceRuleSerializer(serializers.ModelSerializer):
+class AccountingBankBalanceRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     alert_recipient_ids = serializers.PrimaryKeyRelatedField(
         source="alert_recipients",
         queryset=Employee.objects.all(),
@@ -1649,7 +1649,7 @@ class AccountingBankBalanceRuleSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class AccountingSpendableAllocationRuleSerializer(serializers.ModelSerializer):
+class AccountingSpendableAllocationRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = AccountingSpendableAllocationRule
         fields = [
