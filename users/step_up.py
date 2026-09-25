@@ -5,6 +5,7 @@ import secrets
 from datetime import timedelta
 
 from django.db import connection, transaction
+from django.db.models import F, Q
 from django.utils import timezone
 from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework.exceptions import PermissionDenied
@@ -50,7 +51,15 @@ SENSITIVE_FIELD_POLICIES = {
     "admin_role_changes": frozenset({"is_active", "permissions"}),
 }
 
-STEP_UP_TTL_SECONDS = 600
+STEP_UP_GRANT_POLICIES = {
+    "bank_account_changes": {"ttl_seconds": 3600, "reusable": True},
+    "payment_configuration": {"ttl_seconds": 3600, "reusable": True},
+    "admin_role_changes": {"ttl_seconds": 1800, "reusable": True},
+    "security_settings": {"ttl_seconds": 900, "reusable": True},
+    "payroll_approval": {"ttl_seconds": 300, "reusable": False},
+    "backup_restore": {"ttl_seconds": 300, "reusable": False},
+    "mfa_recovery": {"ttl_seconds": 300, "reusable": False},
+}
 
 
 SENSITIVE_REQUEST_PATTERNS = (
@@ -69,6 +78,37 @@ SENSITIVE_REQUEST_PATTERNS = (
 
 def normalize_context(value):
     return str(value or "").strip()[:255]
+
+
+def get_step_up_grant_policy(action):
+    try:
+        return STEP_UP_GRANT_POLICIES[action]
+    except KeyError as exc:
+        raise ValueError(f"Unknown step-up action: {action}") from exc
+
+
+def request_session_binding(request):
+    """Return a stable, non-secret identifier for the authenticated session."""
+    existing = getattr(request, "_step_up_session_binding", "")
+    if existing:
+        return existing
+
+    auth = getattr(request, "auth", None)
+    if auth is not None and hasattr(auth, "get"):
+        session_id = auth.get("session_id") or auth.get("jti")
+        if session_id:
+            return f"jwt:{session_id}"[:128]
+
+    tenant_session = request.META.get("HTTP_X_TENANT_SESSION", "")
+    if tenant_session:
+        return f"tenant:{token_digest(tenant_session)}"[:128]
+
+    django_session = getattr(request, "session", None)
+    session_key = getattr(django_session, "session_key", "")
+    if session_key:
+        return f"django:{session_key}"[:128]
+
+    return ""
 
 
 def comparable_value(value):
@@ -142,19 +182,26 @@ def is_step_up_required(action):
     return bool(policy and getattr(policy, field, False))
 
 
-def issue_step_up_proof(*, user, tenant_schema, action, context=""):
+def issue_step_up_proof(*, request, user, tenant_schema, action, context=""):
     from users.models import StepUpAuthorization
 
+    policy = get_step_up_grant_policy(action)
+    session_binding = request_session_binding(request)
+    if not session_binding:
+        raise ValueError("Step-up verification requires a bound authenticated session.")
     raw_token = secrets.token_urlsafe(32)
     StepUpAuthorization.objects.create(
         user=user,
         tenant_schema=tenant_schema,
         action=action,
-        context=normalize_context(context),
+        context="" if policy["reusable"] else normalize_context(context),
+        session_binding=session_binding,
+        security_version=user.security_version,
+        reusable=policy["reusable"],
         token_hash=token_digest(raw_token),
-        expires_at=timezone.now() + timedelta(seconds=STEP_UP_TTL_SECONDS),
+        expires_at=timezone.now() + timedelta(seconds=policy["ttl_seconds"]),
     )
-    return raw_token
+    return raw_token, policy
 
 
 def enforce_step_up(
@@ -171,6 +218,9 @@ def enforce_step_up(
         return
     raw_token = str(request.headers.get("X-Step-Up-Token", ""))
     tenant_schema = connection.schema_name
+    policy = get_step_up_grant_policy(action)
+    session_binding = request_session_binding(request)
+    proof_context = "" if policy["reusable"] else normalize_context(context)
     # Preserve the tenant before switching to the shared schema in the helper.
     from users.models import StepUpAuthorization
     with schema_context(get_public_schema_name()), transaction.atomic():
@@ -179,13 +229,20 @@ def enforce_step_up(
             user_id=request.user.pk,
             tenant_schema=tenant_schema,
             action=action,
-            context=normalize_context(context),
-            used_at__isnull=True,
+            context=proof_context,
+            session_binding=session_binding,
+            security_version=request.user.security_version,
             expires_at__gt=timezone.now(),
-        ).first()
+        ).filter(Q(reusable=True) | Q(used_at__isnull=True)).first()
         if proof:
-            proof.used_at = timezone.now()
-            proof.save(update_fields=["used_at"])
+            now = timezone.now()
+            updates = {
+                "last_used_at": now,
+                "use_count": F("use_count") + 1,
+            }
+            if not proof.reusable:
+                updates["used_at"] = now
+            StepUpAuthorization.objects.filter(pk=proof.pk).update(**updates)
             return
     raise PermissionDenied(
         detail={
