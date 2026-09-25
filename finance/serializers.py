@@ -2,6 +2,7 @@ from urllib import response
 
 from django.db import models
 from rest_framework import serializers
+from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from students.serializers.student import StudentSerializer
 
@@ -169,7 +170,10 @@ class SectionFeeDetailSerializer(serializers.ModelSerializer):
         return response
 
 
-class TransactionTypeSerializer(serializers.ModelSerializer):
+class TransactionTypeSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     """Basic serializer for transaction type list views"""
 
     class Meta:
@@ -198,7 +202,10 @@ class TransactionTypeDetailSerializer(TransactionTypeSerializer):
         ]
 
 
-class PaymentMethodSerializer(serializers.ModelSerializer):
+class PaymentMethodSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     """Basic serializer for payment method list views"""
 
     class Meta:
