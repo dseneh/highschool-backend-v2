@@ -18,7 +18,7 @@ from .models import (
 from .services import generate_benefit_request_number, generate_benefit_type_rule_name, validate_benefit_request_period
 
 
-class BenefitTypeRuleSerializer(serializers.ModelSerializer):
+class BenefitTypeRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = BenefitTypeRule
         fields = [
@@ -84,7 +84,7 @@ class BenefitTypeSerializer(ChangedFieldsModelSerializerMixin, serializers.Model
         return getattr(obj, "employee_count", None) or obj.employee_assignments.filter(is_active=True).count()
 
 
-class EmployeeBenefitSerializer(serializers.ModelSerializer):
+class EmployeeBenefitSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     benefit_type_name = serializers.CharField(source="benefit_type.name", read_only=True)
     display_name = serializers.SerializerMethodField()
@@ -163,7 +163,7 @@ class EmployeeBenefitSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class BenefitRequestLineSerializer(serializers.ModelSerializer):
+class BenefitRequestLineSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     benefit_type_name = serializers.CharField(source="request.benefit_type.name", read_only=True)
     request_number = serializers.CharField(source="request.request_number", read_only=True)
@@ -286,7 +286,7 @@ class BenefitRequestDetailSerializer(BenefitRequestListSerializer):
         return getattr(user, "get_full_name", lambda: user.username)() or user.username
 
 
-class BenefitRequestWriteSerializer(serializers.ModelSerializer):
+class BenefitRequestWriteSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = BenefitRequest
         fields = [
@@ -337,7 +337,7 @@ class SyncBenefitEmployeesSerializer(serializers.Serializer):
     position_id = serializers.UUIDField(required=False, allow_null=True)
 
 
-class BenefitSettingsSerializer(serializers.ModelSerializer):
+class BenefitSettingsSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     transaction_type_name = serializers.CharField(source="transaction_type.name", read_only=True)
     transaction_type_code = serializers.CharField(source="transaction_type.code", read_only=True)
 
