@@ -107,7 +107,10 @@ class EmployeePositionSerializer(
         return data
 
 
-class EmployeeContactSerializer(serializers.ModelSerializer):
+class EmployeeContactSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = EmployeeContact
         fields = [
@@ -130,7 +133,10 @@ class EmployeeContactSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-class EmployeeDependentSerializer(serializers.ModelSerializer):
+class EmployeeDependentSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = EmployeeDependent
         fields = [
@@ -149,7 +155,10 @@ class EmployeeDependentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
-class EmployeeSpecializationSerializer(serializers.ModelSerializer):
+class EmployeeSpecializationSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
         required=False,
@@ -179,7 +188,10 @@ class EmployeeSpecializationSerializer(serializers.ModelSerializer):
             data["subject"] = None
         return data
 
-class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
+class EmployeePerformanceReviewSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     reviewer = serializers.PrimaryKeyRelatedField(
         queryset=Employee.objects.all(),
@@ -238,7 +250,10 @@ class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeTeacherSectionSerializer(serializers.ModelSerializer):
+class EmployeeTeacherSectionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     teacher = EmployeeOrStaffPKField(queryset=Employee.objects.all())
     section = serializers.PrimaryKeyRelatedField(queryset=Section.objects.all())
 
@@ -270,7 +285,10 @@ class EmployeeTeacherSectionSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
+class EmployeeTeacherSubjectSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     teacher = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
@@ -387,7 +405,10 @@ class LeaveTypeSerializer(
         return attrs
 
 
-class LeaveRequestSerializer(serializers.ModelSerializer):
+class LeaveRequestSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     leave_type = serializers.PrimaryKeyRelatedField(queryset=LeaveType.objects.all())
     total_days = serializers.IntegerField(read_only=True)
@@ -440,7 +461,10 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeAttendanceSerializer(serializers.ModelSerializer):
+class EmployeeAttendanceSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     hours_worked = serializers.FloatField(read_only=True)
 
