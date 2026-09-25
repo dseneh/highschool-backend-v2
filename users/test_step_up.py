@@ -3,10 +3,33 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from users.step_up import changed_fields, enforce_step_up_for_sensitive_changes
+from users.step_up import (
+    changed_fields,
+    enforce_step_up_for_sensitive_changes,
+    get_step_up_grant_policy,
+    request_session_binding,
+)
 
 
 class StepUpSensitiveChangeTests(SimpleTestCase):
+    def test_reusable_and_operation_grant_policies_have_expected_scope(self):
+        self.assertEqual(
+            get_step_up_grant_policy("bank_account_changes"),
+            {"ttl_seconds": 3600, "reusable": True},
+        )
+        self.assertEqual(
+            get_step_up_grant_policy("backup_restore"),
+            {"ttl_seconds": 300, "reusable": False},
+        )
+
+    def test_request_session_binding_prefers_authentication_binding(self):
+        request = SimpleNamespace(
+            _step_up_session_binding="tenant:session-1",
+            auth={"session_id": "jwt-session"},
+        )
+
+        self.assertEqual(request_session_binding(request), "tenant:session-1")
+
     def test_changed_fields_ignores_unsubmitted_and_equal_values(self):
         instance = SimpleNamespace(
             bank_name="Current Bank",
