@@ -11,6 +11,7 @@ from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework.exceptions import PermissionDenied
 
 from users.mfa import token_digest
+from common.update_utils import filter_changed_data
 
 
 ACTION_TO_SETTING = {
@@ -111,36 +112,15 @@ def request_session_binding(request):
     return ""
 
 
-def comparable_value(value):
-    """Normalize model and scalar values before change comparison."""
-    if hasattr(value, "pk"):
-        return value.pk
-    if isinstance(value, dict):
-        return tuple(
-            sorted((key, comparable_value(item)) for key, item in value.items())
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(comparable_value(item) for item in value)
-    return value
-
-
 def changed_fields(instance, validated_data, *, fields=None):
-    """Return submitted fields whose validated value differs from the instance.
-
-    This helper intentionally works from serializer ``validated_data`` so type
-    coercion and relationship resolution have already happened.
-    """
-    candidates = set(validated_data)
-    if fields is not None:
-        candidates.intersection_update(fields)
-    return {
-        field
-        for field in candidates
-        if comparable_value(
-            instance.get(field) if isinstance(instance, dict) else getattr(instance, field, None)
+    """Return the submitted model fields whose validated values changed."""
+    return set(
+        filter_changed_data(
+            instance,
+            validated_data,
+            fields=fields,
         )
-        != comparable_value(validated_data[field])
-    }
+    )
 
 
 def enforce_step_up_for_sensitive_changes(
