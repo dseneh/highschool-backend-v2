@@ -210,6 +210,19 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
+    def perform_update(self, serializer):
+        from users.step_up import enforce_step_up_for_sensitive_changes
+
+        instance = serializer.instance
+        enforce_step_up_for_sensitive_changes(
+            self.request,
+            action="bank_account_changes",
+            context=instance.pk,
+            instance=instance,
+            validated_data=serializer.validated_data,
+        )
+        serializer.save()
+
 
 class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
     queryset = AccountingCashTransaction.objects.select_related(
