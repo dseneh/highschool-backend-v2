@@ -6,6 +6,8 @@ from decimal import Decimal
 from django.db.models import Count
 from rest_framework import serializers
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
+
 from .enums import CalculationType, DeductionSourceType, PaymentMethod, SalaryAdvanceRepaymentMethod, SalaryAdvanceRepaymentStatus, StaffWardSponsorshipStatus, TargetAmountSource
 from .services import (
     _build_staff_ward_student_allocation,
@@ -73,7 +75,7 @@ class EmployeeDisplaySerializer(serializers.Serializer):
         return getattr(position, "title", None) if position else None
 
 
-class EmployeeCompensationSerializer(serializers.ModelSerializer):
+class EmployeeCompensationSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     currency_code = serializers.SerializerMethodField()
 
@@ -363,7 +365,7 @@ class PayrollEmployeeItemSerializer(serializers.ModelSerializer):
         return schedule.frequency if schedule else None
 
 
-class PayScheduleSerializer(serializers.ModelSerializer):
+class PayScheduleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     currency_symbol = serializers.CharField(source="currency.symbol", read_only=True)
     has_runs = serializers.SerializerMethodField()
