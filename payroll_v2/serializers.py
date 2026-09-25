@@ -875,7 +875,7 @@ class PayrollPayslipTemplateSerializer(ChangedFieldsModelSerializerMixin, serial
         read_only_fields = ["created_at", "updated_at"]
 
 
-class StaffWardSponsorshipPolicySerializer(serializers.ModelSerializer):
+class StaffWardSponsorshipPolicySerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = StaffWardSponsorshipPolicy
         fields = [
@@ -1398,7 +1398,7 @@ class PayrollDeductionScheduleSerializer(serializers.ModelSerializer):
         return obj.employee.get_full_name() if obj.employee_id else None
 
 
-class PayrollSettingsSerializer(serializers.ModelSerializer):
+class PayrollSettingsSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     transaction_type_name = serializers.CharField(
         source="transaction_type.name",
         read_only=True,
