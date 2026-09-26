@@ -12,6 +12,7 @@ from authorization.models import AuthorizationAuditLog, Role, RolePermission, Te
 from authorization.registry import get_permission_registry
 from authorization.system_roles import get_system_roles
 from common.status import UserAccountType
+from common.update_utils import filter_changed_data
 from users.tenant_access import is_global_superadmin
 
 
@@ -380,17 +381,29 @@ def update_role(*, role: Role, changes: Mapping, actor=None, metadata=None) -> R
     locked_role = Role.objects.select_for_update().get(pk=role.pk)
     if locked_role.is_system_role:
         raise ValidationError("System roles cannot be modified.")
-    name = _normalize_role_name(str(changes.get("name", locked_role.name)))
+    normalized_changes = dict(changes)
+    if "name" in normalized_changes:
+        normalized_changes["name"] = _normalize_role_name(
+            str(normalized_changes["name"]),
+        )
+    name = normalized_changes.get("name", locked_role.name)
     _validate_tenant_role_name_available(name, exclude_role_id=locked_role.pk)
+    changed_fields = filter_changed_data(
+        locked_role,
+        normalized_changes,
+        fields=("name", "description", "is_active"),
+    )
+    if not changed_fields:
+        return locked_role
     before = {
         "name": locked_role.name,
         "description": locked_role.description,
         "is_active": locked_role.is_active,
     }
     for field in ("name", "description", "is_active"):
-        if field in changes:
-            setattr(locked_role, field, changes[field])
-    locked_role.save()
+        if field in changed_fields:
+            setattr(locked_role, field, changed_fields[field])
+    locked_role.save(update_fields=[*changed_fields, "updated_at"])
     AuthorizationAuditLog.objects.create(
         actor=actor,
         action="role.updated",
