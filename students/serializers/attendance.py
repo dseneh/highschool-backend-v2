@@ -3,10 +3,14 @@ from rest_framework import serializers
 from academics.models import MarkingPeriod
 
 from ..models import Attendance
-from common.status import AttendanceStatus\nfrom common.update_utils import ChangedFieldsModelSerializerMixin
+from common.status import AttendanceStatus
+from common.update_utils import ChangedFieldsModelSerializerMixin
 
 
-class AttendanceSerializer(\n    ChangedFieldsModelSerializerMixin,\n    serializers.ModelSerializer,\n):
+class AttendanceSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     marking_period = serializers.SerializerMethodField()
 
     class Meta:
