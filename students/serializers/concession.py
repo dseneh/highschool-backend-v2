@@ -2,10 +2,15 @@ from datetime import date
 
 from rest_framework import serializers
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
+
 from accounting.models import AccountingConcession
 
 
-class StudentConcessionSerializer(serializers.ModelSerializer):
+class StudentConcessionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     amount = serializers.SerializerMethodField()
     active = serializers.BooleanField(source="is_active")
 

@@ -8,6 +8,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from common.status import UserAccountType
+from common.update_utils import filter_changed_data
 
 User = get_user_model()
 
@@ -544,6 +545,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             for field in ['first_name', 'last_name', 'gender', 'photo']:
                 validated_data.pop(field, None)
 
+        validated_data = filter_changed_data(instance, validated_data)
         return super().update(instance, validated_data)
 
     def validate_account_type(self, value):

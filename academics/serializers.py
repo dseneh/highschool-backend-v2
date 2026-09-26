@@ -6,6 +6,7 @@ from finance.models import Currency
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from rest_framework import serializers
+from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from students.models.enrollment import Enrollment
 
@@ -364,7 +365,10 @@ class SemesterSerializer(serializers.ModelSerializer):
         return response
 
 
-class MarkingPeriodSerializer(serializers.ModelSerializer):
+class MarkingPeriodSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = MarkingPeriod
         fields = [
@@ -412,7 +416,10 @@ class DivisionSerializer(serializers.ModelSerializer):
         return response
 
 
-class GradeLevelSerializer(serializers.ModelSerializer):
+class GradeLevelSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = GradeLevel
         fields = [
@@ -531,7 +538,10 @@ class SectionSubjectSerializer(serializers.ModelSerializer):
         return response
 
 
-class SectionSerializer(serializers.ModelSerializer):
+class SectionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = Section
         fields = [
@@ -620,7 +630,10 @@ class SectionSerializer(serializers.ModelSerializer):
         return response
 
 
-class SubjectSerializer(serializers.ModelSerializer):
+class SubjectSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     # Computed fields for deletion logic
     can_delete = serializers.SerializerMethodField()
     can_force_delete = serializers.SerializerMethodField()

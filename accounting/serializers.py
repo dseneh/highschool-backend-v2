@@ -55,12 +55,13 @@ from accounting.services.posting import (
 )
 from accounting.services.settings_services import resolve_student_refund_transaction_type
 from common.email_validation import is_valid_email
+from common.update_utils import ChangedFieldsModelSerializerMixin, filter_changed_data
 from hr.models import Employee
 from students.models import Student
 from academics.models import AcademicYear
 
 
-class AccountingCurrencySerializer(serializers.ModelSerializer):
+class AccountingCurrencySerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = AccountingCurrency
         fields = [
@@ -281,7 +282,10 @@ class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
         validated_data.pop("template_key", None)
         if "code" in validated_data and not str(validated_data.get("code") or "").strip():
             validated_data.pop("code")
-        return super().update(instance, validated_data)
+        changed_data = filter_changed_data(instance, validated_data)
+        if not changed_data:
+            return instance
+        return super().update(instance, changed_data)
 
     def validate(self, attrs):
         if self.instance is not None and getattr(self.instance, "is_system_managed", False):
@@ -301,7 +305,10 @@ class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_system_managed"]
 
 
-class AccountingJournalEntrySerializer(serializers.ModelSerializer):
+class AccountingJournalEntrySerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     # Allow blank reference_number so it can be auto-generated in create()
     reference_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
 
@@ -350,7 +357,10 @@ class AccountingJournalEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["academic_year"]
 
 
-class AccountingJournalLineSerializer(serializers.ModelSerializer):
+class AccountingJournalLineSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     ledger_account_name = serializers.CharField(source="ledger_account.name", read_only=True)
     ledger_account_code = serializers.CharField(source="ledger_account.code", read_only=True)
     currency_code = serializers.CharField(source="currency.code", read_only=True)
@@ -543,7 +553,10 @@ class AccountingPaymentMethodSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "code", "description", "is_active"]
 
 
-class AccountingBankAccountSerializer(serializers.ModelSerializer):
+class AccountingBankAccountSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     currency = serializers.PrimaryKeyRelatedField(queryset=AccountingCurrency.objects.all())
     bank_rule_status = serializers.SerializerMethodField()
 
@@ -963,7 +976,10 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         if "description" in validated_data:
             description = str(validated_data.get("description") or "").strip()
             validated_data["description"] = description or "Transaction entry"
-        return super().update(instance, validated_data)
+        changed_data = filter_changed_data(instance, validated_data)
+        if not changed_data:
+            return instance
+        return super().update(instance, changed_data)
 
     def get_bank_account(self, obj):
         if obj.bank_account_id is None:
@@ -1502,7 +1518,7 @@ class AccountingPayrollPostingLineSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class AccountingBankBalanceRuleSerializer(serializers.ModelSerializer):
+class AccountingBankBalanceRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     alert_recipient_ids = serializers.PrimaryKeyRelatedField(
         source="alert_recipients",
         queryset=Employee.objects.all(),
@@ -1639,7 +1655,7 @@ class AccountingBankBalanceRuleSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class AccountingSpendableAllocationRuleSerializer(serializers.ModelSerializer):
+class AccountingSpendableAllocationRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = AccountingSpendableAllocationRule
         fields = [

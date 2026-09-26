@@ -4,9 +4,13 @@ from academics.models import MarkingPeriod
 
 from ..models import Attendance
 from common.status import AttendanceStatus
+from common.update_utils import ChangedFieldsModelSerializerMixin
 
 
-class AttendanceSerializer(serializers.ModelSerializer):
+class AttendanceSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     marking_period = serializers.SerializerMethodField()
 
     class Meta:

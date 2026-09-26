@@ -1,6 +1,8 @@
 from django.db import models
 from rest_framework import serializers
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
+
 from academics.models import AcademicYear, GradeLevel, MarkingPeriod, Subject
 
 from ..models.historical_grade import HistoricalGradeRecord
@@ -139,7 +141,10 @@ class HistoricalGradeRecordSerializer(serializers.ModelSerializer):
         return obj.counts_toward_year
 
 
-class HistoricalGradeRecordWriteSerializer(serializers.ModelSerializer):
+class HistoricalGradeRecordWriteSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     academic_year = UuidOrNameRelatedField(
         queryset=AcademicYear.objects.all(),
         required=False,

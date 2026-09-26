@@ -2,6 +2,10 @@ from decimal import Decimal
 
 from django.utils import timezone
 from rest_framework import serializers
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    filter_changed_data,
+)
 from academics.models import Section, SectionSubject, Subject
 from staff.models import Staff
 
@@ -48,7 +52,10 @@ class EmployeeOrStaffPKField(serializers.PrimaryKeyRelatedField):
             return employee
 
 
-class EmployeeDepartmentSerializer(serializers.ModelSerializer):
+class EmployeeDepartmentSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = EmployeeDepartment
         fields = [
@@ -63,7 +70,10 @@ class EmployeeDepartmentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-class EmployeePositionSerializer(serializers.ModelSerializer):
+class EmployeePositionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     department = serializers.PrimaryKeyRelatedField(
         queryset=EmployeeDepartment.objects.all(),
         required=False,
@@ -97,7 +107,10 @@ class EmployeePositionSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeContactSerializer(serializers.ModelSerializer):
+class EmployeeContactSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = EmployeeContact
         fields = [
@@ -120,7 +133,10 @@ class EmployeeContactSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-class EmployeeDependentSerializer(serializers.ModelSerializer):
+class EmployeeDependentSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = EmployeeDependent
         fields = [
@@ -139,7 +155,10 @@ class EmployeeDependentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
-class EmployeeSpecializationSerializer(serializers.ModelSerializer):
+class EmployeeSpecializationSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
         required=False,
@@ -169,7 +188,10 @@ class EmployeeSpecializationSerializer(serializers.ModelSerializer):
             data["subject"] = None
         return data
 
-class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
+class EmployeePerformanceReviewSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     reviewer = serializers.PrimaryKeyRelatedField(
         queryset=Employee.objects.all(),
@@ -228,7 +250,10 @@ class EmployeePerformanceReviewSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeTeacherSectionSerializer(serializers.ModelSerializer):
+class EmployeeTeacherSectionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     teacher = EmployeeOrStaffPKField(queryset=Employee.objects.all())
     section = serializers.PrimaryKeyRelatedField(queryset=Section.objects.all())
 
@@ -260,7 +285,10 @@ class EmployeeTeacherSectionSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
+class EmployeeTeacherSubjectSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     teacher = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
@@ -334,7 +362,10 @@ class EmployeeTeacherSubjectSerializer(serializers.ModelSerializer):
         return data
 
 
-class LeaveTypeSerializer(serializers.ModelSerializer):
+class LeaveTypeSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = LeaveType
         fields = [
@@ -374,7 +405,10 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class LeaveRequestSerializer(serializers.ModelSerializer):
+class LeaveRequestSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     leave_type = serializers.PrimaryKeyRelatedField(queryset=LeaveType.objects.all())
     total_days = serializers.IntegerField(read_only=True)
@@ -427,7 +461,10 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         return data
 
 
-class EmployeeAttendanceSerializer(serializers.ModelSerializer):
+class EmployeeAttendanceSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     hours_worked = serializers.FloatField(read_only=True)
 
@@ -587,6 +624,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validated_data["job_title"] = position.title
         if position and not validated_data.get("employment_type"):
             validated_data["employment_type"] = position.employment_type
+        validated_data = filter_changed_data(instance, validated_data)
+        if not validated_data:
+            return instance
         instance = super().update(instance, validated_data)
         if "pay_schedule" in validated_data and instance.pay_schedule_id != previous_schedule_id:
             from payroll_v2.services import refresh_employee_compensation_annual_salaries
