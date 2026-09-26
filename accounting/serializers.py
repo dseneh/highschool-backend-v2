@@ -305,7 +305,7 @@ class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_system_managed"]
 
 
-class AccountingJournalEntrySerializer(serializers.ModelSerializer):
+class AccountingJournalEntrySerializer(\n    ChangedFieldsModelSerializerMixin,\n    serializers.ModelSerializer,\n):
     # Allow blank reference_number so it can be auto-generated in create()
     reference_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
 
@@ -354,7 +354,7 @@ class AccountingJournalEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["academic_year"]
 
 
-class AccountingJournalLineSerializer(serializers.ModelSerializer):
+class AccountingJournalLineSerializer(\n    ChangedFieldsModelSerializerMixin,\n    serializers.ModelSerializer,\n):
     ledger_account_name = serializers.CharField(source="ledger_account.name", read_only=True)
     ledger_account_code = serializers.CharField(source="ledger_account.code", read_only=True)
     currency_code = serializers.CharField(source="currency.code", read_only=True)
