@@ -429,25 +429,13 @@ class AttendanceDetailView(APIView):
                 "detail": "Historical attendance records are read-only when the student is not currently enrolled.",
             })
 
-        allowed_fields = [
-            "date",
-            "status",
-        ]
-
-        validate_required_fields(request, allowed_fields)
-
-        if request.data.get("status") not in AttendanceStatus.all():
-            return Response({"detail": "Invalid attendance status"}, 400)
-
-        next_date = _parse_attendance_date(request.data.get("date"))
-        next_status = request.data.get("status")
-
-        attendence.date = next_date
-        attendence.status = next_status
-        attendence.updated_by = request.user
-        attendence.save(update_fields=["date", "status", "updated_by", "updated_at"])
-
-        serializer = AttendanceSerializer(attendence)
+        serializer = AttendanceSerializer(
+            attendence,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, id):
