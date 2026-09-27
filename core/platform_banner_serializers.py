@@ -2,10 +2,14 @@
 
 from rest_framework import serializers
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
 from core.models import PlatformBanner
 
 
-class PlatformBannerSerializer(serializers.ModelSerializer):
+class PlatformBannerSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     """Full representation used by the admin portal."""
 
     created_by_name = serializers.SerializerMethodField()
