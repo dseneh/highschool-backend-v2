@@ -8,6 +8,8 @@ from django_tenants.utils import schema_context
 from django.db import transaction
 import logging
 
+from common.update_utils import ChangedFieldsModelSerializerMixin
+
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +306,7 @@ class PublicTenantSerializer(BaseTenantSerializer):
         return response
 
 
-class TenantSerializer(BaseTenantSerializer):
+class TenantSerializer(ChangedFieldsModelSerializerMixin, BaseTenantSerializer):
     """
     Serializer for Tenant model.
     Used for reading and updating tenant data.
@@ -794,7 +796,10 @@ class SignupRequestCreateSerializer(serializers.ModelSerializer):
         ]
 
 
-class SignupRequestAdminSerializer(serializers.ModelSerializer):
+class SignupRequestAdminSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     """Admin list/detail/update for signup requests."""
 
     linked_tenant_schema_name = serializers.SerializerMethodField()
