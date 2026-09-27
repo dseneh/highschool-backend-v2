@@ -1020,7 +1020,10 @@ class PeriodTimeSerializer(serializers.ModelSerializer):
         ]
 
 
-class SectionTimeSlotSerializer(serializers.ModelSerializer):
+class SectionTimeSlotSerializer(
+    ChangedFieldsModelSerializerMixin,
+    serializers.ModelSerializer,
+):
     class Meta:
         model = SectionTimeSlot
         fields = [
