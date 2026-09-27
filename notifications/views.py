@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from academics.models import AcademicYear
 
 from common.status import Roles
+from common.update_utils import filter_changed_data
 from notifications.access_policies import NotificationAccessPolicy
 from notifications.models import (
     Notification,
@@ -341,6 +342,8 @@ class CampaignViewSet(viewsets.ModelViewSet):
             campaign, data=payload, partial=True
         )
         serializer.is_valid(raise_exception=True)
+        if not filter_changed_data(campaign, serializer.validated_data):
+            return Response(NotificationCampaignSerializer(campaign).data)
         serializer.save(updated_by=request.user)
         # Bump child Notification rows so the inbox ETag advances. Without
         # this, polling clients keep getting 304 Not Modified and never see
