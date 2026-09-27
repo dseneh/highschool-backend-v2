@@ -56,6 +56,7 @@ from common.utils import (
     update_model_fields,
     validate_required_fields,
 )
+from common.update_utils import filter_changed_data
 from academics.models import AcademicYear
 from finance.models import PaymentInstallment
 from finance.serializers import (
@@ -392,10 +393,9 @@ def validate_total_percentage(installments_data, academic_year, exclude_ids=None
         inst_id = str(inst.id)
         if inst_id in values_map:
             total += values_map[inst_id]
-        elif inst_id not in exclude_ids:
-            # Keep existing value if not being updated
+        else:
+            # Partial updates that omit value keep the existing percentage.
             total += float(inst.value)
-        # If in exclude_ids but not in values_map, skip (being deleted or not updating)
     
     # For creates (no exclude_ids), just sum the request values
     if not exclude_ids:
@@ -1022,21 +1022,29 @@ class PaymentInstallmentListView(APIView):
                     inst_id = str(item_data["id"])
                     inst = existing_dict[inst_id]
 
-                    # Update fields
+                    candidate_changes = {}
                     for field in ["name", "description", "value", "due_date", "sequence", "active"]:
                         if field in item_data:
                             if field == "value":
-                                setattr(inst, field, float(item_data[field]))
+                                candidate_changes[field] = float(item_data[field])
                             elif field == "due_date":
-                                setattr(inst, field, datetime.strptime(item_data[field], "%Y-%m-%d").date())
+                                candidate_changes[field] = datetime.strptime(
+                                    item_data[field],
+                                    "%Y-%m-%d",
+                                ).date()
                             elif field == "sequence":
-                                setattr(inst, field, int(item_data[field]))
+                                candidate_changes[field] = int(item_data[field])
                             elif field == "active":
-                                setattr(inst, field, bool(item_data[field]))
+                                candidate_changes[field] = bool(item_data[field])
                             else:
-                                setattr(inst, field, item_data[field])
+                                candidate_changes[field] = item_data[field]
 
-                    inst.save()
+                    changed_fields = filter_changed_data(inst, candidate_changes)
+                    if not changed_fields:
+                        continue
+                    for field, value in changed_fields.items():
+                        setattr(inst, field, value)
+                    inst.save(update_fields=[*changed_fields, "updated_at"])
         except Exception as e:
             return Response(
                 {"detail": f"Error updating installments: {str(e)}"},
