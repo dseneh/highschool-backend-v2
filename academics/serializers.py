@@ -6,7 +6,7 @@ from finance.models import Currency
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from rest_framework import serializers
-from common.update_utils import ChangedFieldsModelSerializerMixin
+from common.update_utils import ChangedFieldsModelSerializerMixin, filter_changed_data
 
 from students.models.enrollment import Enrollment
 
@@ -982,7 +982,23 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
             if key in enriched:
                 validated_data[key] = enriched[key]
 
-        event = super().update(instance, validated_data)
+        updated_by = validated_data.pop("updated_by", serializers.empty)
+        changed_data = filter_changed_data(instance, validated_data)
+        current_section_ids = set(
+            instance.sections.values_list("id", flat=True),
+        )
+        submitted_section_ids = (
+            {section.id for section in sections}
+            if sections is not None
+            else current_section_ids
+        )
+        sections_changed = current_section_ids != submitted_section_ids
+        if not changed_data and not sections_changed:
+            return instance
+        if updated_by is not serializers.empty:
+            changed_data["updated_by"] = updated_by
+
+        event = super().update(instance, changed_data)
         if event.applies_to_all_sections:
             event.sections.clear()
         elif sections is not None:
