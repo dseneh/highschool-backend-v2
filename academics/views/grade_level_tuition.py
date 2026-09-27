@@ -39,10 +39,11 @@ class GradeLevelTuitionFeesDetailView(APIView):
         if not updated_fees:
             return Response(
                 {
-                    "detail": "No tuition fees were updated",
-                    "errors": ["No valid tuition fees found"],
+                    "updated": [],
+                    "updated_count": 0,
+                    "message": "No tuition fee changes detected",
                 },
-                status=400,
+                status=status.HTTP_200_OK,
             )
 
         # Invalidate the GradeLevelListView cache for this tenant
@@ -68,5 +69,4 @@ class GradeLevelTuitionFeesDetailView(APIView):
             "updated_count": len(updated_fees),
             "message": "Tuition fees updated successfully",
         }
-        print("Updated tuition fees response:", response_data)  # Debug log
         return Response(response_data, status=status.HTTP_200_OK)
