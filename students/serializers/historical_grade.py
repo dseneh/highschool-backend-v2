@@ -1,7 +1,13 @@
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+    get_update_value,
+)
+
+
 from django.db import models
 from rest_framework import serializers
 
-from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from academics.models import AcademicYear, GradeLevel, MarkingPeriod, Subject
 
@@ -57,7 +63,7 @@ class UuidOrNameRelatedField(serializers.Field):
         return {"id": str(value.id), "name": getattr(value, "name", str(value))}
 
 
-class HistoricalGradeRecordSerializer(serializers.ModelSerializer):
+class HistoricalGradeRecordSerializer(PartialUpdateModelSerializer):
     source = serializers.ReadOnlyField(default="transferred")
     include_in_calculations = serializers.SerializerMethodField()
     counts_toward_year = serializers.SerializerMethodField()
@@ -143,7 +149,7 @@ class HistoricalGradeRecordSerializer(serializers.ModelSerializer):
 
 class HistoricalGradeRecordWriteSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     academic_year = UuidOrNameRelatedField(
         queryset=AcademicYear.objects.all(),
@@ -199,13 +205,12 @@ class HistoricalGradeRecordWriteSerializer(
         academic_year = attrs.get("academic_year")
         if academic_year is None and self.instance is not None:
             academic_year = self.instance.academic_year
-        academic_year_label = (attrs.get("academic_year_label") or "").strip()
-        if academic_year and not academic_year_label:
+        academic_year_label = (get_update_value(self.instance, attrs, "academic_year_label", "") or "").strip()
+        if self.instance is None and academic_year and not academic_year_label:
             attrs["academic_year_label"] = academic_year.name or ""
-        elif not academic_year_label and self.instance is not None:
-            attrs["academic_year_label"] = self.instance.academic_year_label
+            academic_year_label = attrs["academic_year_label"]
 
-        if not attrs.get("academic_year_label"):
+        if not academic_year_label:
             raise serializers.ValidationError(
                 {"academic_year_label": "Academic year label is required."}
             )

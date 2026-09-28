@@ -4,8 +4,10 @@ from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
 
+from academics.models import GradeLevelTuitionFee
 from academics.views.section_time_slot import SectionTimeSlotDetailView
 from business.core.adapters.supporting_adapter import bulk_update_tuition_fees
+from users.models import User
 
 
 class TuitionChangedPayloadTests(SimpleTestCase):
@@ -31,9 +33,10 @@ class TuitionChangedPayloadTests(SimpleTestCase):
     @patch("common.cache_service.DataCache.invalidate_grade_levels")
     @patch("business.core.adapters.supporting_adapter.GradeLevelTuitionFee.objects.get")
     def test_changed_tuition_uses_targeted_update_fields(self, get_fee, invalidate):
-        fee = SimpleNamespace(amount=Decimal("100.00"), save=Mock())
+        fee = GradeLevelTuitionFee(amount=Decimal("100.00"))
+        fee.save = Mock()
         get_fee.return_value = fee
-        user = SimpleNamespace(id="user-1")
+        user = User(username="tuition-editor")
 
         result = self.call_bulk_update(
             SimpleNamespace(id="grade-1"),

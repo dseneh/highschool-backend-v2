@@ -1,3 +1,10 @@
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+    get_update_value,
+)
+
+
 from collections import OrderedDict
 import calendar
 from datetime import date, timedelta
@@ -6,7 +13,6 @@ from decimal import Decimal
 from django.db.models import Count
 from rest_framework import serializers
 
-from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from .enums import CalculationType, DeductionSourceType, PaymentMethod, SalaryAdvanceRepaymentMethod, SalaryAdvanceRepaymentStatus, StaffWardSponsorshipStatus, TargetAmountSource
 from .services import (
@@ -75,7 +81,7 @@ class EmployeeDisplaySerializer(serializers.Serializer):
         return getattr(position, "title", None) if position else None
 
 
-class EmployeeCompensationSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class EmployeeCompensationSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     currency_code = serializers.SerializerMethodField()
 
@@ -121,7 +127,7 @@ class PayrollItemRulePreviewSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False, default=True)
 
 
-class PayrollItemRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollItemRuleSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = PayrollCatalogItemRule
         fields = [
@@ -150,6 +156,12 @@ class PayrollItemRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.M
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        calculation_fields = {
+            "calculation_type", "value", "formula", "target_amount_source",
+            "target_min_amount", "target_max_amount",
+        }
+        if not calculation_fields.intersection(validated_data):
+            return super().update(instance, validated_data)
         snapshot = {
             "calculation_type": validated_data.get("calculation_type", instance.calculation_type),
             "value": validated_data.get("value", instance.value),
@@ -162,7 +174,7 @@ class PayrollItemRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.M
         return super().update(instance, validated_data)
 
 
-class PayrollItemSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollItemSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     rules = PayrollItemRuleSerializer(many=True, read_only=True)
 
     class Meta:
@@ -183,7 +195,7 @@ class PayrollItemSerializer(ChangedFieldsModelSerializerMixin, serializers.Model
         read_only_fields = ["created_at", "updated_at"]
 
 
-class EmployeePayrollItemSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class EmployeePayrollItemSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     payroll_item_display = PayrollItemSerializer(source="payroll_item", read_only=True)
 
@@ -218,6 +230,11 @@ class EmployeePayrollItemSerializer(ChangedFieldsModelSerializerMixin, serialize
         read_only_fields = ["created_at", "updated_at"]
 
     def _apply_calculation_override_flag(self, validated_data, instance=None):
+        if instance is not None and not {
+            "calculation_type", "value", "formula", "calculation_limit",
+            "calculation_overridden",
+        }.intersection(validated_data):
+            return validated_data
         if validated_data.get("calculation_overridden") is False:
             validated_data["calculation_overridden"] = False
             return validated_data
@@ -262,7 +279,7 @@ class EmployeePayrollItemSerializer(ChangedFieldsModelSerializerMixin, serialize
         return super().update(instance, validated_data)
 
 
-class PayrollLineItemSerializer(serializers.ModelSerializer):
+class PayrollLineItemSerializer(PartialUpdateModelSerializer):
     column_key = serializers.SerializerMethodField()
 
     class Meta:
@@ -301,7 +318,7 @@ class PayrollLineItemSerializer(serializers.ModelSerializer):
         return f"line:{obj.id}"
 
 
-class PayrollEmployeeItemSerializer(serializers.ModelSerializer):
+class PayrollEmployeeItemSerializer(PartialUpdateModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     line_items = PayrollLineItemSerializer(many=True, read_only=True)
     payroll_run_period_name = serializers.SerializerMethodField()
@@ -365,7 +382,7 @@ class PayrollEmployeeItemSerializer(serializers.ModelSerializer):
         return schedule.frequency if schedule else None
 
 
-class PayScheduleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayScheduleSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     currency_symbol = serializers.CharField(source="currency.symbol", read_only=True)
     has_runs = serializers.SerializerMethodField()
@@ -406,7 +423,7 @@ class PayScheduleSerializer(ChangedFieldsModelSerializerMixin, serializers.Model
         return attrs
 
 
-class PayrollPeriodSerializer(serializers.ModelSerializer):
+class PayrollPeriodSerializer(PartialUpdateModelSerializer):
     schedule_name = serializers.CharField(source="schedule.name", read_only=True)
     currency_code = serializers.CharField(source="schedule.currency.code", read_only=True)
 
@@ -428,7 +445,7 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at", "is_closed"]
 
 
-class PayrollRunListSerializer(serializers.ModelSerializer):
+class PayrollRunListSerializer(PartialUpdateModelSerializer):
     employee_count = serializers.SerializerMethodField()
     currency_code = serializers.CharField(source="currency.code", read_only=True)
     currency_symbol = serializers.CharField(source="currency.symbol", read_only=True)
@@ -531,6 +548,8 @@ class PayrollRunWriteSerializer(PayrollRunListSerializer):
         super().__init__(*args, **kwargs)
         if self.instance is not None and "pay_schedule" in self.fields:
             self.fields["pay_schedule"].read_only = True
+            self.fields["period_name"].read_only = True
+            self.fields["period_name"].write_only = False
 
     def validate(self, attrs):
         if self.instance is None and not attrs.get("pay_schedule"):
@@ -805,7 +824,7 @@ class SalaryAdvancePaymentRecordSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
 
 
-class SalaryAdvancePaymentSerializer(serializers.ModelSerializer):
+class SalaryAdvancePaymentSerializer(PartialUpdateModelSerializer):
     finance_transaction_id = serializers.CharField(source="finance_transaction.id", read_only=True)
     finance_transaction_reference = serializers.CharField(source="finance_transaction.reference_number", read_only=True)
     finance_transaction_status = serializers.CharField(source="finance_transaction.status", read_only=True)
@@ -832,7 +851,7 @@ class SalaryAdvancePaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at", "updated_at"]
 
 
-class PayrollTableViewSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollTableViewSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = PayrollTableView
         fields = [
@@ -859,7 +878,7 @@ class PayrollTableViewSerializer(ChangedFieldsModelSerializerMixin, serializers.
         return value
 
 
-class PayrollPayslipTemplateSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollPayslipTemplateSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = PayrollPayslipTemplate
         fields = [
@@ -875,7 +894,7 @@ class PayrollPayslipTemplateSerializer(ChangedFieldsModelSerializerMixin, serial
         read_only_fields = ["created_at", "updated_at"]
 
 
-class StaffWardSponsorshipPolicySerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class StaffWardSponsorshipPolicySerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = StaffWardSponsorshipPolicy
         fields = [
@@ -905,7 +924,7 @@ class StaffWardSponsorshipPolicySerializer(ChangedFieldsModelSerializerMixin, se
         read_only_fields = ["created_at", "updated_at"]
 
 
-class EmployeeWardSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class EmployeeWardSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_name = serializers.SerializerMethodField()
     student_name = serializers.SerializerMethodField()
 
@@ -935,7 +954,7 @@ class EmployeeWardSerializer(ChangedFieldsModelSerializerMixin, serializers.Mode
         return obj.student.get_full_name() if obj.student_id else None
 
 
-class StaffWardSponsorshipStudentSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class StaffWardSponsorshipStudentSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     student_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -962,11 +981,11 @@ class StaffWardSponsorshipStudentSerializer(ChangedFieldsModelSerializerMixin, s
     def validate(self, attrs):
         attrs = super().validate(attrs)
 
-        sponsorship = attrs.get("sponsorship") or getattr(self.instance, "sponsorship", None)
+        sponsorship = get_update_value(self.instance, attrs, 'sponsorship', None)
         if sponsorship is None:
             raise serializers.ValidationError({"sponsorship": "Sponsorship is required."})
 
-        student = attrs.get("student") or getattr(self.instance, "student", None)
+        student = get_update_value(self.instance, attrs, 'student', None)
         if student is None:
             raise serializers.ValidationError({"student": "Student is required."})
 
@@ -1010,9 +1029,10 @@ class StaffWardSponsorshipStudentSerializer(ChangedFieldsModelSerializerMixin, s
             contribution_value=policy.employee_contribution_value,
         )
 
-        attrs["eligible_fee_total"] = eligible_total
-        attrs["school_covered_amount"] = coverage_amount
-        attrs["employee_responsibility_amount"] = employee_amount
+        if self.instance is None or {"eligible_fee_total", "sponsorship"}.intersection(attrs):
+            attrs["eligible_fee_total"] = eligible_total
+            attrs["school_covered_amount"] = coverage_amount
+            attrs["employee_responsibility_amount"] = employee_amount
         return attrs
 
     def _refresh_sponsorship_totals(self, sponsorship: StaffWardSponsorship):
@@ -1081,7 +1101,7 @@ class StaffWardSponsorshipStudentSerializer(ChangedFieldsModelSerializerMixin, s
         return instance
 
 
-class StaffWardSponsorshipSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class StaffWardSponsorshipSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_name = serializers.SerializerMethodField()
     id_number = serializers.CharField(source="employee.id_number", read_only=True)
     policy_name = serializers.CharField(source="policy.name", read_only=True)
@@ -1145,7 +1165,7 @@ class StaffWardSponsorshipSerializer(ChangedFieldsModelSerializerMixin, serializ
     def validate(self, attrs):
         attrs = super().validate(attrs)
 
-        academic_year = attrs.get("academic_year") or getattr(self.instance, "academic_year", None)
+        academic_year = get_update_value(self.instance, attrs, 'academic_year', None)
         if academic_year is None:
             raise serializers.ValidationError({"academic_year": "Academic year is required."})
 
@@ -1182,7 +1202,7 @@ class StaffWardSponsorshipSerializer(ChangedFieldsModelSerializerMixin, serializ
                 }
             )
 
-        employee = attrs.get("employee") or getattr(self.instance, "employee", None)
+        employee = get_update_value(self.instance, attrs, 'employee', None)
         requested = attrs.get("payroll_recovery_amount")
         if employee is None or requested is None:
             return attrs
@@ -1202,7 +1222,7 @@ class StaffWardSponsorshipSerializer(ChangedFieldsModelSerializerMixin, serializ
         return attrs
 
 
-class SalaryAdvanceSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class SalaryAdvanceSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_name = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     completed_by_name = serializers.SerializerMethodField()
@@ -1281,7 +1301,7 @@ class SalaryAdvanceSerializer(ChangedFieldsModelSerializerMixin, serializers.Mod
         request = self.context.get("request")
         settings = get_tenant_payroll_settings(user=getattr(request, "user", None))
 
-        employee = attrs.get("employee") or getattr(self.instance, "employee", None)
+        employee = get_update_value(self.instance, attrs, 'employee', None)
         if employee is None:
             return attrs
 
@@ -1349,7 +1369,7 @@ class SalaryAdvanceSerializer(ChangedFieldsModelSerializerMixin, serializers.Mod
         return attrs
 
 
-class PayrollDeductionInstallmentSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollDeductionInstallmentSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = PayrollDeductionInstallment
         fields = [
@@ -1368,7 +1388,7 @@ class PayrollDeductionInstallmentSerializer(ChangedFieldsModelSerializerMixin, s
         read_only_fields = ["created_at", "updated_at"]
 
 
-class PayrollDeductionScheduleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollDeductionScheduleSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_name = serializers.SerializerMethodField()
     installments = PayrollDeductionInstallmentSerializer(many=True, read_only=True)
 
@@ -1398,7 +1418,7 @@ class PayrollDeductionScheduleSerializer(ChangedFieldsModelSerializerMixin, seri
         return obj.employee.get_full_name() if obj.employee_id else None
 
 
-class PayrollSettingsSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class PayrollSettingsSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     transaction_type_name = serializers.CharField(
         source="transaction_type.name",
         read_only=True,

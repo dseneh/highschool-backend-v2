@@ -431,26 +431,12 @@ def update_model_fields(request, model, allowed_fields, serializer_class, contex
     """
     # Use the core update function
     source_data = data if data is not None else request.data
-    update_fields = update_model_fields_core(
+    update_model_fields_core(
         model, source_data, allowed_fields, request.user
     )
-
-    try:
-        # Only serialize fields that were updated
-        data = {key: source_data.get(key) for key in update_fields if key in source_data}
-
-        # Use provided context or default to request context
-        serializer_context = context if context is not None else {"request": request}
-        serializer = serializer_class(
-            model, data=data, partial=True, context=serializer_context
-        )
-        # Validate the serializer
-        if not serializer.is_valid():
-            raise ValidationError(serializer.errors)  # Raise validation errors if any
-
-        return Response(serializer.data, status=200)
-    except Exception as e:
-        raise ValidationError(str(e))
+    serializer_context = context if context is not None else {"request": request}
+    serializer = serializer_class(model, context=serializer_context)
+    return Response(serializer.data, status=200)
 
 
 def update_model_fields_core(model, data, allowed_fields, user=None):
@@ -467,12 +453,10 @@ def update_model_fields_core(model, data, allowed_fields, user=None):
     Returns:
         list: List of fields that were actually updated
     """
-    # Filter out fields that have the same value as the existing model instance
-    update_data = {
-        key: data.get(key)
-        for key in data.keys()
-        if key in allowed_fields and getattr(model, key, None) != data.get(key)
-    }
+    from common.update_utils import filter_changed_data, save_model_changes, validate_model_update
+
+    serializer = validate_model_update(model, data, allowed_fields)
+    update_data = filter_changed_data(model, serializer.validated_data)
 
     if update_data:
         # Add metadata fields if user is provided
@@ -482,12 +466,7 @@ def update_model_fields_core(model, data, allowed_fields, user=None):
             if hasattr(model, "updated_at"):
                 update_data["updated_at"] = timezone.now()
 
-        # Set all field values
-        for key, value in update_data.items():
-            setattr(model, key, value)
-
-        # Save only the changed fields
-        model.save(update_fields=list(update_data.keys()))
+        save_model_changes(model, update_data)
 
         return list(update_data.keys())
 

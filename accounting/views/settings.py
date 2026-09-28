@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,8 +19,7 @@ class AccountingSettingsView(APIView):
 
     def patch(self, request):
         settings = get_tenant_accounting_settings(user=request.user)
-        serializer = AccountingSettingsSerializer(settings, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(AccountingSettingsSerializer, settings, request.data)
         settings = serializer.save(updated_by=request.user)
         settings.refresh_from_db()
         return Response(AccountingSettingsSerializer(settings).data)

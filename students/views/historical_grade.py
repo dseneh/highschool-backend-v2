@@ -1,5 +1,8 @@
 """Historical / transferred transcript grade API views."""
 
+from common.update_utils import validate_partial_update
+
+
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
 from django.shortcuts import get_object_or_404
@@ -367,10 +370,11 @@ class HistoricalGradeRecordDetailView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = HistoricalGradeRecordWriteSerializer(
+        serializer = validate_partial_update(
+            HistoricalGradeRecordWriteSerializer,
             record,
-            data=data,
-            partial=True,
+            data,
+            raise_exception=False,
             context={"student": record.student, "request": request},
         )
         if not serializer.is_valid():

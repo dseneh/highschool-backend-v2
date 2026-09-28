@@ -1,3 +1,4 @@
+from common.update_utils import filter_changed_data, validate_model_update
 import logging
 import time
 from datetime import datetime
@@ -56,7 +57,6 @@ from common.utils import (
     update_model_fields,
     validate_required_fields,
 )
-from common.update_utils import filter_changed_data
 from academics.models import AcademicYear
 from finance.models import PaymentInstallment
 from finance.serializers import (
@@ -990,7 +990,7 @@ class PaymentInstallmentListView(APIView):
         existing_dict = {
             str(inst.id): inst
             for inst in PaymentInstallment.objects.filter(
-                id__in=update_ids
+                id__in=update_ids, academic_year=academic_year
             ).select_related("academic_year")
         }
 
@@ -1001,6 +1001,14 @@ class PaymentInstallmentListView(APIView):
                 {"detail": f"Installments not found: {', '.join(missing_ids)}"},
                 status=404,
             )
+
+        update_serializers = [
+            validate_model_update(
+                existing_dict[str(item_data["id"])], item_data,
+                ["name", "description", "value", "due_date", "sequence", "active"],
+            )
+            for item_data in installments_data
+        ]
 
         # Validate no overlapping dates
         error = validate_dates_no_overlap(installments_data, academic_year, exclude_ids=update_ids)
@@ -1015,36 +1023,8 @@ class PaymentInstallmentListView(APIView):
         # All validations passed, update installments
         try:
             with transaction.atomic():
-                for item_data in installments_data:
-                    if not isinstance(item_data, dict) or "id" not in item_data:
-                        continue
-
-                    inst_id = str(item_data["id"])
-                    inst = existing_dict[inst_id]
-
-                    candidate_changes = {}
-                    for field in ["name", "description", "value", "due_date", "sequence", "active"]:
-                        if field in item_data:
-                            if field == "value":
-                                candidate_changes[field] = float(item_data[field])
-                            elif field == "due_date":
-                                candidate_changes[field] = datetime.strptime(
-                                    item_data[field],
-                                    "%Y-%m-%d",
-                                ).date()
-                            elif field == "sequence":
-                                candidate_changes[field] = int(item_data[field])
-                            elif field == "active":
-                                candidate_changes[field] = bool(item_data[field])
-                            else:
-                                candidate_changes[field] = item_data[field]
-
-                    changed_fields = filter_changed_data(inst, candidate_changes)
-                    if not changed_fields:
-                        continue
-                    for field, value in changed_fields.items():
-                        setattr(inst, field, value)
-                    inst.save(update_fields=[*changed_fields, "updated_at"])
+                for update_serializer in update_serializers:
+                    update_serializer.save()
         except Exception as e:
             return Response(
                 {"detail": f"Error updating installments: {str(e)}"},

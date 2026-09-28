@@ -1,12 +1,15 @@
 """
 Common serializer mixins and utilities for reusable serializer functionality.
 """
+
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from auditlog.models import LogEntry
 
 
-class AuditLogSerializer(serializers.ModelSerializer):
+class AuditLogSerializer(PartialUpdateModelSerializer):
     """Read-only serializer for django-auditlog LogEntry records."""
 
     actor_email = serializers.EmailField(source="actor.email", read_only=True, default=None)
@@ -96,7 +99,7 @@ class PhotoURLMixin:
     - Default fallback images
     
     Usage:
-        class MySerializer(PhotoURLMixin, serializers.ModelSerializer):
+        class MySerializer(PhotoURLMixin, PartialUpdateModelSerializer):
             class Meta:
                 model = MyModel
                 fields = ['id', 'name', 'photo', ...]

@@ -1,3 +1,10 @@
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+    filter_changed_data,
+    get_update_value,
+)
+
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from datetime import datetime
@@ -55,13 +62,12 @@ from accounting.services.posting import (
 )
 from accounting.services.settings_services import resolve_student_refund_transaction_type
 from common.email_validation import is_valid_email
-from common.update_utils import ChangedFieldsModelSerializerMixin, filter_changed_data
 from hr.models import Employee
 from students.models import Student
 from academics.models import AcademicYear
 
 
-class AccountingCurrencySerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class AccountingCurrencySerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = AccountingCurrency
         fields = [
@@ -77,13 +83,13 @@ class AccountingCurrencySerializer(ChangedFieldsModelSerializerMixin, serializer
         ]
 
 
-class AccountingExchangeRateSerializer(serializers.ModelSerializer):
+class AccountingExchangeRateSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingExchangeRate
         fields = "__all__"
 
 
-class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
+class AccountingLedgerAccountSerializer(PartialUpdateModelSerializer):
     template_key = serializers.ChoiceField(
         choices=[
             "manual",
@@ -307,7 +313,7 @@ class AccountingLedgerAccountSerializer(serializers.ModelSerializer):
 
 class AccountingJournalEntrySerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     # Allow blank reference_number so it can be auto-generated in create()
     reference_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
@@ -359,7 +365,7 @@ class AccountingJournalEntrySerializer(
 
 class AccountingJournalLineSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     ledger_account_name = serializers.CharField(source="ledger_account.name", read_only=True)
     ledger_account_code = serializers.CharField(source="ledger_account.code", read_only=True)
@@ -387,7 +393,7 @@ class AccountingJournalLineSerializer(
         ]
 
 
-class AccountingJournalEntryListSerializer(serializers.ModelSerializer):
+class AccountingJournalEntryListSerializer(PartialUpdateModelSerializer):
     total_debit = serializers.SerializerMethodField()
     total_credit = serializers.SerializerMethodField()
     bank_accounts = serializers.SerializerMethodField()
@@ -448,7 +454,7 @@ class AccountingJournalEntryDetailSerializer(AccountingJournalEntryListSerialize
         fields = AccountingJournalEntryListSerializer.Meta.fields + ["lines"]
 
 
-class AccountingTransactionTypeSerializer(serializers.ModelSerializer):
+class AccountingTransactionTypeSerializer(PartialUpdateModelSerializer):
     default_ledger_account_name = serializers.CharField(
         source="default_ledger_account.name", read_only=True
     )
@@ -547,7 +553,7 @@ class AccountingTransactionTypeSerializer(serializers.ModelSerializer):
         read_only_fields = ["managed_ledger_account", "is_system_managed"]
 
 
-class AccountingPaymentMethodSerializer(serializers.ModelSerializer):
+class AccountingPaymentMethodSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingPaymentMethod
         fields = ["id", "name", "code", "description", "is_active"]
@@ -555,7 +561,7 @@ class AccountingPaymentMethodSerializer(serializers.ModelSerializer):
 
 class AccountingBankAccountSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     currency = serializers.PrimaryKeyRelatedField(queryset=AccountingCurrency.objects.all())
     bank_rule_status = serializers.SerializerMethodField()
@@ -637,7 +643,7 @@ class AccountingBankAccountSerializer(
         return compute_bank_account_rule_status(obj)
 
 
-class AccountingBankAccountRecentActivitySerializer(serializers.ModelSerializer):
+class AccountingBankAccountRecentActivitySerializer(PartialUpdateModelSerializer):
     transaction_type = serializers.SerializerMethodField()
     payment_method = serializers.SerializerMethodField()
     posted = serializers.SerializerMethodField()
@@ -797,7 +803,7 @@ class AccountingBankAccountDetailSerializer(AccountingBankAccountSerializer):
 
 
 
-class AccountingCashTransactionSerializer(serializers.ModelSerializer):
+class AccountingCashTransactionSerializer(PartialUpdateModelSerializer):
     @staticmethod
     def _pop_transient_fields(validated_data):
         validated_data.pop("transaction_type_code", None)
@@ -976,10 +982,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         if "description" in validated_data:
             description = str(validated_data.get("description") or "").strip()
             validated_data["description"] = description or "Transaction entry"
-        changed_data = filter_changed_data(instance, validated_data)
-        if not changed_data:
-            return instance
-        return super().update(instance, changed_data)
+        return super().update(instance, validated_data)
 
     def get_bank_account(self, obj):
         if obj.bank_account_id is None:
@@ -1139,35 +1142,35 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         bank_account_value = payload.get("bank_account")
         if isinstance(bank_account_value, dict):
             payload["bank_account"] = bank_account_value.get("id")
-        if payload.get("bank_account") is not None and payload.get("bank_account_id") is None:
+        if "bank_account" in payload and "bank_account_id" not in payload:
             payload["bank_account_id"] = payload.get("bank_account")
 
         # Handle transaction_type
         transaction_type_value = payload.get("transaction_type")
         if isinstance(transaction_type_value, dict):
             payload["transaction_type"] = transaction_type_value.get("id")
-        if payload.get("transaction_type") is not None and payload.get("transaction_type_id") is None:
+        if "transaction_type" in payload and "transaction_type_id" not in payload:
             payload["transaction_type_id"] = payload.get("transaction_type")
 
         # Handle payment_method
         payment_method_value = payload.get("payment_method")
         if isinstance(payment_method_value, dict):
             payload["payment_method"] = payment_method_value.get("id")
-        if payload.get("payment_method") is not None and payload.get("payment_method_id") is None:
+        if "payment_method" in payload and "payment_method_id" not in payload:
             payload["payment_method_id"] = payload.get("payment_method")
 
         # Handle currency
         currency_value = payload.get("currency")
         if isinstance(currency_value, dict):
             payload["currency"] = currency_value.get("id")
-        if payload.get("currency") is not None and payload.get("currency_id") is None:
+        if "currency" in payload and "currency_id" not in payload:
             payload["currency_id"] = payload.get("currency")
 
         # Handle ledger_account
         ledger_account_value = payload.get("ledger_account")
         if isinstance(ledger_account_value, dict):
             payload["ledger_account"] = ledger_account_value.get("id")
-        if payload.get("ledger_account") is not None and payload.get("ledger_account_id") is None:
+        if "ledger_account" in payload and "ledger_account_id" not in payload:
             payload["ledger_account_id"] = payload.get("ledger_account")
 
         # Handle student. We accept any of:
@@ -1191,6 +1194,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         # parses as a UUID. Anything else gets re-routed through the
         # resolver below so we don't bubble a confusing PK validation
         # error.
+        explicit_student_null = "student_id" in payload and payload["student_id"] is None
         direct_student_id = payload.get("student_id")
         if direct_student_id is not None:
             try:
@@ -1201,11 +1205,11 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
                 payload["student"] = payload.get("student") or direct_student_id
                 payload["student_id"] = None
 
-        if payload.get("student_id") is None:
+        if payload.get("student_id") is None and not explicit_student_null:
             resolved = _resolve_student_uuid(payload.get("student"))
             if resolved is None:
                 resolved = _resolve_student_uuid(payload.get("student_id_number"))
-            if resolved is None:
+            if resolved is None and self.instance is None:
                 resolved = _resolve_student_uuid(payload.get("source_reference"))
             if resolved is not None:
                 payload["student_id"] = resolved
@@ -1230,7 +1234,7 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
 
             attrs["transaction_type"] = transaction_type
 
-        if attrs.get("transaction_type") is None:
+        if get_update_value(self.instance, attrs, "transaction_type") is None:
             raise serializers.ValidationError({"transaction_type": "This field is required."})
 
         exchange_rate = attrs.get("exchange_rate")
@@ -1243,42 +1247,43 @@ class AccountingCashTransactionSerializer(serializers.ModelSerializer):
         if amount is not None and amount <= 0:
             raise serializers.ValidationError({"amount": "Amount must be greater than zero"})
 
-        # If base_amount is omitted, derive from amount and exchange_rate.
-        if base_amount is None and amount is not None:
+        # Creation can derive defaults. Updates only write supplied fields;
+        # callers changing the base amount must include it explicitly.
+        if self.instance is None and base_amount is None and amount is not None:
             rate = exchange_rate if exchange_rate is not None else Decimal("1")
             attrs["base_amount"] = amount * rate
 
         return attrs
 
 
-class AccountingBankAccountNestedSerializer(serializers.ModelSerializer):
+class AccountingBankAccountNestedSerializer(PartialUpdateModelSerializer):
     """Lightweight nested serializer for bank account in responses."""
     class Meta:
         model = AccountingBankAccount
         fields = ["id", "account_number", "account_name", "bank_name", "account_type", "status"]
 
 
-class AccountingTransactionTypeNestedSerializer(serializers.ModelSerializer):
+class AccountingTransactionTypeNestedSerializer(PartialUpdateModelSerializer):
     """Lightweight nested serializer for transaction type in responses."""
     class Meta:
         model = AccountingTransactionType
         fields = ["id", "name", "code", "transaction_category", "description"]
 
 
-class AccountingPaymentMethodNestedSerializer(serializers.ModelSerializer):
+class AccountingPaymentMethodNestedSerializer(PartialUpdateModelSerializer):
     """Lightweight nested serializer for payment method in responses."""
     class Meta:
         model = AccountingPaymentMethod
         fields = ["id", "name", "code", "description"]
 
 
-class AccountingLedgerAccountNestedSerializer(serializers.ModelSerializer):
+class AccountingLedgerAccountNestedSerializer(PartialUpdateModelSerializer):
     """Lightweight nested serializer for ledger account in responses."""
     class Meta:
         model = AccountingLedgerAccount
         fields = ["id", "code", "name", "account_type"]
 
-class AccountingAccountTransferSerializer(serializers.ModelSerializer):
+class AccountingAccountTransferSerializer(PartialUpdateModelSerializer):
     def _generate_reference_number(self, transfer_date):
         """Generate a unique reference number for account transfer."""
         # Format: TRF-YYYYMMDD-XXXXX
@@ -1418,7 +1423,7 @@ class AccountingAccountTransferSerializer(serializers.ModelSerializer):
         if exchange_rate is not None and exchange_rate <= 0:
             raise serializers.ValidationError({"exchange_rate": "Exchange rate must be greater than zero"})
 
-        if to_amount is None and amount is not None:
+        if self.instance is None and to_amount is None and amount is not None:
             rate = exchange_rate if exchange_rate is not None else Decimal("1")
             attrs["to_amount"] = amount * rate
 
@@ -1434,91 +1439,91 @@ class AccountingAccountTransferSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class AccountingFeeItemSerializer(serializers.ModelSerializer):
+class AccountingFeeItemSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingFeeItem
         fields = "__all__"
 
 
-class AccountingFeeRateSerializer(serializers.ModelSerializer):
+class AccountingFeeRateSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingFeeRate
         fields = "__all__"
 
 
-class AccountingStudentBillSerializer(serializers.ModelSerializer):
+class AccountingStudentBillSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingStudentBill
         fields = "__all__"
 
 
-class AccountingStudentBillLineSerializer(serializers.ModelSerializer):
+class AccountingStudentBillLineSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingStudentBillLine
         fields = "__all__"
 
 
-class AccountingConcessionSerializer(serializers.ModelSerializer):
+class AccountingConcessionSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingConcession
         fields = "__all__"
 
 
-class AccountingInstallmentPlanSerializer(serializers.ModelSerializer):
+class AccountingInstallmentPlanSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingInstallmentPlan
         fields = "__all__"
 
 
-class AccountingInstallmentLineSerializer(serializers.ModelSerializer):
+class AccountingInstallmentLineSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingInstallmentLine
         fields = "__all__"
 
 
-class AccountingStudentPaymentAllocationSerializer(serializers.ModelSerializer):
+class AccountingStudentPaymentAllocationSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingStudentPaymentAllocation
         fields = "__all__"
 
 
-class AccountingARSnapshotSerializer(serializers.ModelSerializer):
+class AccountingARSnapshotSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingARSnapshot
         fields = "__all__"
 
 
-class AccountingTaxCodeSerializer(serializers.ModelSerializer):
+class AccountingTaxCodeSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingTaxCode
         fields = "__all__"
 
 
-class AccountingTaxRemittanceSerializer(serializers.ModelSerializer):
+class AccountingTaxRemittanceSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingTaxRemittance
         fields = "__all__"
 
 
-class AccountingExpenseRecordSerializer(serializers.ModelSerializer):
+class AccountingExpenseRecordSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingExpenseRecord
         fields = "__all__"
 
 
-class AccountingPayrollPostingBatchSerializer(serializers.ModelSerializer):
+class AccountingPayrollPostingBatchSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingPayrollPostingBatch
         fields = "__all__"
 
 
-class AccountingPayrollPostingLineSerializer(serializers.ModelSerializer):
+class AccountingPayrollPostingLineSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AccountingPayrollPostingLine
         fields = "__all__"
 
 
-class AccountingBankBalanceRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class AccountingBankBalanceRuleSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     alert_recipient_ids = serializers.PrimaryKeyRelatedField(
         source="alert_recipients",
         queryset=Employee.objects.all(),
@@ -1584,7 +1589,7 @@ class AccountingBankBalanceRuleSerializer(ChangedFieldsModelSerializerMixin, ser
         return sorted(ALLOWED_EMAIL_PLACEHOLDERS)
 
     def validate(self, attrs):
-        mode = attrs.get("limit_mode") or getattr(self.instance, "limit_mode", None)
+        mode = get_update_value(self.instance, attrs, 'limit_mode', None)
         fixed = attrs.get("fixed_maximum_balance")
         if fixed is None and self.instance is not None:
             fixed = self.instance.fixed_maximum_balance
@@ -1655,7 +1660,7 @@ class AccountingBankBalanceRuleSerializer(ChangedFieldsModelSerializerMixin, ser
         return attrs
 
 
-class AccountingSpendableAllocationRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class AccountingSpendableAllocationRuleSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = AccountingSpendableAllocationRule
         fields = [
@@ -1673,7 +1678,7 @@ class AccountingSpendableAllocationRuleSerializer(ChangedFieldsModelSerializerMi
         read_only_fields = ["created_at", "updated_at"]
 
     def validate(self, attrs):
-        mode = attrs.get("limit_mode") or getattr(self.instance, "limit_mode", None)
+        mode = get_update_value(self.instance, attrs, 'limit_mode', None)
         fixed = attrs.get("fixed_allocation")
         if fixed is None and self.instance is not None:
             fixed = self.instance.fixed_allocation
@@ -1730,7 +1735,7 @@ class AccountingRuleEmailPreviewSerializer(serializers.Serializer):
         }
 
 
-class AccountingSettingsSerializer(serializers.ModelSerializer):
+class AccountingSettingsSerializer(PartialUpdateModelSerializer):
     transfer_in_account_name = serializers.CharField(
         source="transfer_in_account.name",
         read_only=True,

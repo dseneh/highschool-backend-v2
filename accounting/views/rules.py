@@ -1,4 +1,6 @@
-from rest_framework import status, viewsets
+from common.viewsets import PartialUpdateModelViewSet
+
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -12,7 +14,7 @@ from accounting.serializers import (
 from accounting.services.bank_rules import default_email_template
 
 
-class AccountingBankBalanceRuleViewSet(viewsets.ModelViewSet):
+class AccountingBankBalanceRuleViewSet(PartialUpdateModelViewSet):
     queryset = AccountingBankBalanceRule.objects.prefetch_related(
         "bank_accounts",
         "alert_recipients",
@@ -49,7 +51,7 @@ class AccountingBankBalanceRuleViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(rule).data, status=status.HTTP_200_OK)
 
 
-class AccountingSpendableAllocationRuleViewSet(viewsets.ModelViewSet):
+class AccountingSpendableAllocationRuleViewSet(PartialUpdateModelViewSet):
     queryset = AccountingSpendableAllocationRule.objects.order_by("-updated_at")
     serializer_class = AccountingSpendableAllocationRuleSerializer
     permission_classes = [AccountingFinanceAccessPolicy]

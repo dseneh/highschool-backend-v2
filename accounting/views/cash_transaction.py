@@ -1,3 +1,5 @@
+from common.viewsets import PartialUpdateModelViewSet
+
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -60,6 +62,7 @@ from accounting.services.post_all import (
 )
 from accounting.services.cash_transaction_pdf import build_cash_transaction_pdf_bytes
 from accounting.views.base import AccountingErrorFormattingMixin
+from common.update_utils import validate_model_update, validate_partial_update
 
 
 class AccountingCashTransactionPagination(PageNumberPagination):
@@ -102,7 +105,7 @@ def _delete_transfer_bundle(transfer: AccountingAccountTransfer) -> None:
         recalculate_bank_account_current_balance(account)
 
 
-class AccountingTransactionTypeViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingTransactionTypeViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingTransactionType.objects.select_related(
         "default_ledger_account", "managed_ledger_account"
     ).order_by("name")
@@ -148,7 +151,7 @@ class AccountingPaymentMethodViewSet(AccountingErrorFormattingMixin, viewsets.Re
     pagination_class = None
 
 
-class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingBankAccount.objects.select_related("currency", "ledger_account").prefetch_related("balance_rules__alert_recipients").order_by("account_name")
     serializer_class = AccountingBankAccountSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
@@ -211,7 +214,7 @@ class AccountingBankAccountViewSet(AccountingErrorFormattingMixin, viewsets.Mode
         return Response(serializer.data)
 
 
-class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingCashTransaction.objects.select_related(
         "transaction_type",
         "payment_method",
@@ -983,25 +986,18 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         if error_response:
             return error_response
 
-        serializer = self.get_serializer(cash_transaction, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(
+            self.get_serializer,
+            cash_transaction,
+            request.data,
+        )
         self.perform_update(serializer)
 
         cash_transaction.refresh_from_db()
         return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
 
     def partial_update(self, request, *args, **kwargs):
-        cash_transaction = self.get_object()
-        error_response = self._validate_editable(cash_transaction)
-        if error_response:
-            return error_response
-
-        serializer = self.get_serializer(cash_transaction, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-
-        cash_transaction.refresh_from_db()
-        return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
+        return self.update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         cash_transaction = self.get_object()
@@ -1087,21 +1083,13 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
     def update_notes(self, request, pk=None):
         cash_transaction = self.get_object()
         if "notes" not in request.data:
-            return Response(
-                {"detail": "notes is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response(self.get_serializer(cash_transaction).data)
 
-        raw_notes = request.data.get("notes")
-        notes = (str(raw_notes).strip() if raw_notes is not None else "") or None
+        update_serializer = validate_model_update(cash_transaction, request.data, ["notes"])
+        notes = (update_serializer.validated_data["notes"] or "").strip() or None
 
         with transaction.atomic():
-            cash_transaction.notes = notes
-            if hasattr(cash_transaction, "updated_by"):
-                cash_transaction.updated_by = request.user
-                cash_transaction.save(update_fields=["notes", "updated_by", "updated_at"])
-            else:
-                cash_transaction.save(update_fields=["notes", "updated_at"])
+            update_serializer.save(notes=notes, updated_by=request.user)
 
             journals_to_sync = []
             linked_journal = cash_transaction.journal_entry
@@ -1124,8 +1112,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
                     synced_ids.add(entry.id)
 
             for journal_entry in journals_to_sync:
-                journal_entry.notes = notes
-                journal_entry.save(update_fields=["notes", "updated_at"])
+                validate_model_update(journal_entry, {"notes": notes}, ["notes"]).save()
 
         cash_transaction.refresh_from_db()
         return Response(self.get_serializer(cash_transaction).data, status=status.HTTP_200_OK)
@@ -1582,7 +1569,7 @@ class AccountingCashTransactionViewSet(AccountingErrorFormattingMixin, viewsets.
         return Response(payload, status=status.HTTP_200_OK)
 
 
-class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingAccountTransferViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingAccountTransfer.objects.select_related(
         "from_account",
         "to_account",

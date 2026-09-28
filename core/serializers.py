@@ -1,6 +1,9 @@
 """
 Serializers for core models (Tenant)
 """
+
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from rest_framework import serializers
 from core.models import Division, Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
@@ -8,10 +11,18 @@ from django_tenants.utils import schema_context
 from django.db import transaction
 import logging
 
-from common.update_utils import ChangedFieldsModelSerializerMixin
 
 
 logger = logging.getLogger(__name__)
+
+
+class TenantLogoUpdateSerializer(PartialUpdateModelSerializer):
+    # SVG uploads are supported by the logo endpoint's own image validation.
+    logo = serializers.FileField(required=False, allow_null=True)
+
+    class Meta:
+        model = Tenant
+        fields = ["logo", "logo_shape"]
 
 
 class DivisionReferenceField(serializers.PrimaryKeyRelatedField):
@@ -190,7 +201,7 @@ class TenantDomainMixin:
         return relative
 
 
-class BaseTenantSerializer(TenantDomainMixin, serializers.ModelSerializer):
+class BaseTenantSerializer(TenantDomainMixin, PartialUpdateModelSerializer):
     """
     Base serializer for Tenant model with common functionality.
     Provides domain methods and logo URL building.
@@ -387,7 +398,7 @@ class TenantSerializer(ChangedFieldsModelSerializerMixin, BaseTenantSerializer):
         return response
 
 
-class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
+class PublicTenantSerializer(PartialUpdateModelSerializer, TenantDomainMixin):
     """
     Limited serializer for public tenant information.
     Used for public pages like login, registration, etc.
@@ -784,7 +795,7 @@ class TenantInfoSearchResultSerializer(serializers.Serializer):
     data = serializers.DictField(help_text="User/Student/Staff data")
 
 
-class SignupRequestCreateSerializer(serializers.ModelSerializer):
+class SignupRequestCreateSerializer(PartialUpdateModelSerializer):
     """Public marketing signup form (write-only)."""
 
     class Meta:
@@ -798,7 +809,7 @@ class SignupRequestCreateSerializer(serializers.ModelSerializer):
 
 class SignupRequestAdminSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     """Admin list/detail/update for signup requests."""
 

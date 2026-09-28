@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 from datetime import date
 
 from django.db import transaction
@@ -429,12 +431,7 @@ class AttendanceDetailView(APIView):
                 "detail": "Historical attendance records are read-only when the student is not currently enrolled.",
             })
 
-        serializer = AttendanceSerializer(
-            attendence,
-            data=request.data,
-            partial=True,
-        )
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(AttendanceSerializer, attendence, request.data)
         serializer.save(updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

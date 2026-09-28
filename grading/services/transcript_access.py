@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from common.update_utils import validate_model_update
+
 import logging
 import threading
 from datetime import timedelta
@@ -278,39 +280,40 @@ def update_transcript_request_status(
     if status not in valid_statuses:
         raise ValueError("Invalid status.")
 
+    if access_request.status == status:
+        if admin_note is not None:
+            update_serializer = validate_model_update(
+                access_request, {"admin_note": admin_note.strip()}, ["admin_note"]
+            )
+            update_serializer.save(updated_by=reviewer)
+        return access_request
+
     if status == TranscriptAccessRequest.Status.APPROVED:
         raise ValueError("Use approve or grant to approve transcript access.")
 
-    if access_request.status == status:
-        if admin_note is not None:
-            access_request.admin_note = admin_note.strip()
-            access_request.updated_by = reviewer
-            access_request.save(update_fields=["admin_note", "updated_by", "updated_at"])
-        return access_request
-
     previous_status = access_request.status
-    access_request.status = status
+    changes = {"status": status}
     if admin_note is not None:
-        access_request.admin_note = admin_note.strip()
+        changes["admin_note"] = admin_note.strip()
 
     if status in {
         TranscriptAccessRequest.Status.DENIED,
         TranscriptAccessRequest.Status.EXPIRED,
     }:
-        access_request.allow_download = False
-        access_request.download_expires_at = None
+        changes["allow_download"] = False
+        changes["download_expires_at"] = None
 
     if status == TranscriptAccessRequest.Status.PENDING:
-        access_request.reviewed_by = None
-        access_request.reviewed_at = None
-        access_request.allow_download = False
-        access_request.download_expires_at = None
+        changes["reviewed_by"] = None
+        changes["reviewed_at"] = None
+        changes["allow_download"] = False
+        changes["download_expires_at"] = None
     else:
-        access_request.reviewed_by = reviewer
-        access_request.reviewed_at = timezone.now()
+        changes["reviewed_by"] = reviewer
+        changes["reviewed_at"] = timezone.now()
 
-    access_request.updated_by = reviewer
-    access_request.save()
+    update_serializer = validate_model_update(access_request, changes, list(changes))
+    update_serializer.save(updated_by=reviewer)
 
     if (
         status == TranscriptAccessRequest.Status.DENIED

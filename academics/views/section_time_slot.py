@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 import copy
 
 from rest_framework import status
@@ -66,13 +68,12 @@ class SectionTimeSlotDetailView(APIView):
         payload = copy.deepcopy(request.data)
         payload["section"] = str(slot.section_id)
 
-        serializer = SectionTimeSlotSerializer(
+        serializer = validate_partial_update(
+            SectionTimeSlotSerializer,
             slot,
-            data=payload,
-            partial=True,
+            payload,
             context={"request": request},
         )
-        serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

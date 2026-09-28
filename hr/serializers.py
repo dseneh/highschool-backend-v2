@@ -1,11 +1,15 @@
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+    filter_changed_data,
+    get_update_value,
+)
+
+
 from decimal import Decimal
 
 from django.utils import timezone
 from rest_framework import serializers
-from common.update_utils import (
-    ChangedFieldsModelSerializerMixin,
-    filter_changed_data,
-)
 from academics.models import Section, SectionSubject, Subject
 from staff.models import Staff
 
@@ -54,7 +58,7 @@ class EmployeeOrStaffPKField(serializers.PrimaryKeyRelatedField):
 
 class EmployeeDepartmentSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     class Meta:
         model = EmployeeDepartment
@@ -72,7 +76,7 @@ class EmployeeDepartmentSerializer(
 
 class EmployeePositionSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     department = serializers.PrimaryKeyRelatedField(
         queryset=EmployeeDepartment.objects.all(),
@@ -109,7 +113,7 @@ class EmployeePositionSerializer(
 
 class EmployeeContactSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     class Meta:
         model = EmployeeContact
@@ -135,7 +139,7 @@ class EmployeeContactSerializer(
 
 class EmployeeDependentSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     class Meta:
         model = EmployeeDependent
@@ -157,7 +161,7 @@ class EmployeeDependentSerializer(
 
 class EmployeeSpecializationSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
@@ -190,7 +194,7 @@ class EmployeeSpecializationSerializer(
 
 class EmployeePerformanceReviewSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     reviewer = serializers.PrimaryKeyRelatedField(
@@ -228,8 +232,8 @@ class EmployeePerformanceReviewSerializer(
         read_only_fields = ["id", "rating_score", "is_completed", "created_at", "updated_at"]
 
     def validate(self, attrs):
-        review_date = attrs.get("review_date") or getattr(self.instance, "review_date", None)
-        next_review_date = attrs.get("next_review_date") or getattr(self.instance, "next_review_date", None)
+        review_date = get_update_value(self.instance, attrs, 'review_date', None)
+        next_review_date = get_update_value(self.instance, attrs, 'next_review_date', None)
         if review_date and next_review_date and next_review_date < review_date:
             raise serializers.ValidationError("Next review date cannot be earlier than review date.")
         return attrs
@@ -252,7 +256,7 @@ class EmployeePerformanceReviewSerializer(
 
 class EmployeeTeacherSectionSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     teacher = EmployeeOrStaffPKField(queryset=Employee.objects.all())
     section = serializers.PrimaryKeyRelatedField(queryset=Section.objects.all())
@@ -287,7 +291,7 @@ class EmployeeTeacherSectionSerializer(
 
 class EmployeeTeacherSubjectSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     teacher = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     subject = serializers.PrimaryKeyRelatedField(
@@ -322,7 +326,7 @@ class EmployeeTeacherSubjectSerializer(
         if not section_subject and not subject:
             raise serializers.ValidationError({"section_subject": "This field is required."})
 
-        if section_subject:
+        if section_subject and (self.instance is None or "section_subject" in attrs):
             attrs["subject"] = section_subject.subject
 
         return attrs
@@ -364,7 +368,7 @@ class EmployeeTeacherSubjectSerializer(
 
 class LeaveTypeSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     class Meta:
         model = LeaveType
@@ -395,7 +399,7 @@ class LeaveTypeSerializer(
             getattr(self.instance, "max_carryover_days", 0),
         )
 
-        if not allow_carryover:
+        if not allow_carryover and (self.instance is None or "allow_carryover" in attrs or "max_carryover_days" in attrs):
             attrs["max_carryover_days"] = 0
         elif max_carryover_days < 0:
             raise serializers.ValidationError(
@@ -407,7 +411,7 @@ class LeaveTypeSerializer(
 
 class LeaveRequestSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     leave_type = serializers.PrimaryKeyRelatedField(queryset=LeaveType.objects.all())
@@ -440,8 +444,8 @@ class LeaveRequestSerializer(
         ]
 
     def validate(self, attrs):
-        start_date = attrs.get("start_date") or getattr(self.instance, "start_date", None)
-        end_date = attrs.get("end_date") or getattr(self.instance, "end_date", None)
+        start_date = get_update_value(self.instance, attrs, 'start_date', None)
+        end_date = get_update_value(self.instance, attrs, 'end_date', None)
         if start_date and end_date and end_date < start_date:
             raise serializers.ValidationError("End date cannot be earlier than start date.")
         return attrs
@@ -463,7 +467,7 @@ class LeaveRequestSerializer(
 
 class EmployeeAttendanceSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     employee = serializers.PrimaryKeyRelatedField(queryset=Employee.objects.all())
     hours_worked = serializers.FloatField(read_only=True)
@@ -485,8 +489,8 @@ class EmployeeAttendanceSerializer(
         read_only_fields = ["id", "hours_worked", "created_at", "updated_at"]
 
     def validate(self, attrs):
-        check_in_time = attrs.get("check_in_time") or getattr(self.instance, "check_in_time", None)
-        check_out_time = attrs.get("check_out_time") or getattr(self.instance, "check_out_time", None)
+        check_in_time = get_update_value(self.instance, attrs, "check_in_time")
+        check_out_time = get_update_value(self.instance, attrs, "check_out_time")
         if check_in_time and check_out_time and check_out_time < check_in_time:
             raise serializers.ValidationError("Check-out time cannot be earlier than check-in time.")
         return attrs
@@ -501,7 +505,7 @@ class EmployeeAttendanceSerializer(
         return data
 
 
-class EmployeeSerializer(serializers.ModelSerializer):
+class EmployeeSerializer(PartialUpdateModelSerializer):
     employee_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     department = serializers.PrimaryKeyRelatedField(
         queryset=EmployeeDepartment.objects.all(),

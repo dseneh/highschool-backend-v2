@@ -1,5 +1,7 @@
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.db.models import Q
-from rest_framework import viewsets, serializers
+from rest_framework import serializers
 from rest_framework.pagination import PageNumberPagination
 
 from ..models import TeacherSchedule
@@ -13,7 +15,7 @@ class TeacherSchedulePageNumberPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class TeacherScheduleViewSet(viewsets.ModelViewSet):
+class TeacherScheduleViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for TeacherSchedule CRUD operations with maximum optimization.
 

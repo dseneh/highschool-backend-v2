@@ -1,9 +1,11 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from authorization.models import Role, RolePermission
 
 
-class RolePermissionSerializer(serializers.ModelSerializer):
+class RolePermissionSerializer(PartialUpdateModelSerializer):
     code = serializers.CharField(source="permission_code")
 
     class Meta:
@@ -11,7 +13,7 @@ class RolePermissionSerializer(serializers.ModelSerializer):
         fields = ("code", "scope")
 
 
-class RoleSerializer(serializers.ModelSerializer):
+class RoleSerializer(PartialUpdateModelSerializer):
     permissions = RolePermissionSerializer(
         source="permission_grants",
         many=True,
@@ -54,6 +56,14 @@ class UnifiedRoleSerializer(serializers.Serializer):
 class PermissionGrantInputSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=150)
     scope = serializers.ChoiceField(choices=("own", "assigned", "all"))
+
+    def validate(self, attrs):
+        # A supplied grant replaces that item. Partial updates may omit the
+        # permissions list, but cannot store incomplete grant entries.
+        missing = {field: "This field is required." for field in ("code", "scope") if field not in attrs}
+        if missing:
+            raise serializers.ValidationError(missing)
+        return attrs
 
 
 class PermissionListValidationMixin:

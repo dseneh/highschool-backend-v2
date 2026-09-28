@@ -110,11 +110,14 @@ class MarkingPeriodDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        request.data["start_date"] = start_date_obj
-        request.data["end_date"] = end_date_obj
+        payload = request.data.copy()
+        if "start_date" in payload:
+            payload["start_date"] = start_date_obj
+        if "end_date" in payload:
+            payload["end_date"] = end_date_obj
 
         serializer = update_model_fields(
-            request, marking_period, allowed_fields, MarkingPeriodSerializer
+            request, marking_period, allowed_fields, MarkingPeriodSerializer, data=payload
         )
         return Response(serializer.data, status=status.HTTP_200_OK)
 

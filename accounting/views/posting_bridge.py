@@ -1,4 +1,5 @@
-from rest_framework import viewsets
+from common.viewsets import PartialUpdateModelViewSet
+
 
 from accounting.access_policies import AccountingFinanceAccessPolicy
 from accounting.models import AccountingPayrollPostingBatch, AccountingPayrollPostingLine
@@ -9,7 +10,7 @@ from accounting.serializers import (
 from accounting.views.base import AccountingErrorFormattingMixin
 
 
-class AccountingPayrollPostingBatchViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingPayrollPostingBatchViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingPayrollPostingBatch.objects.select_related(
         "academic_year",
         "journal_entry",
@@ -19,7 +20,7 @@ class AccountingPayrollPostingBatchViewSet(AccountingErrorFormattingMixin, views
     permission_classes = [AccountingFinanceAccessPolicy]
 
 
-class AccountingPayrollPostingLineViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingPayrollPostingLineViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingPayrollPostingLine.objects.select_related(
         "posting_batch",
         "staff_member",

@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 
 from grading.models import TranscriptAccessRequest
+from users.models import User
 from grading.services.transcript_access import (
     build_access_status,
     can_download_transcript,
@@ -260,14 +261,15 @@ class TranscriptRequestAdminMutationTests(SimpleTestCase):
 
     @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
     def test_update_status_to_expired_clears_download(self, _mock_admin):
-        access = MagicMock()
+        access = TranscriptAccessRequest()
+        access.save = MagicMock()
         access.status = TranscriptAccessRequest.Status.APPROVED
         access.allow_download = True
         access.download_expires_at = timezone.now()
 
         result = update_transcript_request_status(
             access,
-            self._admin(),
+            User(username="transcript-editor"),
             status=TranscriptAccessRequest.Status.EXPIRED,
             admin_note="Window closed",
         )
@@ -279,16 +281,18 @@ class TranscriptRequestAdminMutationTests(SimpleTestCase):
 
     @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
     def test_update_status_reopen_pending_clears_review(self, _mock_admin):
-        access = MagicMock()
+        admin = User(username="transcript-editor")
+        access = TranscriptAccessRequest()
+        access.save = MagicMock()
         access.status = TranscriptAccessRequest.Status.DENIED
-        access.reviewed_by = self._admin()
+        access.reviewed_by = admin
         access.reviewed_at = timezone.now()
         access.allow_download = False
         access.download_expires_at = None
 
         result = update_transcript_request_status(
             access,
-            self._admin(),
+            admin,
             status=TranscriptAccessRequest.Status.PENDING,
         )
 
@@ -296,6 +300,27 @@ class TranscriptRequestAdminMutationTests(SimpleTestCase):
         self.assertIsNone(result.reviewed_by)
         self.assertIsNone(result.reviewed_at)
         access.save.assert_called_once()
+
+    @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
+    def test_note_only_edit_preserves_approved_access(self, _mock_admin):
+        access = TranscriptAccessRequest(
+            status=TranscriptAccessRequest.Status.APPROVED,
+            allow_download=True,
+            download_expires_at=timezone.now(),
+        )
+        access.save = MagicMock()
+        expires_at = access.download_expires_at
+        update_transcript_request_status(
+            access, User(username="reviewer"), status=access.status,
+            admin_note="Updated note",
+        )
+        self.assertEqual(access.status, TranscriptAccessRequest.Status.APPROVED)
+        self.assertTrue(access.allow_download)
+        self.assertEqual(access.download_expires_at, expires_at)
+        self.assertEqual(
+            set(access.save.call_args.kwargs["update_fields"]),
+            {"admin_note", "updated_by", "updated_at"},
+        )
 
     @patch("grading.services.transcript_access._is_transcript_admin", return_value=True)
     def test_update_status_rejects_approved(self, _mock_admin):

@@ -1,11 +1,12 @@
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
-from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from ..models import StudentContact
 
 
-class StudentContactSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class StudentContactSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = StudentContact
         fields = [

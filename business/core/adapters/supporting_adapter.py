@@ -72,9 +72,11 @@ def bulk_update_tuition_fees(grade_level: GradeLevel, fee_updates: List[Dict[str
                 continue
             if tuition_fee.amount == normalized_amount:
                 continue
-            tuition_fee.amount = normalized_amount
-            tuition_fee.updated_by = user
-            tuition_fee.save(update_fields=["amount", "updated_by", "updated_at"])
+            from common.update_utils import validate_model_update
+            update_serializer = validate_model_update(
+                tuition_fee, {"amount": normalized_amount}, ["amount"]
+            )
+            update_serializer.save(updated_by=user)
             updated_fees.append(tuition_fee)
         except GradeLevelTuitionFee.DoesNotExist:
             continue

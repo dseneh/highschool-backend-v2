@@ -1,3 +1,5 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from students.models import Student
@@ -145,7 +147,7 @@ class BillSummarySectionSerializer(serializers.Serializer):
             'avg_bill_per_student': float(data['avg_bill_per_student'] or 0)
         }
 
-class BillSummaryStudentSerializer(serializers.ModelSerializer):
+class BillSummaryStudentSerializer(PartialUpdateModelSerializer):
     """Serializer for student bill summary"""
     
     total_bills = serializers.DecimalField(max_digits=15, decimal_places=2, read_only=True)

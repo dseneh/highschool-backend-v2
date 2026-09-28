@@ -1,3 +1,5 @@
+from common.viewsets import PartialUpdateModelViewSet
+
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -6,7 +8,7 @@ from django.db import connection, transaction
 from django.db.models import Q
 from django.http import Http404
 from django_tenants.utils import get_public_schema_name
-from rest_framework import status, viewsets
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.pagination import PageNumberPagination
@@ -16,6 +18,7 @@ from academics.models import AcademicYear
 from accounting.models import AccountingCashTransaction
 from accounting.serializers import AccountingCashTransactionSerializer
 from common.filter import get_transaction_queryparams
+from common.update_utils import validate_partial_update
 from common.utils import create_model_data, get_object_by_uuid_or_fields, update_model_fields
 from finance.access_policies import TransactionAccessPolicy
 from finance.models import BankAccount, PaymentMethod, Transaction, TransactionType
@@ -31,7 +34,7 @@ class TransactionPageNumberPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class TransactionViewSet(viewsets.ModelViewSet):
+class TransactionViewSet(PartialUpdateModelViewSet):
     """
     ModelViewSet for finance transactions.
 
@@ -205,22 +208,21 @@ class TransactionViewSet(viewsets.ModelViewSet):
         payload = request.data.copy()
 
         # Accept finance-style field names from generic transaction forms.
-        if payload.get("account") is not None and payload.get("bank_account") is None:
-            payload["bank_account"] = payload.get("account")
-        if payload.get("type") is not None and payload.get("transaction_type") is None:
-            payload["transaction_type"] = payload.get("type")
-        if payload.get("date") is not None and payload.get("transaction_date") is None:
-            payload["transaction_date"] = payload.get("date")
-        if payload.get("reference") is not None and payload.get("reference_number") is None:
-            payload["reference_number"] = payload.get("reference")
+        for source, target in (
+            ("account", "bank_account"),
+            ("type", "transaction_type"),
+            ("date", "transaction_date"),
+            ("reference", "reference_number"),
+        ):
+            if source in payload and target not in payload:
+                payload[target] = payload[source]
 
-        serializer = AccountingCashTransactionSerializer(
+        serializer = validate_partial_update(
+            AccountingCashTransactionSerializer,
             cash_tx,
-            data=payload,
-            partial=True,
+            payload,
             context={"request": request},
         )
-        serializer.is_valid(raise_exception=True)
 
         previous_status = cash_tx.status
         previous_bank_account_id = cash_tx.bank_account_id
@@ -1315,4 +1317,3 @@ class TransactionViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-

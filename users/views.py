@@ -1,6 +1,9 @@
 """
 Views for authentication and user management
 """
+
+from common.update_utils import validate_partial_update
+
 import secrets
 from datetime import timedelta
 
@@ -851,7 +854,12 @@ class UserDetailView(APIView):
         with schema_context('public'):
             try:
                 user = User.objects.get(id_number=id_number)
-                serializer = UserUpdateSerializer(user, data=request.data, partial=True)
+                serializer = validate_partial_update(
+                    UserUpdateSerializer,
+                    user,
+                    request.data,
+                    raise_exception=False,
+                )
                 if serializer.is_valid():
                     serializer.save(
                         profile_updated_at=timezone.now(),

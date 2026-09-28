@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 from decimal import Decimal
 
 from django.db.models import Avg, Count, Sum
@@ -220,8 +222,7 @@ class StudentConcessionDetailView(APIView):
             return Response({"detail": "Concession not found"}, status=status.HTTP_404_NOT_FOUND)
 
         payload = request.data.copy()
-        serializer = StudentConcessionSerializer(concession, data=payload, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(StudentConcessionSerializer, concession, payload)
         updated_concession = serializer.save(updated_by=request.user)
 
         computed_amount = _calculate_concession_amount(

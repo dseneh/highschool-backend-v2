@@ -1,3 +1,5 @@
+from common.viewsets import PartialUpdateModelViewSet
+
 from rest_framework import viewsets
 
 from accounting.access_policies import AccountingFinanceAccessPolicy
@@ -26,21 +28,21 @@ from accounting.serializers import (
 from accounting.views.base import AccountingErrorFormattingMixin
 
 
-class AccountingFeeItemViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingFeeItemViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingFeeItem.objects.order_by("code")
     serializer_class = AccountingFeeItemSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
     pagination_class = None
 
 
-class AccountingFeeRateViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingFeeRateViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingFeeRate.objects.select_related("fee_item", "academic_year", "grade_level", "currency").order_by("academic_year", "fee_item")
     serializer_class = AccountingFeeRateSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
     pagination_class = None
 
 
-class AccountingStudentBillViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingStudentBillViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingStudentBill.objects.select_related("enrollment", "academic_year", "student", "grade_level", "currency").order_by("-bill_date", "-created_at")
     serializer_class = AccountingStudentBillSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
@@ -67,31 +69,31 @@ class AccountingStudentBillViewSet(AccountingErrorFormattingMixin, viewsets.Mode
         return queryset
 
 
-class AccountingStudentBillLineViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingStudentBillLineViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingStudentBillLine.objects.select_related("student_bill", "fee_item", "currency").order_by("student_bill", "line_sequence")
     serializer_class = AccountingStudentBillLineSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
 
 
-class AccountingConcessionViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingConcessionViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingConcession.objects.select_related("student", "student_bill", "academic_year", "currency").order_by("-start_date")
     serializer_class = AccountingConcessionSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
 
 
-class AccountingInstallmentPlanViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingInstallmentPlanViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingInstallmentPlan.objects.select_related("academic_year").order_by("academic_year", "name")
     serializer_class = AccountingInstallmentPlanSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
 
 
-class AccountingInstallmentLineViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingInstallmentLineViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingInstallmentLine.objects.select_related("installment_plan").order_by("installment_plan", "sequence")
     serializer_class = AccountingInstallmentLineSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
 
 
-class AccountingStudentPaymentAllocationViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingStudentPaymentAllocationViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingStudentPaymentAllocation.objects.select_related(
         "student_bill",
         "cash_transaction",

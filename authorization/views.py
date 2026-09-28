@@ -1,3 +1,7 @@
+from common.update_utils import validate_partial_update
+
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Prefetch
 from django_tenants.utils import get_public_schema_name, schema_context
@@ -114,7 +118,7 @@ class PermissionCatalogView(TenantAuthorizationMixin, APIView):
         )
 
 
-class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
+class RoleViewSet(TenantAuthorizationMixin, PartialUpdateModelViewSet):
     permission_classes = [RBACPermission]
     permission_map = {
         "list": "roles.view",
@@ -214,9 +218,8 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
-        partial = kwargs.pop("partial", False)
-        serializer = RoleUpdateSerializer(data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        role = self.get_object()
+        serializer = validate_partial_update(RoleUpdateSerializer, role, request.data)
         _require_permission_assignment(
             request,
             serializer.validated_data.get("permissions"),
@@ -225,7 +228,7 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
             changes = dict(serializer.validated_data)
             permissions = changes.pop("permissions", None)
             role = update_role(
-                role=self.get_object(),
+                role=role,
                 changes=changes,
                 actor=request.user,
                 metadata=_metadata(request),

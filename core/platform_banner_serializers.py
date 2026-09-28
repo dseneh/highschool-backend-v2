@@ -1,14 +1,16 @@
 """Serializers for the public-schema :class:`PlatformBanner` model."""
 
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
+
 from rest_framework import serializers
 
-from common.update_utils import ChangedFieldsModelSerializerMixin
 from core.models import PlatformBanner
 
 
 class PlatformBannerSerializer(
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     """Full representation used by the admin portal."""
 
@@ -49,7 +51,7 @@ class PlatformBannerSerializer(
             return None
 
 
-class PlatformBannerPublicSerializer(serializers.ModelSerializer):
+class PlatformBannerPublicSerializer(PartialUpdateModelSerializer):
     """Compact representation served to end users by the banner host."""
 
     class Meta:

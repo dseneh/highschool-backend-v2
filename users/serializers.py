@@ -1,6 +1,9 @@
 """
 Serializers for authentication
 """
+
+from common.update_utils import PartialUpdateModelSerializer, filter_changed_data
+
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import authenticate, get_user_model
@@ -8,12 +11,11 @@ from django.conf import settings
 from django.utils import timezone
 
 from common.status import UserAccountType
-from common.update_utils import filter_changed_data
 
 User = get_user_model()
 
 
-class UserSerializer(serializers.ModelSerializer):
+class UserSerializer(PartialUpdateModelSerializer):
     """
     User serializer for authentication responses.
     
@@ -486,7 +488,7 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         return data
 
 
-class UserCreateSerializer(serializers.ModelSerializer):
+class UserCreateSerializer(PartialUpdateModelSerializer):
     username = serializers.CharField(required=False, allow_blank=True, help_text="Defaults to id_number if not provided")
     
     class Meta:
@@ -520,7 +522,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return user
 
 
-class UserUpdateSerializer(serializers.ModelSerializer):
+class UserUpdateSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = User
         fields = [

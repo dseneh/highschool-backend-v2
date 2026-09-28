@@ -14,6 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from django.db import connection
@@ -21,10 +22,11 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import serializers, status
 
 from core.models import Tenant
 from common.permissions import IsAdminOrSuperAdmin
+from common.update_utils import validate_model_update, validate_partial_update
 from defaults.services import (
     apply_onboarding_plan,
     build_grade_structure_payload,
@@ -33,6 +35,11 @@ from defaults.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class OnboardingStepUpdateSerializer(serializers.Serializer):
+    payload = serializers.DictField()
+    mark_completed = serializers.BooleanField()
 
 
 def _now_iso() -> str:
@@ -117,13 +124,10 @@ def save_onboarding_step(request: Request, schema_name: str) -> Response:
         return Response({"detail": "Tenant not found."}, status=status.HTTP_404_NOT_FOUND)
 
     step_key = request.data.get("step_key")
-    payload = request.data.get("payload", {})
-    mark_completed = request.data.get("mark_completed", True)
-
     if not step_key:
         return Response({"detail": "step_key is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    plan = tenant.onboarding_plan or {}
+    plan = deepcopy(tenant.onboarding_plan or {})
 
     # Initialise plan if empty
     if not plan:
@@ -135,7 +139,10 @@ def save_onboarding_step(request: Request, schema_name: str) -> Response:
 
     # Update the step entry
     step_entry = plan["steps"].get(step_key, {"status": "pending", "payload": {}, "apply_result": None})
-    step_entry["payload"] = payload
+    update_serializer = validate_partial_update(OnboardingStepUpdateSerializer, step_entry, request.data)
+    payload = update_serializer.validated_data.get("payload", {})
+    mark_completed = update_serializer.validated_data.get("mark_completed", True)
+    step_entry["payload"] = {**step_entry.get("payload", {}), **payload}
     step_entry["saved_at"] = _now_iso()
     if mark_completed:
         step_entry["status"] = "completed"
@@ -180,17 +187,14 @@ def save_onboarding_step(request: Request, schema_name: str) -> Response:
     except (ValueError, StopIteration):
         pass
 
-    tenant.onboarding_plan = plan
-
     # Transition tenant status to in_progress on first save
-    fields_to_save = ["onboarding_plan"]
+    changes = {"onboarding_plan": plan}
     if tenant.status == Tenant.STATUS_PENDING:
-        tenant.status = Tenant.STATUS_IN_PROGRESS
+        changes["status"] = Tenant.STATUS_IN_PROGRESS
         if not tenant.onboarding_started_at:
-            tenant.onboarding_started_at = datetime.now(tz=timezone.utc)
-        fields_to_save += ["status", "onboarding_started_at"]
+            changes["onboarding_started_at"] = datetime.now(tz=timezone.utc)
 
-    tenant.save(update_fields=fields_to_save)
+    validate_model_update(tenant, changes, list(changes)).save()
 
     return Response(
         {

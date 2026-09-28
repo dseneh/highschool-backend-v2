@@ -1,10 +1,11 @@
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from rest_framework import serializers
 from academics.models import AcademicYear
 from django.utils import timezone
 
 from common.utils import get_enrollment_bill_summary
 from common.serializers import PhotoURLMixin
-from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from ..models import Student
 from ..services.student_status import apply_status_fields_to_response
@@ -15,7 +16,7 @@ from .discipline import ActiveStudentDisciplinaryActionSerializer
 class StudentSerializer(
     PhotoURLMixin,
     ChangedFieldsModelSerializerMixin,
-    serializers.ModelSerializer,
+    PartialUpdateModelSerializer,
 ):
     class Meta:
         model = Student
@@ -304,7 +305,7 @@ class StudentSerializer(
         return response
 
 
-class StudentPaymentStatusSerializer(serializers.ModelSerializer):
+class StudentPaymentStatusSerializer(PartialUpdateModelSerializer):
     """Minimal serializer for payment status views - only essential fields"""
 
     class Meta:

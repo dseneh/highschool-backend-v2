@@ -1,7 +1,11 @@
+from common.update_utils import validate_partial_update
+
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.db import connection, transaction
 from django.db.models import Q
 from django_tenants.utils import get_tenant_model
-from rest_framework import viewsets, status, serializers
+from rest_framework import status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -16,17 +20,7 @@ from ..serializers import StaffSerializer, StaffDetailSerializer
 from ..access_policies import StaffAccessPolicy
 
 from business.staff.services import staff_service
-from business.staff.adapters import (
-    create_staff_in_db,
-    update_staff_in_db,
-    delete_staff_from_db,
-    django_staff_to_data,
-    staff_has_user_account,
-    staff_has_teaching_sections,
-    check_staff_exists_by_id,
-    check_staff_exists_by_email,
-    check_staff_exists_by_name_dob,
-)
+from business.staff.adapters import create_staff_in_db, delete_staff_from_db, django_staff_to_data, staff_has_user_account, staff_has_teaching_sections, check_staff_exists_by_id, check_staff_exists_by_email, check_staff_exists_by_name_dob
 
 
 class StaffPageNumberPagination(PageNumberPagination):
@@ -35,7 +29,7 @@ class StaffPageNumberPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class StaffViewSet(viewsets.ModelViewSet):
+class StaffViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for Staff CRUD operations with maximum optimization.
 
@@ -223,14 +217,13 @@ class StaffViewSet(viewsets.ModelViewSet):
         
         # Update in database using adapter
         try:
-            updated_staff = update_staff_in_db(
-                str(staff.id),
+            update_serializer = validate_partial_update(
+                StaffSerializer,
+                staff,
                 prepared_data,
-                position_id=prepared_data.get('position'),
-                department_id=prepared_data.get('primary_department'),
-                manager_id=prepared_data.get('manager'),
-                user=request.user
+                context={"request": request},
             )
+            updated_staff = update_serializer.save(updated_by=request.user)
             
             if not updated_staff:
                 return Response({"error": "Staff not found"}, status=404)
@@ -384,4 +377,3 @@ class StaffViewSet(viewsets.ModelViewSet):
         # If no pagination, return all results
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
-

@@ -1,8 +1,14 @@
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+    get_update_value,
+)
+
+
 from decimal import Decimal
 
 from rest_framework import serializers
 
-from common.update_utils import ChangedFieldsModelSerializerMixin
 
 from payroll_v2.enums import CalculationType, TargetAmountSource
 from payroll_v2.serializers import EmployeeDisplaySerializer
@@ -18,7 +24,7 @@ from .models import (
 from .services import generate_benefit_request_number, generate_benefit_type_rule_name, validate_benefit_request_period
 
 
-class BenefitTypeRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class BenefitTypeRuleSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = BenefitTypeRule
         fields = [
@@ -47,6 +53,12 @@ class BenefitTypeRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.M
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        calculation_fields = {
+            "calculation_type", "value", "formula", "target_amount_source",
+            "target_min_amount", "target_max_amount",
+        }
+        if not calculation_fields.intersection(validated_data):
+            return super().update(instance, validated_data)
         snapshot = {
             "calculation_type": validated_data.get("calculation_type", instance.calculation_type),
             "value": validated_data.get("value", instance.value),
@@ -61,7 +73,7 @@ class BenefitTypeRuleSerializer(ChangedFieldsModelSerializerMixin, serializers.M
         return super().update(instance, validated_data)
 
 
-class BenefitTypeSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class BenefitTypeSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     rules = BenefitTypeRuleSerializer(many=True, read_only=True)
     employee_count = serializers.SerializerMethodField()
 
@@ -84,7 +96,7 @@ class BenefitTypeSerializer(ChangedFieldsModelSerializerMixin, serializers.Model
         return getattr(obj, "employee_count", None) or obj.employee_assignments.filter(is_active=True).count()
 
 
-class EmployeeBenefitSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class EmployeeBenefitSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     benefit_type_name = serializers.CharField(source="benefit_type.name", read_only=True)
     display_name = serializers.SerializerMethodField()
@@ -119,6 +131,11 @@ class EmployeeBenefitSerializer(ChangedFieldsModelSerializerMixin, serializers.M
         return obj.get_name()
 
     def _apply_calculation_override_flag(self, validated_data, instance=None):
+        if instance is not None and not {
+            "calculation_type", "value", "formula", "calculation_limit",
+            "calculation_overridden",
+        }.intersection(validated_data):
+            return validated_data
         if validated_data.get("calculation_overridden") is False:
             validated_data["calculation_overridden"] = False
             return validated_data
@@ -163,7 +180,7 @@ class EmployeeBenefitSerializer(ChangedFieldsModelSerializerMixin, serializers.M
         return super().update(instance, validated_data)
 
 
-class BenefitRequestLineSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class BenefitRequestLineSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     employee_display = EmployeeDisplaySerializer(source="employee", read_only=True)
     benefit_type_name = serializers.CharField(source="request.benefit_type.name", read_only=True)
     request_number = serializers.CharField(source="request.request_number", read_only=True)
@@ -206,7 +223,7 @@ class BenefitRequestLineSerializer(ChangedFieldsModelSerializerMixin, serializer
         return super().update(instance, validated_data)
 
 
-class BenefitRequestListSerializer(serializers.ModelSerializer):
+class BenefitRequestListSerializer(PartialUpdateModelSerializer):
     benefit_type_name = serializers.CharField(source="benefit_type.name", read_only=True)
     currency_code = serializers.SerializerMethodField()
     line_count = serializers.SerializerMethodField()
@@ -286,7 +303,7 @@ class BenefitRequestDetailSerializer(BenefitRequestListSerializer):
         return getattr(user, "get_full_name", lambda: user.username)() or user.username
 
 
-class BenefitRequestWriteSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class BenefitRequestWriteSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     class Meta:
         model = BenefitRequest
         fields = [
@@ -304,9 +321,9 @@ class BenefitRequestWriteSerializer(ChangedFieldsModelSerializerMixin, serialize
         read_only_fields = ["request_number", "status"]
 
     def validate(self, attrs):
-        benefit_type = attrs.get("benefit_type") or (self.instance.benefit_type if self.instance else None)
-        period_start = attrs.get("period_start") or (self.instance.period_start if self.instance else None)
-        period_end = attrs.get("period_end") or (self.instance.period_end if self.instance else None)
+        benefit_type = get_update_value(self.instance, attrs, 'benefit_type', None)
+        period_start = get_update_value(self.instance, attrs, 'period_start', None)
+        period_end = get_update_value(self.instance, attrs, 'period_end', None)
         if benefit_type and period_start and period_end:
             exclude_id = self.instance.id if self.instance else None
             validate_benefit_request_period(
@@ -337,7 +354,7 @@ class SyncBenefitEmployeesSerializer(serializers.Serializer):
     position_id = serializers.UUIDField(required=False, allow_null=True)
 
 
-class BenefitSettingsSerializer(ChangedFieldsModelSerializerMixin, serializers.ModelSerializer):
+class BenefitSettingsSerializer(ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer):
     transaction_type_name = serializers.CharField(source="transaction_type.name", read_only=True)
     transaction_type_code = serializers.CharField(source="transaction_type.code", read_only=True)
 

@@ -2,9 +2,13 @@
 ViewSet for user management with proper DRF action-based permissions.
 Replaces APIView implementations for better permission integration.
 """
+
+from common.update_utils import validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
 import logging
 
-from rest_framework import viewsets, status
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -45,7 +49,7 @@ class UserPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class UserViewSet(viewsets.ModelViewSet):
+class UserViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for user management with proper action-based permissions.
     
@@ -558,12 +562,10 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """Update user and sync email to linked tenant source record when relevant."""
-        partial = kwargs.pop('partial', False)
         user = self.get_object()
 
         old_email = user.email
-        serializer = self.get_serializer(user, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(self.get_serializer, user, request.data)
         self.perform_update(serializer)
         with schema_context('public'):
             user.profile_updated_at = timezone.now()
