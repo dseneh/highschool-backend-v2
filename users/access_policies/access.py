@@ -103,11 +103,9 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         role_key = authorization.context.role_id
         if not role_key:
             return False
-        from authorization.models import Role
-
-        system_key = Role.objects.filter(pk=role_key).values_list(
-            "system_key", flat=True
-        ).first()
+        from authorization.services import get_assigned_role
+        role = get_assigned_role(user)
+        system_key = role.system_key if role else None
         allowed: List[str] = [r.strip().lower() for r in roles.split(",") if r.strip()]
         return system_key in allowed
 

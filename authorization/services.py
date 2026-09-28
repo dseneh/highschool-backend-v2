@@ -105,7 +105,7 @@ def get_unified_role_payloads(*, schema_name: str | None = None) -> list[dict]:
     shared_name_keys = {_role_name_key(role.name) for role in shared_roles}
     tenant_roles = list(
         Role.objects.filter(is_system_role=False, system_key__isnull=True)
-        .annotate(user_count=Count("memberships"))
+        .annotate(user_count=Count("assignments", filter=models.Q(assignments__is_active=True)))
         .prefetch_related(
             Prefetch(
                 "permission_grants",
@@ -117,10 +117,19 @@ def get_unified_role_payloads(*, schema_name: str | None = None) -> list[dict]:
     tenant_roles = [
         role for role in tenant_roles if _role_name_key(role.name) not in shared_name_keys
     ]
-    return _dedupe_role_payloads(
+    payloads = _dedupe_role_payloads(
         [serialize_shared_role(role) for role in shared_roles]
         + [serialize_tenant_role(role) for role in tenant_roles]
     )
+    from authorization.models import TenantRoleAssignment
+    counts = dict(TenantRoleAssignment.objects.filter(is_active=True, membership__is_active=True)
+                  .values("role_key").annotate(total=Count("id")).values_list("role_key", "total"))
+    for payload in payloads:
+        key = (f"system:{payload['system_key']}" if payload["system_key"] else
+               f"{'core.sharedrole' if payload['source'] == 'shared' else 'authorization.role'}:{payload['id']}")
+        payload["user_count"] = counts.get(key, 0)
+    return payloads
+
 
 
 def _dedupe_role_payloads(payloads) -> list[dict]:
@@ -218,33 +227,14 @@ def _active_admin_membership_count() -> int:
 
 
 def get_assigned_role(user) -> Role | None:
-    """Return the role explicitly assigned to the user in the current schema.
+    """Return the selected role, or a usable assigned default for a new session.
 
-    Returns ``None`` when no usable assignment exists. There is deliberately no
-    fallback role: an unassigned account has no role at all.
+    An invalid explicit selection fails closed. Never invent a role for an
+    unassigned account.
     """
-    from authorization.models import TenantMembership
-
-    user_id = getattr(user, "pk", None)
-    if not user_id:
-        return None
-    membership = (
-        TenantMembership.objects.select_related("role")
-        .filter(user_id=user_id, is_active=True, role__is_active=True)
-        .first()
-    )
-    if membership:
-        return membership.role
-    shared_membership = (
-        TenantMembership.objects.filter(user_id=user_id, is_active=True, shared_role_id__isnull=False)
-        .first()
-    )
-    if not shared_membership:
-        return None
-    try:
-        return get_applicable_shared_role(shared_membership.shared_role_id)
-    except ValidationError:
-        return None
+    from authorization.multiple_roles import selected_assignment, assignment_role
+    assignment = selected_assignment(user)
+    return assignment_role(assignment) if assignment else None
 
 
 def has_assigned_role(user) -> bool:
@@ -283,12 +273,9 @@ def has_assigned_role(user) -> bool:
 
 
 def validate_role_for_account_type(*, user, role: Role) -> None:
-    account_type = str(getattr(user, "account_type", "") or "").strip().lower()
-    required_role = FIXED_ACCOUNT_TYPE_ROLES.get(account_type)
-    if required_role and role.system_key != required_role:
-        raise ValidationError(
-            f"{account_type.capitalize()} accounts must use the {required_role} role."
-        )
+    # Identity category does not limit the person's school role assignments.
+    # Base-role protection is enforced when revoking an assignment.
+    return None
 
 
 def validate_role_grants(grants: Mapping[str, str]) -> None:
@@ -316,20 +303,11 @@ def validate_permission_delegation(actor, grants: Mapping[str, str]) -> None:
         return
     if is_global_superadmin(actor):
         return
-    from authorization.models import TenantMembership
-
-    membership = TenantMembership.objects.select_related("role").filter(
-        user=actor,
-        is_active=True,
-        role__is_active=True,
-    ).first()
-    if membership is None:
+    from authorization.runtime import resolve_authorization_context
+    context = resolve_authorization_context(actor)
+    if not context.active:
         raise ValidationError("The actor has no active tenant role.")
-    actor_grants = dict(
-        RolePermission.objects.filter(role=membership.role).values_list(
-            "permission_code", "scope"
-        )
-    )
+    actor_grants = context.permissions
     prohibited = set(grants) - actor_grants.keys()
     if prohibited:
         raise ValidationError(
@@ -425,7 +403,7 @@ def delete_role(*, role: Role, actor=None, metadata=None) -> None:
     locked_role = Role.objects.select_for_update().get(pk=role.pk)
     if locked_role.is_system_role:
         raise ValidationError("System roles cannot be deleted.")
-    if locked_role.memberships.exists():
+    if locked_role.memberships.exists() or locked_role.assignments.exists():
         raise ValidationError("Reassign users before deleting this role.")
     before = {"name": locked_role.name, "description": locked_role.description}
     role_id = str(locked_role.pk)
@@ -568,98 +546,14 @@ def resolve_assignable_role(identifier, *, account_type=None) -> Role:
     return role
 
 
-@transaction.atomic
-def assign_user_role(*, user, role: Role, actor=None, metadata=None):
-    if not role.is_active:
-        raise ValidationError("Inactive roles cannot be assigned.")
-    if role.system_key in SUPERADMIN_ROLE_KEYS:
-        raise ValidationError(
-            "The superadmin role is reserved for platform superusers and cannot be assigned."
-        )
-    validate_role_for_account_type(user=user, role=role)
-    membership = (
-        TenantMembership.objects.select_for_update().filter(user=user).first()
-    )
-    if membership and actor and membership.user_id == actor.pk and membership.role_id != role.pk:
-        raise ValidationError("You cannot change your own role.")
-    if (
-        membership
-        and _membership_system_key(membership) == "admin"
-        and role.system_key != "admin"
-        and _active_admin_membership_count() <= 1
-    ):
-        raise ValidationError("The tenant must retain at least one administrator.")
-    before = (
-        {
-            "role_id": str(membership.role_id) if membership.role_id else None,
-            "shared_role_id": str(membership.shared_role_id) if membership.shared_role_id else None,
-            "active": membership.is_active,
-        }
-        if membership
-        else None
-    )
-    if membership is None:
-        membership = TenantMembership(user=user, role=role, is_active=True)
-    else:
-        membership.role = role
-        membership.shared_role_id = None
-        membership.is_active = True
-    membership.save()
-    AuthorizationAuditLog.objects.create(
-        actor=actor,
-        action="membership.role_changed",
-        target_type="membership",
-        target_id=str(membership.pk),
-        before=before,
-        after={"user_id": str(user.pk), "role_id": str(role.pk), "shared_role_id": None, "active": True},
-        **_audit_metadata(metadata),
-    )
-    return membership
+def assign_user_role(*, user, role, actor=None, metadata=None):
+    from authorization.multiple_roles import add_role
+    return add_role(user=user, role=role, actor=actor, metadata=metadata)
 
 
-@transaction.atomic
 def assign_user_shared_role(*, user, role, actor=None, metadata=None):
-    if not role.is_active:
-        raise ValidationError("Inactive roles cannot be assigned.")
-    if role.scope not in {"TENANT", "GLOBAL"}:
-        raise ValidationError("This shared role is not available in tenant workspaces.")
-    validate_role_for_account_type(user=user, role=role)
-    membership = TenantMembership.objects.select_for_update().filter(user=user).first()
-    if membership and actor and membership.user_id == actor.pk and membership.shared_role_id != role.pk:
-        raise ValidationError("You cannot change your own role.")
-    if (
-        membership
-        and _membership_system_key(membership) == "admin"
-        and role.system_key != "admin"
-        and _active_admin_membership_count() <= 1
-    ):
-        raise ValidationError("The tenant must retain at least one administrator.")
-    before = (
-        {
-            "role_id": str(membership.role_id) if membership.role_id else None,
-            "shared_role_id": str(membership.shared_role_id) if membership.shared_role_id else None,
-            "active": membership.is_active,
-        }
-        if membership
-        else None
-    )
-    if membership is None:
-        membership = TenantMembership(user=user, shared_role_id=role.pk, is_active=True)
-    else:
-        membership.role = None
-        membership.shared_role_id = role.pk
-        membership.is_active = True
-    membership.save()
-    AuthorizationAuditLog.objects.create(
-        actor=actor,
-        action="membership.role_changed",
-        target_type="membership",
-        target_id=str(membership.pk),
-        before=before,
-        after={"user_id": str(user.pk), "role_id": None, "shared_role_id": str(role.pk), "active": True},
-        **_audit_metadata(metadata),
-    )
-    return membership
+    from authorization.multiple_roles import add_role
+    return add_role(user=user, role=role, actor=actor, metadata=metadata)
 
 
 def ensure_tenant_owner_membership(owner) -> None:

@@ -12,7 +12,9 @@ from django_tenants.utils import get_public_schema_name, schema_context
 
 def is_global_superadmin(user) -> bool:
     """True when the user is a platform-level superuser on the public User."""
-    return bool(user and getattr(user, "is_authenticated", False) and getattr(user, "is_platform_superuser", False))
+    return bool(user and getattr(user, "is_authenticated", False)
+                and getattr(user, "is_platform_superuser", False)
+                and getattr(user, "_active_role_selection", None) in (None, "platform"))
 
 
 def ensure_global_superadmin_tenant_membership(user, tenant) -> bool:

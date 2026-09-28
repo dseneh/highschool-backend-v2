@@ -148,10 +148,10 @@ class MyPlatformBannersView(APIView):
     def get(self, request):
         role_key = None
         if connection.schema_name != "public":
-            from authorization.models import TenantMembership
+            from authorization.services import get_assigned_role
 
-            membership = TenantMembership.objects.select_related("role").filter(user=request.user).first()
-            role_key = membership.role.system_key if membership else None
+            role = get_assigned_role(request.user)
+            role_key = role.system_key if role else None
         elif getattr(request.user, "is_platform_superuser", False):
             role_key = "platform_superuser"
         with schema_context("public"):

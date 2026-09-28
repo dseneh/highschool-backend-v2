@@ -60,7 +60,7 @@ class UserAccessPolicy(BaseSchoolAccessPolicy):
             "condition": "has_rbac_permission:roles.assign_users",
         },
         {
-            "action": ["tenant_role"],
+            "action": ["tenant_role", "revoke_tenant_role"],
             "principal": "authenticated",
             "effect": "allow",
             "condition": "has_rbac_permission:roles.assign_users",

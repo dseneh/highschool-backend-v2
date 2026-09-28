@@ -30,6 +30,8 @@ class UserSerializer(PartialUpdateModelSerializer):
     # Add flag to identify the currently logged-in user
     is_current_user = serializers.SerializerMethodField()
     rbac_role = serializers.SerializerMethodField()
+    role_assignments = serializers.SerializerMethodField()
+    active_role_assignment_id = serializers.SerializerMethodField()
     profile_updated_by = serializers.SerializerMethodField()
     
     class Meta:
@@ -48,6 +50,8 @@ class UserSerializer(PartialUpdateModelSerializer):
             'last_login',
             'tenants',
             'rbac_role',
+            'role_assignments',
+            'active_role_assignment_id',
             'gender',
             'last_password_updated',
             'created_at',
@@ -85,33 +89,28 @@ class UserSerializer(PartialUpdateModelSerializer):
             except Exception:
                 return None
 
-        try:
-            from authorization.models import TenantMembership
-            from authorization.services import get_applicable_shared_role
+        payload = self._role_payload(obj)
+        return payload.get("role")
 
-            membership = TenantMembership.objects.select_related("role").filter(user=obj).first()
-            if membership is None:
-                return None
-            if membership.shared_role_id:
-                role = get_applicable_shared_role(membership.shared_role_id)
-                return {
-                    "id": str(role.pk),
-                    "name": role.name,
-                    "system_key": role.system_key,
-                    "is_active": membership.is_active and role.is_active,
-                    "role_type": role.role_type,
-                    "scope": role.scope,
-                }
-            return {
-                "id": str(membership.role_id),
-                "name": membership.role.name,
-                "system_key": membership.role.system_key,
-                "is_active": membership.is_active and membership.role.is_active,
-                "role_type": "CUSTOM" if not membership.role.is_system_role else "SYSTEM",
-                "scope": "TENANT",
-            }
-        except Exception:
-            return None
+    def _role_payload(self, obj):
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name
+        if connection.schema_name == get_public_schema_name():
+            return {}
+        cache = getattr(self, "_assignment_payloads", {})
+        if obj.pk not in cache:
+            from authorization.multiple_roles import user_assignments_payload
+            request = self.context.get("request")
+            selection = getattr(request.user, "_active_role_selection", None) if request and request.user.pk == obj.pk else None
+            cache[obj.pk] = user_assignments_payload(obj, selection=selection)
+            self._assignment_payloads = cache
+        return cache[obj.pk]
+
+    def get_role_assignments(self, obj):
+        return self._role_payload(obj).get("assignments", [])
+
+    def get_active_role_assignment_id(self, obj):
+        return self._role_payload(obj).get("active_assignment_id")
 
     def get_profile_updated_by(self, obj):
         actor = getattr(obj, "profile_updated_by", None)

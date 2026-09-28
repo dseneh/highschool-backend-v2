@@ -1,4 +1,5 @@
 from django.urls import path
+from students.views.my_student import MyStudentView
 
 from students.views.student import (
     StudentImportView,
@@ -105,6 +106,7 @@ urlpatterns = [
         StudentDisciplinaryActionByStudentListCreateView.as_view(),
         name="student_discipline_by_student_list_create",
     ),
+    path("students/me/", MyStudentView.as_view(), name="my_student"),
     path(
         "students/",
         StudentListView.as_view(),

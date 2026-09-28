@@ -7,6 +7,7 @@ from common.update_utils import validate_partial_update
 from common.viewsets import PartialUpdateModelViewSet
 
 import logging
+from users.tenant_access import is_global_superadmin
 
 from rest_framework import status
 from rest_framework.decorators import action
@@ -150,7 +151,7 @@ class UserViewSet(PartialUpdateModelViewSet):
         request_user = getattr(getattr(self, "request", None), "user", None)
         request_user_id = getattr(request_user, "pk", None)
         request_user_is_superadmin = bool(
-            getattr(request_user, "is_platform_superuser", False)
+            is_global_superadmin(request_user)
         )
 
         with schema_context(schema_name):
@@ -883,7 +884,7 @@ class UserViewSet(PartialUpdateModelViewSet):
         }
         """
         actor = request.user
-        is_actor_admin = bool(getattr(actor, 'is_platform_superuser', False) or request.can("users.update"))
+        is_actor_admin = bool(is_global_superadmin(actor) or request.can("users.update"))
         if not is_actor_admin:
             return Response(
                 {"detail": "Only admins can set another user's password."},
@@ -898,7 +899,7 @@ class UserViewSet(PartialUpdateModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if target.is_platform_superuser and not getattr(actor, 'is_platform_superuser', False):
+        if target.is_platform_superuser and not is_global_superadmin(actor):
             return Response(
                 {"detail": "Only a superadmin can reset another superadmin's password."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -979,6 +980,44 @@ class UserViewSet(PartialUpdateModelViewSet):
                 "is_active": membership.is_active and membership.role.is_active,
             }
 
+    @staticmethod
+    def _tenant_roles_for_user(user, schema_name):
+        from authorization.models import TenantRoleAssignment
+        from authorization.multiple_roles import assignment_role, assignment_payload
+
+        with schema_context(schema_name):
+            assignments = TenantRoleAssignment.objects.filter(
+                membership__user=user, is_active=True,
+            ).select_related("role", "membership")
+            roles = []
+            for assignment in assignments:
+                role = assignment_role(assignment)
+                if role is not None:
+                    payload = assignment_payload(assignment)
+                    roles.append({
+                        "id": str(role.pk),
+                        "assignment_id": str(assignment.pk),
+                        "can_revoke": payload["can_revoke"],
+                        "revocation_blocked_reason": payload["revocation_blocked_reason"],
+                        "name": role.name,
+                        "system_key": role.system_key,
+                        "is_active": assignment.membership.is_active and role.is_active,
+                    })
+            return sorted(roles, key=lambda role: (role["name"].casefold(), role["id"]))
+
+    def _can_manage_tenant_roles(self, request, target, schema_name):
+        if target.pk == request.user.pk or self._is_target_superadmin(target):
+            return False
+        if is_global_superadmin(request.user):
+            return True
+        return (
+            schema_name == connection.schema_name
+            and schema_name != 'public'
+            and UserAccessPolicy().has_rbac_permission(
+                request, self, self.action, "roles.assign_users"
+            )
+        )
+
     def _is_target_superadmin(self, target) -> bool:
         return bool(getattr(target, "is_platform_superuser", False))
 
@@ -989,7 +1028,7 @@ class UserViewSet(PartialUpdateModelViewSet):
         platform superadmins even though tenant admins may view the list.
         """
         actor = request.user
-        if not getattr(actor, "is_platform_superuser", False):
+        if not is_global_superadmin(actor):
             return actor, Response(
                 {"detail": "Only platform superadmins can manage tenant assignments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1030,6 +1069,8 @@ class UserViewSet(PartialUpdateModelViewSet):
                         {
                             **self._serialize_tenant(t),
                             "role": self._tenant_role_for_user(target, t.schema_name),
+                            "roles": self._tenant_roles_for_user(target, t.schema_name),
+                            "can_manage_roles": self._can_manage_tenant_roles(request, target, t.schema_name),
                         }
                         for t in tenants
                     ],
@@ -1136,7 +1177,9 @@ class UserViewSet(PartialUpdateModelViewSet):
                 "added": added,
                 "already_present": already_present,
                 "failures": failures,
-                "results": [self._serialize_tenant(t) for t in tenants],
+                "results": [{**self._serialize_tenant(t),
+                             "role": self._tenant_role_for_user(target, t.schema_name),
+                             "roles": self._tenant_roles_for_user(target, t.schema_name)} for t in tenants],
             },
             status=status_code,
         )
@@ -1221,9 +1264,9 @@ class UserViewSet(PartialUpdateModelViewSet):
         from core.models import Tenant
 
         target = self.get_object()
-        actor, error = self._require_admin_actor(request)
-        if error is not None:
-            return error
+        actor = request.user
+        if not self._can_manage_tenant_roles(request, target, schema_name):
+            return Response({"detail": "You cannot manage roles in this workspace."}, status=403)
         if self._is_target_superadmin(target):
             return Response(
                 {"detail": "Superadmin roles are managed automatically."},
@@ -1278,6 +1321,26 @@ class UserViewSet(PartialUpdateModelViewSet):
             return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
 
         return Response({"schema_name": schema, "role": role_data}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['delete'], permission_classes=[UserAccessPolicy],
+            url_path=r'tenants/(?P<schema_name>[^/.]+)/roles/(?P<assignment_id>[^/.]+)')
+    def revoke_tenant_role(self, request, id_number=None, schema_name=None, assignment_id=None):
+        from authorization.multiple_roles import revoke_role
+        from core.models import Tenant
+
+        target = self.get_object()
+        if not self._can_manage_tenant_roles(request, target, schema_name):
+            return Response({"detail": "You cannot manage roles in this workspace."}, status=403)
+        with schema_context('public'):
+            exists = Tenant.objects.filter(schema_name=schema_name, active=True).exclude(schema_name='public').exists()
+        if not exists:
+            return Response({"detail": "Tenant does not exist or is inactive."}, status=404)
+        try:
+            with schema_context(schema_name):
+                revoke_role(user=target, assignment_id=assignment_id, actor=request.user)
+        except (DjangoValidationError, ValueError) as exc:
+            return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'], permission_classes=[UserAccessPolicy],
             url_path='send-login-instructions')

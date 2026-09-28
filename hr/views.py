@@ -404,6 +404,12 @@ class EmployeeViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeeSerializer
     permission_classes = [HRAccessPolicy]
 
+    @action(detail=False, methods=["get"])
+    def me(self, request):
+        from hr.self_service import own_employee_queryset
+        employee = own_employee_queryset(request.user).first()
+        return Response(self.get_serializer(employee).data if employee else None)
+
     def get_queryset(self):
         queryset = Employee.objects.select_related(
             "department",

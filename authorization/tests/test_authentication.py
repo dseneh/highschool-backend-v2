@@ -49,3 +49,12 @@ class AuthenticationFacadeTests(SimpleTestCase):
 
         with self.assertRaises(AuthorizationBindingError):
             initialize_request_authorization(request, authenticated_user("user-2"))
+
+    def test_selection_is_bound_to_both_middleware_and_drf_user_instances(self):
+        request = SimpleNamespace(META={"HTTP_X_ROLE_ASSIGNMENT": "parent-assignment"})
+        middleware_user = authenticated_user()
+        drf_user = authenticated_user()
+        first = initialize_request_authorization(request, middleware_user)
+        second = initialize_request_authorization(request, drf_user)
+        self.assertIs(first, second)
+        self.assertEqual(drf_user._active_role_selection, "parent-assignment")

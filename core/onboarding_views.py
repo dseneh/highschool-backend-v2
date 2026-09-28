@@ -64,7 +64,7 @@ class OnboardingPermission:
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        if getattr(user, "is_platform_superuser", False):
+        if is_global_superadmin(user):
             return True
         return bool(getattr(request, "can", lambda permission: False)("tenant.settings.manage"))
 
@@ -221,7 +221,7 @@ def apply_onboarding(request: Request, schema_name: str) -> Response:
 
     # Permission check
     user = request.user
-    if not getattr(user, "is_platform_superuser", False) and not getattr(request, "can", lambda permission: False)("tenant.settings.manage"):
+    if not is_global_superadmin(user) and not getattr(request, "can", lambda permission: False)("tenant.settings.manage"):
         return Response({"detail": "You don't have permission to provision this workspace."}, status=status.HTTP_403_FORBIDDEN)
 
     plan = tenant.onboarding_plan

@@ -43,9 +43,8 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         tenant = getattr(request, "tenant", None)
         if tenant:
             ensure_global_superadmin_tenant_membership(user, tenant)
-        if hasattr(request, "_request"):
-            from authorization.runtime import initialize_request_authorization
-            initialize_request_authorization(request, user)
+        from authorization.runtime import initialize_request_authorization
+        initialize_request_authorization(request, user)
         return user, token
 
 

@@ -594,8 +594,9 @@ class AuthorizationPersistenceTests(TenantTestCase):
 
         self.assertEqual(custom_response.status_code, 200, custom_response.data)
         self.assertEqual(custom_response.data["role"]["id"], str(custom_role.pk))
-        self.assertEqual(membership.role_id, custom_role.pk)
-        self.assertIsNone(membership.shared_role_id)
+        self.assertEqual(membership.shared_role_id, shared_role.pk)
+        self.assertTrue(membership.role_assignments.filter(role=custom_role, is_active=True).exists())
+        self.assertTrue(membership.role_assignments.filter(shared_role_id=shared_role.pk, is_active=True).exists())
 
     def test_tenant_role_management_allows_permission_or_admin_or_superadmin(self):
         staff_role = Role.objects.get(system_key="staff")

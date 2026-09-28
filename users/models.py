@@ -61,7 +61,8 @@ class User(UserProfile):
 
     @property
     def is_admin(self) -> bool:
-        return bool(self.is_platform_superuser)
+        from users.tenant_access import is_global_superadmin
+        return is_global_superadmin(self)
 
     @property
     def is_staff_user(self) -> bool:

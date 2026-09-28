@@ -16,22 +16,14 @@ class RoleAssignmentRulesTests(SimpleTestCase):
 
         validate_role_for_account_type(user=student, role=student_role)
 
-    def test_student_account_rejects_staff_role(self):
+    def test_student_account_accepts_additional_staff_role(self):
         student = SimpleNamespace(pk="student-1", account_type="student")
         staff_role = SimpleNamespace(is_active=True, system_key="staff")
 
-        with self.assertRaisesMessage(
-            ValidationError,
-            "Student accounts must use the student role.",
-        ):
-            validate_role_for_account_type(user=student, role=staff_role)
+        validate_role_for_account_type(user=student, role=staff_role)
 
-    def test_parent_account_rejects_custom_role(self):
+    def test_parent_account_accepts_additional_custom_role(self):
         parent = SimpleNamespace(pk="parent-1", account_type="parent")
         custom_role = SimpleNamespace(is_active=True, system_key=None)
 
-        with self.assertRaisesMessage(
-            ValidationError,
-            "Parent accounts must use the parent role.",
-        ):
-            validate_role_for_account_type(user=parent, role=custom_role)
+        validate_role_for_account_type(user=parent, role=custom_role)
