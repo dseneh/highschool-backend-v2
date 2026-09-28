@@ -85,6 +85,7 @@ class MultipleRolesTests(TenantTestCase):
             revoke_role(user=self.user, assignment_id=self.parent_assignment.pk, actor=self.tenant.owner)
 
     def test_last_admin_cannot_be_revoked(self):
+        add_role(user=self.tenant.owner, role=self.teacher)
         assignment = TenantRoleAssignment.objects.get(membership__user=self.tenant.owner, role_key="system:admin")
         with self.assertRaisesMessage(ValidationError, "at least one administrator"):
             revoke_role(user=self.tenant.owner, assignment_id=assignment.pk, actor=self.user)
@@ -115,6 +116,43 @@ class MultipleRolesTests(TenantTestCase):
         teacher_assignment = self.membership.role_assignments.get(role_key="system:teacher")
         revoke_role(user=self.user, assignment_id=teacher_assignment.pk, actor=self.tenant.owner)
         self.assertEqual(selected_assignment(self.user).pk, self.parent_assignment.pk)
+
+    def test_last_role_is_protected_in_payload_and_revoke_endpoint(self):
+        revoke_role(user=self.user, assignment_id=self.parent_assignment.pk, actor=self.tenant.owner)
+        teacher_assignment = self.membership.role_assignments.get(role_key="system:teacher")
+        payload = user_assignments_payload(self.user)["assignments"][0]
+        self.assertFalse(payload["can_revoke"])
+        self.assertIn("at least one active role", payload["revocation_blocked_reason"])
+        response = self._tenant_role_request(self.tenant.owner, assignment=teacher_assignment.pk)
+        self.assertEqual(response.status_code, 400)
+        teacher_assignment.refresh_from_db()
+        self.membership.refresh_from_db()
+        self.assertTrue(teacher_assignment.is_active)
+        self.assertTrue(self.membership.is_active)
+
+    def test_disabled_role_does_not_allow_removing_last_usable_role(self):
+        revoke_role(user=self.user, assignment_id=self.parent_assignment.pk, actor=self.tenant.owner)
+        custom = Role.objects.create(name="Disabled alternative")
+        add_role(user=self.user, role=custom)
+        from authorization.services import update_role
+        update_role(role=custom, changes={"is_active": False})
+        teacher_assignment = self.membership.role_assignments.get(role_key="system:teacher")
+        with self.assertRaisesMessage(ValidationError, "at least one active role"):
+            revoke_role(user=self.user, assignment_id=teacher_assignment.pk, actor=self.tenant.owner)
+
+    def test_shared_role_counts_as_an_alternative(self):
+        from django_tenants.utils import get_public_schema_name, schema_context
+        from core.models import SharedRole
+        revoke_role(user=self.user, assignment_id=self.parent_assignment.pk, actor=self.tenant.owner)
+        with schema_context(get_public_schema_name()):
+            shared = SharedRole.objects.create(name="Shared alternative", role_type="CUSTOM", scope="TENANT", is_active=True)
+        add_role(user=self.user, role=shared)
+        teacher_assignment = self.membership.role_assignments.get(role_key="system:teacher")
+        revoke_role(user=self.user, assignment_id=teacher_assignment.pk, actor=self.tenant.owner)
+        remaining = selected_assignment(self.user)
+        self.assertEqual(remaining.shared_role_id, shared.pk)
+        with self.assertRaisesMessage(ValidationError, "at least one active role"):
+            revoke_role(user=self.user, assignment_id=remaining.pk, actor=self.tenant.owner)
 
     def test_public_role_cannot_be_assigned_in_school(self):
         role = SimpleNamespace(is_active=True, system_key=None, scope="PUBLIC", _meta=SimpleNamespace(label_lower="core.sharedrole"))

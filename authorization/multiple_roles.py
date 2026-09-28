@@ -78,6 +78,12 @@ def assignment_payload(assignment):
         reason = "Platform administrator access is managed separately."
     if role.system_key == "student" and str(assignment.membership.user.account_type).lower() == "student":
         reason = "The Student base role is protected."
+    if reason is None:
+        alternatives = assignment.membership.role_assignments.filter(is_active=True).exclude(
+            pk=assignment.pk,
+        ).select_related("role")
+        if not any((candidate := assignment_role(item)) and candidate.is_active for item in alternatives):
+            reason = "Users must retain at least one active role in this school. Assign another role before removing this one."
     return {
         "id": str(assignment.pk),
         "role": serialize_tenant_role(role) if assignment.role_id else serialize_shared_role(role),

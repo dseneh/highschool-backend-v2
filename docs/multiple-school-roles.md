@@ -8,8 +8,10 @@ shared system roles; assigning either representation twice is idempotent.
 The existing membership role pointer is retained as the default for older
 clients. It is not a global active-role setting. New assignments are additive.
 Revocation retains the assignment as inactive for history. If the default is
-revoked, another usable assignment becomes the default, or membership becomes
-inactive when no assignments remain.
+revoked, another usable assignment becomes the default. Revoking a user's last
+usable role in a school is rejected: assign another active role first. Disabled
+roles and previously revoked assignments do not count as alternatives. The API
+exposes this protection to both role-management interfaces.
 
 ## API
 
