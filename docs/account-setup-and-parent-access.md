@@ -277,3 +277,19 @@ build was blocked by a worker-port restriction; Vercel built the release success
 Authenticated cross-school flows and real email delivery remain staging smoke
 checks. A nonfatal MaxMind GeoIP HTTP 401 warning requires separate credential review.
 Local media, scratch scripts, and the demo-seeding command were excluded from release.
+
+
+### Parent/guardian form access and explicit deletion
+
+The school parent/guardian form submits `give_access`, defaulting to false on
+creation. Access changes require guardian-management permission with all/assigned
+scope and student visibility, and use the existing verified relationship lifecycle.
+Saving and approving are atomic; an invalid approval rolls back the form changes.
+
+The UI explicitly deletes a relationship with `DELETE guardians/<id>/?delete_record=true`.
+This revokes invitations/access, reconciles the school Parent role, and removes
+only that guardian and the contact mirror identified by its guardian ID. It does
+not delete the user, student, or unrelated relationships. The access switch and
+legacy DELETE without the flag continue to disconnect linked portal access while
+preserving school guardian records. Both actions require confirmation; deletion
+uses the shared destructive confirmation component.
