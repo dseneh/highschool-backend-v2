@@ -252,3 +252,28 @@ Notices are created after the relationship transaction commits. A deterministic 
 School staff see the notice in the existing school inbox. The global parent inbox exposes only contact-added system notices addressed to that user across operational schools, including notices before portal access approval. Its list, counts, and mark-read actions do not depend on a selected student and cannot read or mutate another user's notifications. Existing school-specific announcements remain on the family dashboard. This endpoint currently queries operational school schemas for recipient-owned notices; large tenant counts should be profiled before wider rollout.
 
 Validation: three tenant-backed notification integration tests passed (creation/deduplication/rollback, parent and other contact targeting, cross-school inbox and recipient isolation), along with six frontend API/proxy tests and the TypeScript check. No real contact records or notifications were created for verification.
+
+### Staging rollout — 2026-10-01
+
+The existing `staging` branches deploy to Railway (`backend-v2`, staging environment)
+and Vercel (`highschool-ui-2`, staging environment). Frontend root:
+`https://staging.myezyschool.com`; backend: `https://api.staging.myezyschool.com`.
+
+The Railway staging service is configured with this idempotent pre-deploy command:
+
+```sh
+python manage.py configure_parent_workspace --origin https://parent.staging.myezyschool.com --apply
+```
+
+This registration is staging-only. An unauthenticated authorization request for
+that exact callback should reach `AUTH_REQUIRED`, not `UNKNOWN_CLIENT` or
+`REDIRECT_URI_NOT_ALLOWED`. Verify this after a fresh deployment; a redeploy of
+an older deployment may retain its original configuration.
+
+Release checks: all 295 frontend tests passed, the local production Webpack build
+passed, Django checks passed, and no model changes lacked migrations. Railway
+applied shared and school migrations successfully. The default local Turbopack
+build was blocked by a worker-port restriction; Vercel built the release successfully.
+Authenticated cross-school flows and real email delivery remain staging smoke
+checks. A nonfatal MaxMind GeoIP HTTP 401 warning requires separate credential review.
+Local media, scratch scripts, and the demo-seeding command were excluded from release.
