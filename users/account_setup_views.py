@@ -12,7 +12,7 @@ from users.models import ParentLinkRequest
 
 
 class SetupStartSerializer(serializers.Serializer):
-    account_type = serializers.ChoiceField(choices=["staff", "student", "parent"])
+    account_type = serializers.ChoiceField(choices=["staff", "student", "parent", "other"])
     email = serializers.EmailField()
 
 

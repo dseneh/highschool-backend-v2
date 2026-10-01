@@ -504,6 +504,7 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class UserCreateSerializer(PartialUpdateModelSerializer):
+    email = serializers.EmailField(max_length=254, validators=[])
     username = serializers.CharField(required=False, allow_blank=True, help_text="Defaults to id_number if not provided")
     
     class Meta:
@@ -521,6 +522,16 @@ class UserCreateSerializer(PartialUpdateModelSerializer):
             'is_platform_superuser',
         ]
         read_only_fields = ['id']
+
+    def validate_email(self, value):
+        from django.db.models.functions import Lower, Trim
+        email = value.strip().lower()
+        if User.objects.annotate(normalized_email=Lower(Trim("email"))).filter(normalized_email=email).exists():
+            raise serializers.ValidationError(
+                "An account already uses this email. Sign in or reset your password. "
+                "To add school access, use the existing account workflow."
+            )
+        return email
 
     def validate_account_type(self, value):
         if value not in UserAccountType.all():

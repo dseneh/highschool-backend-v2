@@ -37,7 +37,7 @@ Each tenant includes `can_manage_roles`; each role includes its `assignment_id`,
 Both operations require `roles.assign_users` with `all` scope in the current
 school. Only an active platform superadmin context may manage another school's
 roles. The API checks this independently of the UI, and existing role protections
-still apply. Adding/removing tenant access remains platform-superadmin-only.
+still apply. The cross-school tenant-assignment endpoints remain platform-superadmin-only; school admins can approve verified school-user onboarding in their own school as described below.
 
 An explicit assignment is checked against the authenticated user, current school,
 active membership, active assignment, and active role on every request. Selected
@@ -117,3 +117,53 @@ The response includes `created` and `linked_existing`. The employee Account Info
 Validation: 18 provisioning tests (including real tenant-schema tests), 7 adjacent identity-email tests, 8 frontend tests, TypeScript, and a two-school PostgreSQL rollback smoke check. The smoke verified shared identity with different school IDs, idempotent role assignment, unchanged credentials, preservation of Parent/first-school roles, and selected-role isolation. All smoke records were rolled back; email delivery was mocked. Live browser generation was not performed.
 
 In the global Parent portal, Switch role groups active school Parent assignments into one current Parent option, with a distinct-school count. Staff roles remain individual school-specific options. The available-option count reflects the grouped presentation; backend grants and school-role selection are unchanged.
+
+## School users without employee records
+
+School administrators with both `users.create:all` and `roles.assign_users:all`
+can submit `POST auth/users/` with `account_type: "other"`, first/last name,
+email, and a school role ID or system key. This creates a shared
+`SchoolUserAccess` approval scoped to the current tenant; it creates neither a
+User nor an employee record and grants no access immediately. The UI labels this
+identity category **School user**, not platform user.
+
+The user opens the school's existing **Set up account → School user** flow.
+Eligibility is checked before sending the existing six-digit code, with the same
+rate limits, attempt limits, school binding, expiry and single-use proof. New
+users choose a password and accept terms. Existing users must authenticate their
+existing account; its password, profile, category and other school roles remain
+unchanged. Completion atomically adds tenant access and the approved school roles.
+
+`GET auth/school-user-access/` lists pending and revoked approvals in the current
+school. `PATCH auth/school-user-access/{id}/` edits a pending approval and sends
+updated instructions. `POST` to that detail URL with `action: "revoke"` retains
+revoked history; `action: "resend"` retries delivery with a one-minute cooldown.
+`DELETE` permanently removes an unaccepted approval, preserving accounts and
+existing roles. All require the same management permissions, and approval,
+edit, revoke and deletion are audited. Accepted roles remain managed through
+the existing role-management workflow. Verification proofs are bound to the
+approved names, email and role; changing these details requires fresh setup.
+
+Approval and edit email instructions through the shared branded email service,
+including the school-specific account-setup link. Failed delivery preserves the
+approval and is reported in the API and UI, with a resend action. The Users page
+has separate Users and Pending school access tabs using the shared advanced table.
+
+Decisions: pending approvals persist until accepted or revoked, while
+verification challenges expire after 15 minutes. Parent/student/teacher/staff
+roles must use their linked-record workflows. Platform roles cannot be granted.
+Permission delegation cannot exceed the acting role; a change to the approved
+role's permissions invalidates the pending approval and requires a fresh approval.
+Suspended memberships and revoked assignments are never restored by setup.
+School-wide pending approval management intentionally requires `all` scope.
+
+### Account email uniqueness
+
+Global account emails are unique after trimming whitespace and ignoring case,
+including at the database layer to prevent concurrent duplicate creation. New
+account creation rejects an existing email and directs the user to sign in or
+reset their password. Migration 0018 stops safely if legacy duplicate identities
+exist; those must be reviewed before deployment, never automatically merged.
+School access approval can reuse an existing account after verification, but
+rejects duplicate pending approvals and already-active assignments for the same
+school and role. Other schools and other roles remain eligible.

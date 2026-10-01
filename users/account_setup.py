@@ -35,7 +35,7 @@ def reserve_setup_email(email):
 
 
 def setup_source_details(record, kind):
-    fields = PARENT_NAME_FIELDS if kind == "parent" else BIO_FIELDS
+    fields = PARENT_NAME_FIELDS if kind in {"parent", "other"} else BIO_FIELDS
     return {key: getattr(record, key, None) for key in fields}
 
 
@@ -57,6 +57,9 @@ def source_records(tenant, kind, email, *, snapshot=None, lock=False):
     from students.models import Student, StudentGuardian, StudentContact
     if not school_available(tenant):
         raise ValidationError("This school is unavailable.")
+    if kind == "other":
+        from users.school_access import eligible_access
+        return eligible_access(tenant, email, snapshot, lock)
     from staff.models import Staff
     with schema_context(tenant.schema_name):
         staff_model = {"employee": Employee} if Employee.objects.filter(email__iexact=email).exists() else {"staff": Staff}
@@ -116,6 +119,10 @@ def begin_setup(tenant, kind, email):
     challenge = AccountSetupChallenge.objects.create(tenant=tenant, email=email, account_type=kind,
         code_hash=make_password(code), source_ids={key: [str(r.pk) for r in rows] for key, rows in records.items()},
         expires_at=timezone.now()+timedelta(minutes=15))
+    if kind == "other":
+        from users.school_access import access_versions
+        challenge.source_ids["school_access_versions"] = access_versions(records["school_access"])
+        challenge.save(update_fields=["source_ids"])
     from common.email_service import send_notification_email
     sent = send_notification_email(SimpleNamespace(email=email, first_name="", pk=challenge.pk),
         "Your EzySchool account setup code", f"Your verification code is {code}. It expires in 15 minutes. Do not share this code.", school=tenant)
@@ -184,7 +191,7 @@ def complete_setup(tenant, challenge_id, proof, details, password, actor=None):
     challenge = AccountSetupChallenge.objects.select_for_update().filter(pk=challenge_id, tenant=tenant).first()
     if not challenge or not challenge.verified_at or challenge.used_at or challenge.expires_at <= timezone.now() or not secrets.compare_digest(challenge.proof_hash, token_hash(proof)):
         raise ValidationError("Account setup has expired or was already completed. Start again.")
-    if challenge.account_type == "parent" and details.get("terms_accepted") is not True:
+    if challenge.account_type in {"parent", "other"} and details.get("terms_accepted") is not True:
         raise ValidationError({"terms_accepted": "Accept the Terms and Conditions to continue."})
     records = source_records(tenant, challenge.account_type, challenge.email, snapshot=challenge.source_ids, lock=True)
     source = next(r for rows in records.values() for r in rows)
@@ -208,9 +215,9 @@ def complete_setup(tenant, challenge_id, proof, details, password, actor=None):
     created = user is None
     if created:
         from common.utils import generate_entity_id_number, ID_ENTITY_PARENT, ID_ENTITY_EMPLOYEE, ID_ENTITY_STUDENT
-        prefix = {"parent": ID_ENTITY_PARENT, "staff": ID_ENTITY_EMPLOYEE, "student": ID_ENTITY_STUDENT}[challenge.account_type]
+        prefix = {"parent": ID_ENTITY_PARENT, "staff": ID_ENTITY_EMPLOYEE, "student": ID_ENTITY_STUDENT, "other": None}[challenge.account_type]
         user = User(email=challenge.email, account_type=challenge.account_type,
-                    id_number=generate_entity_id_number(User, prefix),
+                    id_number=("U" + secrets.token_hex(8).upper()) if challenge.account_type == "other" else generate_entity_id_number(User, prefix),
                     **{key: bio.get(key) or (None if key == "date_of_birth" else "") for key in ["first_name", "middle_name", "last_name", "gender", "date_of_birth"]})
         try:
             validate_password(password, user)
@@ -233,6 +240,9 @@ def complete_setup(tenant, challenge_id, proof, details, password, actor=None):
             for guardian in StudentGuardian.objects.select_for_update().filter(email__iexact=challenge.email, active=True, give_access=True):
                 activate_guardian(guardian, user, tenant)
             reconcile_parent(profile, tenant)
+        elif challenge.account_type == "other":
+            from users.school_access import activate_access
+            activate_access(records["school_access"], user, tenant)
         else:
             source.user_account_id_number = user.id_number
             source.save(update_fields=["user_account_id_number"])
@@ -245,7 +255,7 @@ def complete_setup(tenant, challenge_id, proof, details, password, actor=None):
                 raise ValidationError("The school must configure the account's self-service role first.")
             add_role(user=user, role=role)
     challenge.used_at = timezone.now()
-    if challenge.account_type == "parent":
+    if challenge.account_type in {"parent", "other"}:
         challenge.source_ids = {**challenge.source_ids, "terms_acceptance": {
             "accepted_at": challenge.used_at.isoformat(), "terms_version": "2025-05-01",
             "terms_path": "/terms", "user_id": str(user.pk),

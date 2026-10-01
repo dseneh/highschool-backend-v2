@@ -1,3 +1,4 @@
+from users.school_access_views import SchoolUserAccessView
 """URL configuration for users app (authentication and user management)."""
 from users.parent_notifications import ParentNotificationsView
 from users.account_setup_views import RetiredInvitationView, AccountSetupView, ContactPortalAccessView, ParentLinkRequestsView, ReviewParentRequestsView
@@ -24,6 +25,8 @@ from users.parent_views import ParentSummaryView, ParentSelectView, ParentStuden
 from users.parent_workspace import ParentWorkspaceView, ParentWorkspaceContextView, ParentWorkspaceRolesView
 
 urlpatterns = [
+    path("school-user-access/", SchoolUserAccessView.as_view()),
+    path("school-user-access/<uuid:access_id>/", SchoolUserAccessView.as_view()),
     path("parent/notifications/", ParentNotificationsView.as_view()),
     path("parent/notifications/<path:action>/", ParentNotificationsView.as_view()),
     path("parent/context/<uuid:link_id>/", ParentWorkspaceContextView.as_view()),

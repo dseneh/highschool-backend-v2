@@ -7,6 +7,7 @@ Reference: https://django-tenant-users.readthedocs.io/en/latest/pages/installati
 
 import uuid
 from django.db import models
+from django.db.models.functions import Lower, Trim
 from django.contrib.auth.models import Group, Permission
 from tenant_users.tenants.models import UserProfile
 from core.validators import ValidateImageFile
@@ -57,6 +58,9 @@ class User(UserProfile):
         db_table = "user"
         verbose_name = "User"
         verbose_name_plural = "Users"
+        constraints = [
+            models.UniqueConstraint(Lower(Trim("email")), name="unique_normalized_user_email"),
+        ]
 
     def __str__(self):
         return self.email or self.username or self.id_number or str(self.id)
@@ -110,3 +114,4 @@ class User(UserProfile):
 
 from .parent_models import ParentProfile, ParentStudentLink, ParentInvitation  # noqa: E402,F401
 from .account_setup_models import AccountSetupChallenge, VerifiedAccountEmail, ParentSchoolRegistration, ParentLinkRequest  # noqa: E402,F401
+from .account_setup_models import SchoolUserAccess  # noqa: E402,F401

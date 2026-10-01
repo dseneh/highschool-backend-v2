@@ -569,6 +569,12 @@ class UserViewSet(PartialUpdateModelViewSet):
         request_data = request.data.copy()
         request_data['account_type'] = request_data.get('account_type', '').lower()
         
+        if request_data['account_type'] == 'other':
+            from users.school_access import approve_access, send_setup_instructions
+            access = approve_access(request.tenant, request.user, request_data)
+            sent = send_setup_instructions(access)
+            return Response({"detail": "School access approved.", "pending_access_id": str(access.pk), "instructions_sent": sent}, status=status.HTTP_201_CREATED)
+
         lookup_serializer = UserRecreateSerializer(data=request_data)
         if not lookup_serializer.is_valid():
             return error_response(lookup_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
