@@ -262,7 +262,7 @@ and Vercel (`highschool-ui-2`, staging environment). Frontend root:
 The Railway staging service is configured with this idempotent pre-deploy command:
 
 ```sh
-python manage.py configure_parent_workspace --origin https://parent.staging.myezyschool.com --apply
+python manage.py configure_parent_workspace --origin https://parent.staging.myezyschool.com --include-schools --apply
 ```
 
 This registration is staging-only. An unauthenticated authorization request for
@@ -293,3 +293,9 @@ not delete the user, student, or unrelated relationships. The access switch and
 legacy DELETE without the flag continue to disconnect linked portal access while
 preserving school guardian records. Both actions require confirmation; deletion
 uses the shared destructive confirmation component.
+
+The staging pre-deploy registration includes `--include-schools` so parent-to-school
+role switches have exact callbacks for every active school workspace. Callbacks
+remain under the explicitly configured staging root; wildcard redirects and
+reactivation of disabled clients/callbacks are not permitted. Newly activated
+schools need this command rerun before SSO handoff is available.
