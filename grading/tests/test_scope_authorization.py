@@ -152,7 +152,7 @@ class GradingOwnershipScopeTests(TenantTestCase):
 
         self.assertEqual(accessible_student_ids(user), {linked.id})
 
-    def test_guardian_account_resolves_only_linked_children(self):
+    def test_unverified_guardian_reference_does_not_authorize_grades(self):
         user = User.objects.create(
             email="grading-scope-parent@example.com",
             username="grading-scope-parent",
@@ -171,5 +171,5 @@ class GradingOwnershipScopeTests(TenantTestCase):
 
         student_ids = accessible_student_ids(user)
 
-        self.assertIn(child.id, student_ids)
+        self.assertNotIn(child.id, student_ids)
         self.assertNotIn(other.id, student_ids)

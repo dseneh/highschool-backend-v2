@@ -32,7 +32,7 @@ class StudentGuardianListView(APIView):
         ):
             raise PermissionDenied("You cannot view guardians for this student.")
         guardians = student.guardians.all()
-        serializer = StudentGuardianSerializer(guardians, many=True)
+        serializer = StudentGuardianSerializer(guardians, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request, student_id):
@@ -119,9 +119,14 @@ class StudentGuardianDetailView(APIView):
             "notes",
         ]
 
-        serializer = update_model_fields(
-            request, guardian, allowed_fields, StudentGuardianSerializer
-        )
+        from django.db import transaction
+        from users.identity_email import sync_record_email
+        data = request.data.copy()
+        with transaction.atomic():
+            sync_record_email(guardian, data, request)
+            serializer = update_model_fields(
+                request, guardian, allowed_fields, StudentGuardianSerializer, data=data
+            )
         return serializer
 
     def delete(self, request, id):
@@ -132,5 +137,9 @@ class StudentGuardianDetailView(APIView):
             "students.guardians.manage",
         ):
             raise PermissionDenied("You cannot delete this guardian.")
-        guardian.delete()
+        if guardian.give_access or guardian.parent_profile_id or guardian.portal_state != "unverified":
+            from users.parent_portal import end_link
+            end_link(tenant=request.tenant, guardian_id=guardian.pk, actor=request.user)
+        else:
+            guardian.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

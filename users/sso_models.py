@@ -218,6 +218,7 @@ class TenantSession(models.Model):
     revoked_at = models.DateTimeField(null=True, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True)
+    device_metadata = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Meta:
         db_table = "auth_tenant_session"

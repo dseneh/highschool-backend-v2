@@ -506,6 +506,23 @@ class EmployeeAttendanceSerializer(
 
 
 class EmployeeSerializer(PartialUpdateModelSerializer):
+    parent_of = serializers.SerializerMethodField()
+
+    def get_parent_of(self, obj):
+        from users.models import User
+        from users.parent_portal import verified_guardians
+        from students.authorization import filter_students_for_permission_scope
+        from students.models import Student
+        request = self.context.get("request")
+        if not request or not obj.user_account_id_number:
+            return []
+        user = User.objects.filter(id_number=obj.user_account_id_number).first()
+        if not user:
+            return []
+        visible = filter_students_for_permission_scope(Student.objects.all(), request, "students.guardians.view")
+        return [{"id": str(g.student_id), "display_name": g.student.get_full_name()}
+                for g in verified_guardians(user).filter(student__in=visible).select_related("student")]
+
     employee_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     department = serializers.PrimaryKeyRelatedField(
         queryset=EmployeeDepartment.objects.all(),
@@ -529,6 +546,7 @@ class EmployeeSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Employee
         fields = [
+            "parent_of",
             "id",
             "employee_number",
             "id_number",
@@ -580,6 +598,7 @@ class EmployeeSerializer(PartialUpdateModelSerializer):
             "contacts",
             "dependents",
             "specializations",
+            "user_account_id_number",
         ]
 
     def validate_manager(self, value):
@@ -654,6 +673,8 @@ class EmployeeSerializer(PartialUpdateModelSerializer):
         data["full_name"] = instance.get_full_name()
         data["photo_url"] = instance.photo.url if getattr(instance, "photo", None) else None
         data["has_photo"] = bool(getattr(instance, "photo", None))
+        from common.account_link import existing_account_reference
+        data["user_account_id_number"] = existing_account_reference(instance.user_account_id_number)
 
         if instance.department:
             data["department"] = {

@@ -503,6 +503,8 @@ class CreateTenantSerializer(serializers.Serializer):
         """Validate schema_name format and uniqueness"""
         if value:
             value = value.strip()
+            if value.lower() == "parent":
+                raise serializers.ValidationError("This workspace name is reserved for the global parent portal.")
             # Schema names must be valid PostgreSQL identifiers
             if not value.replace('_', '').isalnum():
                 raise serializers.ValidationError(

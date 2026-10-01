@@ -42,6 +42,7 @@ class UserSerializer(PartialUpdateModelSerializer):
             'email',
             'id_number',
             'first_name',
+            'middle_name',
             'last_name',
             'account_type',
             'photo',
@@ -365,7 +366,7 @@ class UserSerializer(PartialUpdateModelSerializer):
 
         if instance.account_type != UserAccountType.GLOBAL:
             source_bio = self._resolve_source_bio(instance)
-            for field in ['first_name', 'last_name', 'gender', 'email']:
+            for field in ['first_name', 'last_name', 'gender']:
                 if field in source_bio:
                     data[field] = source_bio[field]
 
@@ -468,12 +469,27 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         from authorization.exceptions import NoAssignedRole
         from authorization.services import has_assigned_role
 
+        from users.parent_workspace import is_parent_workspace, parent_identity
+        parent_workspace = is_parent_workspace(self.context.get("request"))
+        if parent_workspace and not parent_identity(user):
+            raise serializers.ValidationError({"detail": "Set up your parent account before signing in here."})
+
         # Checked before any token is built so an unassigned account never
         # receives credentials.
-        if not has_assigned_role(user):
-            raise NoAssignedRole()
+        if not parent_workspace and not has_assigned_role(user):
+            # Credentials are still mandatory. This only admits a matching, delivered
+            # invitation into sign-in; school permissions stay denied until acceptance.
+            request = self.context.get("request")
+            invitation_token = request.data.get("parent_invitation") if request else None
+            if not invitation_token:
+                raise NoAssignedRole()
+            from users.parent_portal import validate_invitation_email
+            validate_invitation_email(token=invitation_token, email=user.email,
+                                      tenant=getattr(request, "tenant", None))
 
         refresh = self.get_token(user)
+        if parent_workspace:
+            refresh["parent_workspace"] = True
         data = {
             'refresh': str(refresh),
             'access': str(refresh.access_token),
@@ -540,7 +556,7 @@ class UserUpdateSerializer(PartialUpdateModelSerializer):
         """
         Only GLOBAL users can have user-level profile fields updated directly.
         For STUDENT/STAFF/PARENT, first_name/last_name/gender/photo remain sourced
-        from tenant records, but email updates are allowed and synchronized by view logic.
+        from tenant records, but email updates use the canonical identity-email service in the view.
         """
         if instance.account_type != UserAccountType.GLOBAL:
             for field in ['first_name', 'last_name', 'gender', 'photo']:
@@ -610,4 +626,3 @@ class UserRecreateSerializer(serializers.Serializer):
         if not attrs.get('id_number'):
             raise serializers.ValidationError({'id_number': 'id_number is required.'})
         return attrs
-

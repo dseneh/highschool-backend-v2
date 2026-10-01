@@ -19,12 +19,17 @@ class StudentContact(BaseModel):
         ("other", "Other"),
     ]
 
+    gender = models.CharField(max_length=10, blank=True, default="")
+    date_of_birth = models.DateField(null=True, blank=True)
+    portal_guardian_id = models.UUIDField(null=True, blank=True)
+
     student = models.ForeignKey(
         "students.Student",
         on_delete=models.CASCADE,
         related_name="contacts",
     )
     first_name = models.CharField(max_length=100)
+    middle_name = models.CharField(max_length=100, blank=True, default="")
     last_name = models.CharField(max_length=100)
     relationship = models.CharField(
         max_length=20,
@@ -54,7 +59,7 @@ class StudentContact(BaseModel):
 
     @property
     def full_name(self):
-        return f"{self.first_name} {self.last_name}"
+        return " ".join(part for part in [self.first_name, self.middle_name, self.last_name] if part)
 
     @property
     def default_photo(self):

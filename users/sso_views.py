@@ -95,8 +95,12 @@ def is_valid_tenant_redirect_uri(redirect_uri: str, tenant_slug: str) -> bool:
 
 
 def resolve_sso_user(request):
+    user = None
     if getattr(request, "user", None) and getattr(request.user, "is_authenticated", False):
-        return request.user, None
+        # Authenticate the identity independently of the source role selection.
+        # Destination membership and permissions are checked below.
+        from users.models import User
+        user = User.objects.filter(pk=request.user.pk, is_active=True, status=PersonStatus.ACTIVE).first()
 
     sso_cookie = None
     for cookie_name in CENTRAL_SSO_COOKIE_NAMES:
@@ -105,7 +109,7 @@ def resolve_sso_user(request):
             sso_cookie = candidate
             break
     if not sso_cookie:
-        return None, None
+        return user, None
 
     now = timezone.now()
     central_session = (
@@ -114,11 +118,15 @@ def resolve_sso_user(request):
             session_key_hash=hash_value(sso_cookie),
             revoked_at__isnull=True,
             expires_at__gt=now,
+            user__is_active=True,
+            user__status=PersonStatus.ACTIVE,
         )
         .first()
     )
     if not central_session:
-        return None, None
+        return user, None
+    if user and user.pk != central_session.user_id:
+        return user, None
     return central_session.user, central_session
 
 
@@ -127,6 +135,9 @@ def resolve_requested_tenant(requested_tenant: str):
     if not slug:
         return None
 
+    if slug in {"parent", "admin"}:
+        from django_tenants.utils import get_public_schema_name
+        slug = get_public_schema_name()
     tenant = Tenant.objects.filter(schema_name__iexact=slug).first()
     if tenant:
         return tenant
@@ -143,6 +154,19 @@ def resolve_requested_tenant(requested_tenant: str):
     return None
 
 
+class SsoSessionView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        from users.parent_workspace import parent_identity
+        user, central = resolve_sso_user(request)
+        response = Response({"authenticated": bool(user and central),
+                             "parent_available": bool(user and central and parent_identity(user))})
+        response["Cache-Control"] = "no-store"
+        return response
+
+
 class SsoBootstrapView(APIView):
     permission_classes = [IsAuthenticated]
     authentication_classes = [TenantAwareJWTAuthentication, TenantSessionAuthentication]
@@ -151,6 +175,19 @@ class SsoBootstrapView(APIView):
         serializer = SsoBootstrapSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+
+        # Reuse this browser's identity session without extending its lifetime.
+        for cookie_name in CENTRAL_SSO_COOKIE_NAMES:
+            raw = request.COOKIES.get(cookie_name)
+            if not raw:
+                continue
+            existing = CentralAuthSession.objects.filter(
+                session_key_hash=hash_value(raw), user=request.user,
+                revoked_at__isnull=True, expires_at__gt=timezone.now(),
+            ).first()
+            if existing:
+                return Response({"session_id": raw, "expires_at": existing.expires_at.isoformat(),
+                                 "central_session_id": str(existing.pk)})
 
         ttl_seconds = payload.get("ttl_seconds", 60 * 60 * 8)
         opaque_session_id = secrets.token_urlsafe(32)
@@ -249,7 +286,14 @@ class SsoAuthorizeView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if not user_has_tenant_workspace_access(auth_user, tenant):
+        from users.parent_workspace import parent_identity
+        parent_workspace = payload["tenant"].lower() == "parent"
+        parent_destination = (urlparse(payload["redirect_uri"]).hostname or "").lower().startswith("parent.")
+        if (parent_workspace and not is_valid_tenant_redirect_uri(payload["redirect_uri"], "parent")) or (parent_destination and not parent_workspace):
+            return Response({"detail": "Parent handoff destination mismatch."}, status=400)
+        if parent_workspace and not parent_identity(auth_user):
+            return Response({"detail": "Set up your parent account first."}, status=403)
+        if not parent_workspace and not user_has_tenant_workspace_access(auth_user, tenant):
             if _lacks_assigned_role(auth_user, tenant):
                 return Response(
                     {"detail": NO_ASSIGNED_ROLE_DETAIL, "error_code": NO_ASSIGNED_ROLE_CODE},
@@ -275,7 +319,7 @@ class SsoAuthorizeView(APIView):
             redirect_uri=payload["redirect_uri"],
             code_challenge=payload["code_challenge"],
             code_challenge_method=payload["code_challenge_method"],
-            requested_scopes=[],
+            requested_scopes=["parent_workspace"] if parent_workspace else [],
             return_to=return_to,
             expires_at=expires_at,
             auth_session=central_session,
@@ -310,7 +354,7 @@ class SsoTokenExchangeView(APIView):
 
         with transaction.atomic():
             code_obj = (
-                AuthorizationCode.objects.select_for_update()
+                AuthorizationCode.objects.select_for_update(of=("self",))
                 .select_related("user", "tenant", "client", "auth_session")
                 .filter(code_hash=code_hash)
                 .first()
@@ -391,7 +435,11 @@ class SsoTokenExchangeView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-            if not user_has_tenant_workspace_access(user, tenant):
+            from users.parent_workspace import parent_identity
+            parent_workspace = "parent_workspace" in code_obj.requested_scopes
+            if parent_workspace and not parent_identity(user):
+                return Response({"detail": "Parent account unavailable."}, status=403)
+            if not parent_workspace and not user_has_tenant_workspace_access(user, tenant):
                 if _lacks_assigned_role(user, tenant):
                     return Response(
                         {"detail": NO_ASSIGNED_ROLE_DETAIL, "error_code": NO_ASSIGNED_ROLE_CODE},
@@ -403,7 +451,7 @@ class SsoTokenExchangeView(APIView):
                 )
 
             auth_session = code_obj.auth_session
-            if auth_session and auth_session.revoked_at is not None:
+            if auth_session and (auth_session.revoked_at is not None or auth_session.expires_at <= now):
                 return Response(
                     {"detail": "Global session revoked.", "error_code": "GLOBAL_SESSION_REVOKED"},
                     status=status.HTTP_403_FORBIDDEN,
@@ -420,13 +468,15 @@ class SsoTokenExchangeView(APIView):
 
             from authorization.runtime import resolve_authorization_context
 
-            authorization_context = resolve_authorization_context(user)
+            from django_tenants.utils import schema_context
+            with schema_context(tenant.schema_name):
+                authorization_context = resolve_authorization_context(user)
             tenant_session = TenantSession.objects.create(
                 session_key_hash=hash_value(secrets.token_urlsafe(48)),
                 user=user,
                 tenant=tenant,
                 membership_id="",
-                roles=[authorization_context.role_id] if authorization_context.role_id else [],
+                roles=["parent_workspace"] if parent_workspace else ([authorization_context.role_id] if authorization_context.role_id else []),
                 permission_version=1,
                 refresh_token_family=token_family,
                 global_session=auth_session,
@@ -436,6 +486,9 @@ class SsoTokenExchangeView(APIView):
             )
 
             refresh = RefreshToken.for_user(user)
+            refresh["security_version"] = int(user.security_version)
+            if parent_workspace:
+                refresh["parent_workspace"] = True
             refresh["tenant_id"] = str(tenant.id)
             refresh["membership_id"] = ""
             refresh["session_id"] = str(tenant_session.id)
@@ -471,6 +524,7 @@ class SsoTokenExchangeView(APIView):
                 "token_type": "Bearer",
                 "expires_in": int(access.lifetime.total_seconds()),
                 "tenant_session_id": str(tenant_session.id),
+                "parent_workspace": parent_workspace,
             },
             status=status.HTTP_200_OK,
         )
@@ -552,6 +606,9 @@ class SsoRefreshView(APIView):
             refresh_record.save(update_fields=["rotated_at"])
 
             rotated_refresh = RefreshToken.for_user(user)
+            rotated_refresh["security_version"] = int(user.security_version)
+            if "parent_workspace" in tenant_session.roles:
+                rotated_refresh["parent_workspace"] = True
             rotated_refresh["tenant_id"] = str(tenant.id)
             rotated_refresh["membership_id"] = tenant_session.membership_id or ""
             rotated_refresh["session_id"] = str(tenant_session.id)
@@ -648,6 +705,10 @@ class GlobalLogoutView(APIView):
         central_query = CentralAuthSession.objects.filter(user=request.user, revoked_at__isnull=True)
         if central_session_id:
             central_query = central_query.filter(id=central_session_id)
+        else:
+            raw = next((request.COOKIES.get(name) for name in CENTRAL_SSO_COOKIE_NAMES if request.COOKIES.get(name)), None)
+            if raw:
+                central_query = central_query.filter(session_key_hash=hash_value(raw))
 
         central_session = central_query.order_by("-created_at").first()
         if not central_session:

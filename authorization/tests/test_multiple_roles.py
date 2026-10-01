@@ -181,8 +181,12 @@ class MultipleRolesTests(TenantTestCase):
         from students.models import Student, StudentGuardian
         student = Student.objects.create(first_name="Mary", last_name="Doe", id_number="99001",
             entry_as="new", school_code=1, student_seq=99001)
+        from users.models import ParentProfile
+        from django.utils import timezone
+        profile = ParentProfile.objects.create(user=self.user)
         StudentGuardian.objects.create(student=student, first_name="Jane", last_name="Doe",
-            user_account_id_number=self.user.id_number, active=True)
+            user_account_id_number=self.user.id_number, active=True, parent_profile_id=profile.pk,
+            portal_state="active", portal_verified_at=timezone.now(), portal_approved_at=timezone.now())
         with self.assertRaisesMessage(ValidationError, "active guardian links"):
             revoke_role(user=self.user, assignment_id=self.parent_assignment.pk, actor=self.tenant.owner)
 

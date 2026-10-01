@@ -68,6 +68,15 @@ class EnrollmentListSerializer(PartialUpdateModelSerializer):
         include_payment_plan = context.get("include_payment_plan", True)
         include_payment_status = context.get("include_payment_status", True)
 
+        request = context.get("request")
+        if request:
+            from authorization.services import get_assigned_role
+            from students.authorization import permission_scope
+
+            role = get_assigned_role(request.user)
+            if role and role.system_key == "parent":
+                include_billing = include_billing and bool(permission_scope(request, "billing.view"))
+
         if include_billing:
             response["billing_summary"] = get_enrollment_bill_summary(
                 instance,

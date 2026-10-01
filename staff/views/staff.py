@@ -223,7 +223,11 @@ class StaffViewSet(PartialUpdateModelViewSet):
                 prepared_data,
                 context={"request": request},
             )
-            updated_staff = update_serializer.save(updated_by=request.user)
+            from django.db import transaction
+            from users.identity_email import sync_record_email
+            with transaction.atomic():
+                sync_record_email(staff, update_serializer.validated_data, request)
+                updated_staff = update_serializer.save(updated_by=request.user)
             
             if not updated_staff:
                 return Response({"error": "Staff not found"}, status=404)

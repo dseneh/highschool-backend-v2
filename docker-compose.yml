@@ -3,6 +3,8 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine
+    # Shared user deletion checks foreign keys in every tenant schema.
+    command: ["postgres", "-c", "max_locks_per_transaction=512"]
     container_name: backend_v2_postgres
     environment:
       POSTGRES_DB: highschool_v2

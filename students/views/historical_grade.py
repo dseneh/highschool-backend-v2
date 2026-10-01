@@ -292,6 +292,13 @@ class HistoricalGradeRecordListView(APIView):
             .order_by("-created_at")
         )
 
+        from authorization.services import get_assigned_role
+        role = get_assigned_role(request.user)
+        if role and role.system_key == "parent":
+            from grading.services.grade_access import enforce_grade_access
+            enforce_grade_access(student)
+            records = records.filter(status="verified", active=True)
+
         academic_year_id = request.query_params.get("academic_year_id")
         if academic_year_id:
             records = records.filter(academic_year_id=academic_year_id)

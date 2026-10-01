@@ -1,6 +1,8 @@
+> Current enrollment flow: [Account setup and parent access](account-setup-and-parent-access.md) replaces invitations with verified self-service setup and school Give access approval. Invitation sections below describe the earlier implementation.
+
 # Parent portal foundation
 
-Status: implementation plan; parent portal endpoints and screens are not yet implemented.
+Status: foundation specification. Implementation and rollout notes are in [parent-portal-implementation.md](parent-portal-implementation.md).
 
 ## Existing foundation
 

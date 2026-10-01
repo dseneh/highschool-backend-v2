@@ -475,7 +475,7 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             
             if tenant_header:
                 # Special case: admin/public are aliases for the public schema.
-                if tenant_header.lower() in {'admin', 'public'}:
+                if tenant_header.lower() in {'admin', 'public', 'parent'}:
                     try:
                         public_schema = get_public_schema_name()
                         return Tenant.objects.get(schema_name=public_schema)

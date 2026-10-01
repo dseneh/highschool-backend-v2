@@ -31,8 +31,10 @@ class User(UserProfile):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     username = models.CharField(max_length=150, unique=True, null=True, blank=True, help_text="Optional username for login")
     first_name = models.CharField(max_length=100, blank=True)
+    middle_name = models.CharField(max_length=100, blank=True, default="")
     last_name = models.CharField(max_length=100, blank=True)
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female')], default='male')
+    date_of_birth = models.DateField(null=True, blank=True)
     id_number = models.CharField(max_length=50, unique=True)
     account_type = models.CharField(max_length=20, choices=UserAccountType.choices(), default=UserAccountType.OTHER, help_text="Identity category only: global, staff, student, parent, or other. Authorization is tenant RBAC.")
     status = models.CharField(max_length=20, choices=PersonStatus.choices(), default=PersonStatus.ACTIVE, help_text="User status: ACTIVE (default), INACTIVE, SUSPENDED, DELETED, etc.")
@@ -95,23 +97,16 @@ class User(UserProfile):
             return None
 
     def get_children(self):
-        if not self.is_parent_user:
-            return None
-        try:
-            from students.models import Student, StudentGuardian
-            student_ids = StudentGuardian.objects.filter(email=self.email).values_list('student_id', flat=True)
-            return Student.objects.filter(id__in=student_ids)
-        except Exception:
-            return None
+        from students.models import Student
+        from users.parent_portal import verified_guardians
+        return Student.objects.filter(pk__in=verified_guardians(self).values("student_id"))
 
     def get_guardian_records(self):
-        if not self.is_parent_user:
-            return None
-        try:
-            from students.models import StudentGuardian
-            return StudentGuardian.objects.filter(email=self.email)
-        except Exception:
-            return None
+        from users.parent_portal import verified_guardians
+        return verified_guardians(self)
 
 
 # Tenant authorization roles and grants are modeled by the authorization app.
+
+from .parent_models import ParentProfile, ParentStudentLink, ParentInvitation  # noqa: E402,F401
+from .account_setup_models import AccountSetupChallenge, VerifiedAccountEmail, ParentSchoolRegistration, ParentLinkRequest  # noqa: E402,F401

@@ -43,6 +43,14 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         return initialize_request_authorization(request, user).context.unrestricted
 
     def has_permission(self, request, view) -> bool:
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name
+        from authorization.services import get_assigned_role
+        if self._get_user(request) and connection.schema_name != get_public_schema_name():
+            role = get_assigned_role(request.user)
+            if role and role.system_key == "parent" and view.__class__.__module__.split(".")[0] in {"students", "grading", "finance", "reports", "hr", "academics"}:
+                from users.parent_student_access import parent_student_read_allowed
+                return parent_student_read_allowed(request, view)
         if self._has_unrestricted_access(request):
             return True
         return super().has_permission(request, view)

@@ -15,6 +15,10 @@ PASSWORD = "role-required-pass-123"
 
 class RoleRequiredLoginTests(TenantTestCase):
     @classmethod
+    def get_test_schema_name(cls):
+        return "parent_role_login_test"
+
+    @classmethod
     def setup_tenant(cls, tenant):
         from users.models import User
 

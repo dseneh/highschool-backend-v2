@@ -11,6 +11,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .access_policies import HRAccessPolicy
+from authorization.drf import RBACPermission
 
 from .models import (
     Employee,
@@ -403,6 +404,21 @@ class EmployeePerformanceReviewViewSet(PartialUpdateModelViewSet):
 class EmployeeViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeeSerializer
     permission_classes = [HRAccessPolicy]
+    permission_map = {"lookup_sources": "employees.create", "lookup_profile": "employees.create"}
+
+    @action(detail=False, methods=["get"], url_path="lookup-sources", permission_classes=[RBACPermission])
+    def lookup_sources(self, request):
+        from .employee_lookup import available_sources
+        response = Response(available_sources(request.user))
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=False, methods=["post"], url_path="lookup-profile", permission_classes=[RBACPermission])
+    def lookup_profile(self, request):
+        from .employee_lookup import lookup_profile
+        response = Response(lookup_profile(request.user, request.data))
+        response["Cache-Control"] = "no-store"
+        return response
 
     @action(detail=False, methods=["get"])
     def me(self, request):
@@ -454,7 +470,11 @@ class EmployeeViewSet(PartialUpdateModelViewSet):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
     def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
+        from django.db import transaction
+        from users.identity_email import sync_record_email
+        with transaction.atomic():
+            sync_record_email(serializer.instance, serializer.validated_data, self.request)
+            serializer.save(updated_by=self.request.user)
 
     def get_object(self):
         """Look up employees by either UUID ``id`` or ``id_number``.

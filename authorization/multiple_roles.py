@@ -59,11 +59,16 @@ def selected_assignment(user, selection=None):
 
 def parent_removal_reason(user):
     from students.models import StudentGuardian
-    if StudentGuardian.objects.filter(user_account_id_number=user.id_number, active=True).exists():
+    from users.parent_portal import verified_guardians
+    if verified_guardians(user).exists():
         return "Parent access is required by active guardian links in this school. Manage those links before revoking this role."
     # Legacy parent accounts may predate reliable guardian linking. Preserve their
     # fixed role until the guardian migration can establish their eligibility.
-    if str(user.account_type).lower() == "parent":
+    from users.models import ParentProfile
+    if str(user.account_type).lower() == "parent" and (
+        not ParentProfile.objects.filter(user=user).exists()
+        or StudentGuardian.objects.filter(user_account_id_number=user.id_number, active=True, portal_state="unverified").exists()
+    ):
         return "This parent account's base role is protected. Resolve its guardian access before revoking Parent."
     return None
 
