@@ -17,7 +17,13 @@ from core.services.tenant_clone import (
 	resolve_modules,
 	run_tenant_creation_job,
 )
-from core.models import Tenant, TenantCreationJob
+from core.models import Tenant, TenantCreationJob, generate_unique_id_number
+
+
+class TenantIdNumberTests(SimpleTestCase):
+	@patch("core.models.Tenant.objects.values_list", return_value=["01001", "Z-LEGACY"])
+	def test_non_numeric_legacy_ids_do_not_reset_sequence(self, _values):
+		self.assertEqual(generate_unique_id_number(), "01002")
 
 
 class GradingBypassOutcomeValidationTests(SimpleTestCase):
@@ -136,6 +142,14 @@ class TenantCloneModuleTests(SimpleTestCase):
 
 class TenantCloneIntegrationTests(TenantTestCase):
 	"""Exercises ID remapping and transaction boundaries across real schemas."""
+
+	@classmethod
+	def get_test_schema_name(cls):
+		return "clone_integration_test"
+
+	@classmethod
+	def get_test_tenant_domain(cls):
+		return "clone.tenant.test.com"
 
 	@classmethod
 	def setup_tenant(cls, tenant):
