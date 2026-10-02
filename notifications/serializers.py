@@ -1,3 +1,5 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from notifications.models import (
@@ -9,7 +11,7 @@ from notifications.models import (
 )
 
 
-class NotificationSerializer(serializers.ModelSerializer):
+class NotificationSerializer(PartialUpdateModelSerializer):
     title = serializers.CharField(source="campaign.title", read_only=True)
     body = serializers.CharField(source="campaign.body", read_only=True)
     category = serializers.CharField(source="campaign.category", read_only=True)
@@ -57,7 +59,7 @@ class NotificationMarkReadSerializer(serializers.Serializer):
     read = serializers.BooleanField(default=True)
 
 
-class NotificationCampaignSerializer(serializers.ModelSerializer):
+class NotificationCampaignSerializer(PartialUpdateModelSerializer):
     created_by_name = serializers.SerializerMethodField()
     delivery_stats = serializers.SerializerMethodField()
 
@@ -197,7 +199,7 @@ class PaymentReminderSendSerializer(serializers.Serializer):
         return attrs
 
 
-class BannerNotificationSerializer(serializers.ModelSerializer):
+class BannerNotificationSerializer(PartialUpdateModelSerializer):
     """Compact representation tailored to the header banner host."""
 
     campaign_id = serializers.UUIDField(source="campaign.id", read_only=True)
@@ -233,7 +235,7 @@ class BannerNotificationSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class AnnouncementSerializer(serializers.ModelSerializer):
+class AnnouncementSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = NotificationCampaign
         fields = [
@@ -247,7 +249,7 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         ]
 
 
-class NotificationRuleSerializer(serializers.ModelSerializer):
+class NotificationRuleSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = NotificationRule
         fields = [
@@ -267,14 +269,14 @@ class NotificationRuleSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "event_type", "created_at", "updated_at"]
 
 
-class UserNotificationPreferenceSerializer(serializers.ModelSerializer):
+class UserNotificationPreferenceSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = UserNotificationPreference
         fields = ["id", "email_enabled", "muted_categories"]
         read_only_fields = ["id"]
 
 
-class TenantNotificationSettingsSerializer(serializers.ModelSerializer):
+class TenantNotificationSettingsSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = TenantNotificationSettings
         fields = ["id", "grade_publish_enabled", "payment_reminder_lead_days"]

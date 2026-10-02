@@ -26,24 +26,14 @@ def generate_unique_id_number():
     Generate a unique sequential ID number for tenants starting from 01001.
     Format: 01001, 01002, 01003, etc.
     """
-    from django.db import models
-    # Get the highest existing id_number
-    max_id = Tenant.objects.aggregate(
-        max_id=models.Max('id_number')
-    )['max_id']
-    
-    if max_id:
-        try:
-            # Increment the highest ID
-            next_id = int(max_id) + 1
-        except (ValueError, TypeError):
-            # If conversion fails, start from 01001
-            next_id = 1001
-    else:
-        # First tenant, start from 01001
-        next_id = 1001
-    
-    return str(next_id).zfill(5)  # Pad with zeros to make it 5 digits (01001)
+    # IDs are text; a non-numeric legacy value can sort after "01001" and
+    # must not reset the sequence to an already-used value.
+    numeric_ids = (
+        int(value)
+        for value in Tenant.objects.values_list("id_number", flat=True)
+        if value and value.isdigit()
+    )
+    return str(max(numeric_ids, default=1000) + 1).zfill(5)
 
 
 def tenant_logo_upload_path(instance, filename):
@@ -909,3 +899,13 @@ class TenantOwnerActivationCode(models.Model):
 
     def __str__(self):
         return f"{self.tenant.schema_name} / {self.user.email or self.user.id_number} / {self.purpose}"
+
+
+class PlatformAuthAppearance(models.Model):
+    """Singleton shared settings; only presentation choices are public."""
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    default_layout = models.CharField(max_length=16, default="classic")
+    workspace_layout = models.CharField(max_length=16, blank=True, default="")
+    parent_layout = models.CharField(max_length=16, blank=True, default="")
+    background_settings = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)

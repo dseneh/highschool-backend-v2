@@ -1,3 +1,5 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from academics.services.school_days import get_academic_year_duration
@@ -6,7 +8,7 @@ from common.utils import get_enrollment_bill_summary
 from ..models import Enrollment
 
 
-class EnrollmentListSerializer(serializers.ModelSerializer):
+class EnrollmentListSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Enrollment
         depth = 1
@@ -66,6 +68,15 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
         include_payment_plan = context.get("include_payment_plan", True)
         include_payment_status = context.get("include_payment_status", True)
 
+        request = context.get("request")
+        if request:
+            from authorization.services import get_assigned_role
+            from students.authorization import permission_scope
+
+            role = get_assigned_role(request.user)
+            if role and role.system_key == "parent":
+                include_billing = include_billing and bool(permission_scope(request, "billing.view"))
+
         if include_billing:
             response["billing_summary"] = get_enrollment_bill_summary(
                 instance,
@@ -75,7 +86,7 @@ class EnrollmentListSerializer(serializers.ModelSerializer):
         return response
 
 
-class EnrollmentSerializer(serializers.ModelSerializer):
+class EnrollmentSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Enrollment
         fields = [

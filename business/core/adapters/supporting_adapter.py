@@ -6,6 +6,7 @@ SectionSchedule, SectionSubject, and GradeLevelTuitionFee.
 Business logic should NOT be in this file - only database interactions.
 """
 
+from decimal import Decimal, InvalidOperation
 from typing import Optional, List, Dict, Any
 from django.db import transaction
 from django.db.models import Q
@@ -65,9 +66,17 @@ def bulk_update_tuition_fees(grade_level: GradeLevel, fee_updates: List[Dict[str
         
         try:
             tuition_fee = GradeLevelTuitionFee.objects.get(id=fee_id, grade_level=grade_level)
-            tuition_fee.amount = amount
-            tuition_fee.updated_by = user
-            tuition_fee.save()
+            try:
+                normalized_amount = Decimal(str(amount))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if tuition_fee.amount == normalized_amount:
+                continue
+            from common.update_utils import validate_model_update
+            update_serializer = validate_model_update(
+                tuition_fee, {"amount": normalized_amount}, ["amount"]
+            )
+            update_serializer.save(updated_by=user)
             updated_fees.append(tuition_fee)
         except GradeLevelTuitionFee.DoesNotExist:
             continue

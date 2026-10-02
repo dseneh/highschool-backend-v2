@@ -7,6 +7,10 @@ from django.db.models import Sum
 from rest_framework.exceptions import PermissionDenied
 
 
+class OutstandingBalanceGradeRestriction(PermissionDenied):
+    error_code = "grades_restricted_outstanding_balance"
+
+
 def get_student_year_outstanding_balance(student, academic_year) -> Decimal:
     """Return the student's current-year bill balance without touching prior ledgers."""
     from accounting.models import AccountingStudentBill
@@ -34,10 +38,10 @@ def enforce_grade_access(student, academic_year=None) -> None:
     if outstanding_balance <= Decimal("0"):
         return
 
-    raise PermissionDenied(
+    raise OutstandingBalanceGradeRestriction(
         {
+            "detail": "Grades are currently unavailable because this student has an outstanding balance. Please contact the school about payment or balance corrections.",
             "code": "grades_restricted_outstanding_balance",
-            "detail": "Grades are currently unavailable because this student has an outstanding balance.",
             "outstanding_balance": str(outstanding_balance.quantize(Decimal("0.01"))),
             "currency": getattr(getattr(academic_year, "currency", None), "code", None),
         }

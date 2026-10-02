@@ -43,17 +43,13 @@ def filter_students_for_permission_scope(
     if scope == "all":
         return queryset
     if scope == "own":
-        from students.models import StudentGuardian
-
         user_id_number = getattr(request.user, "id_number", "")
-        guardian_student_ids = StudentGuardian.objects.filter(
-            user_account_id_number=user_id_number,
-            active=True,
-        ).values("student_id")
-        return queryset.filter(
-            Q(user_account_id_number=user_id_number)
-            | Q(id__in=guardian_student_ids)
-        ).distinct()
+        from authorization.services import get_assigned_role
+        from users.parent_portal import verified_guardians
+        role = get_assigned_role(request.user)
+        if role and role.system_key == "parent":
+            return queryset.filter(pk__in=verified_guardians(request.user).values("student_id"))
+        return queryset.filter(user_account_id_number=user_id_number)
     if scope == "assigned":
         from hr.models import Employee, EmployeeTeacherSection
         from staff.models import Staff, TeacherSection

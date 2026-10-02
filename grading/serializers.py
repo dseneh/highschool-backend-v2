@@ -1,3 +1,5 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 from math import ceil
 from .models import (
@@ -120,7 +122,7 @@ def get_latest_active_teacher_assignment(section_subject):
     )
 
 
-class AssessmentTypeOut(serializers.ModelSerializer):
+class AssessmentTypeOut(PartialUpdateModelSerializer):
     class Meta:
         model = AssessmentType
         fields = [
@@ -134,7 +136,7 @@ class AssessmentTypeOut(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class GradeBookOut(serializers.ModelSerializer):
+class GradeBookOut(PartialUpdateModelSerializer):
 
     class Meta:
         model = GradeBook
@@ -206,7 +208,7 @@ class GradeBookOut(serializers.ModelSerializer):
         return response
 
 
-class AssessmentOut(serializers.ModelSerializer):
+class AssessmentOut(PartialUpdateModelSerializer):
     gradebook = serializers.SerializerMethodField()
     assessment_type = serializers.SerializerMethodField()
     marking_period = serializers.SerializerMethodField()
@@ -392,7 +394,7 @@ class AssessmentOut(serializers.ModelSerializer):
         return stats
 
 
-class GradeOut(serializers.ModelSerializer):
+class GradeOut(PartialUpdateModelSerializer):
     assessment = serializers.SerializerMethodField()
     student = serializers.SerializerMethodField()
     section = serializers.SerializerMethodField()
@@ -444,7 +446,7 @@ class GradeOut(serializers.ModelSerializer):
         return get_condition_status_code(obj.condition_status, obj.condition_reason)
 
 
-class AssessmentsWithGradeOut(serializers.ModelSerializer):
+class AssessmentsWithGradeOut(PartialUpdateModelSerializer):
     """Grade item serializer that includes student's grade and percentage"""
 
     student_grade = serializers.SerializerMethodField()
@@ -1058,7 +1060,7 @@ class SectionFinalGradesOut(serializers.Serializer):
         return response
 
 
-class GradeLetterOut(serializers.ModelSerializer):
+class GradeLetterOut(PartialUpdateModelSerializer):
     """Serializer for grade letters"""
 
     min_percentage = serializers.SerializerMethodField()
@@ -1095,7 +1097,7 @@ class GradeLetterOut(serializers.ModelSerializer):
         )
 
 
-class HonorCategoryOut(serializers.ModelSerializer):
+class HonorCategoryOut(PartialUpdateModelSerializer):
     """Serializer for honor categories used on the dashboard."""
 
     min_average = serializers.SerializerMethodField()
@@ -1780,7 +1782,7 @@ class StudentMarkingPeriodGradesOut(serializers.Serializer):
 # ============================================================================
 
 
-class DefaultAssessmentTemplateOut(serializers.ModelSerializer):
+class DefaultAssessmentTemplateOut(PartialUpdateModelSerializer):
     """Serializer for DefaultAssessmentTemplate (read-only)"""
 
     assessment_type = serializers.SerializerMethodField()
@@ -1825,7 +1827,7 @@ class DefaultAssessmentTemplateOut(serializers.ModelSerializer):
         return response
 
 
-class DefaultAssessmentTemplateIn(serializers.ModelSerializer):
+class DefaultAssessmentTemplateIn(PartialUpdateModelSerializer):
     """Serializer for creating/updating DefaultAssessmentTemplate"""
 
     class Meta:

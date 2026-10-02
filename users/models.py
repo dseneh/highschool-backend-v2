@@ -7,6 +7,7 @@ Reference: https://django-tenant-users.readthedocs.io/en/latest/pages/installati
 
 import uuid
 from django.db import models
+from django.db.models.functions import Lower, Trim
 from django.contrib.auth.models import Group, Permission
 from tenant_users.tenants.models import UserProfile
 from core.validators import ValidateImageFile
@@ -31,8 +32,10 @@ class User(UserProfile):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     username = models.CharField(max_length=150, unique=True, null=True, blank=True, help_text="Optional username for login")
     first_name = models.CharField(max_length=100, blank=True)
+    middle_name = models.CharField(max_length=100, blank=True, default="")
     last_name = models.CharField(max_length=100, blank=True)
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female')], default='male')
+    date_of_birth = models.DateField(null=True, blank=True)
     id_number = models.CharField(max_length=50, unique=True)
     account_type = models.CharField(max_length=20, choices=UserAccountType.choices(), default=UserAccountType.OTHER, help_text="Identity category only: global, staff, student, parent, or other. Authorization is tenant RBAC.")
     status = models.CharField(max_length=20, choices=PersonStatus.choices(), default=PersonStatus.ACTIVE, help_text="User status: ACTIVE (default), INACTIVE, SUSPENDED, DELETED, etc.")
@@ -55,13 +58,17 @@ class User(UserProfile):
         db_table = "user"
         verbose_name = "User"
         verbose_name_plural = "Users"
+        constraints = [
+            models.UniqueConstraint(Lower(Trim("email")), name="unique_normalized_user_email"),
+        ]
 
     def __str__(self):
         return self.email or self.username or self.id_number or str(self.id)
 
     @property
     def is_admin(self) -> bool:
-        return bool(self.is_platform_superuser)
+        from users.tenant_access import is_global_superadmin
+        return is_global_superadmin(self)
 
     @property
     def is_staff_user(self) -> bool:
@@ -94,27 +101,16 @@ class User(UserProfile):
             return None
 
     def get_children(self):
-        if not self.is_parent_user:
-            return None
-        try:
-            from students.models import Student, StudentGuardian
-            student_ids = StudentGuardian.objects.filter(email=self.email).values_list('student_id', flat=True)
-            return Student.objects.filter(id__in=student_ids)
-        except Exception:
-            return None
+        from students.models import Student
+        from users.parent_portal import verified_guardians
+        return Student.objects.filter(pk__in=verified_guardians(self).values("student_id"))
 
     def get_guardian_records(self):
-        if not self.is_parent_user:
-            return None
-        try:
-            from students.models import StudentGuardian
-            return StudentGuardian.objects.filter(email=self.email)
-        except Exception:
-            return None
+        from users.parent_portal import verified_guardians
+        return verified_guardians(self)
 
 
 # Tenant authorization roles and grants are modeled by the authorization app.
-
 
 class EmailMFAChallenge(models.Model):
     """Single-use email challenge issued before privileged JWT login."""
@@ -177,3 +173,7 @@ class EmailMFARecovery(models.Model):
         indexes = [
             models.Index(fields=("user", "tenant_schema", "created_at"), name="user_mfa_recovery_idx"),
         ]
+
+from .parent_models import ParentProfile, ParentStudentLink, ParentInvitation  # noqa: E402,F401
+from .account_setup_models import AccountSetupChallenge, VerifiedAccountEmail, ParentSchoolRegistration, ParentLinkRequest  # noqa: E402,F401
+from .account_setup_models import SchoolUserAccess  # noqa: E402,F401

@@ -21,6 +21,7 @@ class TenantSessionAuthenticationTests(SimpleTestCase):
         session_obj = SimpleNamespace(
             user=user,
             tenant=tenant,
+            roles=[],
             revoked_at=None,
             expires_at=timezone.now() + timedelta(hours=1),
         )
@@ -44,6 +45,7 @@ class TenantSessionAuthenticationTests(SimpleTestCase):
         session_obj = SimpleNamespace(
             user=user,
             tenant=tenant,
+            roles=[],
             revoked_at=None,
             expires_at=timezone.now() + timedelta(hours=1),
         )

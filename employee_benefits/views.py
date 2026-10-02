@@ -1,5 +1,8 @@
+from common.update_utils import validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.db.models import Count
-from rest_framework import filters, status, viewsets
+from rest_framework import filters, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -43,7 +46,7 @@ from .services import (
 from .settings_services import get_tenant_benefit_settings
 
 
-class BaseBenefitViewSet(viewsets.ModelViewSet):
+class BaseBenefitViewSet(PartialUpdateModelViewSet):
     permission_classes = [EmployeeBenefitsAccessPolicy]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
 
@@ -301,7 +304,6 @@ class BenefitSettingsView(APIView):
 
     def patch(self, request):
         settings = get_tenant_benefit_settings()
-        serializer = BenefitSettingsSerializer(settings, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(BenefitSettingsSerializer, settings, request.data)
         serializer.save(updated_by=request.user)
         return Response(serializer.data)

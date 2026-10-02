@@ -1,12 +1,12 @@
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from django.db import transaction
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from ..access_policies import StudentGuardianAccessPolicy
 from students.authorization import user_can_access_student_for_permission
 
 from common.utils import (
-    create_model_data,
     get_object_by_uuid_or_fields,
     update_model_fields,
     validate_required_fields,
@@ -15,6 +15,18 @@ from common.status import StudentStatus
 
 from ..models import Student, StudentGuardian
 from ..serializers import StudentGuardianSerializer
+
+
+def requested_access(request):
+    if "give_access" not in request.data:
+        return None
+    enabled = request.data["give_access"]
+    if not isinstance(enabled, bool):
+        raise ValidationError({"give_access": "Use true or false."})
+    from students.authorization import permission_scope
+    if permission_scope(request, "students.guardians.manage") not in {"all", "assigned"}:
+        raise PermissionDenied("School guardian-management permission is required.")
+    return enabled
 
 
 class StudentGuardianListView(APIView):
@@ -32,9 +44,10 @@ class StudentGuardianListView(APIView):
         ):
             raise PermissionDenied("You cannot view guardians for this student.")
         guardians = student.guardians.all()
-        serializer = StudentGuardianSerializer(guardians, many=True)
+        serializer = StudentGuardianSerializer(guardians, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @transaction.atomic
     def post(self, request, student_id):
         student = self.get_student(student_id)
         if not user_can_access_student_for_permission(
@@ -74,9 +87,13 @@ class StudentGuardianListView(APIView):
             "created_by": request.user,
         }
 
-        return create_model_data(
-            request, data, StudentGuardian, StudentGuardianSerializer
-        )
+        enabled = requested_access(request)
+        guardian = StudentGuardian.objects.create(**data)
+        if enabled:
+            from users.account_setup import set_guardian_access
+            set_guardian_access(request.tenant, guardian, request.user, True)
+            guardian.refresh_from_db()
+        return Response(StudentGuardianSerializer(guardian, context={"request": request}).data, status=201)
 
 
 class StudentGuardianDetailView(APIView):
@@ -119,9 +136,19 @@ class StudentGuardianDetailView(APIView):
             "notes",
         ]
 
-        serializer = update_model_fields(
-            request, guardian, allowed_fields, StudentGuardianSerializer
-        )
+        from users.identity_email import sync_record_email
+        data = request.data.copy()
+        enabled = requested_access(request)
+        with transaction.atomic():
+            sync_record_email(guardian, data, request)
+            serializer = update_model_fields(
+                request, guardian, allowed_fields, StudentGuardianSerializer, data=data
+            )
+            if enabled is not None and enabled != guardian.give_access:
+                from users.account_setup import set_guardian_access
+                set_guardian_access(request.tenant, guardian, request.user, enabled)
+                guardian.refresh_from_db()
+                return Response(StudentGuardianSerializer(guardian, context={"request": request}).data)
         return serializer
 
     def delete(self, request, id):
@@ -132,5 +159,18 @@ class StudentGuardianDetailView(APIView):
             "students.guardians.manage",
         ):
             raise PermissionDenied("You cannot delete this guardian.")
-        guardian.delete()
+        # Explicit deletion is separate from the legacy disconnect behavior.
+        if getattr(request, "query_params", {}).get("delete_record") == "true":
+            from students.models import StudentContact
+            from users.parent_portal import end_link
+            with transaction.atomic():
+                end_link(tenant=request.tenant, guardian_id=guardian.pk, actor=request.user)
+                StudentContact.objects.filter(student=guardian.student, portal_guardian_id=guardian.pk).delete()
+                guardian.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        if guardian.give_access or guardian.parent_profile_id or guardian.portal_state != "unverified":
+            from users.parent_portal import end_link
+            end_link(tenant=request.tenant, guardian_id=guardian.pk, actor=request.user)
+        else:
+            guardian.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

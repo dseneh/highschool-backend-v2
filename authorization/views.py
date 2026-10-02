@@ -1,3 +1,7 @@
+from common.update_utils import validate_partial_update
+
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Prefetch
 from django_tenants.utils import get_public_schema_name, schema_context
@@ -11,7 +15,7 @@ from rest_framework.views import APIView
 
 from authorization.constants import SUPERADMIN_ROLE_KEYS
 from authorization.drf import RBACPermission
-from authorization.models import Role, RolePermission, TenantMembership
+from authorization.models import Role, RolePermission, TenantMembership, TenantRoleAssignment
 from authorization.registry import get_permission_registry, get_platform_permission_registry
 from authorization.serializers import (
     BulkUserRoleAssignmentSerializer,
@@ -114,7 +118,7 @@ class PermissionCatalogView(TenantAuthorizationMixin, APIView):
         )
 
 
-class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
+class RoleViewSet(TenantAuthorizationMixin, PartialUpdateModelViewSet):
     permission_classes = [RBACPermission]
     permission_map = {
         "list": "roles.view",
@@ -143,7 +147,7 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
         if connection.schema_name == get_public_schema_name():
             return Role.objects.none()
         queryset = (
-            Role.objects.annotate(user_count=Count("memberships"))
+            Role.objects.annotate(user_count=Count("assignments"))
             .prefetch_related(
                 Prefetch(
                     "permission_grants",
@@ -214,9 +218,8 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
-        partial = kwargs.pop("partial", False)
-        serializer = RoleUpdateSerializer(data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        role = self.get_object()
+        serializer = validate_partial_update(RoleUpdateSerializer, role, request.data)
         _require_permission_assignment(
             request,
             serializer.validated_data.get("permissions"),
@@ -225,7 +228,7 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
             changes = dict(serializer.validated_data)
             permissions = changes.pop("permissions", None)
             role = update_role(
-                role=self.get_object(),
+                role=role,
                 changes=changes,
                 actor=request.user,
                 metadata=_metadata(request),
@@ -342,7 +345,8 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
             shared_role = None
         if shared_role is not None:
             memberships = TenantMembership.objects.filter(
-                shared_role_id=shared_role.pk,
+                role_assignments__role_key=(f"system:{shared_role.system_key}" if shared_role.system_key else f"core.sharedrole:{shared_role.pk}"),
+                role_assignments__is_active=True,
                 is_active=True,
             ).select_related("user")
             return Response(
@@ -364,7 +368,7 @@ class RoleViewSet(TenantAuthorizationMixin, viewsets.ModelViewSet):
             )
 
         role = self.get_object()
-        memberships = TenantMembership.objects.filter(role=role).select_related("user")
+        memberships = TenantMembership.objects.filter(role_assignments__role=role, role_assignments__is_active=True).select_related("user")
         return Response(
             {
                 "count": memberships.count(),
@@ -395,6 +399,8 @@ class UserRoleView(TenantAuthorizationMixin, APIView):
 
     def get_permissions(self):
         if connection.schema_name == get_public_schema_name() and self.request.method in {"GET", "PUT", "POST"}:
+            return [IsAuthenticated()]
+        if self.request.method == "GET" and str(self.kwargs.get("id_number")) == str(getattr(self.request.user, "id_number", "")):
             return [IsAuthenticated()]
         return super().get_permissions()
 
@@ -449,31 +455,10 @@ class UserRoleView(TenantAuthorizationMixin, APIView):
             ).first()
             return Response(self._public_assignment_payload(user, assignment))
 
+        from authorization.multiple_roles import user_assignments_payload
         user = self._user(id_number)
-        membership = TenantMembership.objects.select_related("role").filter(user=user).first()
-        if membership and membership.shared_role_id:
-            try:
-                role = get_applicable_shared_role(membership.shared_role_id)
-            except DjangoValidationError:
-                role = None
-            return Response(
-                {
-                    "user_id": str(user.pk),
-                    "id_number": user.id_number,
-                    "membership_id": str(membership.pk),
-                    "role": RoleViewSet._shared_role_payload(role) if role else None,
-                    "is_active": membership.is_active and bool(role),
-                }
-            )
-        return Response(
-            {
-                "user_id": str(user.pk),
-                "id_number": user.id_number,
-                "membership_id": str(membership.pk) if membership else None,
-                "role": RoleSerializer(membership.role).data if membership else None,
-                "is_active": membership.is_active if membership else False,
-            }
-        )
+        selection = getattr(request.user, "_active_role_selection", None) if user.pk == request.user.pk else None
+        return Response(user_assignments_payload(user, selection=selection))
 
     def put(self, request, id_number):
         serializer = UserRoleAssignmentSerializer(data=request.data)
@@ -615,3 +600,47 @@ class BulkUserRoleAssignmentView(UserRoleView):
         except DjangoValidationError as exc:
             _raise_api_validation(exc)
         return Response({"role": RoleSerializer(role).data, "assignments": assignments})
+
+
+class UserRoleRevokeView(UserRoleView):
+    permission_map = {"delete": "roles.assign_users"}
+
+    def delete(self, request, id_number, assignment_id):
+        from authorization.multiple_roles import revoke_role, user_assignments_payload
+        user = self._user(id_number)
+        try:
+            revoke_role(user=user, assignment_id=assignment_id, actor=request.user, metadata=_metadata(request))
+        except DjangoValidationError as exc:
+            _raise_api_validation(exc)
+        return Response(user_assignments_payload(user))
+
+
+class MyRolesView(TenantAuthorizationMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from authorization.multiple_roles import user_assignments_payload
+        payload = user_assignments_payload(request.user)
+        payload["assignments"] = [item for item in payload["assignments"]
+                                  if item["role"].get("system_key") not in SUPERADMIN_ROLE_KEYS]
+        payload["can_use_platform_context"] = bool(request.user.is_platform_superuser)
+        payload["platform_context_active"] = bool(request.user.is_platform_superuser and
+            getattr(request.user, "_active_role_selection", None) in (None, "platform"))
+        return Response(payload)
+
+    def post(self, request):
+        from authorization.multiple_roles import selected_assignment, user_assignments_payload
+        selection = str(request.data.get("assignment_id") or "")
+        if selection == "platform":
+            if not request.user.is_platform_superuser:
+                raise PermissionDenied("Platform access is not assigned to this account.")
+        elif not selected_assignment(request.user, selection) or not selection:
+            raise PermissionDenied("This role assignment is not active in this school.")
+        from authorization.models import AuthorizationAuditLog
+        AuthorizationAuditLog.objects.create(
+            actor=request.user, action="role_context.selected", target_type="role_assignment",
+            target_id=selection, after={"assignment_id": selection}, **_metadata(request),
+        )
+        payload = user_assignments_payload(request.user, selection=selection)
+        payload["selected_assignment_id"] = selection
+        return Response(payload)

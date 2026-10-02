@@ -5,6 +5,7 @@ Platform permission classes. Tenant authorization is evaluated through RBAC memb
 """
 
 from rest_framework.permissions import BasePermission
+from users.tenant_access import is_global_superadmin
 
 
 class IsSuperAdmin(BasePermission):
@@ -21,7 +22,7 @@ class IsSuperAdmin(BasePermission):
         return (
             request.user and
             request.user.is_authenticated and
-            request.user.is_platform_superuser
+            is_global_superadmin(request.user)
         )
 
 
@@ -38,7 +39,7 @@ class IsAdminOrSuperAdmin(BasePermission):
         return (
             request.user and
             request.user.is_authenticated and
-            request.user.is_platform_superuser
+            is_global_superadmin(request.user)
         )
 
 

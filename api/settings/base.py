@@ -205,3 +205,7 @@ API_PERF_METRICS_PATH_PREFIXES = config(
     cast=_csv,
 )
 API_PERF_METRICS_LOG_THRESHOLD_MS = config("API_PERF_METRICS_LOG_THRESHOLD_MS", default=400, cast=int)
+
+# Explicit opt-in; development never sends guardian invitations by default.
+ACCOUNT_SETUP_EMAIL_ENABLED = config("ACCOUNT_SETUP_EMAIL_ENABLED", default=True, cast=bool)
+PARENT_INVITATIONS_ENABLED = config("PARENT_INVITATIONS_ENABLED", default=False, cast=bool)

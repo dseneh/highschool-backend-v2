@@ -31,6 +31,7 @@ class StudentGuardian(BaseModel):
         related_name="guardians",
     )
     first_name = models.CharField(max_length=100)
+    middle_name = models.CharField(max_length=100, blank=True, default="")
     last_name = models.CharField(max_length=100)
     relationship = models.CharField(
         max_length=20,
@@ -62,6 +63,20 @@ class StudentGuardian(BaseModel):
         help_text="Reference to User.id_number in public schema (avoid cross-schema FK)"
     )
 
+    # UUID reference avoids a cross-schema FK. Legacy rows remain unverified.
+    give_access = models.BooleanField(default=False)
+    gender = models.CharField(max_length=10, blank=True, default="")
+    date_of_birth = models.DateField(null=True, blank=True)
+    parent_profile_id = models.UUIDField(null=True, blank=True, db_index=True)
+    portal_state = models.CharField(max_length=16, default="unverified", choices=[
+        ("unverified", "Unverified"), ("invited", "Invited"), ("active", "Active"),
+        ("suspended", "Suspended"), ("disconnected", "Disconnected"),
+    ])
+    portal_approved_at = models.DateTimeField(null=True, blank=True)
+    portal_approved_by = models.UUIDField(null=True, blank=True)
+    portal_verified_at = models.DateTimeField(null=True, blank=True)
+    portal_ended_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = "student_guardian"
         verbose_name = "Student Guardian"
@@ -84,7 +99,7 @@ class StudentGuardian(BaseModel):
 
     @property
     def full_name(self):
-        return f"{self.first_name} {self.last_name}"
+        return " ".join(part for part in [self.first_name, self.middle_name, self.last_name] if part)
 
     @property
     def default_photo(self):

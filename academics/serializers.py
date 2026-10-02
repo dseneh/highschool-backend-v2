@@ -1,3 +1,11 @@
+from common.update_utils import (
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+    filter_changed_data,
+    get_update_value,
+)
+
+
 from datetime import date, timedelta
 
 from business.core.adapters.supporting_adapter import section_subject_has_grades
@@ -33,7 +41,7 @@ from settings.models import GradingSettings
 from staff.models import TeacherSchedule, TeacherSubject
 
 
-class SchoolSerializer(serializers.ModelSerializer):
+class SchoolSerializer(PartialUpdateModelSerializer):
     school_division = serializers.SerializerMethodField()
     workspace = serializers.CharField(source="schema_name", read_only=True)
     redirect_url = serializers.SerializerMethodField()
@@ -203,7 +211,7 @@ class WorkspaceSerializer(serializers.Serializer):
         return workspaces
 
 
-class SchoolUserListSerializer(serializers.ModelSerializer):
+class SchoolUserListSerializer(PartialUpdateModelSerializer):
     # first_name = serializers.SerializerMethodField()
     # last_name = serializers.SerializerMethodField()
     # photo = serializers.SerializerMethodField()
@@ -257,7 +265,7 @@ class SchoolUserListSerializer(serializers.ModelSerializer):
         return response
 
 
-class AcademicYearSerializer(serializers.ModelSerializer):
+class AcademicYearSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = AcademicYear
         fields = [
@@ -325,7 +333,7 @@ class AcademicYearSerializer(serializers.ModelSerializer):
         return response
 
 
-class SemesterSerializer(serializers.ModelSerializer):
+class SemesterSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Semester
         fields = [
@@ -364,7 +372,10 @@ class SemesterSerializer(serializers.ModelSerializer):
         return response
 
 
-class MarkingPeriodSerializer(serializers.ModelSerializer):
+class MarkingPeriodSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     class Meta:
         model = MarkingPeriod
         fields = [
@@ -397,7 +408,7 @@ class MarkingPeriodSerializer(serializers.ModelSerializer):
         return response
 
 
-class DivisionSerializer(serializers.ModelSerializer):
+class DivisionSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Division
         fields = [
@@ -412,7 +423,10 @@ class DivisionSerializer(serializers.ModelSerializer):
         return response
 
 
-class GradeLevelSerializer(serializers.ModelSerializer):
+class GradeLevelSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     class Meta:
         model = GradeLevel
         fields = [
@@ -475,7 +489,7 @@ class GradeLevelSerializer(serializers.ModelSerializer):
         return response
 
 
-class GradeLevelTuitionFeeSerializer(serializers.ModelSerializer):
+class GradeLevelTuitionFeeSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = GradeLevelTuitionFee
         fields = [
@@ -486,7 +500,7 @@ class GradeLevelTuitionFeeSerializer(serializers.ModelSerializer):
         ]
 
 
-class SectionSubjectSerializer(serializers.ModelSerializer):
+class SectionSubjectSerializer(PartialUpdateModelSerializer):
     can_delete = serializers.SerializerMethodField()
     
     class Meta:
@@ -531,7 +545,10 @@ class SectionSubjectSerializer(serializers.ModelSerializer):
         return response
 
 
-class SectionSerializer(serializers.ModelSerializer):
+class SectionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     class Meta:
         model = Section
         fields = [
@@ -620,7 +637,10 @@ class SectionSerializer(serializers.ModelSerializer):
         return response
 
 
-class SubjectSerializer(serializers.ModelSerializer):
+class SubjectSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     # Computed fields for deletion logic
     can_delete = serializers.SerializerMethodField()
     can_force_delete = serializers.SerializerMethodField()
@@ -675,7 +695,7 @@ class SubjectSerializer(serializers.ModelSerializer):
         return response
 
 
-class PeriodSerializer(serializers.ModelSerializer):
+class PeriodSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Period
         fields = [
@@ -690,7 +710,7 @@ class PeriodSerializer(serializers.ModelSerializer):
         return response
 
 
-class SchoolCalendarSettingsSerializer(serializers.ModelSerializer):
+class SchoolCalendarSettingsSerializer(PartialUpdateModelSerializer):
     operating_day_labels = serializers.SerializerMethodField()
     school_year_start_date = serializers.SerializerMethodField()
     school_year_end_date = serializers.SerializerMethodField()
@@ -720,7 +740,7 @@ class SchoolCalendarSettingsSerializer(serializers.ModelSerializer):
         return current_year.end_date if current_year else None
 
 
-class SchoolCalendarEventSerializer(serializers.ModelSerializer):
+class SchoolCalendarEventSerializer(PartialUpdateModelSerializer):
     sections = serializers.PrimaryKeyRelatedField(
         queryset=Section.objects.all(),
         many=True,
@@ -794,8 +814,8 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
             attrs["recurrence_pattern"] = SchoolCalendarEvent.RecurrencePattern.NONE
 
         pattern = self._resolve_pattern(attrs)
-        start_date = attrs.get("start_date") or (self.instance.start_date if self.instance else None)
-        end_date = attrs.get("end_date") or (self.instance.end_date if self.instance else None)
+        start_date = get_update_value(self.instance, attrs, 'start_date', None)
+        end_date = get_update_value(self.instance, attrs, 'end_date', None)
         recurrence_until = attrs.get("recurrence_until")
         if recurrence_until is None and self.instance:
             recurrence_until = self.instance.recurrence_until
@@ -854,8 +874,10 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
             end_time = self.instance.end_time
 
         if all_day:
-            attrs["start_time"] = None
-            attrs["end_time"] = None
+            if self.instance is None or "all_day" in attrs or "start_time" in attrs:
+                attrs["start_time"] = None
+            if self.instance is None or "all_day" in attrs or "end_time" in attrs:
+                attrs["end_time"] = None
         else:
             if not start_time or not end_time:
                 raise serializers.ValidationError(
@@ -947,15 +969,21 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
         )
 
         sections = validated_data.pop("sections", None)
+        recurrence_changed = bool({
+            "recurrence_pattern", "recurrence_type", "recurrence_until",
+            "recurrence_interval", "start_date", "end_date",
+        }.intersection(validated_data))
         snapshot = {
             "recurrence_pattern": validated_data.get("recurrence_pattern", instance.recurrence_pattern),
             "recurrence_type": validated_data.get("recurrence_type", instance.recurrence_type),
             "recurrence_until": validated_data.get("recurrence_until", instance.recurrence_until),
+            "recurrence_interval": validated_data.get("recurrence_interval", instance.recurrence_interval),
             "start_date": validated_data.get("start_date", instance.start_date),
             "end_date": validated_data.get("end_date", instance.end_date),
         }
         if (
-            get_effective_recurrence_pattern(type("EventProxy", (), snapshot)())
+            recurrence_changed
+            and get_effective_recurrence_pattern(type("EventProxy", (), snapshot)())
             != SchoolCalendarEvent.RecurrencePattern.NONE
             and "recurrence_until" not in validated_data
             and not instance.recurrence_until
@@ -964,13 +992,30 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
                 type("EventProxy", (), snapshot)()
             )
 
-        enriched = self._apply_recurrence_defaults({**snapshot, **validated_data})
-        for key in ("recurrence_type", "recurrence_pattern", "recurrence_until", "recurrence_interval"):
-            if key in enriched:
-                validated_data[key] = enriched[key]
+        if recurrence_changed:
+            enriched = self._apply_recurrence_defaults({**snapshot, **validated_data})
+            for key in ("recurrence_type", "recurrence_pattern", "recurrence_until", "recurrence_interval"):
+                if key in enriched:
+                    validated_data[key] = enriched[key]
 
-        event = super().update(instance, validated_data)
-        if event.applies_to_all_sections:
+        updated_by = validated_data.pop("updated_by", serializers.empty)
+        changed_data = filter_changed_data(instance, validated_data)
+        current_section_ids = set(
+            instance.sections.values_list("id", flat=True),
+        )
+        submitted_section_ids = (
+            {section.id for section in sections}
+            if sections is not None
+            else current_section_ids
+        )
+        sections_changed = current_section_ids != submitted_section_ids
+        if not changed_data and not sections_changed:
+            return instance
+        if updated_by is not serializers.empty:
+            changed_data["updated_by"] = updated_by
+
+        event = super().update(instance, changed_data)
+        if event.applies_to_all_sections and ("applies_to_all_sections" in changed_data or sections is not None):
             event.sections.clear()
         elif sections is not None:
             event.sections.set(sections)
@@ -979,7 +1024,7 @@ class SchoolCalendarEventSerializer(serializers.ModelSerializer):
         return event
 
 
-class PeriodTimeSerializer(serializers.ModelSerializer):
+class PeriodTimeSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = PeriodTime
         fields = [
@@ -991,7 +1036,10 @@ class PeriodTimeSerializer(serializers.ModelSerializer):
         ]
 
 
-class SectionTimeSlotSerializer(serializers.ModelSerializer):
+class SectionTimeSlotSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     class Meta:
         model = SectionTimeSlot
         fields = [
@@ -1008,10 +1056,10 @@ class SectionTimeSlotSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         instance = self.instance
 
-        section = attrs.get("section") or (instance.section if instance else None)
-        start_time = attrs.get("start_time") or (instance.start_time if instance else None)
-        end_time = attrs.get("end_time") or (instance.end_time if instance else None)
-        day_of_week = attrs.get("day_of_week") or (instance.day_of_week if instance else None)
+        section = get_update_value(instance, attrs, 'section', None)
+        start_time = get_update_value(instance, attrs, 'start_time', None)
+        end_time = get_update_value(instance, attrs, 'end_time', None)
+        day_of_week = get_update_value(instance, attrs, 'day_of_week', None)
 
         if not section or not start_time or not end_time or not day_of_week:
             return attrs
@@ -1068,7 +1116,7 @@ class SectionTimeSlotSerializer(serializers.ModelSerializer):
         return response
 
 
-class SectionScheduleSerializer(serializers.ModelSerializer):
+class SectionScheduleSerializer(PartialUpdateModelSerializer):
     subject = serializers.PrimaryKeyRelatedField(
         queryset=SectionSubject.objects.all(),
         required=False,
@@ -1105,12 +1153,10 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         instance = self.instance
 
-        section = attrs.get("section") or (instance.section if instance else None)
-        period = attrs.get("period") or (instance.period if instance else None)
-        section_time_slot = attrs.get("section_time_slot") or (
-            instance.section_time_slot if instance else None
-        )
-        period_time = attrs.get("period_time") or (instance.period_time if instance else None)
+        section = get_update_value(instance, attrs, 'section', None)
+        period = get_update_value(instance, attrs, 'period', None)
+        section_time_slot = get_update_value(instance, attrs, 'section_time_slot', None)
+        period_time = get_update_value(instance, attrs, 'period_time', None)
         subject = attrs.get("subject") if "subject" in attrs else (instance.subject if instance else None)
 
         if not section or not period:
@@ -1317,7 +1363,7 @@ class SectionScheduleSerializer(serializers.ModelSerializer):
         return response
 
 
-class TeacherScheduleProjectionSerializer(serializers.ModelSerializer):
+class TeacherScheduleProjectionSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = TeacherSchedule
         fields = [
@@ -1365,7 +1411,7 @@ class TeacherScheduleProjectionSerializer(serializers.ModelSerializer):
         return response
 
 
-class GradeBookScheduleProjectionSerializer(serializers.ModelSerializer):
+class GradeBookScheduleProjectionSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = GradeBookScheduleProjection
         fields = [
@@ -1414,7 +1460,7 @@ class GradeBookScheduleProjectionSerializer(serializers.ModelSerializer):
         return response
 
 
-class StudentScheduleProjectionSerializer(serializers.ModelSerializer):
+class StudentScheduleProjectionSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = StudentScheduleProjection
         fields = [

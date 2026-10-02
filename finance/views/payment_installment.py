@@ -1,3 +1,4 @@
+from common.update_utils import filter_changed_data, validate_model_update
 import logging
 import time
 from datetime import datetime
@@ -392,10 +393,9 @@ def validate_total_percentage(installments_data, academic_year, exclude_ids=None
         inst_id = str(inst.id)
         if inst_id in values_map:
             total += values_map[inst_id]
-        elif inst_id not in exclude_ids:
-            # Keep existing value if not being updated
+        else:
+            # Partial updates that omit value keep the existing percentage.
             total += float(inst.value)
-        # If in exclude_ids but not in values_map, skip (being deleted or not updating)
     
     # For creates (no exclude_ids), just sum the request values
     if not exclude_ids:
@@ -990,7 +990,7 @@ class PaymentInstallmentListView(APIView):
         existing_dict = {
             str(inst.id): inst
             for inst in PaymentInstallment.objects.filter(
-                id__in=update_ids
+                id__in=update_ids, academic_year=academic_year
             ).select_related("academic_year")
         }
 
@@ -1001,6 +1001,14 @@ class PaymentInstallmentListView(APIView):
                 {"detail": f"Installments not found: {', '.join(missing_ids)}"},
                 status=404,
             )
+
+        update_serializers = [
+            validate_model_update(
+                existing_dict[str(item_data["id"])], item_data,
+                ["name", "description", "value", "due_date", "sequence", "active"],
+            )
+            for item_data in installments_data
+        ]
 
         # Validate no overlapping dates
         error = validate_dates_no_overlap(installments_data, academic_year, exclude_ids=update_ids)
@@ -1015,28 +1023,8 @@ class PaymentInstallmentListView(APIView):
         # All validations passed, update installments
         try:
             with transaction.atomic():
-                for item_data in installments_data:
-                    if not isinstance(item_data, dict) or "id" not in item_data:
-                        continue
-
-                    inst_id = str(item_data["id"])
-                    inst = existing_dict[inst_id]
-
-                    # Update fields
-                    for field in ["name", "description", "value", "due_date", "sequence", "active"]:
-                        if field in item_data:
-                            if field == "value":
-                                setattr(inst, field, float(item_data[field]))
-                            elif field == "due_date":
-                                setattr(inst, field, datetime.strptime(item_data[field], "%Y-%m-%d").date())
-                            elif field == "sequence":
-                                setattr(inst, field, int(item_data[field]))
-                            elif field == "active":
-                                setattr(inst, field, bool(item_data[field]))
-                            else:
-                                setattr(inst, field, item_data[field])
-
-                    inst.save()
+                for update_serializer in update_serializers:
+                    update_serializer.save()
         except Exception as e:
             return Response(
                 {"detail": f"Error updating installments: {str(e)}"},

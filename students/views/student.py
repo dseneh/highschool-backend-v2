@@ -940,9 +940,14 @@ class StudentDetailView(APIView):
             "date_of_graduation",
         ]
 
-        serializer = update_model_fields(
-            request, student, allowed_fields, StudentSerializer
-        )
+        from django.db import transaction
+        from users.identity_email import sync_record_email
+        data = request.data.copy()
+        with transaction.atomic():
+            sync_record_email(student, data, request)
+            serializer = update_model_fields(
+                request, student, allowed_fields, StudentSerializer, data=data
+            )
         
         # Handle photo update if provided
         photo = request.FILES.get("photo")

@@ -45,17 +45,26 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         if not touch_and_validate_session(user=user, session_id=token.get("session_id")):
             raise AuthenticationFailed("Session has been revoked. Please sign in again.")
 
+        from users.parent_workspace import bind_parent_request, is_parent_workspace
+        if token.get("session_id"):
+            from django.db.models import Q
+            if not TenantSession.objects.filter(pk=token["session_id"], user=user, revoked_at__isnull=True, expires_at__gt=timezone.now()).filter(Q(global_session__isnull=True) | Q(global_session__revoked_at__isnull=True, global_session__expires_at__gt=timezone.now())).exists():
+                raise AuthenticationFailed("Session has expired or been revoked.")
+        if token.get("parent_workspace") or is_parent_workspace(request):
+            bind_parent_request(request, user)
         tenant = getattr(request, "tenant", None)
         if tenant:
             ensure_global_superadmin_tenant_membership(user, tenant)
-        if hasattr(request, "_request"):
-            from authorization.runtime import initialize_request_authorization
-            initialize_request_authorization(request, user)
+        from authorization.runtime import initialize_request_authorization
+        initialize_request_authorization(request, user)
         return user, token
 
 
 class TenantSessionAuthentication(authentication.BaseAuthentication):
     """Authenticate requests using a hashed server-side tenant session identifier."""
+
+    def authenticate_header(self, request):
+        return "Bearer"
 
     def authenticate(self, request):
         raw_session_id = request.META.get("HTTP_X_TENANT_SESSION")
@@ -80,6 +89,13 @@ class TenantSessionAuthentication(authentication.BaseAuthentication):
         if header_tenant and header_tenant != getattr(session_obj.tenant, "schema_name", ""):
             return None
 
+        from users.parent_workspace import bind_parent_request, is_parent_workspace
+        if "parent_workspace" in (session_obj.roles or []) or is_parent_workspace(request):
+            if session_obj.global_session_id and (
+                session_obj.global_session.revoked_at or session_obj.global_session.expires_at <= now
+            ):
+                raise AuthenticationFailed("Session has expired or been revoked.")
+            bind_parent_request(request, session_obj.user)
         from authorization.runtime import initialize_request_authorization
         initialize_request_authorization(request, session_obj.user)
         return session_obj.user, None

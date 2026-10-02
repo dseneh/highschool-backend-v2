@@ -1,9 +1,11 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from employee_disbursements.models import EmployeeDisbursementRecord
 
 
-class EmployeeDisbursementRecordListSerializer(serializers.ModelSerializer):
+class EmployeeDisbursementRecordListSerializer(PartialUpdateModelSerializer):
     employee_display = serializers.SerializerMethodField()
     currency_code = serializers.CharField(source="currency.code", read_only=True, default=None)
     source_type_label = serializers.CharField(source="get_source_type_display", read_only=True)

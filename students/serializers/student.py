@@ -1,3 +1,5 @@
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from rest_framework import serializers
 from academics.models import AcademicYear
 from django.utils import timezone
@@ -11,7 +13,11 @@ from .enrollment import EnrollmentListSerializer
 from .discipline import ActiveStudentDisciplinaryActionSerializer
 
 
-class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
+class StudentSerializer(
+    PhotoURLMixin,
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     class Meta:
         model = Student
         fields = [
@@ -299,7 +305,7 @@ class StudentSerializer(PhotoURLMixin, serializers.ModelSerializer):
         return response
 
 
-class StudentPaymentStatusSerializer(serializers.ModelSerializer):
+class StudentPaymentStatusSerializer(PartialUpdateModelSerializer):
     """Minimal serializer for payment status views - only essential fields"""
 
     class Meta:
@@ -401,7 +407,9 @@ class StudentDetailSerializer(StudentSerializer):
 
         # Safely get user account by id_number lookup (cross-schema)
         user_account = None
-        if instance.user_account_id_number or instance.id_number:
+        from students.authorization import permission_scope
+        can_view_account = request is not None and bool(permission_scope(request, "users.view"))
+        if can_view_account and (instance.user_account_id_number or instance.id_number):
             from users.models import User
             from django.db.models import Q
             # try:
@@ -502,7 +510,16 @@ class StudentDetailSerializer(StudentSerializer):
             academic_year__current=True
         ).first()
 
-        if current_enrollment:
+        grades_allowed = bool(request and permission_scope(request, "grades.view"))
+        if grades_allowed and current_enrollment:
+            from grading.services.grade_access import enforce_grade_access
+            from rest_framework.exceptions import PermissionDenied
+            try:
+                enforce_grade_access(instance, current_enrollment.academic_year)
+            except PermissionDenied:
+                grades_allowed = False
+        response["grades_restricted"] = not grades_allowed
+        if current_enrollment and grades_allowed:
             # Use the standardized calculation
             average_data = calculate_student_overall_average(
                 student=instance,

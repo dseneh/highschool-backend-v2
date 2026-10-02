@@ -1,6 +1,9 @@
 """
 Serializers for authentication
 """
+
+from common.update_utils import PartialUpdateModelSerializer, filter_changed_data
+
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import authenticate, get_user_model
@@ -12,7 +15,7 @@ from common.status import UserAccountType
 User = get_user_model()
 
 
-class UserSerializer(serializers.ModelSerializer):
+class UserSerializer(PartialUpdateModelSerializer):
     """
     User serializer for authentication responses.
     
@@ -27,6 +30,8 @@ class UserSerializer(serializers.ModelSerializer):
     # Add flag to identify the currently logged-in user
     is_current_user = serializers.SerializerMethodField()
     rbac_role = serializers.SerializerMethodField()
+    role_assignments = serializers.SerializerMethodField()
+    active_role_assignment_id = serializers.SerializerMethodField()
     profile_updated_by = serializers.SerializerMethodField()
     
     class Meta:
@@ -37,6 +42,7 @@ class UserSerializer(serializers.ModelSerializer):
             'email',
             'id_number',
             'first_name',
+            'middle_name',
             'last_name',
             'account_type',
             'photo',
@@ -45,6 +51,8 @@ class UserSerializer(serializers.ModelSerializer):
             'last_login',
             'tenants',
             'rbac_role',
+            'role_assignments',
+            'active_role_assignment_id',
             'gender',
             'last_password_updated',
             'created_at',
@@ -82,33 +90,28 @@ class UserSerializer(serializers.ModelSerializer):
             except Exception:
                 return None
 
-        try:
-            from authorization.models import TenantMembership
-            from authorization.services import get_applicable_shared_role
+        payload = self._role_payload(obj)
+        return payload.get("role")
 
-            membership = TenantMembership.objects.select_related("role").filter(user=obj).first()
-            if membership is None:
-                return None
-            if membership.shared_role_id:
-                role = get_applicable_shared_role(membership.shared_role_id)
-                return {
-                    "id": str(role.pk),
-                    "name": role.name,
-                    "system_key": role.system_key,
-                    "is_active": membership.is_active and role.is_active,
-                    "role_type": role.role_type,
-                    "scope": role.scope,
-                }
-            return {
-                "id": str(membership.role_id),
-                "name": membership.role.name,
-                "system_key": membership.role.system_key,
-                "is_active": membership.is_active and membership.role.is_active,
-                "role_type": "CUSTOM" if not membership.role.is_system_role else "SYSTEM",
-                "scope": "TENANT",
-            }
-        except Exception:
-            return None
+    def _role_payload(self, obj):
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name
+        if connection.schema_name == get_public_schema_name():
+            return {}
+        cache = getattr(self, "_assignment_payloads", {})
+        if obj.pk not in cache:
+            from authorization.multiple_roles import user_assignments_payload
+            request = self.context.get("request")
+            selection = getattr(request.user, "_active_role_selection", None) if request and request.user.pk == obj.pk else None
+            cache[obj.pk] = user_assignments_payload(obj, selection=selection)
+            self._assignment_payloads = cache
+        return cache[obj.pk]
+
+    def get_role_assignments(self, obj):
+        return self._role_payload(obj).get("assignments", [])
+
+    def get_active_role_assignment_id(self, obj):
+        return self._role_payload(obj).get("active_assignment_id")
 
     def get_profile_updated_by(self, obj):
         actor = getattr(obj, "profile_updated_by", None)
@@ -363,7 +366,7 @@ class UserSerializer(serializers.ModelSerializer):
 
         if instance.account_type != UserAccountType.GLOBAL:
             source_bio = self._resolve_source_bio(instance)
-            for field in ['first_name', 'last_name', 'gender', 'email']:
+            for field in ['first_name', 'last_name', 'gender']:
                 if field in source_bio:
                     data[field] = source_bio[field]
 
@@ -466,12 +469,27 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         from authorization.exceptions import NoAssignedRole
         from authorization.services import has_assigned_role
 
+        from users.parent_workspace import is_parent_workspace, parent_identity
+        parent_workspace = is_parent_workspace(self.context.get("request"))
+        if parent_workspace and not parent_identity(user):
+            raise serializers.ValidationError({"detail": "Set up your parent account before signing in here."})
+
         # Checked before any token is built so an unassigned account never
         # receives credentials.
-        if not has_assigned_role(user):
-            raise NoAssignedRole()
+        if not parent_workspace and not has_assigned_role(user):
+            # Credentials are still mandatory. This only admits a matching, delivered
+            # invitation into sign-in; school permissions stay denied until acceptance.
+            request = self.context.get("request")
+            invitation_token = request.data.get("parent_invitation") if request else None
+            if not invitation_token:
+                raise NoAssignedRole()
+            from users.parent_portal import validate_invitation_email
+            validate_invitation_email(token=invitation_token, email=user.email,
+                                      tenant=getattr(request, "tenant", None))
 
         refresh = self.get_token(user)
+        if parent_workspace:
+            refresh["parent_workspace"] = True
         from users.session_security import register_jwt_session
 
         register_jwt_session(
@@ -492,7 +510,8 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         return data
 
 
-class UserCreateSerializer(serializers.ModelSerializer):
+class UserCreateSerializer(PartialUpdateModelSerializer):
+    email = serializers.EmailField(max_length=254, validators=[])
     username = serializers.CharField(required=False, allow_blank=True, help_text="Defaults to id_number if not provided")
     
     class Meta:
@@ -511,6 +530,16 @@ class UserCreateSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id']
 
+    def validate_email(self, value):
+        from django.db.models.functions import Lower, Trim
+        email = value.strip().lower()
+        if User.objects.annotate(normalized_email=Lower(Trim("email"))).filter(normalized_email=email).exists():
+            raise serializers.ValidationError(
+                "An account already uses this email. Sign in or reset your password. "
+                "To add school access, use the existing account workflow."
+            )
+        return email
+
     def validate_account_type(self, value):
         if value not in UserAccountType.all():
             raise serializers.ValidationError('Invalid account_type.')
@@ -526,7 +555,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return user
 
 
-class UserUpdateSerializer(serializers.ModelSerializer):
+class UserUpdateSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = User
         fields = [
@@ -545,12 +574,13 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         """
         Only GLOBAL users can have user-level profile fields updated directly.
         For STUDENT/STAFF/PARENT, first_name/last_name/gender/photo remain sourced
-        from tenant records, but email updates are allowed and synchronized by view logic.
+        from tenant records, but email updates use the canonical identity-email service in the view.
         """
         if instance.account_type != UserAccountType.GLOBAL:
             for field in ['first_name', 'last_name', 'gender', 'photo']:
                 validated_data.pop(field, None)
 
+        validated_data = filter_changed_data(instance, validated_data)
         return super().update(instance, validated_data)
 
     def validate_account_type(self, value):

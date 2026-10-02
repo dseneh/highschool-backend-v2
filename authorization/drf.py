@@ -18,13 +18,9 @@ def _is_tenant_admin_context(facade) -> bool:
     if not context.active or not context.role_id:
         return False
     try:
-        from authorization.models import Role
-
-        return Role.objects.filter(
-            pk=context.role_id,
-            system_key="admin",
-            is_active=True,
-        ).exists()
+        from authorization.services import get_assigned_role
+        role = get_assigned_role(facade.user)
+        return bool(role and role.system_key == "admin" and role.is_active)
     except Exception:
         logger.exception("Tenant admin role fallback evaluation failed")
         return False

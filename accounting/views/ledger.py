@@ -1,9 +1,12 @@
+from common.update_utils import validate_model_update
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.core.exceptions import ValidationError
 from django.db.models import DecimalField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from datetime import date
-from rest_framework import status, viewsets
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
@@ -35,14 +38,14 @@ from accounting.serializers import (
 from accounting.views.base import AccountingErrorFormattingMixin
 
 
-class AccountingCurrencyViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingCurrencyViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingCurrency.objects.order_by("-is_base_currency", "code")
     serializer_class = AccountingCurrencySerializer
     permission_classes = [AccountingFinanceAccessPolicy]
     pagination_class = None
 
 
-class AccountingExchangeRateViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingExchangeRateViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingExchangeRate.objects.select_related("from_currency", "to_currency").order_by("-effective_date")
     serializer_class = AccountingExchangeRateSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
@@ -103,7 +106,7 @@ class AccountingExchangeRateViewSet(AccountingErrorFormattingMixin, viewsets.Mod
         return Response(payload)
 
 
-class AccountingLedgerAccountViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingLedgerAccountViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingLedgerAccount.objects.select_related("parent_account").order_by("code")
     serializer_class = AccountingLedgerAccountSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
@@ -233,7 +236,7 @@ def _entry_total_base_debit(entry):
     return total
 
 
-class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = (
         AccountingJournalEntry.objects.select_related("academic_year", "reversal_of")
         .prefetch_related("lines__ledger_account", "lines__currency")
@@ -329,17 +332,13 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
     def update_notes(self, request, pk=None):
         journal_entry = self.get_object()
         if "notes" not in request.data:
-            return Response(
-                {"detail": "notes is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response(self.get_serializer(journal_entry).data)
 
-        raw_notes = request.data.get("notes")
-        notes = (str(raw_notes).strip() if raw_notes is not None else "") or None
+        update_serializer = validate_model_update(journal_entry, request.data, ["notes"])
+        notes = (update_serializer.validated_data["notes"] or "").strip() or None
 
         with transaction.atomic():
-            journal_entry.notes = notes
-            journal_entry.save(update_fields=["notes", "updated_at"])
+            update_serializer.save(notes=notes)
 
             linked_filter = Q(journal_entry=journal_entry)
             if journal_entry.source_reference:
@@ -348,12 +347,7 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
 
             linked_transactions = AccountingCashTransaction.objects.filter(linked_filter).distinct()
             for cash_tx in linked_transactions:
-                cash_tx.notes = notes
-                if hasattr(cash_tx, "updated_by"):
-                    cash_tx.updated_by = request.user
-                    cash_tx.save(update_fields=["notes", "updated_by", "updated_at"])
-                else:
-                    cash_tx.save(update_fields=["notes", "updated_at"])
+                validate_model_update(cash_tx, {"notes": notes}, ["notes"]).save(updated_by=request.user)
 
         serializer = self.get_serializer(journal_entry)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -511,7 +505,7 @@ class AccountingJournalEntryViewSet(AccountingErrorFormattingMixin, viewsets.Mod
             return Response({"detail": f"Upload failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AccountingJournalLineViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingJournalLineViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingJournalLine.objects.select_related("journal_entry", "ledger_account", "currency").order_by("journal_entry", "line_sequence")
     serializer_class = AccountingJournalLineSerializer
     permission_classes = [AccountingFinanceAccessPolicy]

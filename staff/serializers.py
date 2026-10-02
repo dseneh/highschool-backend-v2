@@ -1,3 +1,6 @@
+from common.update_utils import PartialUpdateModelSerializer, get_update_value
+
+
 from rest_framework import serializers
 from django.db.models import Q
 from users.models import User
@@ -81,7 +84,7 @@ class StaffOrEmployeePKField(serializers.PrimaryKeyRelatedField):
             return staff
 
 
-class DepartmentSerializer(serializers.ModelSerializer):
+class DepartmentSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = Department
         fields = [
@@ -100,7 +103,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
         return response
 
 
-class PositionCategorySerializer(serializers.ModelSerializer):
+class PositionCategorySerializer(PartialUpdateModelSerializer):
     class Meta:
         model = PositionCategory
         fields = [
@@ -118,7 +121,7 @@ class PositionCategorySerializer(serializers.ModelSerializer):
         return response
 
 
-class PositionSerializer(serializers.ModelSerializer):
+class PositionSerializer(PartialUpdateModelSerializer):
     category = serializers.SerializerMethodField()
     department = serializers.SerializerMethodField()
 
@@ -164,7 +167,7 @@ class PositionSerializer(serializers.ModelSerializer):
         return response
 
 
-class StaffSerializer(PhotoURLMixin, serializers.ModelSerializer):
+class StaffSerializer(PhotoURLMixin, PartialUpdateModelSerializer):
     hire_date = serializers.DateField(required=True, allow_null=False)
     id_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     # Explicitly define position and primary_department as PrimaryKeyRelatedField
@@ -433,7 +436,7 @@ class StaffDetailSerializer(StaffSerializer):
         return response
 
 
-class TeacherSectionSerializer(serializers.ModelSerializer):
+class TeacherSectionSerializer(PartialUpdateModelSerializer):
     teacher = StaffOrEmployeePKField(queryset=Staff.objects.all())
 
     class Meta:
@@ -468,7 +471,7 @@ class TeacherSectionSerializer(serializers.ModelSerializer):
         return response
 
 
-class TeacherSubjectSerializer(serializers.ModelSerializer):
+class TeacherSubjectSerializer(PartialUpdateModelSerializer):
     teacher = StaffOrEmployeePKField(queryset=Staff.objects.all())
     subject = serializers.PrimaryKeyRelatedField(
         queryset=Subject.objects.all(),
@@ -492,15 +495,15 @@ class TeacherSubjectSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
     def validate(self, attrs):
-        section_subject = attrs.get("section_subject")
-        subject = attrs.get("subject")
+        section_subject = get_update_value(self.instance, attrs, "section_subject")
+        subject = get_update_value(self.instance, attrs, "subject")
 
         if not section_subject and not subject:
             raise serializers.ValidationError(
                 {"section_subject": "This field is required."}
             )
 
-        if section_subject:
+        if section_subject and (self.instance is None or "section_subject" in attrs):
             attrs["subject"] = section_subject.subject
 
         return attrs
@@ -540,7 +543,7 @@ class TeacherSubjectSerializer(serializers.ModelSerializer):
         return response
 
 
-class TeacherScheduleSerializer(serializers.ModelSerializer):
+class TeacherScheduleSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = TeacherSchedule
         fields = [
@@ -572,4 +575,3 @@ class TeacherScheduleSerializer(serializers.ModelSerializer):
                 ),
             }
         return response
-

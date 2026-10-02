@@ -37,3 +37,14 @@ class TenantBoundarySecurityTests(SimpleTestCase):
 
         self.assertIs(result, public_tenant)
         mock_get.assert_called_with(schema_name="public")
+
+    @patch("api.middleware.Tenant.objects.get")
+    def test_public_appearance_ignores_tenant_context(self, mock_get):
+        public = SimpleNamespace(schema_name="public")
+        mock_get.return_value = public
+        for tenant in (None, "parent", "school-a", "unknown-school"):
+            headers = {"HTTP_X_TENANT": tenant} if tenant else {}
+            self.middleware.request = self.factory.get("/api/v1/public/auth-appearance/", **headers)
+            self.assertIs(self.middleware.get_tenant(None, "api.myezyschool.com"), public)
+            mock_get.assert_called_with(schema_name="public")
+        self.assertTrue(self.middleware._is_blocked_tenant_path_allowed("/api/v1/public/auth-appearance/", "GET"))

@@ -417,6 +417,7 @@ class TenantMembership(models.Model):
                 {"role": "An active membership requires an active role."}
             )
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self.full_clean()
         authorization_changed = False
@@ -450,6 +451,8 @@ class TenantMembership(models.Model):
         from authorization.cache import schedule_membership_invalidation
 
         schedule_membership_invalidation(connection.schema_name, self.user_id)
+        from authorization.multiple_roles import seed_default_assignment
+        seed_default_assignment(self)
         return result
 
     def delete(self, *args, **kwargs):
@@ -459,6 +462,32 @@ class TenantMembership(models.Model):
 
         schedule_membership_invalidation(connection.schema_name, user_id)
         return result
+
+
+class TenantRoleAssignment(models.Model):
+    """A unique role grant within a school; membership retains the default role."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    membership = models.ForeignKey(TenantMembership, on_delete=models.CASCADE, related_name="role_assignments")
+    role = models.ForeignKey(Role, null=True, blank=True, on_delete=models.PROTECT, related_name="assignments")
+    shared_role_id = models.UUIDField(null=True, blank=True)
+    # System roles have the same identity whether stored locally or centrally.
+    role_key = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("membership", "role_key"), name="authz_unique_member_role"),
+            models.UniqueConstraint(fields=("membership", "role"), name="authz_unique_local_assignment"),
+            models.UniqueConstraint(fields=("membership", "shared_role_id"), name="authz_unique_shared_assignment"),
+            models.CheckConstraint(condition=(
+                models.Q(role__isnull=False, shared_role_id__isnull=True)
+                | models.Q(role__isnull=True, shared_role_id__isnull=False)
+            ), name="authz_assignment_one_role"),
+        ]
+        ordering = ("created_at", "id")
 
 
 class AuthorizationAuditLog(models.Model):

@@ -1,6 +1,9 @@
 """
 Serializers for core models (Tenant)
 """
+
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from rest_framework import serializers
 from core.models import Division, Tenant, Domain, SignupRequest
 from core.utils import resolve_tenant_logo_media_url
@@ -9,7 +12,17 @@ from django.db import transaction
 import logging
 
 
+
 logger = logging.getLogger(__name__)
+
+
+class TenantLogoUpdateSerializer(PartialUpdateModelSerializer):
+    # SVG uploads are supported by the logo endpoint's own image validation.
+    logo = serializers.FileField(required=False, allow_null=True)
+
+    class Meta:
+        model = Tenant
+        fields = ["logo", "logo_shape"]
 
 
 class DivisionReferenceField(serializers.PrimaryKeyRelatedField):
@@ -188,7 +201,7 @@ class TenantDomainMixin:
         return relative
 
 
-class BaseTenantSerializer(TenantDomainMixin, serializers.ModelSerializer):
+class BaseTenantSerializer(TenantDomainMixin, PartialUpdateModelSerializer):
     """
     Base serializer for Tenant model with common functionality.
     Provides domain methods and logo URL building.
@@ -304,7 +317,7 @@ class PublicTenantSerializer(BaseTenantSerializer):
         return response
 
 
-class TenantSerializer(BaseTenantSerializer):
+class TenantSerializer(ChangedFieldsModelSerializerMixin, BaseTenantSerializer):
     """
     Serializer for Tenant model.
     Used for reading and updating tenant data.
@@ -385,7 +398,7 @@ class TenantSerializer(BaseTenantSerializer):
         return response
 
 
-class PublicTenantSerializer(serializers.ModelSerializer, TenantDomainMixin):
+class PublicTenantSerializer(PartialUpdateModelSerializer, TenantDomainMixin):
     """
     Limited serializer for public tenant information.
     Used for public pages like login, registration, etc.
@@ -490,6 +503,8 @@ class CreateTenantSerializer(serializers.Serializer):
         """Validate schema_name format and uniqueness"""
         if value:
             value = value.strip()
+            if value.lower() == "parent":
+                raise serializers.ValidationError("This workspace name is reserved for the global parent portal.")
             # Schema names must be valid PostgreSQL identifiers
             if not value.replace('_', '').isalnum():
                 raise serializers.ValidationError(
@@ -782,7 +797,7 @@ class TenantInfoSearchResultSerializer(serializers.Serializer):
     data = serializers.DictField(help_text="User/Student/Staff data")
 
 
-class SignupRequestCreateSerializer(serializers.ModelSerializer):
+class SignupRequestCreateSerializer(PartialUpdateModelSerializer):
     """Public marketing signup form (write-only)."""
 
     class Meta:
@@ -794,7 +809,10 @@ class SignupRequestCreateSerializer(serializers.ModelSerializer):
         ]
 
 
-class SignupRequestAdminSerializer(serializers.ModelSerializer):
+class SignupRequestAdminSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     """Admin list/detail/update for signup requests."""
 
     linked_tenant_schema_name = serializers.SerializerMethodField()

@@ -15,6 +15,10 @@ PASSWORD = "role-required-pass-123"
 
 class RoleRequiredLoginTests(TenantTestCase):
     @classmethod
+    def get_test_schema_name(cls):
+        return "parent_role_login_test"
+
+    @classmethod
     def setup_tenant(cls, tenant):
         from users.models import User
 
@@ -159,7 +163,7 @@ class RoleRequiredLoginTests(TenantTestCase):
         with schema_context(get_public_schema_name()):
             self.assertFalse(has_assigned_role(user))
 
-    def test_deactivated_role_removes_every_assignment_that_uses_it(self):
+    def test_deactivated_default_role_keeps_other_active_assignments_usable(self):
         user = self._user("deactivated-role-user")
         self._grant(user)
         custom_role = Role.objects.create(
@@ -174,6 +178,5 @@ class RoleRequiredLoginTests(TenantTestCase):
         custom_role.is_active = False
         custom_role.save(update_fields=["is_active"])
 
-        self.assertIsNone(get_assigned_role(user))
-        with self.assertRaises(NoAssignedRole):
-            self._login(user)
+        self.assertEqual(get_assigned_role(user).system_key, "staff")
+        self.assertEqual(self._login(user)["user"]["rbac_role"]["system_key"], "staff")

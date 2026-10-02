@@ -43,6 +43,14 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         return initialize_request_authorization(request, user).context.unrestricted
 
     def has_permission(self, request, view) -> bool:
+        from django.db import connection
+        from django_tenants.utils import get_public_schema_name
+        from authorization.services import get_assigned_role
+        if self._get_user(request) and connection.schema_name != get_public_schema_name():
+            role = get_assigned_role(request.user)
+            if role and role.system_key == "parent" and view.__class__.__module__.split(".")[0] in {"students", "grading", "finance", "reports", "hr", "academics"}:
+                from users.parent_student_access import parent_student_read_allowed
+                return parent_student_read_allowed(request, view)
         if self._has_unrestricted_access(request):
             return True
         return super().has_permission(request, view)
@@ -103,11 +111,9 @@ class BaseSchoolAccessPolicy(AccessPolicy):
         role_key = authorization.context.role_id
         if not role_key:
             return False
-        from authorization.models import Role
-
-        system_key = Role.objects.filter(pk=role_key).values_list(
-            "system_key", flat=True
-        ).first()
+        from authorization.services import get_assigned_role
+        role = get_assigned_role(user)
+        system_key = role.system_key if role else None
         allowed: List[str] = [r.strip().lower() for r in roles.split(",") if r.strip()]
         return system_key in allowed
 

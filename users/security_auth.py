@@ -34,11 +34,12 @@ class SecurityTokenObtainPairView(MultiFieldTokenObtainPairView):
         from authorization.services import has_assigned_role
         from common.audit_utils import log_auth_event
         from users.mfa import issue_challenge, mask_email, requires_email_mfa
+        from users.parent_workspace import is_parent_workspace, parent_identity
 
         identifier = request.data.get("username", "")
         password = request.data.get("password", "")
         user = authenticate(request=request, username=identifier, password=password)
-        if not user or not user.is_active or not has_assigned_role(user):
+        if not user or not user.is_active or not has_assigned_role(user) or (is_parent_workspace(request) and not parent_identity(user)):
             return super().post(request, *args, **kwargs)
 
         denied = self._enforce_login_policy(request, user, identifier)
@@ -82,6 +83,7 @@ class EmailMFAVerifyView(APIView):
         from authorization.services import has_assigned_role
         from common.audit_utils import log_auth_event
         from users.mfa import get_challenge_for_update, requires_email_mfa, verify_code
+        from users.parent_workspace import is_parent_workspace, parent_identity
 
         raw_token = str(request.data.get("challenge_token", ""))
         code = str(request.data.get("code", ""))
@@ -105,7 +107,8 @@ class EmailMFAVerifyView(APIView):
                 return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
             user = challenge.user
 
-        if not user.is_active or not has_assigned_role(user) or not requires_email_mfa(user):
+        parent_workspace = is_parent_workspace(request)
+        if not user.is_active or not has_assigned_role(user) or not requires_email_mfa(user) or (parent_workspace and not parent_identity(user)):
             log_auth_event(request, user, "mfa_verification_failed", details={"reason": "authorization_changed"})
             return Response({"detail": "Unable to complete sign-in."}, status=status.HTTP_403_FORBIDDEN)
         denied = SecurityTokenObtainPairView()._enforce_login_policy(request, user, user.username or user.email)
@@ -113,6 +116,8 @@ class EmailMFAVerifyView(APIView):
             return denied
 
         refresh = SecurityTokenObtainPairSerializer.get_token(user)
+        if parent_workspace:
+            refresh["parent_workspace"] = True
         from users.session_security import register_jwt_session
 
         register_jwt_session(user=user, request=request, refresh=refresh)

@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 from rest_framework.exceptions import PermissionDenied
 
 from grading.services.grade_access import enforce_grade_access
+from api.exceptions import custom_exception_handler
 
 
 class GradeAccessTests(SimpleTestCase):
@@ -28,6 +29,12 @@ class GradeAccessTests(SimpleTestCase):
             raised.exception.detail["code"],
             "grades_restricted_outstanding_balance",
         )
+        response = custom_exception_handler(raised.exception, {})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error_code"], "grades_restricted_outstanding_balance")
+        self.assertIn("outstanding balance", response.data["detail"])
+        self.assertFalse(response.data["detail"].startswith("code:"))
+
 
     @patch("settings.models.GradingSettings.objects.first")
     @patch("students.services.balance.get_student_effective_outstanding_balance")

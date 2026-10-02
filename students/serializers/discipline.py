@@ -1,3 +1,5 @@
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -5,7 +7,10 @@ from common.status import AttendanceStatus
 from ..models import DisciplinaryActionType, StudentDisciplinaryAction
 
 
-class DisciplinaryActionTypeSerializer(serializers.ModelSerializer):
+class DisciplinaryActionTypeSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     DURATION_REQUIRED_OUTCOMES = {
         DisciplinaryActionType.ActionOutcome.DETENTION,
         DisciplinaryActionType.ActionOutcome.SUSPENSION,
@@ -124,7 +129,10 @@ class DisciplinaryActionTypeSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class StudentDisciplinaryActionSerializer(serializers.ModelSerializer):
+class StudentDisciplinaryActionSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     student_id_number = serializers.CharField(source="student.id_number", read_only=True)
     student_full_name = serializers.CharField(source="student.get_full_name", read_only=True)
     is_active_window = serializers.SerializerMethodField()
@@ -228,7 +236,7 @@ class StudentDisciplinaryActionSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class ActiveStudentDisciplinaryActionSerializer(serializers.ModelSerializer):
+class ActiveStudentDisciplinaryActionSerializer(PartialUpdateModelSerializer):
     action_type_detail = DisciplinaryActionTypeSerializer(source="action_type", read_only=True)
     action_outcome = serializers.CharField(source="action_type.action_outcome", read_only=True)
 

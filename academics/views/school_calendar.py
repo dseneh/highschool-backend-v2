@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 from datetime import date, timedelta
 
 from django.db.models import Q
@@ -22,13 +24,12 @@ class SchoolCalendarSettingsView(APIView):
 
     def put(self, request):
         settings = SchoolCalendarSettings.get_solo()
-        serializer = SchoolCalendarSettingsSerializer(
+        serializer = validate_partial_update(
+            SchoolCalendarSettingsSerializer,
             settings,
-            data=request.data,
-            partial=True,
+            request.data,
             context={"request": request},
         )
-        serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -131,13 +132,12 @@ class SchoolCalendarEventDetailView(APIView):
 
     def put(self, request, id):
         event = self.get_object(id)
-        serializer = SchoolCalendarEventSerializer(
+        serializer = validate_partial_update(
+            SchoolCalendarEventSerializer,
             event,
-            data=request.data,
-            partial=True,
+            request.data,
             context={"request": request},
         )
-        serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

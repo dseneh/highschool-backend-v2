@@ -4,6 +4,12 @@ from users.access_policies.access import BaseSchoolAccessPolicy
 class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
     statements = [
         {
+            "action": ["list", "retrieve"],
+            "principal": "authenticated",
+            "effect": "allow",
+            "condition": "is_own_employee_pay",
+        },
+        {
             "action": ["*"],
             "principal": "authenticated",
             "effect": "allow",
@@ -63,3 +69,19 @@ class PayrollV2AccessPolicy(BaseSchoolAccessPolicy):
             "condition": "has_rbac_permission:payroll.view",
         },
     ]
+
+    def is_own_employee_pay(self, request, view, action):
+        from hr.self_service import own_employee_queryset
+        from payroll_v2.views import EmployeeCompensationViewSet, EmployeePayrollItemViewSet, PayrollEmployeeItemViewSet
+        if not isinstance(view, (EmployeeCompensationViewSet, EmployeePayrollItemViewSet, PayrollEmployeeItemViewSet)):
+            return False
+        employee_ids = {str(employee.pk) for employee in own_employee_queryset(request.user)}
+        if action == "list":
+            return request.query_params.get("employee") in employee_ids
+        from uuid import UUID
+        try:
+            pk = UUID(str(view.kwargs.get("pk")))
+        except (ValueError, TypeError):
+            return False
+        # Keep existing paid-paystub visibility and queryset restrictions.
+        return view.get_queryset().filter(pk=pk, employee_id__in=employee_ids).exists()
