@@ -94,6 +94,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
         '/api/v1/authorization/permissions',
         '/api/v1/public/schools/',
         '/api/v1/public/schools',
+        '/api/v1/public/auth-appearance/',
+        '/api/v1/public/auth-appearance',
     }
 
     def _blocked_tenant_response(self, detail: str, error_code: str, status_code: int = 423):
@@ -437,6 +439,7 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
                     or path.startswith('/api/v1/search')
                         or path.startswith('/api/v1/signup-requests')
                         or path.startswith('/api/v1/public/schools')
+                    or path.rstrip('/') == '/api/v1/public/auth-appearance'
                     or path.startswith('/api/v1/authorization/roles')
                     or path.startswith('/api/v1/authorization/permissions')
                     or path in ('/', '/health', '/health/')
@@ -445,6 +448,8 @@ class HeaderBasedTenantMiddleware(TenantMainMiddleware):
             # Tenant management endpoints (retrieving tenant info) should ignore x-tenant header
             # and always work in public schema
             path = request.path
+            if path.rstrip('/') == '/api/v1/public/auth-appearance':
+                return Tenant.objects.get(schema_name=get_public_schema_name())
             if (
                 path.startswith('/api/v1/tenants/')
                 and path != '/api/v1/tenants/current/'

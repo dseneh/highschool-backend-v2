@@ -24,7 +24,7 @@ AUTH_BACKGROUND_MAX_BYTES = 5 * 1024 * 1024
 AUTH_BACKGROUND_MAX_DIMENSION = 2560
 AUTH_BACKGROUND_MAX_PIXELS = 40_000_000
 AUTH_BACKGROUND_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
-LOGIN_LAYOUTS = {"classic", "split", "hero", "minimal"}
+LOGIN_LAYOUTS = {"classic", "split", "hero", "minimal", "ambient", "centered", "aurora", "orbit", "editorial", "studio", "dusk", "water", "boxes", "particles"}
 SPLIT_MESSAGE_MAX_LENGTH = 280
 
 

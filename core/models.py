@@ -909,3 +909,13 @@ class TenantOwnerActivationCode(models.Model):
 
     def __str__(self):
         return f"{self.tenant.schema_name} / {self.user.email or self.user.id_number} / {self.purpose}"
+
+
+class PlatformAuthAppearance(models.Model):
+    """Singleton shared settings; only presentation choices are public."""
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    default_layout = models.CharField(max_length=16, default="classic")
+    workspace_layout = models.CharField(max_length=16, blank=True, default="")
+    parent_layout = models.CharField(max_length=16, blank=True, default="")
+    background_settings = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)

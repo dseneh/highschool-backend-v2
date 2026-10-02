@@ -12,6 +12,7 @@ from core.views import (
     ContactInquiryView,
     PublicSchoolSearchView,
 )
+from core.platform_auth_views import PublicAuthAppearanceView, PlatformAuthAppearanceView
 from core.branding_views import TenantAuthBackgroundView, TenantLoginExperienceView
 from core.onboarding_views import (
     get_onboarding,
@@ -37,6 +38,8 @@ router.register(
 )
 
 urlpatterns = [
+    path("public/auth-appearance/", PublicAuthAppearanceView.as_view()),
+    path("platform/auth-appearance/", PlatformAuthAppearanceView.as_view()),
     # IMPORTANT: explicit paths that overlap with the router's detail URLs
     # (e.g. /tenants/{schema_name}/, /platform-banners/{pk}/) MUST be
     # registered BEFORE `include(router.urls)`. Otherwise the router
