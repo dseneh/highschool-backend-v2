@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
@@ -101,12 +103,11 @@ class DisciplinaryActionTypeDetailView(APIView):
     def put(self, request, id):
         _require_all_discipline_manage_scope(request)
         action_type = self.get_object(id)
-        serializer = DisciplinaryActionTypeSerializer(
+        serializer = validate_partial_update(
+            DisciplinaryActionTypeSerializer,
             action_type,
-            data=request.data,
-            partial=True,
+            request.data,
         )
-        serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -325,12 +326,7 @@ class StudentDisciplinaryActionDetailView(APIView):
         if error_response:
             return error_response
 
-        serializer = StudentDisciplinaryActionSerializer(
-            record,
-            data=payload,
-            partial=True,
-        )
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(StudentDisciplinaryActionSerializer, record, payload)
 
         next_end_date = serializer.validated_data.get("end_date", record.end_date)
         is_early_end = next_end_date < record.end_date

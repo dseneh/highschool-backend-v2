@@ -4,11 +4,14 @@ Serializers for Settings models.
 Handles data validation and serialization for Settings API endpoints.
 """
 
+from common.update_utils import PartialUpdateModelSerializer
+
+
 from rest_framework import serializers
 from .models import GradingSettings, GradingStyleChoices
 
 
-class GradingSettingsOut(serializers.ModelSerializer):
+class GradingSettingsOut(PartialUpdateModelSerializer):
     """
     Read-only serializer for GradingSettings.
 
@@ -85,7 +88,7 @@ class GradingSettingsOut(serializers.ModelSerializer):
         )
 
 
-class GradingSettingsIn(serializers.ModelSerializer):
+class GradingSettingsIn(PartialUpdateModelSerializer):
     """
     Input serializer for creating/updating GradingSettings.
 

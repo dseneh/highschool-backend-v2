@@ -1,3 +1,6 @@
+from common.update_utils import filter_changed_data, validate_model_update, validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
 from hashlib import sha256
 
 from django.db.models import Count, Max, Q
@@ -106,14 +109,9 @@ class InboxViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["patch"], url_path="mark-read")
     def mark_read(self, request, pk=None):
         notification = self.get_object()
-        serializer = NotificationMarkReadSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        if serializer.validated_data.get("read", True):
-            notification.read_at = timezone.now()
-        else:
-            notification.read_at = None
-        notification.updated_by = request.user
-        notification.save(update_fields=["read_at", "updated_at", "updated_by"])
+        serializer = validate_partial_update(NotificationMarkReadSerializer, notification, request.data)
+        read_at = timezone.now() if serializer.validated_data.get("read", True) else None
+        validate_model_update(notification, {"read_at": read_at}, ["read_at"]).save(updated_by=request.user)
         return Response(NotificationSerializer(notification).data)
 
     @action(detail=False, methods=["patch"], url_path="mark-all-read")
@@ -260,7 +258,7 @@ class InboxViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"id": str(notification.id), "dismissed": True})
 
 
-class CampaignViewSet(viewsets.ModelViewSet):
+class CampaignViewSet(PartialUpdateModelViewSet):
     permission_classes = [NotificationAccessPolicy]
     pagination_class = NotificationPagination
     # Admin/manager edits are restricted to safely-editable fields. Audience,
@@ -337,10 +335,9 @@ class CampaignViewSet(viewsets.ModelViewSet):
         }
         if not payload:
             return Response(NotificationCampaignSerializer(campaign).data)
-        serializer = NotificationCampaignSerializer(
-            campaign, data=payload, partial=True
-        )
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(NotificationCampaignSerializer, campaign, payload)
+        if not filter_changed_data(campaign, serializer.validated_data):
+            return Response(NotificationCampaignSerializer(campaign).data)
         serializer.save(updated_by=request.user)
         # Bump child Notification rows so the inbox ETag advances. Without
         # this, polling clients keep getting 304 Not Modified and never see
@@ -427,7 +424,7 @@ def _ensure_default_notification_rules():
     ensure_all_default_notification_rules()
 
 
-class NotificationRuleViewSet(viewsets.ModelViewSet):
+class NotificationRuleViewSet(PartialUpdateModelViewSet):
     permission_classes = [NotificationAccessPolicy]
     serializer_class = NotificationRuleSerializer
     queryset = NotificationRule.objects.all().order_by("event_type")
@@ -453,10 +450,11 @@ class UserPreferenceView(APIView):
             user_id=request.user.id,
             defaults={"email_enabled": True, "muted_categories": []},
         )
-        serializer = UserNotificationPreferenceSerializer(
-            pref, data=request.data, partial=True
+        serializer = validate_partial_update(
+            UserNotificationPreferenceSerializer,
+            pref,
+            request.data,
         )
-        serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data)
 
@@ -470,9 +468,10 @@ class TenantNotificationSettingsView(APIView):
 
     def patch(self, request):
         settings_obj = TenantNotificationSettings.get_solo()
-        serializer = TenantNotificationSettingsSerializer(
-            settings_obj, data=request.data, partial=True
+        serializer = validate_partial_update(
+            TenantNotificationSettingsSerializer,
+            settings_obj,
+            request.data,
         )
-        serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data)

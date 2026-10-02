@@ -11,7 +11,7 @@ from grading.services.authorization import (
     get_teacher_allowed_section_ids_for_subject,
     get_teacher_gradebook_scope,
 )
-from students.models import Enrollment, Student, StudentGuardian
+from students.models import Enrollment, Student
 
 
 DENIED_MESSAGE = "You do not have permission to view this grading data."
@@ -29,18 +29,12 @@ def accessible_student_ids(user) -> set:
     if not id_number:
         return set()
 
-    student_ids = set(
-        Student.objects.filter(user_account_id_number=id_number).values_list(
-            "id", flat=True
-        )
-    )
-    student_ids.update(
-        StudentGuardian.objects.filter(
-            user_account_id_number=id_number,
-            active=True,
-        ).values_list("student_id", flat=True)
-    )
-    return student_ids
+    from authorization.services import get_assigned_role
+    from users.parent_portal import verified_guardians
+    role = get_assigned_role(user)
+    if role and role.system_key == "parent":
+        return set(verified_guardians(user).values_list("student_id", flat=True))
+    return set(Student.objects.filter(user_account_id_number=id_number).values_list("id", flat=True))
 
 
 def filter_gradebooks_for_view_scope(queryset: QuerySet, request) -> QuerySet:

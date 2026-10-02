@@ -1,9 +1,11 @@
+from common.update_utils import PartialUpdateModelSerializer
+
 from rest_framework import serializers
 
 from backups.models import TenantBackup, TenantRestoreRequest
 
 
-class TenantBackupSerializer(serializers.ModelSerializer):
+class TenantBackupSerializer(PartialUpdateModelSerializer):
     requested_by = serializers.SerializerMethodField()
 
     class Meta:
@@ -48,7 +50,7 @@ class BackupRequestCreateSerializer(serializers.Serializer):
     reason = serializers.CharField(required=True, allow_blank=False, max_length=2000, trim_whitespace=True)
 
 
-class TenantRestoreRequestSerializer(serializers.ModelSerializer):
+class TenantRestoreRequestSerializer(PartialUpdateModelSerializer):
     requested_by = serializers.SerializerMethodField()
     approved_by = serializers.SerializerMethodField()
     rejected_by = serializers.SerializerMethodField()

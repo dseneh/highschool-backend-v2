@@ -39,6 +39,7 @@ def sync_guardian_to_contact(sender, instance, created, **kwargs):
     )
 
     defaults = {
+        "portal_guardian_id": instance.pk,
         "first_name": instance.first_name,
         "last_name": instance.last_name,
         "relationship": contact_rel,
@@ -52,7 +53,7 @@ def sync_guardian_to_contact(sender, instance, created, **kwargs):
     }
 
     try:
-        contact = StudentContact.objects.filter(
+        contact = StudentContact.objects.filter(portal_guardian_id=instance.pk, student=instance.student).first() or StudentContact.objects.filter(
             student=instance.student,
             first_name=instance.first_name,
             last_name=instance.last_name,
@@ -65,6 +66,9 @@ def sync_guardian_to_contact(sender, instance, created, **kwargs):
                 setattr(contact, field, value)
             contact.save(update_fields=list(defaults.keys()))
             logger.info(f"Synced guardian {instance.id} → contact {contact.id}")
+            if created:
+                from students.contact_notifications import schedule_contact_notice
+                schedule_contact_notice(contact.pk)
         else:
             contact = StudentContact.objects.create(
                 student=instance.student,
@@ -208,3 +212,41 @@ def protect_critical_users(sender, instance, **kwargs):
     # For example, raise an exception to prevent deletion of certain users:
     # if instance.username == 'admin' and not getattr(instance, '_force_delete', False):
     #     raise ValueError("Cannot delete admin user without _force_delete flag")
+
+
+def _reconcile_parent_profiles(profile_ids):
+    from django.db import connection, transaction
+    from core.models import Tenant
+    from users.models import ParentProfile
+    from users.parent_portal import reconcile_parent
+    schema = connection.schema_name
+    ids = set(profile_ids)
+    if not ids or schema == "public":
+        return
+
+    def repair():
+        tenant = Tenant.objects.filter(schema_name=schema).first()
+        if tenant and tenant.status != "deleted":
+            for profile in ParentProfile.objects.filter(pk__in=ids):
+                reconcile_parent(profile, tenant)
+    transaction.on_commit(repair)
+
+
+@receiver(post_save, sender="students.StudentGuardian")
+@receiver(post_delete, sender="students.StudentGuardian")
+def reconcile_guardian_portal(sender, instance, **kwargs):
+    if instance.parent_profile_id:
+        _reconcile_parent_profiles([instance.parent_profile_id])
+
+
+@receiver(post_save, sender="students.Student")
+def reconcile_student_parent_access(sender, instance, created, **kwargs):
+    if not created:
+        _reconcile_parent_profiles(instance.guardians.exclude(parent_profile_id=None).values_list("parent_profile_id", flat=True))
+
+
+@receiver(post_save, sender="students.StudentContact")
+def notify_contact_added(sender, instance, created, raw=False, **kwargs):
+    if created and not raw:
+        from students.contact_notifications import schedule_contact_notice
+        schedule_contact_notice(instance.pk)

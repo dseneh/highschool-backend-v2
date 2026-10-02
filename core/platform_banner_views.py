@@ -13,10 +13,14 @@ Two surfaces:
 
 from __future__ import annotations
 
+from common.update_utils import validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
+
 from django.db import connection
 from django.utils import timezone
 from django_tenants.utils import schema_context
-from rest_framework import status, viewsets
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -82,7 +86,7 @@ def models_q_or_null(field: str, value, *, less_or_equal=False, greater_than=Fal
     raise ValueError("must pass one of less_or_equal=True / greater_than=True")
 
 
-class PlatformBannerViewSet(viewsets.ModelViewSet):
+class PlatformBannerViewSet(PartialUpdateModelViewSet):
     """Superadmin CRUD for platform banners.
 
     Always operates in the public schema. The list endpoint returns every
@@ -120,8 +124,7 @@ class PlatformBannerViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         with schema_context("public"):
             instance = self.get_object()
-            serializer = self.get_serializer(instance, data=request.data, partial=True)
-            serializer.is_valid(raise_exception=True)
+            serializer = validate_partial_update(self.get_serializer, instance, request.data)
             serializer.save()
             return Response(serializer.data)
 
@@ -145,10 +148,10 @@ class MyPlatformBannersView(APIView):
     def get(self, request):
         role_key = None
         if connection.schema_name != "public":
-            from authorization.models import TenantMembership
+            from authorization.services import get_assigned_role
 
-            membership = TenantMembership.objects.select_related("role").filter(user=request.user).first()
-            role_key = membership.role.system_key if membership else None
+            role = get_assigned_role(request.user)
+            role_key = role.system_key if role else None
         elif getattr(request.user, "is_platform_superuser", False):
             role_key = "platform_superuser"
         with schema_context("public"):

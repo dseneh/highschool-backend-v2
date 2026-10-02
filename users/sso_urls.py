@@ -3,6 +3,7 @@ from django.urls import path
 from users.sso_views import (
     GlobalLogoutView,
     SsoBootstrapView,
+    SsoSessionView,
     SsoAuthorizeView,
     SsoRefreshView,
     SsoTokenExchangeView,
@@ -11,6 +12,7 @@ from users.sso_views import (
 
 
 urlpatterns = [
+    path("session/", SsoSessionView.as_view(), name="sso-session"),
     path("bootstrap", SsoBootstrapView.as_view(), name="sso-bootstrap"),
     path("bootstrap/", SsoBootstrapView.as_view(), name="sso-bootstrap-slash"),
     path("authorize", SsoAuthorizeView.as_view(), name="sso-authorize"),

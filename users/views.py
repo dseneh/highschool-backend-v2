@@ -1,6 +1,9 @@
 """
 Views for authentication and user management
 """
+
+from common.update_utils import validate_partial_update
+
 import secrets
 from datetime import timedelta
 
@@ -18,7 +21,7 @@ from rest_framework.pagination import PageNumberPagination
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
-from django.db import connection
+from django.db import connection, transaction
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
@@ -500,17 +503,7 @@ class TenantUsersView(APIView):
                     source_email = source_record.email
 
             elif account_type == UserAccountType.PARENT:
-                from students.models import Student
-                student_for_parent = Student.objects.filter(
-                    id_number=id_number,
-                    date_of_birth=date_of_birth,
-                ).first()
-                if student_for_parent:
-                    source_record = student_for_parent.guardians.filter(is_primary=True).first() or student_for_parent.guardians.first()
-                    if source_record:
-                        source_first_name = source_record.first_name or ""
-                        source_last_name = source_record.last_name or ""
-                        source_email = source_record.email
+                return Response({"detail": "Parent access requires Give access on a school guardian record and verified account setup."}, status=status.HTTP_400_BAD_REQUEST)
 
         except Exception as e:
             return Response(
@@ -539,31 +532,11 @@ class TenantUsersView(APIView):
 
                 fields_to_update = []
 
-                if normalized_source_email:
-                    try:
-                        validate_email(normalized_source_email)
-                    except DjangoValidationError:
-                        return Response(
-                            {
-                                "detail": "Cannot attach account because source email is invalid.",
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-
-                    duplicate_email_owner = User.objects.filter(
-                        email__iexact=normalized_source_email,
-                    ).exclude(id=user.id).exists()
-                    if duplicate_email_owner:
-                        return Response(
-                            {
-                                "detail": "Cannot attach account because this email is already linked to another user.",
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-
-                    if (user.email or "").strip().lower() != normalized_source_email.lower():
-                        user.email = normalized_source_email
-                        fields_to_update.append("email")
+                if normalized_source_email and user.email.lower() != normalized_source_email.lower():
+                    return Response(
+                        {"detail": "The source email differs from the existing account. Update the linked account email explicitly before attaching it."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
                 # Ensure account is active when (re)attaching from staff/student records.
                 if not user.is_active:
@@ -739,6 +712,8 @@ class GlobalUserCreateView(APIView):
             account_type = str(data.get('account_type') or '').strip().lower()
             if not account_type:
                 account_type = UserAccountType.GLOBAL
+            if account_type == UserAccountType.PARENT:
+                return Response({"detail": "Parent registration requires an approved guardian invitation."}, status=status.HTTP_400_BAD_REQUEST)
             data['account_type'] = account_type
 
             raw_password = data.pop('password', None)
@@ -851,12 +826,25 @@ class UserDetailView(APIView):
         with schema_context('public'):
             try:
                 user = User.objects.get(id_number=id_number)
-                serializer = UserUpdateSerializer(user, data=request.data, partial=True)
+                serializer = validate_partial_update(
+                    UserUpdateSerializer,
+                    user,
+                    request.data,
+                    raise_exception=False,
+                )
                 if serializer.is_valid():
-                    serializer.save(
-                        profile_updated_at=timezone.now(),
-                        profile_updated_by=request.user,
-                    )
+                    with transaction.atomic():
+                        if "email" in serializer.validated_data:
+                            from users.identity_email import normalize_email, require_email_editor, set_account_email
+                            email = normalize_email(serializer.validated_data["email"])
+                            if email != user.email:
+                                require_email_editor(request, user)
+                                set_account_email(user, email)
+                            serializer.validated_data["email"] = email
+                        serializer.save(
+                            profile_updated_at=timezone.now(),
+                            profile_updated_by=request.user,
+                        )
                     response_serializer = UserSerializer(user, context={'request': request})
                     return Response(response_serializer.data, status=status.HTTP_200_OK)
                 return error_response(serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
@@ -1521,19 +1509,7 @@ class UserRecreateView(APIView):
                     source_email = source_record.email
 
             elif account_type == UserAccountType.PARENT:
-                from students.models import Student
-                student = Student.objects.filter(
-                    id_number=id_number,
-                    date_of_birth=date_of_birth,
-                ).first()
-
-                if student:
-                    matched_student_id = student.id
-                    source_record = student.guardians.filter(is_primary=True).first() or student.guardians.first()
-                    if source_record:
-                        source_first_name = source_record.first_name or ""
-                        source_last_name = source_record.last_name or ""
-                        source_email = source_record.email
+                return Response({"detail": "Parent access requires Give access on a school guardian record and verified account setup."}, status=status.HTTP_400_BAD_REQUEST)
 
         except Exception as exc:
             return Response(
@@ -1576,23 +1552,10 @@ class UserRecreateView(APIView):
             existing_user = User.objects.filter(id_number=id_number).first()
             if existing_user:
                 if (existing_user.email or '').strip().lower() != required_source_email.lower():
-                    duplicate_email_owner = User.objects.filter(
-                        email__iexact=required_source_email,
-                    ).exclude(id=existing_user.id).exists()
-                    if duplicate_email_owner:
-                        return Response(
-                            {
-                                "detail": "Cannot attach account because this email is already linked to another user.",
-                                "errors": {
-                                    "email": [
-                                        "A user with this email already exists."
-                                    ]
-                                },
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    existing_user.email = required_source_email
-                    existing_user.save(update_fields=['email'])
+                    return Response(
+                        {"detail": "The source email differs from the existing account. Update the linked account email explicitly before attaching it."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
                 try:
                     from core.models import Tenant
@@ -1672,10 +1635,7 @@ class UserRecreateView(APIView):
             elif account_type == UserAccountType.STAFF:
                 source_record.user_account_id_number = user.id_number
                 source_record.save(update_fields=['user_account_id_number'])
-            elif account_type == UserAccountType.PARENT:
-                # For parents, source_record is StudentGuardian
-                source_record.user_account_id_number = user.id_number
-                source_record.save(update_fields=['user_account_id_number'])
+
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

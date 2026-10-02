@@ -1,3 +1,5 @@
+from common.update_utils import validate_partial_update
+
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -64,13 +66,12 @@ class SectionScheduleDetailView(APIView):
 
     def put(self, request, id):
         section_schedule = self.get_object(id)
-        serializer = SectionScheduleSerializer(
+        serializer = validate_partial_update(
+            SectionScheduleSerializer,
             section_schedule,
-            data=request.data,
-            partial=True,
+            request.data,
             context={"request": request},
         )
-        serializer.is_valid(raise_exception=True)
         class_schedule = serializer.save(updated_by=request.user)
         sync_schedule_projections_for_class_schedule(class_schedule)
         return Response(serializer.data, status=status.HTTP_200_OK)

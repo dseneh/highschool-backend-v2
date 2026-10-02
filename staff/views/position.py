@@ -1,5 +1,8 @@
+from common.update_utils import get_update_value, validate_partial_update
+
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.db.models import Q
-from rest_framework import viewsets
 from rest_framework.response import Response
 import re
 
@@ -9,13 +12,10 @@ from ..access_policies import StaffAccessPolicy
 
 # Import business logic (framework-agnostic)
 from business.staff.services import staff_service
-from business.staff.adapters import (
-    create_position_in_db,
-    update_position_in_db,
-)
+from business.staff.adapters import create_position_in_db
 
 
-class PositionViewSet(viewsets.ModelViewSet):
+class PositionViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for Position CRUD operations with maximum optimization.
 
@@ -158,7 +158,11 @@ class PositionViewSet(viewsets.ModelViewSet):
         
         # Validate if core fields are being updated
         if any(f in request.data for f in ['title', 'salary_min', 'salary_max']):
-            is_valid, errors = staff_service.validate_position_creation(request.data)
+            effective_data = {
+                field: get_update_value(position, request.data, field)
+                for field in ("title", "salary_min", "salary_max", "employment_type", "compensation_type")
+            }
+            is_valid, errors = staff_service.validate_position_creation(effective_data)
             if not is_valid:
                 from common.api_response import error_response
 
@@ -187,13 +191,10 @@ class PositionViewSet(viewsets.ModelViewSet):
             if field in request.data:
                 data[field] = request.data[field]
         
-        # Generate code if title changed but code not provided
-        if 'title' in request.data and 'code' not in request.data:
-            data['code'] = self.generate_position_code(title, exclude_id=position.id)
-        
         # Update using adapter
         try:
-            updated_position = update_position_in_db(str(position.id), data, request.user)
+            update_serializer = validate_partial_update(self.get_serializer, position, data)
+            updated_position = update_serializer.save(updated_by=request.user)
             if not updated_position:
                 return Response({"error": "Position not found"}, status=404)
             
@@ -201,4 +202,3 @@ class PositionViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
         except Exception as e:
             return Response({"error": str(e)}, status=400)
-

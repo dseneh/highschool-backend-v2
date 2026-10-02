@@ -32,9 +32,14 @@ class EmailMFAHelperTests(SimpleTestCase):
 )
 class PrivilegedEmailMFATests(TenantTestCase):
     @classmethod
+    def get_test_schema_name(cls):
+        return "email_mfa_test"
+
+    @classmethod
     def setup_tenant(cls, tenant):
         tenant.name = "MFA Test School"
         tenant.short_name = "mfa"
+        tenant.status = tenant.STATUS_ACTIVE
         tenant.owner, _ = User.objects.get_or_create(
             email="mfa-owner@example.com",
             defaults={
@@ -46,7 +51,9 @@ class PrivilegedEmailMFATests(TenantTestCase):
 
     def setUp(self):
         cache.clear()
-        self.client = APIClient()
+        type(self.tenant).objects.filter(pk=self.tenant.pk).update(status=self.tenant.STATUS_ACTIVE)
+        self.tenant.status = self.tenant.STATUS_ACTIVE
+        self.client = APIClient(HTTP_HOST=self.domain.domain)
 
     def _user(self, name, role_key):
         user = User.objects.create(
@@ -176,7 +183,7 @@ class PrivilegedEmailMFATests(TenantTestCase):
             format="json",
         )
 
-        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.status_code, 200, getattr(completed, "data", completed.content))
         target.refresh_from_db()
         self.assertEqual(target.email, "recovered@example.com")
         self.assertGreater(target.security_version, 1)

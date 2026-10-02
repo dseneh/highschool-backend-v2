@@ -1,3 +1,4 @@
+from common.update_utils import get_update_value
 from datetime import datetime
 import uuid
 
@@ -230,7 +231,7 @@ class EnrollmentDetailView(APIView):
             return Response({"detail": "Invalid enrollment status"}, 400)
 
         if new_status == EnrollmentStatus.COMPLETED:
-            outcome = request.data.get("year_end_outcome")
+            outcome = get_update_value(enrollment, request.data, "year_end_outcome")
             if not outcome or outcome not in YearEndOutcome.all():
                 return Response(
                     {

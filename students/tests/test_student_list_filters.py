@@ -42,7 +42,7 @@ class StudentListFilterTests(TenantTestCase):
         assign_user_role(
             user=self.admin,
             role=Role.objects.get(system_key="admin"),
-            actor=self.admin,
+            actor=None,
         )
         self.previous_year = AcademicYear.objects.create(
             name="2024-2025",
@@ -223,7 +223,7 @@ class StudentListFilterTests(TenantTestCase):
         self.assertTrue(user_can_view_student(self.new_student, request))
         self.assertFalse(user_can_view_student(other_student, request))
 
-    def test_own_scope_includes_guardian_linked_child_only(self):
+    def test_own_scope_rejects_unverified_guardian_reference(self):
         parent = User.objects.create(
             email="student-list-parent@example.com",
             username="student-list-parent",
@@ -244,7 +244,7 @@ class StudentListFilterTests(TenantTestCase):
 
         students = filter_students_for_view_scope(Student.objects.all(), request)
 
-        self.assertEqual(list(students), [self.new_student])
+        self.assertEqual(list(students), [])
 
     def test_balance_fields_are_returned_when_requested(self):
         row = self._list(

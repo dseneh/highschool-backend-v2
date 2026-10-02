@@ -1,3 +1,6 @@
+from common.update_utils import validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
 import calendar
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -5,7 +8,7 @@ from decimal import Decimal, ROUND_DOWN
 from django.db.models import Count, DecimalField, Prefetch, Q, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
-from rest_framework import filters, status, viewsets
+from rest_framework import filters, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -130,7 +133,7 @@ def ordered_payroll_item_rules_queryset():
     )
 
 
-class BasePayrollViewSet(viewsets.ModelViewSet):
+class BasePayrollViewSet(PartialUpdateModelViewSet):
     permission_classes = [PayrollV2AccessPolicy]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
 
@@ -185,8 +188,7 @@ class EmployeeCompensationViewSet(BasePayrollViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         compensation = self.get_object()
-        serializer = self.get_serializer(compensation, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(self.get_serializer, compensation, request.data)
         compensation = update_employee_compensation_record(
             compensation,
             actor=request.user,
@@ -196,8 +198,7 @@ class EmployeeCompensationViewSet(BasePayrollViewSet):
 
     def update(self, request, *args, **kwargs):
         compensation = self.get_object()
-        serializer = self.get_serializer(compensation, data=request.data)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(self.get_serializer, compensation, request.data)
         compensation = update_employee_compensation_record(
             compensation,
             actor=request.user,
@@ -1212,8 +1213,7 @@ class PayrollSettingsView(APIView):
 
     def patch(self, request):
         settings = get_tenant_payroll_settings(user=request.user)
-        serializer = PayrollSettingsSerializer(settings, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(PayrollSettingsSerializer, settings, request.data)
         settings = serializer.save(updated_by=request.user)
         settings.refresh_from_db()
         return Response(PayrollSettingsSerializer(settings).data)

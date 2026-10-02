@@ -1,4 +1,3 @@
-
 from datetime import date
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -12,6 +11,7 @@ from rest_framework.views import APIView
 
 from ..access_policies import AcademicsAccessPolicy
 from common.cache_service import DataCache
+from common.update_utils import validate_partial_update
 
 from ..models import AcademicYear
 from ..serializers import AcademicYearSerializer
@@ -222,7 +222,14 @@ class AcademicYearDetailView(APIView):
     def put(self, request, id):
         academic_year = self.get_object(id)
 
-        update_data = {}
+        allowed_fields = {"name", "current", "start_date", "end_date", "status"}
+        update_serializer = validate_partial_update(
+            AcademicYearSerializer,
+            academic_year,
+            {key: value for key, value in request.data.items() if key in allowed_fields},
+            context={"request": request},
+        )
+        update_data = dict(update_serializer.validated_data)
         
         # Handle name update
         name = request.data.get("name")
@@ -238,7 +245,7 @@ class AcademicYearDetailView(APIView):
             update_data["name"] = name
         
         # Handle current flag update
-        current = request.data.get("current", False)
+        current = update_data.get("current", False)
         if current and not academic_year.current:
             update_data["current"] = True
 
@@ -273,8 +280,9 @@ class AcademicYearDetailView(APIView):
             if overlap_result["has_overlap"]:
                 return Response({"detail": overlap_result["error"]}, status=400)
             
-            update_data["start_date"] = validation_result["data"]["start_date"]
-            update_data["end_date"] = validation_result["data"]["end_date"]
+            for field in ("start_date", "end_date"):
+                if field in request.data:
+                    update_data[field] = validation_result["data"][field]
         
         # Handle status update
         status_value = request.data.get("status")

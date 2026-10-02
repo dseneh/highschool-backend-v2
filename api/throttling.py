@@ -13,6 +13,8 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
     """Apply tighter IP-based limits to authentication and public discovery routes."""
 
     ROUTE_SCOPES = {
+        "/api/v1/employees/lookup-profile/": "public_search",
+        "/api/v1/employees/lookup-sources/": "public_search",
         "/api/v1/auth/login/": "login",
         "/api/v1/auth/password/forgot/": "password_reset",
         "/api/v1/auth/account-activation/verify-code/": "activation",
@@ -21,6 +23,9 @@ class SensitiveEndpointRateThrottle(SimpleRateThrottle):
         "/api/v1/auth/mfa/resend/": "mfa_resend",
         "/api/v1/auth/security/mfa-recovery/": "mfa_recovery",
         "/api/v1/auth/security/mfa-recovery/verify/": "mfa_recovery",
+        "/api/v1/auth/account-setup/start/": "activation",
+        "/api/v1/auth/account-setup/verify/": "activation",
+        "/api/v1/auth/account-setup/complete/": "activation",
         "/api/v1/public/schools/": "public_search",
     }
 

@@ -1,3 +1,5 @@
+from common.update_utils import ChangedFieldsModelSerializerMixin, PartialUpdateModelSerializer
+
 from urllib import response
 
 from django.db import models
@@ -17,7 +19,7 @@ from .models import (
 )
 
 
-class BankAccountSerializer(serializers.ModelSerializer):
+class BankAccountSerializer(PartialUpdateModelSerializer):
     """Basic serializer for bank account list views"""
 
     class Meta:
@@ -82,7 +84,7 @@ class BankAccountDetailSerializer(BankAccountSerializer):
         return response
 
 
-class GeneralFeeSerializer(serializers.ModelSerializer):
+class GeneralFeeSerializer(PartialUpdateModelSerializer):
     """Basic serializer for general fee list views"""
 
     class Meta:
@@ -104,7 +106,7 @@ class GeneralFeeSerializer(serializers.ModelSerializer):
         return response
 
 
-class SectionFeeSerializer(serializers.ModelSerializer):
+class SectionFeeSerializer(PartialUpdateModelSerializer):
     """Basic serializer for section fee list views"""
 
     class Meta:
@@ -135,7 +137,7 @@ class SectionFeeSerializer(serializers.ModelSerializer):
         return response
 
 
-class SectionFeeDetailSerializer(serializers.ModelSerializer):
+class SectionFeeDetailSerializer(PartialUpdateModelSerializer):
     """Detailed serializer for section fee detail views"""
 
     class Meta:
@@ -169,7 +171,10 @@ class SectionFeeDetailSerializer(serializers.ModelSerializer):
         return response
 
 
-class TransactionTypeSerializer(serializers.ModelSerializer):
+class TransactionTypeSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     """Basic serializer for transaction type list views"""
 
     class Meta:
@@ -198,7 +203,10 @@ class TransactionTypeDetailSerializer(TransactionTypeSerializer):
         ]
 
 
-class PaymentMethodSerializer(serializers.ModelSerializer):
+class PaymentMethodSerializer(
+    ChangedFieldsModelSerializerMixin,
+    PartialUpdateModelSerializer,
+):
     """Basic serializer for payment method list views"""
 
     class Meta:
@@ -218,7 +226,7 @@ class PaymentMethodDetailSerializer(PaymentMethodSerializer):
         ]
 
 
-class CurrencySerializer(serializers.ModelSerializer):
+class CurrencySerializer(PartialUpdateModelSerializer):
     """Basic serializer for payment method list views"""
 
     class Meta:
@@ -236,7 +244,7 @@ class CurrencySerializer(serializers.ModelSerializer):
         return response
 
 
-class TransactionSerializer(serializers.ModelSerializer):
+class TransactionSerializer(PartialUpdateModelSerializer):
     """Basic serializer for transaction list views"""
 
     class Meta:
@@ -390,7 +398,7 @@ class TransactionDetailSerializer(TransactionSerializer):
         ]
 
 
-class PaymentInstallmentSerializer(serializers.ModelSerializer):
+class PaymentInstallmentSerializer(PartialUpdateModelSerializer):
     """Basic serializer for payment installment list views"""
 
     class Meta:

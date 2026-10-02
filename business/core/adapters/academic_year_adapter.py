@@ -75,13 +75,11 @@ def update_academic_year_in_db(year_id: str, data: Dict[str, Any], user=None) ->
         if data.get('current', False) and not academic_year.current:
             clear_current_academic_years(exclude_id=academic_year.id)
         
-        # Update fields
-        for field, value in data.items():
-            if hasattr(academic_year, field) and field not in ['id', 'created_at', 'created_by']:
-                setattr(academic_year, field, value)
-        
-        academic_year.updated_by = user
-        academic_year.save()
+        from common.utils import update_model_fields_core
+        update_model_fields_core(
+            academic_year, data,
+            ["name", "current", "start_date", "end_date", "status"], user,
+        )
         
         return academic_year
     except AcademicYear.DoesNotExist:

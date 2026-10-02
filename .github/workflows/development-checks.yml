@@ -78,7 +78,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v7
@@ -86,7 +86,7 @@ jobs:
           python-version: '3.11'
 
       - name: ⚡ Setup uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           cache-dependency-glob: requirements.txt
@@ -194,7 +194,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v7
@@ -202,7 +202,7 @@ jobs:
           python-version: '3.11'
 
       - name: ⚡ Setup uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           cache-dependency-glob: requirements.txt

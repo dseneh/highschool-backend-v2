@@ -178,7 +178,8 @@ def _resolve_student_scope_user_ids(audience: dict, scope: str) -> Set[uuid.UUID
     if scope in ("grade_sections", "parents_of_students"):
         guardian_id_numbers = StudentGuardian.objects.filter(
             student__in=students,
-            active=True,
+            active=True, parent_profile_id__isnull=False, portal_state="active",
+            portal_verified_at__isnull=False, portal_approved_at__isnull=False, portal_ended_at__isnull=True,
         ).exclude(user_account_id_number__isnull=True).exclude(
             user_account_id_number=""
         ).values_list("user_account_id_number", flat=True)

@@ -2,9 +2,14 @@
 ViewSet for user management with proper DRF action-based permissions.
 Replaces APIView implementations for better permission integration.
 """
-import logging
 
-from rest_framework import viewsets, status
+from common.update_utils import validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
+import logging
+from users.tenant_access import is_global_superadmin
+
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -13,7 +18,7 @@ from api.authentication import TenantAwareJWTAuthentication
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q, Count
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import connection
+from django.db import connection, transaction
 from django_tenants.utils import schema_context
 from django.utils import timezone
 
@@ -45,7 +50,7 @@ class UserPagination(PageNumberPagination):
     max_page_size = 100
 
 
-class UserViewSet(viewsets.ModelViewSet):
+class UserViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for user management with proper action-based permissions.
     
@@ -146,7 +151,7 @@ class UserViewSet(viewsets.ModelViewSet):
         request_user = getattr(getattr(self, "request", None), "user", None)
         request_user_id = getattr(request_user, "pk", None)
         request_user_is_superadmin = bool(
-            getattr(request_user, "is_platform_superuser", False)
+            is_global_superadmin(request_user)
         )
 
         with schema_context(schema_name):
@@ -257,10 +262,11 @@ class UserViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         hard_delete = request.query_params.get('hard', 'false').lower() == 'true'
 
-        import logging
-        logger = logging.getLogger(__name__)
+        denial = self._user_deletion_denial(request, user, hard_delete)
+        if denial:
+            return denial
 
-        with schema_context('public'):
+        with transaction.atomic(), schema_context('public'):
             if hard_delete:
                 from core.models import Tenant
 
@@ -283,6 +289,11 @@ class UserViewSet(viewsets.ModelViewSet):
 
                 username = user.username
                 user_pk = user.pk
+                self._clear_account_string_references(
+                    user.id_number,
+                    allowed_schemas=None if is_global_superadmin(request.user)
+                    else {request.tenant.schema_name},
+                )
 
                 # 1. Collect every tenant the user is linked to via the
                 #    User.tenants M2M (the only cross-schema mapping that
@@ -293,54 +304,22 @@ class UserViewSet(viewsets.ModelViewSet):
                     tenants_qs.values_list('schema_name', flat=True)
                 )
 
-                # 2. Per tenant: clear tenant-scoped FKs that would block the
-                #    delete, then call tenant.remove_user to wipe UserTenantPermissions.
+                # Probe first; empty probes release their locks before writes.
                 for schema_name in schemas:
-                    try:
-                        with schema_context(schema_name):
-                            self._purge_tenant_scoped_user_references(user_pk)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to clear tenant-scoped refs in {schema_name}: {e}"
-                        )
+                    tenant = Tenant.objects.get(schema_name=schema_name)
+                    with schema_context(schema_name):
+                        from tenant_users.permissions.models import UserTenantPermissions
+                        if self._reference_exists(lambda: UserTenantPermissions.objects.filter(profile=user).exists()):
+                            tenant.remove_user(user)
+                        self._purge_tenant_scoped_user_references(user_pk)
 
-                    try:
-                        tenant = Tenant.objects.get(schema_name=schema_name)
-                        tenant.remove_user(user)
-                    except Tenant.DoesNotExist:
-                        continue
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to remove user from tenant {schema_name}: {e}"
-                        )
-
-                # 3. Clear the public M2M through table just to be safe — at
-                #    this point the user should already be unlinked.
-                try:
-                    user.tenants.clear()
-                except Exception as e:
-                    logger.warning(f"Failed to clear user.tenants M2M: {e}")
-
-                # 4. Repeat the FK purge in the public schema for any
-                #    shared-app models that reference User (auditlog
-                #    entries, etc.). Without this, raw_delete would be
-                #    blocked by those FK constraints just like the
-                #    tenant-scoped ones.
-                try:
-                    self._purge_tenant_scoped_user_references(user_pk)
-                except Exception as e:
-                    logger.warning(f"Failed to purge public-schema user refs: {e}")
-
-                # 5. Bulletproof fallback — query pg_constraint directly to
-                #    find every FK pointing at public.user across every
-                #    schema, then clear referencing rows by NULL-ing the
-                #    column (or DELETE-ing the row when not nullable).
-                #    This catches anything the Django introspection walker
-                #    missed (swapped models, weirdly-registered apps, etc.).
-                try:
-                    self._purge_user_refs_via_pg_constraint(user_pk)
-                except Exception as e:
-                    logger.warning(f"pg_constraint purge failed: {e}")
+                user.tenants.clear()
+                self._purge_tenant_scoped_user_references(user_pk)
+                self._purge_user_refs_via_pg_constraint(
+                    user_pk,
+                    allowed_schemas=None if is_global_superadmin(request.user)
+                    else {"public", request.tenant.schema_name},
+                )
 
                 # 6. Drop the user row. Use _raw_delete to avoid Django's
                 #    collector walking tenant-scoped models (which do not
@@ -358,76 +337,107 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
 
+    def _user_deletion_denial(self, request, target, hard_delete):
+        if target.pk == request.user.pk:
+            return Response({"detail": "You cannot delete your own account."}, status=403)
+        platform = is_global_superadmin(request.user)
+        if hard_delete and not platform and not UserAccessPolicy().is_role_in(request, self, "destroy", "admin"):
+            return Response({"detail": "Only Superadmin or tenant Admin can permanently delete users."}, status=403)
+        if not platform:
+            schema = getattr(getattr(request, "tenant", None), "schema_name", "public")
+            if schema == "public" or self._is_target_superadmin(target) or not target.tenants.filter(schema_name=schema).exists():
+                return Response({"detail": "You cannot delete this account from this workspace."}, status=403)
+            if target.tenants.exclude(schema_name__in=["public", schema]).exists():
+                return Response({"detail": "This account belongs to other schools. A Superadmin must delete it."}, status=409)
+            from users.models import ParentSchoolRegistration, ParentStudentLink
+            if (ParentSchoolRegistration.objects.filter(profile__user=target).exclude(tenant__schema_name=schema).exists()
+                    or ParentStudentLink.objects.filter(profile__user=target).exclude(tenant__schema_name=schema).exists()):
+                return Response({"detail": "This parent account has records in other schools. A Superadmin must delete it."}, status=409)
+        return None
+
+    @staticmethod
+    def _clear_account_string_references(id_number, allowed_schemas=None):
+        """Detach person records without deleting school or guardian history."""
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT table_schema, table_name
+                FROM information_schema.columns
+                WHERE column_name = 'user_account_id_number'
+                  AND table_schema NOT IN ('pg_catalog', 'information_schema')
+            """)
+            references = cursor.fetchall()
+        quote = connection.ops.quote_name
+        for schema, table in references:
+            if allowed_schemas is not None and schema not in allowed_schemas:
+                continue
+            qualified = f"{quote(schema)}.{quote(table)}"
+            def probe():
+                with connection.cursor() as cursor:
+                    cursor.execute(f"SELECT 1 FROM {qualified} WHERE user_account_id_number = %s LIMIT 1", [id_number])
+                    return cursor.fetchone() is not None
+            if UserViewSet._reference_exists(probe):
+                with connection.cursor() as cursor:
+                    cursor.execute(f"UPDATE {qualified} SET user_account_id_number = NULL WHERE user_account_id_number = %s", [id_number])
+
+    @staticmethod
+    def _reference_exists(probe):
+        """Release locks acquired by a read-only probe before doing writes."""
+        with transaction.atomic():
+            exists = probe()
+            transaction.set_rollback(True)
+        return exists
+
     @staticmethod
     def _purge_tenant_scoped_user_references(user_pk) -> None:
-        """Clear every row in the current schema that holds an FK to the user.
-
-        Django enforces `on_delete` behavior in Python via the Collector, so
-        the underlying Postgres FK constraints have no cascade rule. That
-        means a low-level `_raw_delete` of the user row is blocked by any
-        table still holding a reference (audit log records, for example)
-        LogEntry.actor, created_by/updated_by audit columns, etc.).
-
-        Walk every registered model, find FKs to `users.User`, and apply the
-        model's declared `on_delete` behavior manually. Each operation runs
-        inside its own savepoint so that querying a model whose table
-        doesn't exist in the current schema (e.g. a tenant-scoped table
-        while we are in public) rolls back cleanly without aborting the
-        outer transaction.
-        """
-        import logging
+        """Apply declared deletion rules only to existing tables with matches."""
         from django.apps import apps
-        from django.db import models as djmodels, transaction
+        from django.db import models as djmodels
 
-        logger = logging.getLogger(__name__)
-
-        user_label = User._meta.label  # "users.User"
-
+        # Public tables on search_path are handled once, in public.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = %s",
+                [connection.schema_name],
+            )
+            tables = {row[0] for row in cursor.fetchall()}
         for model in apps.get_models():
-            if model._meta.label == user_label:
+            if model == User or model._meta.db_table not in tables:
                 continue
-
             for field in model._meta.get_fields():
-                if not isinstance(field, djmodels.ForeignKey):
+                if not isinstance(field, djmodels.ForeignKey) or field.related_model != User:
                     continue
-                related = field.related_model
-                if related is None or related._meta.label != user_label:
-                    continue
-
                 on_delete = field.remote_field.on_delete
-                attname = field.attname  # e.g. "user_id"
-                try:
-                    with transaction.atomic():
-                        qs = model._base_manager.filter(**{attname: user_pk})
-                        if on_delete is djmodels.CASCADE:
-                            qs.delete()
-                        elif on_delete is djmodels.SET_NULL:
-                            qs.update(**{attname: None})
-                        elif on_delete is djmodels.SET_DEFAULT:
-                            qs.update(**{attname: field.get_default()})
-                        # PROTECT / RESTRICT / DO_NOTHING: leave alone; the
-                        # subsequent raw_delete will surface a clear error.
-                except Exception as e:
-                    # Most likely: relation does not exist in current schema.
-                    logger.debug(
-                        f"Skipping {model._meta.label}.{attname} in current schema: {e}"
-                    )
+                if on_delete not in (djmodels.CASCADE, djmodels.SET_NULL, djmodels.SET_DEFAULT):
+                    continue
+                qs = model._base_manager.filter(**{field.attname: user_pk})
+                if not UserViewSet._reference_exists(qs.exists):
+                    continue
+                if on_delete is djmodels.CASCADE:
+                    qs.delete()
+                elif on_delete is djmodels.SET_NULL:
+                    qs.update(**{field.attname: None})
+                else:
+                    qs.update(**{field.attname: field.get_default()})
 
     @staticmethod
-    def _purge_user_refs_via_pg_constraint(user_pk) -> None:
+    def _purge_user_refs_via_pg_constraint(user_pk, allowed_schemas=None) -> None:
         """SQL-level safety net: query `pg_constraint` for every FK pointing
         at `public.user` from any schema, then clear referencing rows.
 
-        For each referencing column we first try `UPDATE ... SET col = NULL`.
-        If the column is NOT NULL we fall back to `DELETE` for that row so
-        that the subsequent raw delete of the user row can proceed.
+        The catalog also discovers references in schools missing from the
+        user's access links. Use ORM cascades for known non-null references;
+        raw SQL cannot collect dependent role assignments, sessions, etc.
         """
-        import logging
-        from django.db import connection, transaction
-
+        from django.apps import apps
+        from django.db import models as djmodels
         from core.models import Tenant
 
-        logger = logging.getLogger(__name__)
+        modeled_references = {
+            (model._meta.db_table, field.column): (model, field.attname)
+            for model in apps.get_models(include_auto_created=True)
+            for field in model._meta.get_fields()
+            if isinstance(field, djmodels.ForeignKey) and field.related_model == User
+        }
         # Owner references are resolved explicitly before this runs; a blind
         # purge here would delete workspaces.
         protected_tables = {Tenant._meta.db_table}
@@ -458,28 +468,33 @@ class UserViewSet(viewsets.ModelViewSet):
             refs = cur.fetchall()
 
         for source_schema, source_table, source_column, not_null in refs:
+            if allowed_schemas is not None and source_schema not in allowed_schemas:
+                continue
             if source_table in protected_tables:
                 continue
-            qualified = f'"{source_schema}"."{source_table}"'
-            col = f'"{source_column}"'
-            try:
-                with transaction.atomic():
-                    with connection.cursor() as cur:
-                        if not_null:
-                            # Column can't be NULL — remove the offending row.
-                            cur.execute(
-                                f"DELETE FROM {qualified} WHERE {col} = %s",
-                                [user_pk],
-                            )
-                        else:
-                            cur.execute(
-                                f"UPDATE {qualified} SET {col} = NULL WHERE {col} = %s",
-                                [user_pk],
-                            )
-            except Exception as e:
-                logger.warning(
-                    f"pg_constraint purge failed for {qualified}.{col}: {e}"
-                )
+            quote = connection.ops.quote_name
+            qualified = f"{quote(source_schema)}.{quote(source_table)}"
+            col = quote(source_column)
+
+            def has_reference():
+                with connection.cursor() as cursor:
+                    cursor.execute(f"SELECT 1 FROM {qualified} WHERE {col} = %s LIMIT 1", [user_pk])
+                    return cursor.fetchone() is not None
+
+            if not UserViewSet._reference_exists(has_reference):
+                continue
+            model_reference = modeled_references.get((source_table, source_column))
+            if not_null and model_reference:
+                model, attname = model_reference
+                with schema_context(source_schema):
+                    model._base_manager.filter(**{attname: user_pk}).delete()
+                continue
+            # Propagate failures to roll back the entire deletion.
+            with connection.cursor() as cursor:
+                if not_null:
+                    cursor.execute(f"DELETE FROM {qualified} WHERE {col} = %s", [user_pk])
+                else:
+                    cursor.execute(f"UPDATE {qualified} SET {col} = NULL WHERE {col} = %s", [user_pk])
 
     def get_object(self):
         """Get user by id_number."""
@@ -515,71 +530,24 @@ class UserViewSet(viewsets.ModelViewSet):
             )
         return super().list(request, *args, **kwargs)
 
-    def _sync_email_to_linked_record(self, user: User, email: str) -> None:
-        """Sync user email to linked student/staff record in the current tenant schema."""
-        if connection.schema_name == 'public':
-            return
-
-        normalized_email = (email or "").strip()
-        if not normalized_email:
-            return
-
-        if user.account_type == UserAccountType.STUDENT:
-            from students.models import Student
-
-            student = Student.objects.filter(user_account_id_number=user.id_number).first()
-            if not student:
-                student = Student.objects.filter(id_number=user.id_number).first()
-            if student and student.email != normalized_email:
-                student.email = normalized_email
-                student.save(update_fields=['email'])
-            return
-
-        if user.account_type == UserAccountType.STAFF:
-            from staff.models import Staff
-
-            staff = Staff.objects.filter(user_account_id_number=user.id_number).first()
-            if not staff:
-                staff = Staff.objects.filter(id_number=user.id_number).first()
-            if staff and staff.email != normalized_email:
-                staff.email = normalized_email
-                staff.save(update_fields=['email'])
-                return
-
-            # Fallback for HR employee records that are not mirrored in staff table.
-            from hr.models import Employee
-
-            employee = Employee.objects.filter(user_account_id_number=user.id_number).first()
-            if not employee:
-                employee = Employee.objects.filter(id_number=user.id_number).first()
-            if employee and employee.email != normalized_email:
-                employee.email = normalized_email
-                employee.save(update_fields=['email'])
-
+    @transaction.atomic
     def update(self, request, *args, **kwargs):
         """Update user and sync email to linked tenant source record when relevant."""
-        partial = kwargs.pop('partial', False)
         user = self.get_object()
 
-        old_email = user.email
-        serializer = self.get_serializer(user, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(self.get_serializer, user, request.data)
+        if "email" in serializer.validated_data:
+            from users.identity_email import normalize_email, require_email_editor, set_account_email
+            email = normalize_email(serializer.validated_data["email"])
+            if email != user.email:
+                require_email_editor(request, user)
+                set_account_email(user, email)
+            serializer.validated_data["email"] = email
         self.perform_update(serializer)
         with schema_context('public'):
             user.profile_updated_at = timezone.now()
             user.profile_updated_by = request.user
             user.save(update_fields=['profile_updated_at', 'profile_updated_by'])
-
-        new_email = serializer.validated_data.get('email')
-        if new_email and new_email != old_email:
-            try:
-                self._sync_email_to_linked_record(user, new_email)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to sync email for user %s to source record: %s",
-                    user.id_number,
-                    exc,
-                )
 
         response_serializer = UserSerializer(user, context={'request': request})
         return Response(response_serializer.data, status=status.HTTP_200_OK)
@@ -601,6 +569,12 @@ class UserViewSet(viewsets.ModelViewSet):
         request_data = request.data.copy()
         request_data['account_type'] = request_data.get('account_type', '').lower()
         
+        if request_data['account_type'] == 'other':
+            from users.school_access import approve_access, send_setup_instructions
+            access = approve_access(request.tenant, request.user, request_data)
+            sent = send_setup_instructions(access)
+            return Response({"detail": "School access approved.", "pending_access_id": str(access.pk), "instructions_sent": sent}, status=status.HTTP_201_CREATED)
+
         lookup_serializer = UserRecreateSerializer(data=request_data)
         if not lookup_serializer.is_valid():
             return error_response(lookup_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
@@ -632,13 +606,8 @@ class UserViewSet(viewsets.ModelViewSet):
                     source_record = Employee.objects.filter(**record_filters).first()
             
             elif account_type == UserAccountType.PARENT:
-                from students.models import Student
-                student = Student.objects.filter(**record_filters).first()
-                
-                if student:
-                    matched_student_id = student.id
-                    source_record = student.guardians.filter(is_primary=True).first() or student.guardians.first()
-        
+                return Response({"detail": "Parent access requires Give access on a school guardian record and verified account setup."}, status=status.HTTP_400_BAD_REQUEST)
+
         except Exception as exc:
             return Response(
                 {"detail": f"Error retrieving source record: {str(exc)}"},
@@ -682,109 +651,36 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Check if user already exists
-        with schema_context('public'):
-            existing_user = User.objects.filter(id_number=id_number).first()
-            if existing_user:
-                if (existing_user.email or '').strip().lower() != required_source_email.lower():
-                    duplicate_email_owner = User.objects.filter(
-                        email__iexact=required_source_email,
-                    ).exclude(id=existing_user.id).exists()
-                    if duplicate_email_owner:
-                        return Response(
-                            {
-                                "detail": "Cannot attach account because this email is already linked to another user.",
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    existing_user.email = required_source_email
-                    existing_user.save(update_fields=['email'])
+        from core.models import Tenant
+        from users.account_provisioning import provision_source_account
+        from rest_framework.exceptions import ValidationError
+        from django.db import IntegrityError
 
-                # Add user to tenant
-                try:
-                    from core.models import Tenant
-                    tenant = Tenant.objects.get(schema_name=tenant_schema_name)
-                    is_staff = account_type == UserAccountType.STAFF
-                    tenant.add_user(existing_user, is_staff=is_staff, is_superuser=False)
-                except Exception as e:
-                    if "already" not in str(e).lower() and "exists" not in str(e).lower():
-                        return Response(
-                            {"detail": f"User exists but tenant assignment failed: {str(e)}"},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        )
-
-                self._assign_role(existing_user, assigned_role, request, tenant_schema_name)
-
-                serializer = UserSerializer(existing_user, context={'request': request})
-                return Response(
-                    {"detail": "User account already exists", "user": serializer.data},
-                    status=status.HTTP_200_OK,
-                )
-
-            if User.objects.filter(email__iexact=required_source_email).exists():
-                return Response(
-                    {
-                        "detail": "Cannot create account because this email is already linked to another user.",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            
-            username = request.data.get('username') or self._generate_unique_username(str(id_number))
-            
-            # Create user
-            user_data = {
-                'username': username,
-                'id_number': id_number,
-                'email': required_source_email,
-                'first_name': source_first_name,
-                'last_name': source_last_name,
-                'gender': source_gender,
-                'account_type': account_type,
-                'is_active': True,
-            }
-            
-            create_serializer = UserCreateSerializer(data=user_data)
-            if not create_serializer.is_valid():
-                    return error_response(create_serializer.errors, status_code=status.HTTP_400_BAD_REQUEST)
-            
-            user = create_serializer.save()
-            
-            # Add user to tenant
-            tenant = None
-            try:
-                from core.models import Tenant
-                tenant = Tenant.objects.get(schema_name=tenant_schema_name)
-                is_staff = account_type == UserAccountType.STAFF
-                tenant.add_user(user, is_staff=is_staff, is_superuser=False)
-            except Exception as e:
-                if "already" not in str(e).lower() and "exists" not in str(e).lower():
-                    return Response(
-                        {"detail": f"User created but tenant assignment failed: {str(e)}"},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    )
-
-            self._assign_role(user, assigned_role, request, tenant_schema_name)
-
-            if notify_user:
-                from users.utils import send_welcome_email
-
-                send_welcome_email(user, str(id_number), tenant)
-        
-        # Update source record with user account id_number
+        tenant = Tenant.objects.get(schema_name=tenant_schema_name)
+        actor = request.user if getattr(request.user, "is_authenticated", False) else None
         try:
-            source_record.user_account_id_number = user.id_number
-            source_record.save(update_fields=['user_account_id_number'])
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to update source_record user_account_id_number: {e}", exc_info=True)
-        
+            user, created = provision_source_account(
+                source_record=source_record, account_type=account_type, role=assigned_role,
+                tenant=tenant, actor=actor, username=request.data.get("username") or None,
+            )
+        except DjangoValidationError as exc:
+            return Response({"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
+        except ValidationError as exc:
+            return error_response(exc.detail, status_code=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError:
+            return Response({"detail": "An account or link changed during this request. Refresh and try again."}, status=status.HTTP_409_CONFLICT)
+
+        if created and notify_user:
+            from users.utils import send_welcome_email
+            transaction.on_commit(lambda: send_welcome_email(user, str(user.id_number), tenant))
+
         serializer = UserSerializer(user, context={'request': request})
         return Response(
-            {"detail": "User account created successfully", "user": serializer.data},
-            status=status.HTTP_201_CREATED,
+            {"detail": "User account created successfully" if created else "Existing account linked to this school; selected role assigned.",
+             "created": created, "linked_existing": not created, "user": serializer.data},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
-    
+
     @staticmethod
     def _assign_role(user, role, request, tenant_schema_name) -> None:
         """Role rows live in the tenant schema, not the public schema."""
@@ -881,7 +777,7 @@ class UserViewSet(viewsets.ModelViewSet):
         }
         """
         actor = request.user
-        is_actor_admin = bool(getattr(actor, 'is_platform_superuser', False) or request.can("users.update"))
+        is_actor_admin = bool(is_global_superadmin(actor) or request.can("users.update"))
         if not is_actor_admin:
             return Response(
                 {"detail": "Only admins can set another user's password."},
@@ -896,7 +792,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if target.is_platform_superuser and not getattr(actor, 'is_platform_superuser', False):
+        if target.is_platform_superuser and not is_global_superadmin(actor):
             return Response(
                 {"detail": "Only a superadmin can reset another superadmin's password."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -977,6 +873,44 @@ class UserViewSet(viewsets.ModelViewSet):
                 "is_active": membership.is_active and membership.role.is_active,
             }
 
+    @staticmethod
+    def _tenant_roles_for_user(user, schema_name):
+        from authorization.models import TenantRoleAssignment
+        from authorization.multiple_roles import assignment_role, assignment_payload
+
+        with schema_context(schema_name):
+            assignments = TenantRoleAssignment.objects.filter(
+                membership__user=user, is_active=True,
+            ).select_related("role", "membership")
+            roles = []
+            for assignment in assignments:
+                role = assignment_role(assignment)
+                if role is not None:
+                    payload = assignment_payload(assignment)
+                    roles.append({
+                        "id": str(role.pk),
+                        "assignment_id": str(assignment.pk),
+                        "can_revoke": payload["can_revoke"],
+                        "revocation_blocked_reason": payload["revocation_blocked_reason"],
+                        "name": role.name,
+                        "system_key": role.system_key,
+                        "is_active": assignment.membership.is_active and role.is_active,
+                    })
+            return sorted(roles, key=lambda role: (role["name"].casefold(), role["id"]))
+
+    def _can_manage_tenant_roles(self, request, target, schema_name):
+        if target.pk == request.user.pk or self._is_target_superadmin(target):
+            return False
+        if is_global_superadmin(request.user):
+            return True
+        return (
+            schema_name == connection.schema_name
+            and schema_name != 'public'
+            and UserAccessPolicy().has_rbac_permission(
+                request, self, self.action, "roles.assign_users"
+            )
+        )
+
     def _is_target_superadmin(self, target) -> bool:
         return bool(getattr(target, "is_platform_superuser", False))
 
@@ -987,7 +921,7 @@ class UserViewSet(viewsets.ModelViewSet):
         platform superadmins even though tenant admins may view the list.
         """
         actor = request.user
-        if not getattr(actor, "is_platform_superuser", False):
+        if not is_global_superadmin(actor):
             return actor, Response(
                 {"detail": "Only platform superadmins can manage tenant assignments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1028,6 +962,8 @@ class UserViewSet(viewsets.ModelViewSet):
                         {
                             **self._serialize_tenant(t),
                             "role": self._tenant_role_for_user(target, t.schema_name),
+                            "roles": self._tenant_roles_for_user(target, t.schema_name),
+                            "can_manage_roles": self._can_manage_tenant_roles(request, target, t.schema_name),
                         }
                         for t in tenants
                     ],
@@ -1134,7 +1070,9 @@ class UserViewSet(viewsets.ModelViewSet):
                 "added": added,
                 "already_present": already_present,
                 "failures": failures,
-                "results": [self._serialize_tenant(t) for t in tenants],
+                "results": [{**self._serialize_tenant(t),
+                             "role": self._tenant_role_for_user(target, t.schema_name),
+                             "roles": self._tenant_roles_for_user(target, t.schema_name)} for t in tenants],
             },
             status=status_code,
         )
@@ -1219,9 +1157,9 @@ class UserViewSet(viewsets.ModelViewSet):
         from core.models import Tenant
 
         target = self.get_object()
-        actor, error = self._require_admin_actor(request)
-        if error is not None:
-            return error
+        actor = request.user
+        if not self._can_manage_tenant_roles(request, target, schema_name):
+            return Response({"detail": "You cannot manage roles in this workspace."}, status=403)
         if self._is_target_superadmin(target):
             return Response(
                 {"detail": "Superadmin roles are managed automatically."},
@@ -1276,6 +1214,26 @@ class UserViewSet(viewsets.ModelViewSet):
             return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
 
         return Response({"schema_name": schema, "role": role_data}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['delete'], permission_classes=[UserAccessPolicy],
+            url_path=r'tenants/(?P<schema_name>[^/.]+)/roles/(?P<assignment_id>[^/.]+)')
+    def revoke_tenant_role(self, request, id_number=None, schema_name=None, assignment_id=None):
+        from authorization.multiple_roles import revoke_role
+        from core.models import Tenant
+
+        target = self.get_object()
+        if not self._can_manage_tenant_roles(request, target, schema_name):
+            return Response({"detail": "You cannot manage roles in this workspace."}, status=403)
+        with schema_context('public'):
+            exists = Tenant.objects.filter(schema_name=schema_name, active=True).exclude(schema_name='public').exists()
+        if not exists:
+            return Response({"detail": "Tenant does not exist or is inactive."}, status=404)
+        try:
+            with schema_context(schema_name):
+                revoke_role(user=target, assignment_id=assignment_id, actor=request.user)
+        except (DjangoValidationError, ValueError) as exc:
+            return error_response(exc, status_code=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'], permission_classes=[UserAccessPolicy],
             url_path='send-login-instructions')

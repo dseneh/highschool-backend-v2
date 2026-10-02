@@ -1,5 +1,8 @@
+from common.update_utils import validate_partial_update
+
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.db.models import Q
-from rest_framework import viewsets
 from rest_framework.response import Response
 
 from ..models import Department
@@ -8,14 +11,10 @@ from ..access_policies import StaffAccessPolicy
 
 # Import business logic (framework-agnostic)
 from business.staff.services import staff_service
-from business.staff.adapters import (
-    create_department_in_db,
-    update_department_in_db,
-    delete_department_from_db,
-)
+from business.staff.adapters import create_department_in_db, delete_department_from_db
 
 
-class DepartmentViewSet(viewsets.ModelViewSet):
+class DepartmentViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for Department CRUD operations with maximum optimization.
 
@@ -96,7 +95,8 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         
         # Update using adapter
         try:
-            updated_dept = update_department_in_db(str(department.id), data, request.user)
+            update_serializer = validate_partial_update(self.get_serializer, department, data)
+            updated_dept = update_serializer.save(updated_by=request.user)
             if not updated_dept:
                 return Response({"error": "Department not found"}, status=404)
             

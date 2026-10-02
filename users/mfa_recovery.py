@@ -47,7 +47,7 @@ def issue_recovery(*, user, initiated_by, tenant_schema: str, new_email: str):
 def verify_recovery(*, raw_token: str, code: str):
     now = timezone.now()
     recovery = (
-        EmailMFARecovery.objects.select_for_update()
+        EmailMFARecovery.objects.select_for_update(of=("self",))
         .select_related("user", "initiated_by")
         .filter(token_hash=token_digest(raw_token))
         .first()

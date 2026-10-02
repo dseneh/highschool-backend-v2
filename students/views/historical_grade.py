@@ -1,5 +1,8 @@
 """Historical / transferred transcript grade API views."""
 
+from common.update_utils import validate_partial_update
+
+
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
 from django.shortcuts import get_object_or_404
@@ -289,6 +292,13 @@ class HistoricalGradeRecordListView(APIView):
             .order_by("-created_at")
         )
 
+        from authorization.services import get_assigned_role
+        role = get_assigned_role(request.user)
+        if role and role.system_key == "parent":
+            from grading.services.grade_access import enforce_grade_access
+            enforce_grade_access(student)
+            records = records.filter(status="verified", active=True)
+
         academic_year_id = request.query_params.get("academic_year_id")
         if academic_year_id:
             records = records.filter(academic_year_id=academic_year_id)
@@ -367,10 +377,11 @@ class HistoricalGradeRecordDetailView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = HistoricalGradeRecordWriteSerializer(
+        serializer = validate_partial_update(
+            HistoricalGradeRecordWriteSerializer,
             record,
-            data=data,
-            partial=True,
+            data,
+            raise_exception=False,
             context={"student": record.student, "request": request},
         )
         if not serializer.is_valid():

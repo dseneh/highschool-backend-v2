@@ -32,7 +32,7 @@ class StudentContactListView(APIView):
         ):
             raise PermissionDenied("You cannot view contacts for this student.")
         contacts = student.contacts.all()
-        serializer = StudentContactSerializer(contacts, many=True)
+        serializer = StudentContactSerializer(contacts, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request, student_id):
@@ -117,9 +117,14 @@ class StudentContactDetailView(APIView):
             "notes",
         ]
 
-        serializer = update_model_fields(
-            request, contact, allowed_fields, StudentContactSerializer
-        )
+        from django.db import transaction
+        from users.identity_email import sync_record_email
+        data = request.data.copy()
+        with transaction.atomic():
+            sync_record_email(contact, data, request)
+            serializer = update_model_fields(
+                request, contact, allowed_fields, StudentContactSerializer, data=data
+            )
         return serializer
 
     def delete(self, request, id):

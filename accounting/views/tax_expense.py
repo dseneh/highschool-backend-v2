@@ -1,4 +1,5 @@
-from rest_framework import viewsets
+from common.viewsets import PartialUpdateModelViewSet
+
 
 from accounting.access_policies import AccountingFinanceAccessPolicy
 from accounting.models import (
@@ -14,14 +15,14 @@ from accounting.serializers import (
 from accounting.views.base import AccountingErrorFormattingMixin
 
 
-class AccountingTaxCodeViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingTaxCodeViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingTaxCode.objects.order_by("code")
     serializer_class = AccountingTaxCodeSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
     pagination_class = None
 
 
-class AccountingTaxRemittanceViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingTaxRemittanceViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingTaxRemittance.objects.select_related("tax_code", "currency").order_by("-period_end")
     serializer_class = AccountingTaxRemittanceSerializer
     permission_classes = [AccountingFinanceAccessPolicy]
@@ -42,7 +43,7 @@ class AccountingTaxRemittanceViewSet(AccountingErrorFormattingMixin, viewsets.Mo
         return queryset
 
 
-class AccountingExpenseRecordViewSet(AccountingErrorFormattingMixin, viewsets.ModelViewSet):
+class AccountingExpenseRecordViewSet(AccountingErrorFormattingMixin, PartialUpdateModelViewSet):
     queryset = AccountingExpenseRecord.objects.select_related(
         "currency",
         "staff_member",

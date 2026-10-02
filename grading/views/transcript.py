@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from common.update_utils import get_update_value, validate_model_update
+
 from django.db import connection
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -232,13 +234,11 @@ class OfficialTranscriptRequestDetailView(APIView):
         if error_response is not None:
             return error_response
 
-        status_value = (request.data.get("status") or "").strip().lower()
-        if not status_value:
-            return Response({"detail": "status is required."}, status=400)
-
-        admin_note = request.data.get("admin_note")
-        if admin_note is not None:
-            admin_note = str(admin_note).strip()
+        update_serializer = validate_model_update(
+            access, request.data, ["status", "admin_note"]
+        )
+        status_value = get_update_value(access, update_serializer.validated_data, "status")
+        admin_note = update_serializer.validated_data.get("admin_note")
 
         try:
             access = update_transcript_request_status(

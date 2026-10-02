@@ -10,6 +10,7 @@ from ..access_policies import SettingsAccessPolicy
 from rest_framework.response import Response
 from django.db import transaction
 
+from common.update_utils import validate_model_update
 from common.utils import update_model_fields
 from academics.models import AcademicYear
 from settings.models import GradingSettings
@@ -106,6 +107,8 @@ class GradingSettingsView(APIView):
                 "updated_by": request.user,
             },
         )
+        # Reject invalid submitted fields before any gradebook workflow runs.
+        validate_model_update(settings, request.data, allowed_fields)
         existing_grading_style = settings.grading_style
 
         # Get force parameter

@@ -1,5 +1,6 @@
+from common.viewsets import PartialUpdateModelViewSet
+
 from django.db.models import Q
-from rest_framework import viewsets
 
 from ..models import PositionCategory
 from ..serializers import PositionCategorySerializer
@@ -7,7 +8,7 @@ from ..access_policies import StaffAccessPolicy
 from ..utils import filter_allowed_fields
 
 
-class PositionCategoryViewSet(viewsets.ModelViewSet):
+class PositionCategoryViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for PositionCategory CRUD operations with maximum optimization.
 

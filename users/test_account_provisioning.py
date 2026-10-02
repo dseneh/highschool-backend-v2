@@ -51,6 +51,9 @@ class AccountProvisioningTests(TenantTestCase):
 
     def _student(self, *, email, linked=False):
         from students.models import Student
+        if linked:
+            from users.models import User
+            User.objects.create(id_number="EXISTING-STUDENT-ACCOUNT", username="linked-student", email=email)
 
         return Student.objects.create(
             first_name="Sam",
@@ -64,6 +67,9 @@ class AccountProvisioningTests(TenantTestCase):
 
     def _employee(self, *, email, linked=False):
         from hr.models import Employee
+        if linked:
+            from users.models import User
+            User.objects.create(id_number="EXISTING-EMPLOYEE-ACCOUNT", username="linked-employee", email=email)
 
         suffix = uuid.uuid4().hex[:8]
         return Employee.objects.create(
@@ -122,7 +128,7 @@ class AccountProvisioningTests(TenantTestCase):
 
         student = self._student(email="new-student-account@example.com")
 
-        with patch("common.email_service.send_account_created_email", return_value=True) as send_email:
+        with patch("common.email_service.send_account_created_email", return_value=True) as send_email, self.captureOnCommitCallbacks(execute=True):
             response = self._create_user_request(
                 {
                     "account_type": UserAccountType.STUDENT,
@@ -224,3 +230,130 @@ class AccountProvisioningTests(TenantTestCase):
 
         self.assertEqual(response.status_code, 201)
         send_email.assert_not_called()
+
+    def _shared_user(self, email, *, account_type="staff", active=True):
+        from users.models import User
+        tag = uuid.uuid4().hex
+        user = User.objects.create(
+            username=f"shared-{tag}", id_number=f"SHARED-{tag}", email=email,
+            first_name="Original", last_name="Identity", account_type=account_type,
+            is_active=active, status="active" if active else "suspended",
+        )
+        user.set_password("Existing-password-123")
+        user.save(update_fields=["password"])
+        return user
+
+    def test_staff_reuses_existing_account_and_keeps_credentials_and_parent_role(self):
+        from authorization.models import Role, TenantRoleAssignment
+        from authorization.services import assign_user_role
+        from users.models import User, ParentProfile
+        employee = self._employee(email="Shared-Parent@example.com")
+        user = self._shared_user("shared-parent@example.com", account_type="parent")
+        password = user.password
+        profile = ParentProfile.objects.create(user=user)
+        self.tenant.add_user(user)
+        assign_user_role(user=user, role=Role.objects.get(system_key="parent"))
+        before = User.objects.count()
+        payload = {"account_type": "staff", "id_number": employee.id_number, "role": "teacher", "username": "must-not-replace"}
+        with patch("common.email_service.send_account_created_email") as mail:
+            for _ in range(2):
+                response = self._create_user_request(payload)
+                self.assertEqual(response.status_code, 200, response.data)
+                self.assertTrue(response.data["linked_existing"])
+            mail.assert_not_called()
+        employee.refresh_from_db(); user.refresh_from_db()
+        self.assertEqual(employee.user_account_id_number, user.id_number)
+        self.assertEqual(employee.email, user.email)
+        self.assertEqual(User.objects.count(), before)
+        self.assertEqual(user.password, password)
+        self.assertEqual(user.account_type, "parent")
+        self.assertEqual(user.first_name, "Original")
+        self.assertNotEqual(user.username, "must-not-replace")
+        self.assertEqual(ParentProfile.objects.get(pk=profile.pk).user_id, user.pk)
+        self.assertEqual(set(TenantRoleAssignment.objects.filter(membership__user=user, is_active=True).values_list("role__system_key", flat=True)), {"parent", "teacher"})
+
+    def test_staff_links_account_with_different_global_id(self):
+        user = self._shared_user("another-school@example.com")
+        employee = self._employee(email=user.email)
+        with patch("common.email_service.send_account_created_email") as mail:
+            response = self._create_user_request({"account_type": "staff", "id_number": employee.id_number, "role": "staff"})
+            self.assertEqual(response.status_code, 200, response.data)
+            mail.assert_not_called()
+        employee.refresh_from_db()
+        self.assertEqual(employee.user_account_id_number, user.id_number)
+        self.assertTrue(user.tenants.filter(pk=self.tenant.pk).exists())
+
+    def test_disabled_existing_account_is_not_reactivated(self):
+        user = self._shared_user("disabled-staff@example.com", active=False)
+        employee = self._employee(email=user.email)
+        response = self._create_user_request({"account_type": "staff", "id_number": employee.id_number, "role": "teacher"})
+        self.assertEqual(response.status_code, 400, response.data)
+        employee.refresh_from_db(); user.refresh_from_db()
+        self.assertFalse(user.is_active)
+        self.assertFalse(employee.user_account_id_number)
+        self.assertFalse(user.tenants.filter(pk=self.tenant.pk).exists())
+
+    def test_conflicting_live_reference_is_not_replaced(self):
+        user = self._shared_user("original-link@example.com")
+        other = self._shared_user("different-email@example.com")
+        employee = self._employee(email=other.email)
+        employee.user_account_id_number = user.id_number
+        employee.save(update_fields=["user_account_id_number"])
+        response = self._create_user_request({"account_type": "staff", "id_number": employee.id_number, "role": "teacher"})
+        self.assertEqual(response.status_code, 400, response.data)
+        employee.refresh_from_db()
+        self.assertEqual(employee.user_account_id_number, user.id_number)
+        self.assertFalse(other.tenants.filter(pk=self.tenant.pk).exists())
+
+    def test_role_failure_rolls_back_tenant_membership_and_link(self):
+        from django.core.exceptions import ValidationError
+        user = self._shared_user("rollback-link@example.com")
+        employee = self._employee(email=user.email)
+        with patch("users.account_provisioning.assign_user_role", side_effect=ValidationError("Cannot assign this role")):
+            response = self._create_user_request({"account_type": "staff", "id_number": employee.id_number, "role": "teacher"})
+        self.assertEqual(response.status_code, 400, response.data)
+        employee.refresh_from_db()
+        self.assertFalse(employee.user_account_id_number)
+        self.assertFalse(user.tenants.filter(pk=self.tenant.pk).exists())
+
+    def test_matching_school_id_does_not_claim_unrelated_global_account(self):
+        from users.models import User
+        employee = self._employee(email="new-person@example.com")
+        unrelated = self._shared_user("unrelated-person@example.com")
+        unrelated.id_number = employee.id_number
+        unrelated.save(update_fields=["id_number"])
+        response = self._create_user_request({"account_type": "staff", "id_number": employee.id_number, "role": "teacher", "notify_user": False})
+        self.assertEqual(response.status_code, 201, response.data)
+        employee.refresh_from_db()
+        self.assertNotEqual(employee.user_account_id_number, unrelated.id_number)
+        self.assertEqual(User.objects.get(id_number=employee.user_account_id_number).email, employee.email)
+
+    def test_student_does_not_claim_parent_email_account(self):
+        parent = self._shared_user("household@example.com", account_type="parent")
+        student = self._student(email=parent.email)
+        response = self._create_user_request({"account_type": "student", "id_number": student.id_number})
+        self.assertEqual(response.status_code, 400, response.data)
+        student.refresh_from_db()
+        self.assertFalse(student.user_account_id_number)
+
+
+class ExistingAccountResolutionTests(SimpleTestCase):
+    def test_ambiguous_case_variant_email_fails_closed(self):
+        from types import SimpleNamespace
+        from rest_framework.exceptions import ValidationError
+        from users.account_provisioning import resolve_existing_account
+        record = SimpleNamespace(user_account_id_number=None, id_number="SCHOOL-ID")
+        with patch("users.account_provisioning.User.objects.select_for_update") as users:
+            users.return_value.filter.return_value = [object(), object()]
+            with self.assertRaises(ValidationError):
+                resolve_existing_account(record, "same@example.com", "staff")
+
+    def test_stale_deleted_account_reference_can_be_repaired_by_staff_provisioning(self):
+        from types import SimpleNamespace
+        from users.account_provisioning import resolve_existing_account
+        record = SimpleNamespace(user_account_id_number="DELETED", id_number="SCHOOL-ID")
+        user = SimpleNamespace(pk="live", id_number="LIVE", email="same@example.com", is_active=True, status="active")
+        with patch("users.account_provisioning.User.objects.select_for_update") as users:
+            users.return_value.filter.return_value.first.return_value = None
+            users.return_value.filter.return_value.__getitem__.return_value = [user]
+            self.assertIs(resolve_existing_account(record, "same@example.com", "staff"), user)

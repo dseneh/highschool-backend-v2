@@ -1,3 +1,4 @@
+from common.update_utils import filter_changed_data, get_update_value, validate_model_update
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
@@ -240,8 +241,8 @@ class GradeDetailView(APIView):
         enforce_teacher_grade_access(request.user, grade.section_id, grade.subject_id)
 
         raw_condition_status = request.data.get("condition_status")
-        condition_reason = request.data.get("condition_reason")
-        score = request.data.get("score")
+        condition_reason = get_update_value(grade, request.data, "condition_reason")
+        score = get_update_value(grade, request.data, "score")
 
         if not can_edit_grade_status(grade.status):
             return Response(
@@ -250,7 +251,9 @@ class GradeDetailView(APIView):
             )
 
         condition_status = normalize_condition_status_input(raw_condition_status) or (
-            Grade.ConditionStatus.GRADED if score not in [None, ""] else None
+            Grade.ConditionStatus.GRADED
+            if "score" in request.data and score not in [None, ""]
+            else grade.condition_status
         )
 
         if (
@@ -284,28 +287,27 @@ class GradeDetailView(APIView):
                     {"detail": f"score cannot exceed of {max_score}."}, status=400
                 )
         else:
-            if score not in [None, ""]:
+            if "score" in request.data and score not in [None, ""]:
                 return Response(
                     {"detail": "non-graded conditions must not include a score."},
                     status=400,
                 )
             score = None
 
-        grade.score = score
-        grade.condition_status = condition_status
-        grade.condition_reason = condition_reason or None
-        grade.status = Grade.Status.DRAFT  # reset to draft on manual edit
-        grade.updated_by = request.user
-        grade.save(
-            update_fields=[
-                "score",
-                "condition_status",
-                "condition_reason",
-                "status",
-                "updated_by",
-                "updated_at",
-            ]
+        values = {
+            "score": score,
+            "condition_status": condition_status,
+            "condition_reason": condition_reason or None,
+        }
+        changes = {key: value for key, value in values.items() if key in request.data}
+        # Keep score/condition consistency when the client changes the condition.
+        if "score" in request.data or "condition_status" in request.data:
+            changes.update(score=score, condition_status=condition_status)
+        update_serializer = validate_model_update(
+            grade, changes, ["score", "condition_status", "condition_reason"]
         )
+        if filter_changed_data(grade, update_serializer.validated_data):
+            update_serializer.save(status=Grade.Status.DRAFT, updated_by=request.user)
         return Response(GradeOut(grade).data)
 
     # @transaction.atomic
@@ -436,9 +438,8 @@ class GradeStatusTransitionView(APIView):
         if grade.status == Grade.Status.APPROVED:
             return Response({"detail": "Approved grades are locked."}, status=409)
 
-        grade.status = target
-        grade.updated_by = request.user
-        grade.save(update_fields=["status", "updated_by", "updated_at"])
+        update_serializer = validate_model_update(grade, {"status": target}, ["status"])
+        update_serializer.save(updated_by=request.user)
         return Response(GradeOut(grade).data)
 
 
@@ -543,9 +544,8 @@ class SectionGradeStatusTransitionView(APIView):
                 skipped_count += 1
                 skip_reasons["invalid_transition"] += 1
                 continue  # skip invalid transitions
-            grade.status = target
-            grade.updated_by = request.user
-            grade.save(update_fields=["status", "updated_by", "updated_at"])
+            update_serializer = validate_model_update(grade, {"status": target}, ["status"])
+            update_serializer.save(updated_by=request.user)
             updated_count += 1
 
         # Build detailed message
@@ -682,9 +682,8 @@ class StudentMarkingPeriodGradeStatusTransitionView(APIView):
                 skipped_count += 1
                 skip_reasons["invalid_transition"] += 1
                 continue  # skip invalid transitions
-            grade.status = target
-            grade.updated_by = request.user
-            grade.save(update_fields=["status", "updated_by", "updated_at"])
+            update_serializer = validate_model_update(grade, {"status": target}, ["status"])
+            update_serializer.save(updated_by=request.user)
             updated_count += 1
 
         # Build detailed message
@@ -1163,4 +1162,3 @@ class AcademicYearCorrectionsQueueView(APIView):
             "count": len(results),
             "results": results,
         })
-

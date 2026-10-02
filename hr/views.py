@@ -1,14 +1,17 @@
+from common.viewsets import PartialUpdateModelViewSet
+
 from datetime import timedelta
 from uuid import UUID
 
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import status, viewsets, serializers
+from rest_framework import status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .access_policies import HRAccessPolicy
+from authorization.drf import RBACPermission
 
 from .models import (
     Employee,
@@ -38,7 +41,7 @@ from .serializers import (
 )
 
 
-class EmployeeDepartmentViewSet(viewsets.ModelViewSet):
+class EmployeeDepartmentViewSet(PartialUpdateModelViewSet):
     queryset = EmployeeDepartment.objects.all().order_by("name")
     serializer_class = EmployeeDepartmentSerializer
     permission_classes = [HRAccessPolicy]
@@ -50,7 +53,7 @@ class EmployeeDepartmentViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeePositionViewSet(viewsets.ModelViewSet):
+class EmployeePositionViewSet(PartialUpdateModelViewSet):
     queryset = EmployeePosition.objects.select_related("department").all().order_by("title")
     serializer_class = EmployeePositionSerializer
     permission_classes = [HRAccessPolicy]
@@ -63,7 +66,7 @@ class EmployeePositionViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeeSpecializationViewSet(viewsets.ModelViewSet):
+class EmployeeSpecializationViewSet(PartialUpdateModelViewSet):
     queryset = EmployeeSpecialization.objects.select_related("employee", "subject").all()
     serializer_class = EmployeeSpecializationSerializer
     permission_classes = [HRAccessPolicy]
@@ -82,7 +85,7 @@ class EmployeeSpecializationViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeeTeacherSectionViewSet(viewsets.ModelViewSet):
+class EmployeeTeacherSectionViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeeTeacherSectionSerializer
     permission_classes = [HRAccessPolicy]
 
@@ -127,7 +130,7 @@ class EmployeeTeacherSectionViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeeTeacherSubjectViewSet(viewsets.ModelViewSet):
+class EmployeeTeacherSubjectViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeeTeacherSubjectSerializer
     permission_classes = [HRAccessPolicy]
 
@@ -219,7 +222,7 @@ class EmployeeTeacherSubjectViewSet(viewsets.ModelViewSet):
                 )
 
 
-class LeaveTypeViewSet(viewsets.ModelViewSet):
+class LeaveTypeViewSet(PartialUpdateModelViewSet):
     queryset = LeaveType.objects.all().order_by("name")
     serializer_class = LeaveTypeSerializer
     permission_classes = [HRAccessPolicy]
@@ -231,7 +234,7 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class LeaveRequestViewSet(viewsets.ModelViewSet):
+class LeaveRequestViewSet(PartialUpdateModelViewSet):
     serializer_class = LeaveRequestSerializer
     permission_classes = [HRAccessPolicy]
 
@@ -323,7 +326,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(leave_request).data)
 
 
-class EmployeeAttendanceViewSet(viewsets.ModelViewSet):
+class EmployeeAttendanceViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeeAttendanceSerializer
     permission_classes = [HRAccessPolicy]
 
@@ -360,7 +363,7 @@ class EmployeeAttendanceViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeePerformanceReviewViewSet(viewsets.ModelViewSet):
+class EmployeePerformanceReviewViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeePerformanceReviewSerializer
     permission_classes = [HRAccessPolicy]
 
@@ -398,9 +401,30 @@ class EmployeePerformanceReviewViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class EmployeeViewSet(viewsets.ModelViewSet):
+class EmployeeViewSet(PartialUpdateModelViewSet):
     serializer_class = EmployeeSerializer
     permission_classes = [HRAccessPolicy]
+    permission_map = {"lookup_sources": "employees.create", "lookup_profile": "employees.create"}
+
+    @action(detail=False, methods=["get"], url_path="lookup-sources", permission_classes=[RBACPermission])
+    def lookup_sources(self, request):
+        from .employee_lookup import available_sources
+        response = Response(available_sources(request.user))
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=False, methods=["post"], url_path="lookup-profile", permission_classes=[RBACPermission])
+    def lookup_profile(self, request):
+        from .employee_lookup import lookup_profile
+        response = Response(lookup_profile(request.user, request.data))
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=False, methods=["get"])
+    def me(self, request):
+        from hr.self_service import own_employee_queryset
+        employee = own_employee_queryset(request.user).first()
+        return Response(self.get_serializer(employee).data if employee else None)
 
     def get_queryset(self):
         queryset = Employee.objects.select_related(
@@ -446,7 +470,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
     def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
+        from django.db import transaction
+        from users.identity_email import sync_record_email
+        with transaction.atomic():
+            sync_record_email(serializer.instance, serializer.validated_data, self.request)
+            serializer.save(updated_by=self.request.user)
 
     def get_object(self):
         """Look up employees by either UUID ``id`` or ``id_number``.

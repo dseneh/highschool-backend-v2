@@ -1,4 +1,3 @@
-
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.response import Response
@@ -173,7 +172,7 @@ class GradeBookDetailView(APIView):
         include_stats = request.query_params.get("include_stats", "").lower() in ("true", "1", "yes")
         
         serializer = update_model_fields(request, gb, allowed_fields, 
-                                       lambda obj: GradeBookOut(obj, include_stats=include_stats))
+                                       lambda obj, **kwargs: GradeBookOut(obj, include_stats=include_stats, **kwargs))
         return Response(serializer.data)
 
     @transaction.atomic

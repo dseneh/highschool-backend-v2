@@ -2,6 +2,10 @@
 Views for core models (Tenant management)
 """
 
+from common.update_utils import validate_partial_update
+from common.viewsets import PartialUpdateModelViewSet
+
+
 import secrets
 from datetime import timedelta
 
@@ -12,7 +16,6 @@ from django.core.cache import cache
 from django.contrib.auth.hashers import make_password
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
-from rest_framework.viewsets import ModelViewSet
 from rest_framework.exceptions import ValidationError, NotFound
 from rest_framework.decorators import (
     api_view,
@@ -21,7 +24,7 @@ from rest_framework.decorators import (
     action,
 )
 from rest_framework.response import Response
-from rest_framework import status, viewsets
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_tenants.utils import schema_context
@@ -127,7 +130,7 @@ def current_tenant(request):
         return Response({"detail": "Tenant not found"}, status=404)
 
 
-class TenantViewSet(ModelViewSet):
+class TenantViewSet(PartialUpdateModelViewSet):
     """
     ViewSet for Tenant management.
 
@@ -485,8 +488,12 @@ class TenantViewSet(ModelViewSet):
         before_state = self._capture_control_state(instance)
 
         data = {key: value for key, value in request.data.items() if key in self.ALLOWED_UPDATE_FIELDS}
-        serializer = TenantSerializer(instance, data=data, partial=True, context={"request": request})
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(
+            TenantSerializer,
+            instance,
+            data,
+            context={"request": request},
+        )
         serializer.save()
         response = Response(serializer.data)
         return self._log_control_change_if_needed(request, instance, before_state, response)
@@ -502,8 +509,12 @@ class TenantViewSet(ModelViewSet):
         before_state = self._capture_control_state(instance)
 
         data = {key: value for key, value in request.data.items() if key in self.ALLOWED_UPDATE_FIELDS}
-        serializer = TenantSerializer(instance, data=data, partial=True, context={"request": request})
-        serializer.is_valid(raise_exception=True)
+        serializer = validate_partial_update(
+            TenantSerializer,
+            instance,
+            data,
+            context={"request": request},
+        )
         serializer.save()
         response = Response(serializer.data)
         return self._log_control_change_if_needed(request, instance, before_state, response)
@@ -657,12 +668,18 @@ class TenantViewSet(ModelViewSet):
         validate_tenant_is_in_public_schema()
 
         instance = self.get_object()
-        logo_file = request.FILES.get("logo")
-        if not logo_file:
-            raise ValidationError({"logo": "Logo file is required."})
+        from core.serializers import TenantLogoUpdateSerializer
+        update_serializer = validate_partial_update(
+            TenantLogoUpdateSerializer,
+            instance,
+            request.data,
+            context={"request": request},
+        )
+        logo_file = update_serializer.validated_data.get("logo")
+        save_kwargs = {}
 
         # Resize raster images to reduce storage while keeping original format
-        if logo_file.content_type != "image/svg+xml":
+        if logo_file is not None and logo_file.content_type != "image/svg+xml":
             max_dimension = 512
             image = Image.open(logo_file)
             image_format = image.format or "PNG"
@@ -682,16 +699,9 @@ class TenantViewSet(ModelViewSet):
             image.save(buffer, format=image_format, **save_kwargs)
             buffer.seek(0)
 
-            content = ContentFile(buffer.read())
-            instance.logo.save(logo_file.name, content, save=False)
-        else:
-            instance.logo = logo_file
+            save_kwargs = {"logo": ContentFile(buffer.read(), name=logo_file.name)}
 
-        logo_shape = request.data.get("logo_shape")
-        if logo_shape:
-            instance.logo_shape = logo_shape
-
-        instance.save()
+        update_serializer.save(**save_kwargs)
 
         serializer = TenantSerializer(instance, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1386,7 +1396,7 @@ def invalidate_cache(request):
 # Signup requests (public create + superadmin management)
 # ---------------------------------------------------------------------------
 
-class SignupRequestViewSet(viewsets.ModelViewSet):
+class SignupRequestViewSet(PartialUpdateModelViewSet):
     """
     POST /api/v1/signup-requests/ — public marketing form (no auth)
     GET/PATCH /api/v1/signup-requests/{id}/ — superadmin CRM

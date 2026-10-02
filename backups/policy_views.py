@@ -1,3 +1,5 @@
+from common.update_utils import PartialUpdateModelSerializer, validate_partial_update
+
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import connection, transaction
@@ -39,7 +41,7 @@ OVERRIDE_FIELDS = (
 )
 
 
-class BackupPlatformSettingsSerializer(serializers.ModelSerializer):
+class BackupPlatformSettingsSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = BackupPlatformSettings
         fields = (
@@ -68,7 +70,7 @@ class BackupPlatformSettingsSerializer(serializers.ModelSerializer):
         return value
 
 
-class TenantBackupPolicyUpdateSerializer(serializers.ModelSerializer):
+class TenantBackupPolicyUpdateSerializer(PartialUpdateModelSerializer):
     class Meta:
         model = TenantBackupPolicy
         fields = OVERRIDE_FIELDS
@@ -166,8 +168,11 @@ class PlatformBackupSettingsView(APIView):
         with schema_context(get_public_schema_name()):
             with transaction.atomic():
                 obj = get_platform_backup_settings()
-                serializer = BackupPlatformSettingsSerializer(obj, data=request.data, partial=True)
-                serializer.is_valid(raise_exception=True)
+                serializer = validate_partial_update(
+                    BackupPlatformSettingsSerializer,
+                    obj,
+                    request.data,
+                )
                 obj = serializer.save()
             for tenant in Tenant.objects.exclude(schema_name=get_public_schema_name()).filter(active=True).iterator():
                 try:
@@ -203,8 +208,11 @@ class PlatformTenantBackupPolicyViewSet(viewsets.ViewSet):
             except (Tenant.DoesNotExist, ValueError) as exc:
                 raise NotFound("Tenant not found.") from exc
             policy = get_or_create_tenant_policy(tenant)
-            serializer = TenantBackupPolicyUpdateSerializer(policy, data=request.data, partial=True)
-            serializer.is_valid(raise_exception=True)
+            serializer = validate_partial_update(
+                TenantBackupPolicyUpdateSerializer,
+                policy,
+                request.data,
+            )
             serializer.save()
             try:
                 ensure_schedule_state(tenant, recalculate=True)

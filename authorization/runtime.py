@@ -84,6 +84,17 @@ def _context_from_bundle(
     )
 
 
+def _available_default_context(user, schema_name):
+    from copy import copy
+    from authorization.multiple_roles import selected_assignment
+    assignment = selected_assignment(user)
+    if not assignment:
+        return _denied_context(schema_name, user.pk)
+    scoped_user = copy(user)
+    scoped_user._active_role_selection = str(assignment.pk)
+    return resolve_authorization_context(scoped_user, schema_name=schema_name)
+
+
 def resolve_authorization_context(user, *, schema_name: str | None = None):
     schema_name = schema_name or getattr(connection, "schema_name", "")
     user_id = getattr(user, "pk", None)
@@ -94,6 +105,30 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
         or not getattr(user, "is_authenticated", False)
         or not getattr(user, "is_active", False)
     ):
+        return _denied_context(schema_name, user_id)
+
+    selection = getattr(user, "_active_role_selection", None)
+    if selection and selection != "platform":
+        from authorization.multiple_roles import selected_assignment, assignment_role
+        assignment = selected_assignment(user, selection)
+        if not assignment:
+            return _denied_context(schema_name, user_id)
+        role = assignment_role(assignment)
+        registry = get_permission_registry()
+        grants = (role.permissions if assignment.shared_role_id else [
+            {"code": grant.permission_code, "scope": grant.scope}
+            for grant in role.permission_grants.all()
+        ])
+        return AuthorizationContext(
+            schema_name=schema_name, user_id=str(user_id),
+            membership_id=str(assignment.membership_id),
+            membership_version=assignment.membership.membership_version,
+            role_id=str(role.pk), permission_version=role.permission_version,
+            permissions={grant["code"]: grant["scope"] for grant in grants
+                         if registry.get(grant.get("code")) is not None},
+            active=True, unrestricted=False,
+        )
+    if selection == "platform" and not is_global_superadmin(user):
         return _denied_context(schema_name, user_id)
 
     # Platform superadmins are intentionally not assigned tenant role grants.
@@ -109,7 +144,8 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
     try:
         cached_bundle = AuthorizationCache.get_bundle(schema_name, user_id)
         if cached_bundle is not None:
-            return _context_from_bundle(schema_name, user_id, cached_bundle)
+            context = _context_from_bundle(schema_name, user_id, cached_bundle)
+            return context if context.active else _available_default_context(user, schema_name)
 
         has_outer_transaction = _has_outer_transaction()
         # Lock the membership and role until the cache snapshot is written. A
@@ -134,13 +170,7 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
                         scope__in=["TENANT", "GLOBAL"],
                     ).first()
                 if shared_role is None or not membership.is_active:
-                    return AuthorizationContext(
-                        schema_name=schema_name,
-                        user_id=str(user_id),
-                        membership_id=str(membership.pk),
-                        membership_version=membership.membership_version,
-                        role_id=str(membership.shared_role_id),
-                    )
+                    return _available_default_context(user, schema_name)
                 registry = get_permission_registry()
                 permissions = {
                     grant.get("code"): grant.get("scope")
@@ -182,13 +212,7 @@ def resolve_authorization_context(user, *, schema_name: str | None = None):
                         cached_membership,
                         cached_role,
                     )
-                return AuthorizationContext(
-                    schema_name=schema_name,
-                    user_id=str(user_id),
-                    membership_id=str(membership.pk),
-                    membership_version=membership.membership_version,
-                    role_id=str(role.pk),
-                )
+                return _available_default_context(user, schema_name)
 
             registry = get_permission_registry()
             permissions = {
@@ -293,6 +317,10 @@ def initialize_request_authorization(request, user=None) -> RequestAuthorization
     user = user or getattr(request, "user", None)
     schema_name = getattr(connection, "schema_name", "")
     user_id = str(getattr(user, "pk", ""))
+    # Middleware and DRF can authenticate the same request into different User
+    # instances. Bind the selection to both, including when reusing the facade.
+    selection = getattr(request, "META", {}).get("HTTP_X_ROLE_ASSIGNMENT")
+    user._active_role_selection = selection or None
     existing = getattr(request, "authorization", None)
     if existing is not None:
         if existing.user_id != user_id or existing.schema_name != schema_name:
