@@ -9,8 +9,6 @@ import threading
 from datetime import timedelta
 from typing import Optional
 
-from django.conf import settings as django_settings
-from django.core.mail import EmailMessage
 from django.db.models import Q
 from django.utils import timezone
 
@@ -368,24 +366,25 @@ def _deliver_transcript_email_async(
 
                 subject = f"Official Transcript - {student_obj.get_full_name()}"
                 body = (
-                    f"Dear {student_obj.get_full_name()},\n\n"
                     "Please find your official transcript attached.\n\n"
                     "This document is official only when signed by a school official "
-                    "and embossed with the school seal.\n\n"
-                    "Best regards,\nSchool Administration"
+                    "and embossed with the school seal."
                 )
-                email = EmailMessage(
+                from common.email_service import send_system_message_email
+
+                sent = send_system_message_email(
+                    to=[recipient],
                     subject=subject,
                     body=body,
-                    from_email=django_settings.DEFAULT_FROM_EMAIL,
-                    to=[recipient],
+                    user_name=student_obj.get_full_name(),
+                    attachments=[(
+                        f"Official_Transcript_{student_obj.id_number}.pdf",
+                        pdf_bytes,
+                        "application/pdf",
+                    )],
                 )
-                email.attach(
-                    f"Official_Transcript_{student_obj.id_number}.pdf",
-                    pdf_bytes,
-                    "application/pdf",
-                )
-                email.send()
+                if not sent:
+                    raise RuntimeError("Transcript email delivery failed")
 
                 access_record = TranscriptAccessRequest.objects.get(id=access.id)
                 access_record.email_sent_at = timezone.now()

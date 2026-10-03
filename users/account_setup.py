@@ -125,7 +125,8 @@ def begin_setup(tenant, kind, email):
         challenge.save(update_fields=["source_ids"])
     from common.email_service import send_notification_email
     sent = send_notification_email(SimpleNamespace(email=email, first_name="", pk=challenge.pk),
-        "Your EzySchool account setup code", f"Your verification code is {code}. It expires in 15 minutes. Do not share this code.", school=tenant)
+        "Your EzySchool account setup code", f"Your verification code is {code}. It expires in 15 minutes. Do not share this code.",
+        school=tenant, category="verification", verification_code=code, expiry_minutes=15)
     if not sent:
         challenge.delete()
         raise ValidationError("The verification email could not be sent. Please try again later.")
