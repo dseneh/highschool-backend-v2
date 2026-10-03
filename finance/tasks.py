@@ -12,7 +12,6 @@ import threading
 from typing import Dict, Any
 
 from django.core.cache import cache
-from django.core.mail import EmailMessage
 from django.conf import settings
 from django.db.models import QuerySet
 
@@ -245,29 +244,21 @@ def send_export_notification(
 ):
     """Send email notification when export is complete"""
     subject = f"Transaction Export Complete - {record_count} records"
-    message = f"""
-    Hello {user.get_full_name()},
-    
-    Your transaction export has been completed successfully.
-    
-    Details:
-    - File: {filename}
-    - Records: {record_count:,}
-    - Download: {file_url}
-    
-    The file will be available for download for 24 hours.
-    
-    Best regards,
-    Finance Team
-    """
+    message = (
+        "Your transaction export has been completed successfully.\n\n"
+        f"File: {filename}\n"
+        f"Records: {record_count:,}\n"
+        f"Download: {file_url}\n\n"
+        "The file will be available for download for 24 hours."
+    )
+    from common.email_service import send_system_message_email
 
-    email = EmailMessage(
+    send_system_message_email(
+        to=[user.email],
         subject=subject,
         body=message,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[user.email],
+        user_name=user.get_full_name() or user.username,
     )
-    email.send()
 
 
 # @shared_task

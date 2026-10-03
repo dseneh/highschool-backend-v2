@@ -67,7 +67,7 @@ class AccountSetupView(ParentAPIView):
             raise ValidationError("An account or school record changed. Sign in or start setup again.")
         if created:
             from common.email_service import send_notification_email
-            send_notification_email(user, "Your EzySchool account is ready", "Your account has been created. Sign in using your email and password.", school=tenant)
+            send_notification_email(user, "Your EzySchool account is ready", "Your account has been created. Sign in using your email and password.", school=tenant, category="Account access")
         return Response({"detail": "Account setup complete. Sign in to continue."}, status=201 if created else 200)
 
 
