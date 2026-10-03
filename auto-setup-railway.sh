@@ -42,10 +42,10 @@ else
 fi
 
 if [ "${RAILWAY_ENVIRONMENT_NAME:-}" = "production" ]; then
-    echo "Step 5: Registering exact Parent and school sign-in callbacks..."
+    echo "Step 5: Registering exact Parent, admin, and school sign-in callbacks..."
     python manage.py configure_parent_workspace \
         --origin "https://parent.${APP_ROOT_DOMAIN:-myezyschool.com}" \
-        --include-schools --apply
+        --include-admin --include-schools --apply
     echo "✅ Step 5 complete"
 fi
 

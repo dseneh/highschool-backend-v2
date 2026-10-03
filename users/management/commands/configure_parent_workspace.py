@@ -35,6 +35,12 @@ def school_callback(origin, slug):
     return f"{parent.scheme}://{slug}.{root}/auth/callback"
 
 
+def admin_callback(origin):
+    parent = urlsplit(parent_callback(origin))
+    root = parent.netloc.removeprefix("parent.")
+    return f"{parent.scheme}://admin.{root}/auth/callback"
+
+
 class Command(BaseCommand):
     help = "Check parent workspace prerequisites; --apply registers its exact OAuth callback."
 
@@ -42,6 +48,7 @@ class Command(BaseCommand):
         parser.add_argument("--origin", required=True)
         parser.add_argument("--client-id", default="ezyschool-web")
         parser.add_argument("--apply", action="store_true")
+        parser.add_argument("--include-admin", action="store_true", help="Also register the exact platform admin callback under this same root.")
         parser.add_argument("--include-schools", action="store_true", help="Also register exact callbacks for active school workspace subdomains under this same root.")
 
     @transaction.atomic
@@ -59,6 +66,8 @@ class Command(BaseCommand):
             if client and (not client.is_active or not client.require_pkce):
                 raise CommandError("The OAuth client must be active and require PKCE. Review its configuration explicitly.")
             callbacks = [callback]
+            if options["include_admin"]:
+                callbacks.append(admin_callback(options["origin"]))
             if options["include_schools"]:
                 schools = Tenant.objects.filter(active=True, status="active").exclude(schema_name=get_public_schema_name())
                 callbacks.extend(school_callback(options["origin"], slug) for slug in schools.order_by("schema_name").values_list("schema_name", flat=True))
