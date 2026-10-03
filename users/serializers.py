@@ -490,6 +490,13 @@ class MultiFieldTokenObtainPairSerializer(TokenObtainPairSerializer):
         refresh = self.get_token(user)
         if parent_workspace:
             refresh["parent_workspace"] = True
+        from users.session_security import register_jwt_session
+
+        register_jwt_session(
+            user=user,
+            request=self.context.get('request'),
+            refresh=refresh,
+        )
         data = {
             'refresh': str(refresh),
             'access': str(refresh.access_token),

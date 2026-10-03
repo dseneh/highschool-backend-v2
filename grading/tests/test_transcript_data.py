@@ -307,7 +307,15 @@ class TranscriptBuildTests(SimpleTestCase):
             date_of_birth=None,
         )
 
-        payload = TranscriptDataService.build(student)
+        with patch(
+            "grading.services.transcript_data.GradingSettings.objects"
+        ) as mock_grading_settings, patch.object(
+            TranscriptDataService,
+            "_resolve_signatory_from_employee",
+            return_value=("School Official", "School Official"),
+        ):
+            mock_grading_settings.first.return_value = None
+            payload = TranscriptDataService.build(student)
 
         self.assertEqual(payload.student_full_name, "Jane Doe")
         self.assertEqual(payload.student_id_number, "10001")

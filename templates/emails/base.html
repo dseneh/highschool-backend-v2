@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <title>{% block email_title %}EzySchool{% endblock %}</title>
+  <style>
+    .logo-dark { display: none !important; }
+    @media (prefers-color-scheme: dark) {
+      .email-page { background: #0b1220 !important; }
+      .email-card { background: #141e2e !important; border-color: #35445a !important; }
+      .email-heading, .email-body, .email-body p, .email-body td { color: #f3f7fc !important; }
+      .email-muted, .email-footer, .email-footer a { color: #b8c6d8 !important; }
+      .email-panel { background: #1c2a3f !important; border-color: #40536d !important; }
+      .email-rule { border-color: #35445a !important; }
+      .logo-light { display: none !important; }
+      .logo-dark { display: block !important; }
+    }
+    @media only screen and (max-width: 620px) {
+      .email-page { padding: 0 !important; }
+      .email-card { width: 100% !important; border-radius: 0 !important; }
+      .email-inner { padding-left: 24px !important; padding-right: 24px !important; }
+      .email-heading { font-size: 26px !important; }
+    }
+  </style>
+</head>
+<body class="email-page" style="margin:0;padding:32px 12px;background:#f2f5fa;font-family:Arial,Helvetica,sans-serif;color:#17243b;">
+  <div style="display:none;font-size:1px;line-height:1px;color:#f2f5fa;max-height:0;max-width:0;opacity:0;overflow:hidden;">{% block preheader %}{% endblock %}</div>
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td align="center">
+    <table role="presentation" class="email-card" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:100%;background:#ffffff;border:1px solid #dce4ef;border-radius:16px;border-collapse:separate;overflow:hidden;">
+      <tr><td class="email-inner" style="padding:32px 40px 24px;">
+        <img class="logo-light" src="cid:ezyschool-logo-light" alt="EzySchool" width="184" style="display:block;width:184px;height:auto;border:0;">
+        <img class="logo-dark" src="cid:ezyschool-logo-dark" alt="EzySchool" width="184" style="display:none;width:184px;height:auto;border:0;">
+      </td></tr>
+      <tr><td class="email-inner" style="padding:4px 40px 0;">
+        <p class="email-muted" style="margin:0 0 10px;font-size:12px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#55708f;">{% block eyebrow %}EzySchool account{% endblock %}</p>
+        <h1 class="email-heading" style="margin:0;font-size:30px;line-height:1.2;letter-spacing:-.6px;color:#11233f;">{% block heading %}{% endblock %}</h1>
+      </td></tr>
+      <tr><td class="email-inner email-body" style="padding:24px 40px 32px;font-size:15px;line-height:1.65;color:#30435e;">
+        {% block content %}{% endblock %}
+      </td></tr>
+      <tr><td class="email-inner email-footer email-rule" style="padding:22px 40px 28px;border-top:1px solid #e6ebf2;color:#718098;font-size:12px;line-height:1.6;">
+        <p style="margin:0 0 5px;">Sent by EzySchool{% if school_name and school_name != 'EzySchool' %} for {{ school_name }}{% endif %}.</p>
+        <p style="margin:0;">Need help? <a href="mailto:{{ support_email }}" style="color:#315fba;text-decoration:underline;">{{ support_email }}</a> &nbsp;·&nbsp; &copy; {{ current_year }} EzySchool</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>

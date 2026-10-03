@@ -44,9 +44,10 @@ class SsoTokenExchangeViewTests(TestCase):
 		code_obj.code_challenge = challenge
 		code_obj.code_challenge_method = "S256"
 		code_obj.client = SimpleNamespace(client_id="ezyschool-web")
-		code_obj.tenant = SimpleNamespace(id="tenant-1", active=True, status="active")
+		code_obj.tenant = SimpleNamespace(id="tenant-1", schema_name="dujar", active=True, status="active")
 		code_obj.auth_session = None
-		code_obj.user = SimpleNamespace(is_active=True, status="active")
+		code_obj.requested_scopes = []
+		code_obj.user = SimpleNamespace(is_active=True, status="active", security_version=1)
 		code_obj.save = MagicMock()
 		return code_obj
 
@@ -105,7 +106,7 @@ class SsoTokenExchangeViewTests(TestCase):
 		)
 		response = self.view(request)
 
-		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.status_code, 200, response.data)
 		self.assertIn("access", response.data)
 		self.assertIn("refresh", response.data)
 		self.assertEqual(response.data["tenant_session_id"], "sess-1")
@@ -347,13 +348,14 @@ class SsoRefreshViewTests(TestCase):
 		family = SimpleNamespace(revoked_at=None)
 		family.save = MagicMock()
 		tenant = SimpleNamespace(id="tenant-1")
-		user = SimpleNamespace(id="user-1")
+		user = SimpleNamespace(id="user-1", security_version=1)
 		session = SimpleNamespace(
 			id="sess-1",
 			user=user,
 			tenant=tenant,
 			membership_id="",
 			permission_version=1,
+			roles=[],
 			revoked_at=None,
 			save=MagicMock(),
 		)
@@ -386,7 +388,7 @@ class SsoRefreshViewTests(TestCase):
 		)
 		response = self.view(request)
 
-		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.status_code, 200, response.data)
 		self.assertEqual(response.data.get("refresh"), "new-refresh")
 		refresh_record.save.assert_called_once()
 

@@ -331,4 +331,11 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunPython(apply_curated_defaults, noop_reverse),
+        # Tenant schemas can be created inside a surrounding transaction (for
+        # example from TestCase or an atomic service). Flush deferred FK trigger
+        # events before 0016 alters this table.
+        migrations.RunSQL(
+            sql="SET CONSTRAINTS ALL IMMEDIATE",
+            reverse_sql=migrations.RunSQL.noop,
+        ),
     ]

@@ -1,0 +1,11 @@
+{% extends "emails/base.html" %}
+{% block email_title %}Your EzySchool sign-in code{% endblock %}
+{% block preheader %}Use this one-time code to finish signing in.{% endblock %}
+{% block eyebrow %}Sign-in verification{% endblock %}
+{% block heading %}Verify your sign-in{% endblock %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ user_name }},</p>
+<p style="margin:0 0 20px;">Use this one-time code to finish signing in to {{ school_name }}:</p>
+<table role="presentation" class="email-panel" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f4f7fc;border:1px solid #dce5f2;border-radius:10px;"><tr><td align="center" style="padding:19px 12px;font-family:Arial,Helvetica,sans-serif;font-size:31px;font-weight:700;letter-spacing:7px;color:#11233f;">{{ verification_code }}</td></tr></table>
+<p class="email-muted" style="margin:18px 0 0;color:#65758e;font-size:13px;">This code expires in {{ expiry_minutes }} minutes and works only once. If you did not try to sign in, change your password and contact your administrator.</p>
+{% endblock %}

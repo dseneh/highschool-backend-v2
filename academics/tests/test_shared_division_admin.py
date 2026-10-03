@@ -2,7 +2,6 @@ from django_tenants.test.cases import TenantTestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from academics.views.division import DivisionListView
-from common.status import Roles
 from users.models import User
 
 
@@ -16,7 +15,7 @@ class SharedDivisionAdminPermissionTests(TenantTestCase):
             defaults={
                 "username": "shared-division-admin",
                 "id_number": "SHARED-DIVISION-ADMIN-001",
-                "role": Roles.ADMIN,
+                "account_type": "staff",
             },
         )
 
@@ -38,7 +37,8 @@ class SharedDivisionAdminPermissionTests(TenantTestCase):
             defaults={
                 "username": "shared-division-superadmin",
                 "id_number": "SHARED-DIVISION-SUPERADMIN-001",
-                "role": Roles.SUPERADMIN,
+                "account_type": "staff",
+                "is_platform_superuser": True,
             },
         )
         request = APIRequestFactory().post(

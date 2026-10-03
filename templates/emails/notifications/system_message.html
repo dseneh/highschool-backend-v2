@@ -1,0 +1,10 @@
+{% extends "emails/base.html" %}
+{% block email_title %}{{ subject }}{% endblock %}
+{% block preheader %}{{ subject }}{% endblock %}
+{% block eyebrow %}EzySchool notice{% endblock %}
+{% block heading %}{{ subject }}{% endblock %}
+{% block content %}
+{% if user_name %}<p style="margin:0 0 16px;">Hi {{ user_name }},</p>{% endif %}
+<p style="margin:0;">{{ body|linebreaksbr }}</p>
+{% if action_url %}{% include "emails/partials/button.html" with href=action_url label=action_label %}{% include "emails/partials/link_fallback.html" with href=action_url %}{% endif %}
+{% endblock %}

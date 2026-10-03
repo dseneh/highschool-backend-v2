@@ -1,0 +1,16 @@
+{% extends "emails/base.html" %}
+{% block email_title %}New sign-in detected{% endblock %}
+{% block preheader %}Review a new sign-in to your EzySchool account.{% endblock %}
+{% block eyebrow %}Account security{% endblock %}
+{% block heading %}New sign-in detected{% endblock %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ user_name }},</p>
+<p style="margin:0 0 20px;">We detected a sign-in to your {{ school_name }} account from a new device or location.</p>
+<table role="presentation" class="email-panel" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f4f7fc;border:1px solid #dce5f2;border-radius:10px;"><tr><td style="padding:17px 20px;font-size:14px;line-height:1.8;color:#30435e;">
+<strong>Device:</strong> {{ device }}<br>
+<strong>Operating system:</strong> {{ operating_system }}<br>
+<strong>Location:</strong> {{ location }}<br>
+<strong>IP address:</strong> {{ ip_address }}
+</td></tr></table>
+<p style="margin:20px 0 0;">If this was you, no action is needed. If you do not recognize it, revoke the unfamiliar session and change your password immediately.</p>
+{% endblock %}

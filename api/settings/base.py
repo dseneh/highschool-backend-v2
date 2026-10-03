@@ -32,6 +32,14 @@ def _csv(value):
 
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="", cast=_csv)
+
+# The redirect middleware must be able to inspect both root and tenant hosts on
+# current and legacy domains. Django's leading-dot syntax allows the root domain
+# and all of its subdomains without enabling arbitrary hosts.
+for app_domain in [APP_ROOT_DOMAIN, *LEGACY_APP_DOMAINS]:
+    for allowed_host in (app_domain, f".{app_domain}"):
+        if allowed_host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(allowed_host)
 railway_public_domain = config("RAILWAY_PUBLIC_DOMAIN", default="").strip()
 if railway_public_domain and railway_public_domain not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(railway_public_domain)
@@ -76,6 +84,7 @@ MIDDLEWARE = [
     "api.middleware.HeaderBasedTenantMiddleware",
     "api.middleware.ApiPerformanceMetricsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "api.middleware.SecurityResponseHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -147,6 +156,19 @@ FRONTEND_PASSWORD_RESET_PATH = config("FRONTEND_PASSWORD_RESET_PATH", default="/
 EMAIL_LOGO_URL = config("EMAIL_LOGO_URL", default="")
 PASSWORD_RESET_TIMEOUT = config("PASSWORD_RESET_TIMEOUT", default=3600, cast=int)
 PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS = config("PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS", default=60, cast=int)
+PASSWORD_RESET_ACCOUNT_LIMIT_PER_HOUR = config("PASSWORD_RESET_ACCOUNT_LIMIT_PER_HOUR", default=3, cast=int)
+MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR = config("MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR", default=3, cast=int)
+MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS = config("MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS", default=60, cast=int)
+
+SECURE_REFERRER_POLICY = config("SECURE_REFERRER_POLICY", default="no-referrer")
+SECURITY_PERMISSIONS_POLICY = config(
+    "SECURITY_PERMISSIONS_POLICY",
+    default="camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+)
+API_CONTENT_SECURITY_POLICY = config(
+    "API_CONTENT_SECURITY_POLICY",
+    default="default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+)
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

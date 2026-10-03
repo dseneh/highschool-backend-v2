@@ -94,7 +94,7 @@ class ParentInvitationRegisterView(ParentAPIView):
         if getattr(settings, "PARENT_INVITATIONS_ENABLED", False):
             sent = send_notification_email(user, "Your EzySchool account has been created",
                 "Your account is ready. Sign in with your email and password, then return to your school's invitation to accept parent portal access. If you did not create this account, contact your school.",
-                school=invitation.tenant, action_url=build_frontend_url(invitation.tenant.schema_name, "/login"))
+                school=invitation.tenant, action_url=build_frontend_url(invitation.tenant.schema_name, "/login"), category="Account access")
         return Response({"detail": "Account created. Sign in to accept your invitation.", "confirmation_sent": bool(sent)}, status=201)
 
 

@@ -1,7 +1,7 @@
 """Tenant-aware authentication backends."""
 
-from django_tenants.utils import get_public_schema_name, schema_context
 from django.utils import timezone
+from django_tenants.utils import get_public_schema_name, schema_context
 from rest_framework import authentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -40,6 +40,11 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
         if token_version != user_version:
             raise AuthenticationFailed("Session has been revoked. Please sign in again.")
 
+        from users.session_security import touch_and_validate_session
+
+        if not touch_and_validate_session(user=user, session_id=token.get("session_id")):
+            raise AuthenticationFailed("Session has been revoked. Please sign in again.")
+
         from users.parent_workspace import bind_parent_request, is_parent_workspace
         if token.get("session_id"):
             from django.db.models import Q
@@ -57,6 +62,9 @@ class TenantAwareJWTAuthentication(JWTAuthentication):
 
 class TenantSessionAuthentication(authentication.BaseAuthentication):
     """Authenticate requests using a hashed server-side tenant session identifier."""
+
+    def authenticate_header(self, request):
+        return "Bearer"
 
     def authenticate(self, request):
         raw_session_id = request.META.get("HTTP_X_TENANT_SESSION")

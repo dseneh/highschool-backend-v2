@@ -1,0 +1,12 @@
+Hello {{ user.first_name|default:user.username }},
+
+We detected a sign-in to your {{ school_name }} account from a new device or location.
+
+Device: {{ device }}
+Operating system: {{ operating_system }}
+Location: {{ location }}
+IP address: {{ ip_address }}
+
+If this was you, no action is required. If you do not recognize this activity, sign in from a trusted device, revoke the unfamiliar session, and change your password immediately.
+
+{{ school_name }} Security

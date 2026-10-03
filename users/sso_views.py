@@ -1,46 +1,52 @@
 import secrets
 from datetime import timedelta
 from urllib.parse import urlencode, urlparse
-from django.conf import settings
 
+from django.conf import settings
 from django.db import transaction
 from django.http import HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from api.authentication import TenantAwareJWTAuthentication, TenantSessionAuthentication
+from authorization.services import (
+    NO_ASSIGNED_ROLE_CODE,
+    NO_ASSIGNED_ROLE_DETAIL,
+    get_assigned_role,
+)
+from common.audit_utils import extract_device_metadata
 from common.status import PersonStatus
 from core.models import Domain, Tenant
-from api.authentication import TenantAwareJWTAuthentication, TenantSessionAuthentication
 from users.models import (
-    CentralAuthSession,
     AuthenticationAuditEvent,
     AuthorizationCode,
+    CentralAuthSession,
     OAuthClient,
     OAuthRedirectURI,
-    RefreshToken as RefreshTokenRecord,
     RefreshTokenFamily,
     SessionRevocation,
     TenantSession,
 )
+from users.models import (
+    RefreshToken as RefreshTokenRecord,
+)
 from users.sso_serializers import (
-    SsoBootstrapSerializer,
     GlobalLogoutSerializer,
     SsoAuthorizeSerializer,
+    SsoBootstrapSerializer,
     SsoRefreshSerializer,
     SsoTokenExchangeSerializer,
     TenantLogoutSerializer,
 )
 from users.sso_utils import hash_value, verify_pkce_s256
 from users.tenant_access import user_has_tenant_workspace_access
-from authorization.services import (
-    NO_ASSIGNED_ROLE_CODE,
-    NO_ASSIGNED_ROLE_DETAIL,
-    get_assigned_role,
+
+SSO_SESSION_LIFETIME = timedelta(
+    days=getattr(settings, "SSO_SESSION_LIFETIME_DAYS", 30)
 )
 
 
@@ -480,9 +486,10 @@ class SsoTokenExchangeView(APIView):
                 permission_version=1,
                 refresh_token_family=token_family,
                 global_session=auth_session,
-                expires_at=now + timedelta(days=7),
+                expires_at=now + SSO_SESSION_LIFETIME,
                 ip_address=request.META.get("REMOTE_ADDR") or None,
                 user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                device_metadata=extract_device_metadata(request),
             )
 
             refresh = RefreshToken.for_user(user)
@@ -504,7 +511,7 @@ class SsoTokenExchangeView(APIView):
                 family=token_family,
                 tenant_session=tenant_session,
                 token_hash=hash_value(refresh_token_value),
-                expires_at=now + timedelta(days=7),
+                expires_at=now + SSO_SESSION_LIFETIME,
             )
 
             AuthenticationAuditEvent.objects.create(
@@ -624,7 +631,7 @@ class SsoRefreshView(APIView):
                 family=family,
                 tenant_session=tenant_session,
                 token_hash=hash_value(rotated_refresh_value),
-                expires_at=now + timedelta(days=7),
+                expires_at=now + SSO_SESSION_LIFETIME,
                 rotated_from=refresh_record,
             )
 

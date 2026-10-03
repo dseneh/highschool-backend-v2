@@ -30,11 +30,18 @@ Defaults can be overridden through environment variables:
 - `API_THROTTLE_ANON=60/min`
 - `API_THROTTLE_USER=300/min`
 - `API_THROTTLE_LOGIN=5/min`
-- `API_THROTTLE_PASSWORD_RESET=12/hour`
+- `API_THROTTLE_PASSWORD_RESET=30/hour` (per IP)
 - `API_THROTTLE_ACTIVATION=12/hour`
+- `API_THROTTLE_MFA_VERIFY=10/min`
+- `API_THROTTLE_MFA_RESEND=5/hour`
+- `API_THROTTLE_MFA_RECOVERY=30/hour` (per IP)
 - `API_THROTTLE_PUBLIC_SEARCH=20/min`
+- `PASSWORD_RESET_ACCOUNT_LIMIT_PER_HOUR=3`
+- `PASSWORD_RESET_REQUEST_COOLDOWN_SECONDS=60`
+- `MFA_RECOVERY_ACCOUNT_LIMIT_PER_HOUR=3`
+- `MFA_RECOVERY_REQUEST_COOLDOWN_SECONDS=60`
 
-DRF throttling uses Django's cache. For multi-replica production deployments, configure `USE_REDIS=true` with a shared `REDIS_URL`; otherwise per-process local-memory caches cannot enforce a reliable platform-wide rate limit. The same shared cache can be used by future payment webhook replay protection.
+DRF IP throttling and the account-aware fixed-window limits use Django's cache. Account identifiers are HMAC-digested before they are placed in cache keys. For multi-replica production deployments, configure `USE_REDIS=true` with a shared `REDIS_URL`; otherwise per-process local-memory caches cannot enforce a reliable platform-wide rate limit. Password-reset responses remain generic when an account is absent, inactive, cooling down, or over its hourly limit.
 
 ## JWT/session revocation
 

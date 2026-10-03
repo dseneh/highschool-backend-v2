@@ -1,0 +1,7 @@
+Hello {{ user_name }},
+
+An administrator started a secure recovery of the email address used for your {{ school_name }} sign-in verification.
+
+Verification code: {{ verification_code }}
+
+This code expires in {{ expiry_minutes }} minutes. Share it only on the EzySchool recovery screen. If you did not request help recovering your account, contact your administrator immediately.

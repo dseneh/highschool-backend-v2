@@ -25,7 +25,7 @@ def begin(tenant, kind, email):
     code = f"{secrets.randbelow(1000000):06d}"
     challenge = AccountSetupChallenge.objects.create(tenant=tenant, email=email, account_type="parent", code_hash=make_password(code), source_ids={"global_parent": True}, expires_at=timezone.now()+timedelta(minutes=15))
     from common.email_service import send_notification_email
-    if not send_notification_email(SimpleNamespace(email=email, first_name="", pk=challenge.pk), "Your EzySchool account setup code", f"Your verification code is {code}. It expires in 15 minutes. Do not share this code.", school=tenant):
+    if not send_notification_email(SimpleNamespace(email=email, first_name="", pk=challenge.pk), "Your EzySchool account setup code", f"Your verification code is {code}. It expires in 15 minutes. Do not share this code.", school=tenant, category="verification", verification_code=code, expiry_minutes=15):
         challenge.delete()
         raise ValidationError("The verification email could not be sent.")
     return challenge

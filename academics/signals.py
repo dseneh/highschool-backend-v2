@@ -74,8 +74,13 @@ def setup_tenant_defaults(sender, instance, created, **kwargs):
 
     try:
         from defaults.services import build_initial_plan
-        instance.onboarding_plan = build_initial_plan(instance)
-        instance.save(update_fields=["onboarding_plan"])
+        plan = build_initial_plan(instance)
+        # Never call Tenant.save() from this post_save handler. Tenant has
+        # auto_create_schema=True, so a nested save can start schema migrations
+        # before the outer save transaction has finished and PostgreSQL can fail
+        # with "pending trigger events" during an ALTER TABLE.
+        Tenant.objects.filter(pk=instance.pk).update(onboarding_plan=plan)
+        instance.onboarding_plan = plan
         logger.info(f"Generated onboarding plan for tenant: {instance.name}")
     except Exception as e:
         logger.error(

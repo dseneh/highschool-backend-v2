@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import uuid
 
+from django.db import connection
 from django.test import SimpleTestCase
 from django_tenants.test.cases import TenantTestCase
 from django_tenants.utils import schema_context
@@ -16,7 +17,13 @@ from core.services.tenant_clone import (
 	resolve_modules,
 	run_tenant_creation_job,
 )
-from core.models import Tenant, TenantCreationJob
+from core.models import Tenant, TenantCreationJob, generate_unique_id_number
+
+
+class TenantIdNumberTests(SimpleTestCase):
+	@patch("core.models.Tenant.objects.values_list", return_value=["01001", "Z-LEGACY"])
+	def test_non_numeric_legacy_ids_do_not_reset_sequence(self, _values):
+		self.assertEqual(generate_unique_id_number(), "01002")
 
 
 class GradingBypassOutcomeValidationTests(SimpleTestCase):
@@ -135,6 +142,14 @@ class TenantCloneModuleTests(SimpleTestCase):
 
 class TenantCloneIntegrationTests(TenantTestCase):
 	"""Exercises ID remapping and transaction boundaries across real schemas."""
+
+	@classmethod
+	def get_test_schema_name(cls):
+		return "clone_integration_test"
+
+	@classmethod
+	def get_test_tenant_domain(cls):
+		return "clone.tenant.test.com"
 
 	@classmethod
 	def setup_tenant(cls, tenant):
@@ -510,6 +525,10 @@ class TenantCloneIntegrationTests(TenantTestCase):
 		)
 		serializer.is_valid(raise_exception=True)
 		with schema_context("public"):
+			# Creating the tenant runs schema DDL. Resolve deferred FK events
+			# from the existing owner fixture before tenant migrations begin.
+			with connection.cursor() as cursor:
+				cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 			created = serializer.save()
 		try:
 			self.assertEqual(created.owner_id, existing_owner.pk)

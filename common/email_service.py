@@ -10,7 +10,11 @@ Configuration (in .env):
     EMAIL_FROM_NAME=EzySchool
 """
 
+import base64
 import logging
+from email.mime.image import MIMEImage
+from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional
 
@@ -24,6 +28,24 @@ from common.email_validation import is_valid_email
 logger = logging.getLogger(__name__)
 
 RESEND_API_URL = "https://api.resend.com/emails"
+EMAIL_BRAND_IMAGES = {
+    "ezyschool-logo-light": "logo-light.png",
+    "ezyschool-logo-dark": "logo-dark.png",
+}
+
+
+@lru_cache(maxsize=2)
+def _brand_image(filename: str) -> bytes:
+    return (Path(__file__).resolve().parent / "assets" / "email" / filename).read_bytes()
+
+
+def _inline_brand_images(html_body: str) -> list[tuple[str, str, bytes]]:
+    """Attach only the image variants referenced by a rendered email."""
+    return [
+        (content_id, filename, _brand_image(filename))
+        for content_id, filename in EMAIL_BRAND_IMAGES.items()
+        if f"cid:{content_id}" in (html_body or "")
+    ]
 
 
 def _build_branding_context(user, school=None) -> dict[str, object]:
@@ -51,28 +73,7 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
         "dev_name": "DewX IT Solutions",
         "dev_website": "https://dewx.tech",
         "support_email": getattr(settings, "SUPPORT_EMAIL", f"support@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"),
-        "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
     }
-
-    if not context["logo_url"]:
-        frontend_domain = getattr(settings, "FRONTEND_DOMAIN", "")
-        if frontend_domain:
-            parsed_frontend = urlparse(frontend_domain)
-            if (
-                parsed_frontend.scheme
-                and parsed_frontend.netloc
-                and _is_public_email_asset_host(parsed_frontend.hostname or "")
-            ):
-                context["logo_url"] = f"{parsed_frontend.scheme}://{parsed_frontend.netloc}/img/logo-dark-full.png"
-
-    if context["logo_url"]:
-        parsed_logo = urlparse(str(context["logo_url"]))
-        if not (parsed_logo.scheme and parsed_logo.netloc and _is_public_email_asset_host(parsed_logo.hostname or "")):
-            logger.warning(
-                "EMAIL_LOGO_URL is not publicly reachable for email clients: %s",
-                context["logo_url"],
-            )
-            context["logo_url"] = ""
 
     frontend_domain = getattr(settings, "FRONTEND_DOMAIN", "")
     parsed_domain = urlparse(frontend_domain) if frontend_domain else None
@@ -82,18 +83,6 @@ def _build_branding_context(user, school=None) -> dict[str, object]:
         context["school_website"] = f"https://www.{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"
 
     return context
-
-
-def _is_public_email_asset_host(hostname: str) -> bool:
-    """Return True when a hostname is suitable for email-client image fetching."""
-    if not hostname:
-        return False
-    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0"}
-    if hostname in blocked_hosts:
-        return False
-    if hostname.endswith(".local"):
-        return False
-    return True
 
 
 class ResendEmailService:
@@ -132,6 +121,7 @@ class ResendEmailService:
         html_body: str = "",
         text_body: str = "",
         reply_to: Optional[str] = None,
+        attachments: Optional[list[tuple[str, bytes, str]]] = None,
     ) -> bool:
         """
         Send an email.
@@ -144,7 +134,7 @@ class ResendEmailService:
                 self.email_host or "django backend",
                 to,
             )
-            return self._send_via_django(to, subject, html_body, text_body, reply_to=reply_to)
+            return self._send_via_django(to, subject, html_body, text_body, reply_to=reply_to, attachments=attachments)
 
         if self.resend_api_key:
             return self._send_via_resend(
@@ -153,6 +143,7 @@ class ResendEmailService:
                 html_body=html_body,
                 text_body=text_body,
                 reply_to=reply_to,
+                attachments=attachments,
             )
 
         if "smtp" in self.email_backend and not self._smtp_is_configured:
@@ -162,7 +153,7 @@ class ResendEmailService:
             )
             return False
 
-        return self._send_via_django(to, subject, html_body, text_body, reply_to=reply_to)
+        return self._send_via_django(to, subject, html_body, text_body, reply_to=reply_to, attachments=attachments)
 
     def _send_via_resend(
         self,
@@ -171,6 +162,7 @@ class ResendEmailService:
         html_body: str,
         text_body: str,
         reply_to: Optional[str],
+        attachments: Optional[list[tuple[str, bytes, str]]],
     ) -> bool:
         payload: dict[str, object] = {
             "from": self._from_address,
@@ -182,6 +174,28 @@ class ResendEmailService:
             payload["text"] = text_body
         if reply_to:
             payload["reply_to"] = reply_to
+        try:
+            images = _inline_brand_images(html_body)
+        except OSError as exc:
+            logger.error("Resend: inline brand image unavailable - %s", exc)
+            return False
+        if images or attachments:
+            payload["attachments"] = [
+                {
+                    "filename": filename,
+                    "content": base64.b64encode(content).decode("ascii"),
+                    "content_type": "image/png",
+                    "content_id": content_id,
+                }
+                for content_id, filename, content in images
+            ] + [
+                {
+                    "filename": filename,
+                    "content": base64.b64encode(content).decode("ascii"),
+                    "content_type": content_type,
+                }
+                for filename, content, content_type in (attachments or [])
+            ]
 
         headers = {
             "Authorization": f"Bearer {self.resend_api_key}",
@@ -225,6 +239,7 @@ class ResendEmailService:
         html_body: str,
         text_body: str,
         reply_to: Optional[str] = None,
+        attachments: Optional[list[tuple[str, bytes, str]]] = None,
     ) -> bool:
         try:
             msg = EmailMultiAlternatives(
@@ -237,6 +252,16 @@ class ResendEmailService:
                 msg.reply_to = [reply_to]
             if html_body:
                 msg.attach_alternative(html_body, "text/html")
+                images = _inline_brand_images(html_body)
+                if images:
+                    msg.mixed_subtype = "related"
+                    for content_id, filename, content in images:
+                        image = MIMEImage(content, _subtype="png")
+                        image.add_header("Content-ID", f"<{content_id}>")
+                        image.add_header("Content-Disposition", "inline", filename=filename)
+                        msg.attach(image)
+            for filename, content, content_type in attachments or []:
+                msg.attach(filename, content, content_type)
             msg.send()
             logger.info("SMTP (%s): sent to %s", self.email_backend, to)
             return True
@@ -288,6 +313,79 @@ def send_password_reset_email(user, reset_url: str, school=None) -> bool:
     )
 
 
+def send_email_mfa_code(user, code: str, *, ttl_seconds: int = 600, school=None) -> bool:
+    """Send a privileged-login verification code without logging the code."""
+    if not is_valid_email(getattr(user, "email", "")):
+        logger.warning("send_email_mfa_code: user %s has no valid email", user.pk)
+        return False
+
+    context = _build_branding_context(user, school)
+    context["verification_code"] = code
+    context["expiry_minutes"] = max(1, ttl_seconds // 60)
+    try:
+        html_body = render_to_string("emails/login_mfa_code.html", context)
+        text_body = render_to_string("emails/login_mfa_code.txt", context)
+    except Exception as exc:
+        logger.error("send_email_mfa_code: template render error - %s", exc)
+        return False
+
+    service = ResendEmailService()
+    return service.send(
+        to=[user.email],
+        subject=f"Your sign-in verification code - {context['school_name']}",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
+def send_suspicious_login_email(user, *, metadata: dict, ip_address=None, school=None) -> bool:
+    """Notify a user when a privileged login comes from materially new context."""
+    if not is_valid_email(getattr(user, "email", "")):
+        return False
+    context = _build_branding_context(user, school)
+    location = metadata.get("location") if isinstance(metadata.get("location"), dict) else {}
+    context.update(
+        {
+            "device": metadata.get("device_name") or metadata.get("client_name") or metadata.get("device_type") or "Unknown device",
+            "operating_system": metadata.get("device_os") or "Unknown",
+            "location": location.get("city") or location.get("region") or location.get("country") or "Unknown location",
+            "ip_address": ip_address or "Unknown",
+        }
+    )
+    try:
+        html_body = render_to_string("emails/suspicious_login.html", context)
+        text_body = render_to_string("emails/suspicious_login.txt", context)
+    except Exception as exc:
+        logger.error("send_suspicious_login_email: template render error - %s", exc)
+        return False
+    return ResendEmailService().send(
+        to=[user.email],
+        subject=f"New sign-in detected - {context['school_name']}",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
+def send_email_mfa_recovery_code(*, email: str, user, code: str, ttl_minutes: int = 15, school=None) -> bool:
+    """Verify a replacement email address before it becomes an MFA destination."""
+    if not is_valid_email(email):
+        return False
+    context = _build_branding_context(user, school)
+    context.update({"verification_code": code, "expiry_minutes": ttl_minutes})
+    try:
+        html_body = render_to_string("emails/mfa_recovery_code.html", context)
+        text_body = render_to_string("emails/mfa_recovery_code.txt", context)
+    except Exception as exc:
+        logger.error("send_email_mfa_recovery_code: template render error - %s", exc)
+        return False
+    return ResendEmailService().send(
+        to=[email],
+        subject=f"Verify your recovery email - {context['school_name']}",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 def send_password_reset_success_email(user, login_url: str = "", school=None) -> bool:
     """Send a confirmation email after a password has been reset successfully."""
     if not user.email:
@@ -323,21 +421,48 @@ def _build_signup_request_email_context(signup_request) -> dict[str, object]:
         "current_year": datetime.now().year,
         "product_name": "EzySchool",
         "dev_name": "DewX IT Solutions",
-        "logo_url": getattr(settings, "EMAIL_LOGO_URL", ""),
     }
-
-    if not context["logo_url"]:
-        frontend_domain = getattr(settings, "FRONTEND_DOMAIN", "")
-        if frontend_domain:
-            parsed_frontend = urlparse(frontend_domain)
-            if (
-                parsed_frontend.scheme
-                and parsed_frontend.netloc
-                and _is_public_email_asset_host(parsed_frontend.hostname or "")
-            ):
-                context["logo_url"] = f"{parsed_frontend.scheme}://{parsed_frontend.netloc}/img/logo-dark-full.png"
-
     return context
+
+
+def send_system_message_email(
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    user_name: str = "",
+    school_name: str = "EzySchool",
+    action_url: str = "",
+    action_label: str = "View details",
+    reply_to: Optional[str] = None,
+    attachments: Optional[list[tuple[str, bytes, str]]] = None,
+) -> bool:
+    """Send a plain-language system notice in the shared HTML shell."""
+    from datetime import datetime
+
+    context = {
+        "subject": subject,
+        "body": body,
+        "user_name": user_name,
+        "school_name": school_name,
+        "action_url": action_url,
+        "action_label": action_label,
+        "support_email": getattr(settings, "SUPPORT_EMAIL", f"support@{getattr(settings, 'APP_ROOT_DOMAIN', 'myezyschool.com')}"),
+        "current_year": datetime.now().year,
+    }
+    try:
+        html_body = render_to_string("emails/notifications/system_message.html", context)
+    except Exception as exc:
+        logger.error("send_system_message_email: template render error - %s", exc)
+        return False
+    return ResendEmailService().send(
+        to=to,
+        subject=subject,
+        html_body=html_body,
+        text_body=f"Hi {user_name},\n\n{body}" if user_name else body,
+        reply_to=reply_to,
+        attachments=attachments,
+    )
 
 
 def _format_signup_request_admin_text(signup_request) -> str:
@@ -413,24 +538,23 @@ def send_contact_inquiry_emails(*, name: str, email: str, school_name: str, topi
         f"Message:\n{message}\n"
     )
     receipt_text = (
-        f"Hi {name},\n\n"
         f"Thanks for contacting EzySchool. We received your message about "
         f"{topic_label.lower()} and will reply within one business day.\n\n"
         f"Your message:\n{message}\n\n"
         f"If you need urgent help, email {support_email}.\n"
     )
 
-    service = ResendEmailService()
-    admin_ok = service.send(
+    admin_ok = send_system_message_email(
         to=[admin_email],
         subject=f"[EzySchool] Contact — {topic_label}",
-        text_body=admin_text,
+        body=admin_text,
         reply_to=email,
     )
-    receipt_ok = service.send(
+    receipt_ok = send_system_message_email(
         to=[email],
         subject="We received your message — EzySchool",
-        text_body=receipt_text,
+        body=receipt_text,
+        user_name=name,
     )
     return admin_ok and receipt_ok
 
@@ -443,11 +567,10 @@ def send_signup_request_admin_notification_email(signup_request) -> bool:
         return False
 
     text_body = _format_signup_request_admin_text(signup_request)
-    service = ResendEmailService()
-    return service.send(
+    return send_system_message_email(
         to=[admin_email],
         subject=f"[EzySchool] New Signup Request — {signup_request.school_name}",
-        text_body=text_body,
+        body=text_body,
         reply_to=signup_request.email,
     )
 
@@ -459,6 +582,8 @@ def send_notification_email(
     category: str = "announcement",
     school=None,
     action_url: str = "",
+    verification_code: str = "",
+    expiry_minutes: int = 0,
 ) -> bool:
     """Send a school notification/announcement email to a user."""
     if not is_valid_email(getattr(user, "email", "")):
@@ -472,7 +597,10 @@ def send_notification_email(
     context["subject"] = subject
     context["body"] = body
     context["category"] = category
-    context["action_url"] = action_url or context.get("school_website", "")
+    context["category_label"] = (category or "School update").replace("_", " ").title()
+    context["action_url"] = action_url or ("" if verification_code else context.get("school_website", ""))
+    context["verification_code"] = verification_code
+    context["expiry_minutes"] = expiry_minutes
 
     try:
         html_body = render_to_string("emails/notifications/announcement.html", context)

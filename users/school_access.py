@@ -156,7 +156,7 @@ def send_setup_instructions(record):
             "We will email you a six-digit verification code. After verification, confirm your details and accept the terms. "
             "If you already have an EzySchool account, use your existing password; otherwise choose a new password. "
             "You can use Forgot password if needed. No employee record is required.",
-            school=record.tenant, action_url=url))
+            school=record.tenant, action_url=url, category="School access"))
     except Exception:
         logging.getLogger(__name__).exception("School access instructions could not be delivered")
         sent = False
